@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <set>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -84,6 +85,20 @@ static std::vector<uint8_t> typesInMask(uint32_t mask) {
     for (uint8_t type = 1; type < 16; ++type)
         if (mask & (1u << type)) out.push_back(type);
     return out;
+}
+
+// The V6 fields the reader must load, in its convention (empty = every field),
+// as the union of the host UI's and the paired phones' requests. A host that
+// declared row families but no fields, or a legacy all-rows host, wants every
+// field; a host with no consumers yet wants none, so an idle desktop does not
+// widen a phone's list to everything.
+static std::vector<uint8_t> readerV6Types(uint32_t hostRowMask,
+                                          const std::vector<uint8_t>& hostTypes,
+                                          const std::vector<uint8_t>& pairTypes) {
+    if (hostRowMask != 0 && hostTypes.empty()) return {};
+    std::set<uint8_t> merged(hostTypes.begin(), hostTypes.end());
+    merged.insert(pairTypes.begin(), pairTypes.end());
+    return {merged.begin(), merged.end()};
 }
 
 static std::string byteList(const std::vector<uint8_t>& values) {
@@ -169,7 +184,10 @@ Engine::Engine(const Config& config, Sink* sink)
                const std::string& persistedJson) {
             if (sink_) sink_->onPairState(publicJson, persistedJson);
         },
-        [this](uint32_t streamMask) { setPairDataRequirements(streamMask); },
+        [this](uint32_t streamMask, const std::vector<uint8_t>& v6Types,
+               bool refreshSnapshot) {
+            setPairDataRequirements(streamMask, v6Types, refreshSnapshot);
+        },
         [this](int currentLap, int comparisonLap, bool sectorDelta) {
             AnalysisLapProgress current;
             AnalysisLapProgress comparison;
@@ -1172,6 +1190,18 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
                                  uint64_t requestId,
                                  const std::vector<uint8_t>& v6Types,
                                  const std::vector<uint8_t>& v6HistoryTypes) {
+    applyDataRequirements(streamRowMask, historyRowMask, windowSeconds, requestId,
+                          v6Types, v6HistoryTypes, 0, false);
+}
+
+void Engine::applyDataRequirements(uint32_t streamRowMask,
+                                   uint32_t historyRowMask,
+                                   float windowSeconds,
+                                   uint64_t requestId,
+                                   const std::vector<uint8_t>& v6Types,
+                                   const std::vector<uint8_t>& v6HistoryTypes,
+                                   uint32_t forceRestoreMask,
+                                   bool pairInitiated) {
     std::vector<std::string> restore;
     float liveBackfillLapStart = 0.0f;
     float liveBackfillStart = 0.0f;
@@ -1202,7 +1232,16 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
         const uint32_t playbackMask = consumerRowMask_ |
             ((consumerRowMask_ & kStrategyRowBit) ? kStrategyDependencyMask : 0u);
         reader_.setPlaybackRowMask(playbackMask, currentTime_);
-        reader_.setPlaybackV6Types(v6Types, v6HistoryTypes, currentTime_);
+        // The reader loads the union of the desktop's and the phones' fields.
+        // Re-priming the cursor is not free, so a phone that re-subscribes with
+        // a field set the reader already holds leaves it alone. Comparing with
+        // the reader's own state (which close() resets) stays correct across
+        // file loads. Desktop-initiated calls keep their existing behaviour.
+        const std::vector<uint8_t> loadedV6Types = readerV6Types(
+            hostConsumerRowMask_, v6Types, pairConsumerV6Types_);
+        if (!(pairInitiated && loadedV6Types == reader_.playbackV6Types() &&
+              v6HistoryTypes == reader_.playbackV6HistoryTypes()))
+            reader_.setPlaybackV6Types(loadedV6Types, v6HistoryTypes, currentTime_);
 
         // Strategy dependencies are retained while hidden. Materialize one fresh
         // derived row at subscription time so opening the tab never waits for the
@@ -1219,7 +1258,16 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
 
         // Historical families are restored by the indexed range request. Only
         // current-state/stream-only families need a latest-row snapshot here.
-        const uint32_t restoreMask = newlyEnabled & ~consumerHistoryMask_ & ~kStrategyRowBit;
+        // A phone's baseline is its own: it needs the latest value of every
+        // family it subscribed to, not just families nobody else had enabled.
+        // Telemetry is only restorable from a V6 recording, whose reader can
+        // return a field's latest sample; live telemetry is a continuous
+        // binary stream and other formats have no JSON latest row for it.
+        uint32_t forcedRestore = forceRestoreMask & aggregateStreamMask;
+        if (!inPlayback_.load() || reader_.loadedFormat() != TnrdFormat::ChunkedV6)
+            forcedRestore &= ~(1u << 1);
+        const uint32_t restoreMask =
+            (newlyEnabled | forcedRestore) & ~consumerHistoryMask_ & ~kStrategyRowBit;
         if (restoreMask != 0) {
             if (inPlayback_.load()) {
                 auto tagged = reader_.latestOfTypesTagged(
@@ -1328,7 +1376,9 @@ std::string Engine::teamColorCatalogJson() const {
     return tnrp::teamColorCatalogJson();
 }
 
-void Engine::setPairDataRequirements(uint32_t streamRowMask) {
+void Engine::setPairDataRequirements(uint32_t streamRowMask,
+                                     const std::vector<uint8_t>& v6Types,
+                                     bool refreshSnapshot) {
     uint32_t hostStreamMask = 0;
     uint32_t hostHistoryMask = 0;
     float hostWindowSeconds = 0.0f;
@@ -1337,14 +1387,16 @@ void Engine::setPairDataRequirements(uint32_t streamRowMask) {
     {
         std::lock_guard<std::mutex> lk(mutex_);
         pairConsumerRowMask_ = streamRowMask;
+        pairConsumerV6Types_ = v6Types;
         hostStreamMask = hostConsumerRowMask_;
         hostHistoryMask = hostConsumerHistoryMask_;
         hostWindowSeconds = hostConsumerWindowSeconds_;
         hostV6Types = hostConsumerV6Types_;
         hostV6HistoryTypes = hostConsumerV6HistoryTypes_;
     }
-    setDataRequirements(hostStreamMask, hostHistoryMask,
-                        hostWindowSeconds, 0, hostV6Types, hostV6HistoryTypes);
+    applyDataRequirements(hostStreamMask, hostHistoryMask, hostWindowSeconds, 0,
+                          hostV6Types, hostV6HistoryTypes,
+                          refreshSnapshot ? streamRowMask : 0, true);
 }
 
 // ── Playback ─────────────────────────────────────────────────────────────────
@@ -1356,6 +1408,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
     bool ok = false;
     HeaderRow header;
     std::string lapBlocksMsg;
+    std::string restrictionMsg;
     std::string statusMsg;
     std::vector<std::string> initState;
     std::vector<std::pair<uint8_t, std::string>> initPanels;
@@ -1404,6 +1457,8 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             liveLapStart_ = 0.0f;
             liveLapNum_ = 0;
             lapBlocksMsg = reader_.lapBlocksMessage();
+            restrictionMsg = reader_.driverRestrictionMessage(reader_.startTime());
+            lastDriverRestriction_ = restrictionMsg;
             if (config_.binaryPlayback) {
                 // Label the clip with its recorded format's catalog (the TS
                 // glue caches/rebroadcasts protocol_status rows as usual).
@@ -1422,6 +1477,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
                 reader_.startTime(), strategyWork);
         } else {
             playbackPath_.clear();
+            lastDriverRestriction_.clear();
             playbackStrategyPending_ = false;
             playbackStrategyPendingRows_.clear();
         }
@@ -1434,6 +1490,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
     if (ok) {
         if (!statusMsg.empty()) emitRow(statusMsg);
         emitRow(lapBlocksMsg);
+        if (!restrictionMsg.empty()) emitRow(restrictionMsg);
         for (const auto& row : initState) emitRow(row);
         std::vector<std::string> panelRows;
         panelRows.reserve(initPanels.size());
@@ -1491,6 +1548,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
     std::vector<std::pair<uint8_t, std::string>> panels;
     StrategyWork strategyWork;
     bool queueStrategyWork = false;
+    std::string seekRestrictionMsg;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
@@ -1541,6 +1599,13 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
             dupCache_ = {};
             for (auto& [tid, line] : panels) dupCache_[tid] = line;
         }
+        // A seek can cross a restriction change while paused, when no tick
+        // follows to notice it.
+        if (std::string next = reader_.driverRestrictionMessage(target);
+            !next.empty() && next != lastDriverRestriction_) {
+            lastDriverRestriction_ = next;
+            seekRestrictionMsg = next;
+        }
         appliedSeekRequestId_ = requestId;
         queueStrategyWork = preparePlaybackStrategyRebuildLocked(target, strategyWork);
     }
@@ -1569,6 +1634,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         emitRow(writeJson(flush));
         for (const auto& s : state) emitRow(s);
     }
+    if (!seekRestrictionMsg.empty()) emitRow(seekRestrictionMsg);
     // Queue only after the authoritative flush has crossed the Sink boundary.
     // Electron will then buffer an early Strategy result behind its
     // waiting-renderer barrier instead of discarding it as pre-seek state.
@@ -1586,12 +1652,17 @@ void Engine::playerSetSpeed(float mult) {
 
 void Engine::playerSetDriver(int driverIndex, bool useRecordedRows) {
     std::string lapBlocks;
+    std::string restriction;
     std::vector<std::pair<uint8_t, std::string>> panels;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
         reader_.setPlaybackDriver(driverIndex, useRecordedRows, currentTime_);
         lapBlocks = reader_.lapBlocksMessage();
+        // Restated unconditionally on a driver change: a paired client has no
+        // other way to learn that the new driver's private data is withheld.
+        restriction = reader_.driverRestrictionMessage(currentTime_);
+        lastDriverRestriction_ = restriction;
         panels = reader_.latestOfTypesTagged(currentTime_,
             typesInMask(consumerRowMask_ & kRestoreRowMask));
         dupCache_ = {};
@@ -1599,6 +1670,7 @@ void Engine::playerSetDriver(int driverIndex, bool useRecordedRows) {
             if (type < dupCache_.size()) dupCache_[type] = row;
     }
     emitRow(lapBlocks);
+    if (!restriction.empty()) emitRow(restriction);
     std::vector<std::string> panelRows;
     panelRows.reserve(panels.size());
     for (const auto& panel : panels) panelRows.push_back(panel.second);
@@ -1836,6 +1908,7 @@ void Engine::playbackLoop() {
         jsonBatch.clear();
         binBatch.clear();
         std::string strategyMsg;
+        std::string restrictionMsg;
         uint32_t emitMask = 0;
         uint64_t tickSeekRequestId = 0;
         bool finished = false;
@@ -1851,6 +1924,14 @@ void Engine::playbackLoop() {
             float total = reader_.totalTime();
             bool  atEnd = currentTime_ >= total;
             if (atEnd) currentTime_ = total;
+
+            // The setting can change mid-session, so the cursor can cross a
+            // change without a driver switch. Silent unless the row differs.
+            if (std::string next = reader_.driverRestrictionMessage(currentTime_);
+                !next.empty() && next != lastDriverRestriction_) {
+                lastDriverRestriction_ = next;
+                restrictionMsg = std::move(next);
+            }
 
             if (config_.binaryPlayback) {
                 uint32_t seen = 0;
@@ -1949,6 +2030,7 @@ void Engine::playbackLoop() {
             }
         }
         emitRows(outputRows);
+        if (!restrictionMsg.empty()) emitRow(restrictionMsg);
         if (!strategyMsg.empty()) emitRow(strategyMsg);
         if (!binBatch.empty()) emitBinary(binBatch.data(), binBatch.size());
         emitPlaybackState();

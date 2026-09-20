@@ -82,6 +82,10 @@ public:
     void setPlaybackV6Types(const std::vector<uint8_t>& streamTypes,
                             const std::vector<uint8_t>& historyTypes,
                             float cursorTime);
+    // What setPlaybackV6Types last installed; empty (also after close()) means
+    // every field.
+    const std::vector<uint8_t>& playbackV6Types() const { return playbackV6Types_; }
+    const std::vector<uint8_t>& playbackV6HistoryTypes() const { return playbackV6HistoryTypes_; }
     // V6 only: project driver-scoped rows for exactly the selected driver.
     // The recorded driver keeps the original private/player rows, but the V6
     // all-car payload attached to those rows is stripped before emission.
@@ -158,6 +162,9 @@ public:
 
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
+    // "driver_restriction" for the selected driver at cursorTime, or "" when
+    // this is not a V6 recording (no other format stores the setting).
+    std::string driverRestrictionMessage(float cursorTime) const;
     std::string getLapDataMessage(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu,
                                   int driverIndex = -1) const;
     bool getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,

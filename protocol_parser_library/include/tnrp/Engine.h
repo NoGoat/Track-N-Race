@@ -297,6 +297,13 @@ private:
     std::vector<uint8_t> hostConsumerV6Types_;
     std::vector<uint8_t> hostConsumerV6HistoryTypes_;
     uint32_t          pairConsumerRowMask_ = 0;
+    // Union of the connected phones' V6 field requests (guarded by mutex_).
+    // Phones never request history, so there is no pair history list.
+    std::vector<uint8_t> pairConsumerV6Types_;
+    // Last "driver_restriction" row emitted, so a moving cursor crossing a
+    // change re-states it and an unchanged setting stays silent (guarded by
+    // mutex_). Cleared on playback open/close.
+    std::string       lastDriverRestriction_;
 
     enum class StrategyWorkKind { Update, Rollback, Reset, Configure, PlaybackRebuild };
     struct StrategyWork {
@@ -364,7 +371,19 @@ private:
     void rewindLiveTimeline(float sessionTime, uint16_t format); // mutex_ held
     void emitRow(const std::string& json);               // forward to the sink
     void emitBinary(const uint8_t* data, size_t length);
-    void setPairDataRequirements(uint32_t streamRowMask);
+    void setPairDataRequirements(uint32_t streamRowMask,
+                                 const std::vector<uint8_t>& v6Types,
+                                 bool refreshSnapshot);
+    // Shared body of setDataRequirements()/setPairDataRequirements().
+    // forceRestoreMask re-emits the latest state of those row families even when
+    // they were already enabled (a newly subscribed phone needs its own
+    // baseline); pairInitiated marks calls that must not re-prime the reader
+    // when nothing it loads has changed.
+    void applyDataRequirements(uint32_t streamRowMask, uint32_t historyRowMask,
+                               float windowSeconds, uint64_t requestId,
+                               const std::vector<uint8_t>& v6Types,
+                               const std::vector<uint8_t>& v6HistoryTypes,
+                               uint32_t forceRestoreMask, bool pairInitiated);
     void ingestStrategyRow(const std::string& json);
     void emitStrategy(bool force = false);
     void enqueueLiveStrategyWork(StrategyWork work);

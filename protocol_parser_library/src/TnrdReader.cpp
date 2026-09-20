@@ -1906,6 +1906,19 @@ void TnrdReader::projectV6Row(
         if (asCar) value += "}]";
         value += '}'; return value;
     };
+    // Tyre sets belong to a car rather than to the player, so the projected row
+    // names it as car_idx instead of player_idx.
+    const auto tyreSetsRow = [&](int carIdx) {
+        std::string row = wrap("tyre_sets", carIdx, false);
+        const auto playerKey = row.find("\"player_idx\":");
+        if (playerKey != std::string::npos) {
+            const auto valueEnd = row.find(',', playerKey);
+            if (valueEnd != std::string::npos)
+                row.replace(playerKey, valueEnd - playerKey,
+                            "\"car_idx\":" + std::to_string(carIdx));
+        }
+        return row;
+    };
     const int selectedDriver = selectedDriverOverride >= 0
         ? selectedDriverOverride
         : (playbackDriverIndex_ >= 0 ? playbackDriverIndex_ : recordedDriverIndex_);
@@ -1918,21 +1931,22 @@ void TnrdReader::projectV6Row(
     else if (sourceType <= 11 && selected && wants(1)) out.emplace_back(1, wrap("telemetry", driver, false));
     else if ((sourceType == 12 || sourceType == 14) && selected && wants(3)) out.emplace_back(3, wrap("damage", driver, false));
     else if (sourceType == 13 && json.find("\"sets\":") != std::string_view::npos) {
-        if (selected && wants(10)) {
-            std::string row = wrap("tyre_sets", driver, false);
-            const auto playerKey = row.find("\"player_idx\":");
-            if (playerKey != std::string::npos) {
-                const auto valueEnd = row.find(',', playerKey);
-                if (valueEnd != std::string::npos)
-                    row.replace(playerKey, valueEnd - playerKey, "\"car_idx\":" + std::to_string(driver));
-            }
-            out.emplace_back(10, std::move(row));
-        }
+        if (selected && wants(10)) out.emplace_back(10, tyreSetsRow(driver));
     }
     else if (sourceType == 13 || (sourceType >= 15 && sourceType <= 20)) {
+        // Losing access is a state change like any other and has to reach every
+        // consumer still showing the old public value. The availability sample
+        // carries no field names, so the guards below cannot look for them.
+        const bool withdrawn =
+            json.find("\"available\":false") != std::string_view::npos;
         if (selected && wants(2)) out.emplace_back(2, wrap("status", driver, false));
-        if (wants(9) && (sourceType != 13 || json.find("\"tyre_compound\"") != std::string_view::npos))
+        if (wants(9) && (sourceType != 13 || withdrawn ||
+                         json.find("\"tyre_compound\"") != std::string_view::npos))
             out.emplace_back(9, wrap("all_status", driver, true));
+        // Tyre sets share this type, so a withdrawal arrives without a "sets"
+        // array and would otherwise leave the last public sets on screen.
+        if (sourceType == 13 && withdrawn && selected && wants(10))
+            out.emplace_back(10, tyreSetsRow(driver));
     }
     else if (sourceType == 21 && selected && wants(11)) out.emplace_back(11, wrap("motion", driver, false));
     else if (sourceType == 22 && selected && wants(12)) out.emplace_back(12, wrap("motion_ex", driver, false));
@@ -1997,6 +2011,23 @@ bool TnrdReader::currentLapAt(float t, float& startOut, int& numOut) const {
     startOut = match->startSessionTime;
     numOut   = match->lapNum;
     return true;
+}
+
+std::string TnrdReader::driverRestrictionMessage(float cursorTime) const {
+    if (loadedFormat_ != TnrdFormat::ChunkedV6) return {};
+    const auto* v6 = dynamic_cast<const detail::TnrdV6Archive*>(indexedArchive_.get());
+    const int driver = playbackDriverIndex_ >= 0 ? playbackDriverIndex_ : recordedDriverIndex_;
+    if (!v6 || driver < 0) return {};
+    const auto index = static_cast<uint8_t>(driver);
+    if (!v6->driverHeader(index)) return {};
+    DriverRestrictionRow row;
+    row.driverIndex = driver;
+    row.restricted = !v6->privateDataAvailableAt(index, cursorTime);
+    row.known = !row.restricted ||
+        v6->telemetrySettingAt(index, cursorTime) != detail::TelemetrySetting::Unknown;
+    std::string out;
+    if (glz::write_json(row, out)) return {};
+    return out;
 }
 
 std::string TnrdReader::lapBlocksMessage() const {

@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace tnrp {
 
@@ -23,7 +24,15 @@ class PairServer {
 public:
     using StateCallback = std::function<void(const std::string& publicStateJson,
                                              const std::string& persistedStateJson)>;
-    using RequirementsCallback = std::function<void(uint32_t streamMask)>;
+    // Union of every connected phone's subscription (plus the always-on roster
+    // family): the row-family bitmask and the V6 field types (V6DataType ids)
+    // they asked for. refreshSnapshot is true when a phone has just subscribed
+    // and needs the current state of those rows re-emitted; the engine has to
+    // do that itself during sparse V6 playback, where the server's latest-row
+    // cache only ever holds the most recent single-field patch.
+    using RequirementsCallback = std::function<void(uint32_t streamMask,
+                                                    const std::vector<uint8_t>& v6Types,
+                                                    bool refreshSnapshot)>;
     using LapDeltaCallback = std::function<std::string(int currentLap,
                                                        int comparisonLap,
                                                        bool sectorDelta)>;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { setAnalyzeLapEnabled, setHistoryRowMask, setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
 import Settings from '../components/Settings'
@@ -10,6 +10,7 @@ import { usePlayback } from './hooks/usePlayback'
 import { useRaceBanners } from './hooks/useRaceBanners'
 import AppHeader from './components/AppHeader'
 import AppHeaderMacOS from './components/AppHeaderMacOS'
+import PageMountShell from './components/PageMountShell'
 import PlaybackBar from './components/PlaybackBar'
 import TabContent from './components/TabContent'
 import FullscreenBanner from './components/FullscreenBanner'
@@ -52,6 +53,7 @@ export default function AppShell() {
     sessionLayout, standingsLayout, theme, tyreView, tyreWearMode, tyresLayout,
   } = useAppConfiguration()
   const [tab, setTab] = useState<Tab>('core')
+  const [mountedTab, setMountedTab] = useState<Tab | null>('core')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [playbackDriverIdx, setPlaybackDriverIdx] = useState<number | null>(null)
@@ -72,6 +74,7 @@ export default function AppShell() {
   const [chartWindowOverrides, setChartWindowOverrides] = useState<ChartWindowOverrides>({})
   const [chartReferenceLapOverrides, setChartReferenceLapOverrides] = useState<ChartReferenceLapOverrides>({})
   const activePageTransitionRef = useRef<AppPageTransition | null>(null)
+  const pageMountGenerationRef = useRef(0)
   const handlePlaybackClosed = useCallback(() => setSelectedIdx(null), [])
   const playback = usePlayback(handlePlaybackClosed)
 
@@ -114,8 +117,16 @@ export default function AppShell() {
     setReferenceLapNum(lapNum)
   }, [])
 
+  const schedulePageMount = useCallback((nextTab: Tab, generation: number) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (pageMountGenerationRef.current !== generation) return
+      startTransition(() => setMountedTab(nextTab))
+    }))
+  }, [])
+
   const handleTabChange = useCallback((nextTab: Tab) => {
     if (nextTab === tab) return
+    const generation = ++pageMountGenerationRef.current
     const transitionDocument = document as Document & {
       startViewTransition?: (update: () => void) => AppPageTransition
     }
@@ -129,13 +140,12 @@ export default function AppShell() {
       delete root.dataset.pageTransition
       delete root.dataset.pageTransitionDirection
       delete root.dataset.pageTransitionPhase
+      setMountedTab(null)
       setTab(nextTab)
+      schedulePageMount(nextTab, generation)
       return
     }
 
-    // First-time tab construction can monopolize the renderer while charts,
-    // fonts, and GPU resources warm up. Pause the compositor snapshots until
-    // that work has yielded, otherwise the animation expires unseen.
     activePageTransitionRef.current?.skipTransition?.()
     root.dataset.pageTransition = 'true'
     root.dataset.pageTransitionPhase = 'preparing'
@@ -144,7 +154,11 @@ export default function AppShell() {
       const nextIndex = TAB_OPTIONS.findIndex(option => option.value === nextTab)
       root.dataset.pageTransitionDirection = nextIndex > currentIndex ? 'right' : 'left'
       const transition = transitionDocument.startViewTransition(() => {
-        flushSync(() => setTab(nextTab))
+        if (pageMountGenerationRef.current !== generation) return
+        flushSync(() => {
+          setMountedTab(null)
+          setTab(nextTab)
+        })
       })
       activePageTransitionRef.current = transition
       void transition.ready.then(() => {
@@ -159,6 +173,7 @@ export default function AppShell() {
         delete root.dataset.pageTransition
         delete root.dataset.pageTransitionDirection
         delete root.dataset.pageTransitionPhase
+        schedulePageMount(nextTab, generation)
       }
       void transition.finished.then(clearPageTransition, clearPageTransition)
     } catch {
@@ -166,9 +181,12 @@ export default function AppShell() {
       delete root.dataset.pageTransition
       delete root.dataset.pageTransitionDirection
       delete root.dataset.pageTransitionPhase
+      if (pageMountGenerationRef.current !== generation) return
+      setMountedTab(null)
       setTab(nextTab)
+      schedulePageMount(nextTab, generation)
     }
-  }, [reduceAnimations, tab])
+  }, [reduceAnimations, schedulePageMount, tab])
 
   useEffect(() => window.recordingBridge.onError(setRecordingError), [])
 
@@ -219,9 +237,9 @@ export default function AppShell() {
   const protocolWarning = useTelemetryStore(s => s.protocolWarning)
   const recordingCurrentLapSupported = useTelemetryStore(s => s.analyzeDeltaAvailable)
   const playbackTnrdVersion = useTelemetryStore(s => s.playbackTnrdVersion)
+  const playbackDriverIndex = useTelemetryStore(s => s.playbackDriverIndex)
   const participants = useTelemetryStore(s => s.participants)
   const timingPlayerIdx = useTelemetryStore(s => s.timing?.player_idx ?? null)
-  const rosterPlayerIdx = participants?.player_idx ?? null
   const clCapability = !playback.state?.filename
     ? 'live'
     : playbackTnrdVersion === null
@@ -232,7 +250,7 @@ export default function AppShell() {
   const clAvailable = clCapability !== 'legacy'
   const recordingOpen = !!playback.state?.filename
   const driverSelectorVisible = recordingOpen && playbackTnrdVersion === 'TNRD_V6'
-  const originalPlayerIdx = recordedPlayerIdx ?? timingPlayerIdx ?? rosterPlayerIdx
+  const originalPlayerIdx = recordedPlayerIdx ?? playbackDriverIndex ?? timingPlayerIdx
   const driverOptions = useMemo(() => (participants?.drivers ?? []).map(driver => {
     const restricted = driver.idx !== originalPlayerIdx && driver.your_telemetry !== 1
     return {
@@ -250,13 +268,13 @@ export default function AppShell() {
       setPlaybackDriverIdx(null)
       return
     }
-    const initialPlayerIdx = timingPlayerIdx ?? rosterPlayerIdx
+    const initialPlayerIdx = playbackDriverIndex ?? timingPlayerIdx
     if (recordedPlayerIdx === null && initialPlayerIdx !== null) {
       setRecordedPlayerIdx(initialPlayerIdx)
       setPlaybackDriverIdx(initialPlayerIdx)
       window.playerBridge.setDriver(initialPlayerIdx, true)
     }
-  }, [driverSelectorVisible, recordedPlayerIdx, rosterPlayerIdx, timingPlayerIdx])
+  }, [driverSelectorVisible, playbackDriverIndex, recordedPlayerIdx, timingPlayerIdx])
   const availableChartWindows = useMemo(() => new Set(
     getChartWindowOptionGroups(clAvailable, recordingOpen)
       .flatMap(group => group.options)
@@ -584,8 +602,8 @@ export default function AppShell() {
           sectorBoundariesEnabled={sectorBoundariesEnabled}
         >
         <ChartCoordinatesProvider mode={chartCoordinateMode} referenceLapNum={referenceLapNum} rowTypeMask={dataRequirements.historyMask} sectorBoundaries={sectorBoundariesEnabled}>
-        <TabContent
-          tab={tab}
+        {mountedTab === null ? <PageMountShell /> : <TabContent
+          tab={mountedTab}
           isDark={theme !== 'light'}
           seconds={seconds}
           coreLayout={coreLayout}
@@ -622,7 +640,7 @@ export default function AppShell() {
           analyzeFixedLapMode={analyzeFixedLapMode}
           onAnalyzeFixedLapModeChange={setAnalyzeFixedLapMode}
           onAnalyzeDataMaskChange={setAnalyzeDataMask}
-        />
+        />}
         </ChartCoordinatesProvider>
         </ChartWindowOverridesProvider>
       </main>

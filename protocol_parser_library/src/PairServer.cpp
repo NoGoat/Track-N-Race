@@ -16,6 +16,7 @@
 #include <mutex>
 #include <optional>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include <thread>
@@ -89,6 +90,8 @@ struct PairIncomingMessage {
     std::string code;
     std::string rowType;
     uint32_t streamMask{};
+    // V6DataType ids this phone needs while a V6 recording is playing.
+    std::vector<int> v6Types{};
     uint64_t requestId{};
     int currentLap{};
     int comparisonLap{};
@@ -119,7 +122,7 @@ struct PairPongFrame {
 
 struct PairWelcomeFrame {
     std::string type{"welcome"};
-    int pairProtocol{1};
+    int pairProtocol{2};
     int binaryRowsVersion{2};
     std::string serverId;
     std::string token;
@@ -127,8 +130,18 @@ struct PairWelcomeFrame {
     std::optional<int> protocolYear;
     std::optional<int> formula;
     std::vector<std::string> capabilities{
-        "subscribe", "latest-state", "playback-state", "lap-delta"
+        "subscribe", "latest-state", "playback-state", "lap-delta",
+        "v6-requirements", "driver-restriction"
     };
+};
+
+// Reply to request_latest when no V6 recording is playing: driver -1 means the
+// question does not apply, which is distinct from "public".
+struct PairDriverRestrictionFrame {
+    std::string type{"driver_restriction"};
+    int         driverIndex{-1};
+    bool        restricted{};
+    bool        known{};
 };
 
 struct PairProtocolPeek {
@@ -139,7 +152,9 @@ struct PairProtocolPeek {
 
 namespace {
 
-constexpr int kPairProtocolVersion = 1;
+// Version 2: subscribe carries v6Types, and playback rows may be single-field
+// V6 patches that a client must merge instead of replacing.
+constexpr int kPairProtocolVersion = 2;
 constexpr int kBinaryRowsVersion = 2;
 constexpr int64_t kPairWindowMs = 2 * 60 * 1000;
 constexpr size_t kMaxFrameBytes = 1024 * 1024;
@@ -148,6 +163,20 @@ constexpr uint32_t kAndroidPageMask =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
     (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13);
 constexpr uint32_t kParticipantsMask = 1u << 8;
+// The reader ignores ids it does not know; this only bounds a phone's list.
+constexpr size_t kMaxV6TypesPerClient = 32;
+constexpr int kMaxV6TypeId = 63;
+
+std::vector<uint8_t> sanitizeV6Types(const std::vector<int>& requested) {
+    std::set<uint8_t> unique;
+    for (const int value : requested) {
+        if (value <= 0 || value > kMaxV6TypeId) continue;
+        if (unique.size() >= kMaxV6TypesPerClient) break;
+        unique.insert(static_cast<uint8_t>(value));
+    }
+    return {unique.begin(), unique.end()};
+}
+
 constexpr glz::opts kPartialRead{
     .null_terminated = false,
     .error_on_unknown_keys = false,
@@ -470,6 +499,7 @@ bool allowedControlRow(std::string_view json) {
         json.starts_with("{\"type\":\"timeline_reset\"") ||
         json.starts_with("{\"type\":\"playback_loaded\"") ||
         json.starts_with("{\"type\":\"playback_lap_blocks\"") ||
+        json.starts_with("{\"type\":\"driver_restriction\"") ||
         json.starts_with("{\"type\":\"playback_close\"");
 }
 
@@ -523,6 +553,7 @@ struct PairServer::Impl {
         bool authenticated{};
         std::string deviceId;
         uint32_t streamMask{};
+        std::vector<uint8_t> v6Types;
         uint64_t participantsRevision{};
         uint64_t connectionId{};
         std::string peer;
@@ -549,6 +580,10 @@ struct PairServer::Impl {
     std::string lastError;
     std::string latestProtocolStatus;
     std::string latestPlaybackLapBlocks;
+    // Restricted data is an absence of rows, so a phone cannot infer it from
+    // the stream. Cached for the snapshot and for request_latest re-requests
+    // after a reconnect or a dropped frame.
+    std::string latestDriverRestriction;
     std::array<std::string, 16> latestRows;
     std::array<std::vector<uint8_t>, 16> latestBinary;
     uint64_t participantsRevision{};
@@ -579,15 +614,25 @@ struct PairServer::Impl {
         return pairingExpiresAt > nowMs();
     }
 
-    uint32_t requirementsLocked() const {
-        if (!running.load()) return 0;
+    struct Requirements {
+        uint32_t streamMask{};
+        std::vector<uint8_t> v6Types;
+    };
+
+    Requirements requirementsLocked() const {
+        Requirements out;
+        if (!running.load()) return out;
         // Keep the roster current even with no phone connected. Every other
         // family follows the connected clients' replaceable subscriptions.
-        uint32_t mask = kParticipantsMask;
-        for (const auto& client : clients)
-            if (client->running.load() && client->authenticated)
-                mask |= client->streamMask;
-        return mask;
+        out.streamMask = kParticipantsMask;
+        std::set<uint8_t> types;
+        for (const auto& client : clients) {
+            if (!client->running.load() || !client->authenticated) continue;
+            out.streamMask |= client->streamMask;
+            types.insert(client->v6Types.begin(), client->v6Types.end());
+        }
+        out.v6Types.assign(types.begin(), types.end());
+        return out;
     }
 
     std::string persistedStateLocked() const {
@@ -633,15 +678,16 @@ struct PairServer::Impl {
         if (callback) callback(publicJson, privateJson);
     }
 
-    void notifyRequirements() {
+    void notifyRequirements(bool refreshSnapshot = false) {
         RequirementsCallback callback;
-        uint32_t mask = 0;
+        Requirements requirements;
         {
             std::lock_guard lock(mutex);
             callback = requirementsCallback;
-            mask = requirementsLocked();
+            requirements = requirementsLocked();
         }
-        if (callback) callback(mask);
+        if (callback)
+            callback(requirements.streamMask, requirements.v6Types, refreshSnapshot);
     }
 
     bool enqueue(const std::shared_ptr<Client>& client, std::vector<uint8_t> frame) {
@@ -705,6 +751,7 @@ struct PairServer::Impl {
             std::lock_guard lock(mutex);
             if (!latestProtocolStatus.empty()) rows.push_back(latestProtocolStatus);
             if (!latestPlaybackLapBlocks.empty()) rows.push_back(latestPlaybackLapBlocks);
+            if (!latestDriverRestriction.empty()) rows.push_back(latestDriverRestriction);
             for (size_t type = 1; type < latestRows.size(); ++type) {
                 if ((client->streamMask & (1u << type)) == 0 || latestRows[type].empty())
                     continue;
@@ -780,6 +827,7 @@ struct PairServer::Impl {
                 // welcome. Keep the stream closed until that first replacement
                 // subscription so no broad Android snapshot leaks through.
                 client->streamMask = 0;
+                client->v6Types.clear();
                 if (initial) {
                     pairingSecret.clear();
                     matchingCode.clear();
@@ -840,14 +888,28 @@ struct PairServer::Impl {
             {
                 std::lock_guard lock(mutex);
                 client->streamMask = message.streamMask & kAndroidPageMask;
+                client->v6Types = sanitizeV6Types(message.v6Types);
             }
             sendText(client, writeJson(PairSubscribedFrame{
                 "subscribed", client->streamMask, 0, "none"
             }));
             sendSnapshot(client);
-            notifyRequirements();
+            notifyRequirements(true);
             diagnostic("subscription_applied", client,
-                "stream_mask=" + std::to_string(client->streamMask));
+                "stream_mask=" + std::to_string(client->streamMask) +
+                " v6_types=" + std::to_string(client->v6Types.size()));
+        } else if (message.type == "request_latest" &&
+                   message.rowType == "driver_restriction") {
+            // Answered even when nothing is cached: "no recording is playing"
+            // is the honest answer, and the phone stops asking on the reply.
+            std::string row;
+            {
+                std::lock_guard lock(mutex);
+                row = latestDriverRestriction;
+            }
+            if (row.empty())
+                row = writeJson(PairDriverRestrictionFrame{});
+            sendRows(client, {row});
         } else if (message.type == "request_latest" &&
                    message.rowType == "participants") {
             sendCachedParticipants(client, true);
@@ -1395,8 +1457,11 @@ void PairServer::publishRow(const std::string& json) {
         if (json.starts_with("{\"type\":\"playback_loaded\"") ||
             json.starts_with("{\"type\":\"playback_close\"")) {
             impl_->latestPlaybackLapBlocks.clear();
+            impl_->latestDriverRestriction.clear();
         } else if (json.starts_with("{\"type\":\"playback_lap_blocks\"")) {
             impl_->latestPlaybackLapBlocks = json;
+        } else if (json.starts_with("{\"type\":\"driver_restriction\"")) {
+            impl_->latestDriverRestriction = json;
         }
         if (type > 0 && type < impl_->latestRows.size()) {
             if (type == 8 && impl_->latestRows[type] != json) {

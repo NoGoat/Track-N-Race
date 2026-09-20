@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,6 +32,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +53,7 @@ import com.google.zxing.client.android.Intents
 import com.journeyapps.barcodescanner.ScanContract
 import com.tracknrace.android.pages.DashboardScreen
 import com.tracknrace.android.pages.LicensesScreen
+import com.tracknrace.android.pages.PARTICIPANTS_RETRY_DELAY_MS
 import com.tracknrace.android.pages.PairingScreen
 import com.tracknrace.android.pages.SettingsScreen
 import com.tracknrace.android.pages.TimingScreen
@@ -65,6 +68,10 @@ private enum class AppScreen(val telemetryPage: PairedTelemetryPage) {
     PAIRING(PairedTelemetryPage.NONE),
     LICENSES(PairedTelemetryPage.NONE),
 }
+
+// Matched to the roster retry: both recover a control row the desktop already
+// caches, so asking more often would not make it arrive sooner.
+private const val DRIVER_RESTRICTION_RETRY_DELAY_MS = 3_000L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -119,6 +126,40 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     }
 
     val isPrimary = screen == AppScreen.DASHBOARD || screen == AppScreen.TIMING || screen == AppScreen.TYRES
+    val paired = store.settings.source == PairedTelemetryClient.SOURCE_PAIRED
+
+    // derivedStateOf keeps this root from recomposing on every timing row: it
+    // only invalidates when the name or the roster-missing flag actually changes.
+    val selectedDriverName by remember(store) { derivedStateOf { store.selectedDriverName } }
+    val driverRestricted by remember(store) { derivedStateOf { store.selectedDriverRestricted } }
+    val restrictionMissing by remember(store) {
+        derivedStateOf { store.needsDriverRestrictionRefresh() }
+    }
+    // The desktop states the restriction on every driver change and caches it
+    // for the subscription snapshot, so a gap means the frame was lost or the
+    // socket dropped. Ask again until it answers.
+    LaunchedEffect(paired, restrictionMissing) {
+        if (!paired || !restrictionMissing) return@LaunchedEffect
+        while (true) {
+            delay(DRIVER_RESTRICTION_RETRY_DELAY_MS)
+            telemetry.requestDriverRestriction()
+        }
+    }
+    val rosterMissing by remember(store) {
+        derivedStateOf { store.timing.needsParticipantsRefresh() }
+    }
+    // The Timing page retries a missing roster itself. Dashboard and Tyres share
+    // the same subscription bit now, so give them the same retry.
+    LaunchedEffect(paired, rosterMissing, screen) {
+        if (!paired || !rosterMissing ||
+            (screen != AppScreen.DASHBOARD && screen != AppScreen.TYRES)
+        ) return@LaunchedEffect
+        while (true) {
+            delay(PARTICIPANTS_RETRY_DELAY_MS)
+            telemetry.requestParticipants()
+        }
+    }
+
     val openSettings = {
         settingsReturn = if (isPrimary) screen else AppScreen.DASHBOARD
         screen = AppScreen.SETTINGS
@@ -132,6 +173,8 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
             if (!landscape) {
                 AppTopBar(
                     screen = screen,
+                    driverName = selectedDriverName.takeIf { paired },
+                    driverRestricted = driverRestricted,
                     onSettings = openSettings,
                     onBack = ::navigateBack,
                 )
@@ -280,6 +323,8 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                 ) {
                     AppTopBar(
                         screen = screen,
+                        driverName = selectedDriverName.takeIf { paired },
+                        driverRestricted = driverRestricted,
                         onSettings = openSettings,
                         onBack = ::navigateBack,
                     )
@@ -306,6 +351,8 @@ private fun <T> rememberCurrentWhileActive(active: Boolean, current: () -> T): T
 @Composable
 private fun AppTopBar(
     screen: AppScreen,
+    driverName: String?,
+    driverRestricted: Boolean?,
     onSettings: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -344,6 +391,23 @@ private fun AppTopBar(
         },
         actions = {
             if (primary) {
+                if (driverName != null) {
+                    // Matches the desktop driver selector's wording. An unknown
+                    // setting says so rather than implying full telemetry.
+                    val label = when (driverRestricted) {
+                        true -> "$driverName · Public data only"
+                        null -> "$driverName · Telemetry access unknown"
+                        false -> driverName
+                    }
+                    Text(
+                        label,
+                        modifier = Modifier.widthIn(max = 220.dp),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Box {
                     IconButton(onClick = { overflowOpen = true }) {
                         Icon(painterResource(R.drawable.ic_more), contentDescription = "More options")

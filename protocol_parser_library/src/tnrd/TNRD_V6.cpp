@@ -1568,6 +1568,24 @@ const std::vector<V6DriverHeader>& TnrdV6Archive::driverHeaders() const { return
 const V6DriverHeader* TnrdV6Archive::driverHeader(uint8_t index) const {
     const auto found = impl_->driverByIndex.find(index); return found == impl_->driverByIndex.end() ? nullptr : &impl_->drivers[found->second];
 }
+TelemetrySetting TnrdV6Archive::telemetrySettingAt(uint8_t index, float logical) const {
+    const auto* header = driverHeader(index);
+    if (!header) return TelemetrySetting::Unknown;
+    // restrictionChanges is appended in recording order, so it is already
+    // sorted by (phase, session time); stop at the first change in the future.
+    auto setting = header->initialTelemetrySetting;
+    for (const auto& change : header->restrictionChanges) {
+        if (impl_->logical(change.phase, change.sessionTime) > logical) break;
+        setting = change.setting;
+    }
+    return setting;
+}
+bool TnrdV6Archive::privateDataAvailableAt(uint8_t index, float logical) const {
+    // Mirrors the writer's privateAvailable(): a restricted recording player
+    // still has their own private telemetry stored.
+    return (impl_->player && *impl_->player == index) ||
+        telemetrySettingAt(index, logical) == TelemetrySetting::Public;
+}
 std::vector<V6LapSummary> TnrdV6Archive::driverLapSummaries(uint8_t index) const {
     std::vector<V6LapSummary> out; for (const auto& lap : impl_->lapSummaries) if (lap.driverIndex == index) out.push_back(lap);
     std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {

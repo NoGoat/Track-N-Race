@@ -656,6 +656,98 @@ Normal stream rows may be buffered behind a short installation barrier so the
 history and current snapshot become visible atomically, but every buffer remains
 bounded.
 
+### 10.4.1 Pair Protocol v2: V6 field requirements and patch rows
+
+`pairProtocol` is now `2`. Android was pre-release, so a v1 phone is refused at
+the handshake rather than kept working; there is no v1 fallback. Two things
+changed.
+
+**`subscribe` names V6 fields.** Alongside `streamMask` (row families) the phone
+sends `v6Types`, the `V6DataType` ids it needs (speed, fuel, tyre state, lap
+timing, and so on; capped at 32, unknown ids ignored). Each Android page declares
+the UI consumers it shows and asks for the union of their families and fields
+(`DataConsumer` in `DataRequirements.kt`, hand-written, not shared with
+Electron's table). The `welcome` frame advertises `v6-requirements`.
+
+**The engine loads the union.** The pair server keeps each phone's list and
+reports the union of all phones to the engine, which merges it with the desktop
+UI's own request before configuring the reader. Rules:
+
+- A desktop that declared row families but no fields, or a legacy all-rows host,
+  wants every field. A desktop with no consumers yet wants none, so an idle
+  Electron window does not widen a phone's list.
+- A phone that lists no fields contributes none. If nobody at all lists a field
+  the reader falls back to loading everything, which costs work but stays
+  correct.
+- A phone that re-subscribes with a field set the reader already holds does not
+  re-prime the shared playback cursor.
+- Phones follow the desktop's playback: one reader, one cursor, one selected
+  driver. A phone chooses which fields it receives, never where or whose.
+- A subscription also asks the engine to re-emit the latest value of every
+  subscribed family, so a phone joining mid-playback gets a baseline. The pair
+  server's own latest-row cache cannot provide one during sparse V6 playback,
+  where it only holds the most recent single-field patch.
+
+**Playback rows are patches.** While a V6 recording plays (and always for the
+selected driver's rows), a row carries only the fields that were sampled and is
+tagged `"_v6_type"`. An absent field means unchanged, never zero. Restricted
+data is the explicit `{"available":false}`. All-car rows (`timing`,
+`all_status`) name one car per patch. Hot telemetry in V6 playback is JSON, not
+the packed binary batch, so a client must merge it. Live rows are still complete.
+`player_idx` on a projected row is the selected driver, and a `tyre_sets` row
+carries that driver as `car_idx`.
+
+### 10.4.2 Telemetry restriction
+
+A driver's "Your Telemetry" setting decides whether their private data exists at
+all. Restricted data is an *absence* of rows, not a value, so a client cannot
+infer it from the stream: silence looks the same as a car that has not moved.
+
+**Direct mode** derives it exactly as the desktop's driver selector does. The
+Participants row already carries each driver's `your_telemetry` (1 public,
+0 restricted, absent when the game has not said), the phone keeps it on the
+roster, and a driver is restricted when they are not the receiving player and
+their setting is not 1. An absent setting stays unknown; it is never read as
+public.
+
+**Paired mode during V6 playback** cannot use that rule. The participants row
+replays the setting recorded at its own timestamp, not the one in force at the
+cursor, and the selected driver is the desktop's choice rather than the player.
+So the desktop states it outright in a `driver_restriction` control row:
+
+```json
+{"type":"driver_restriction","driverIndex":7,"restricted":true,"known":true}
+```
+
+- `known` is false until a Participants update supplied a setting. Unknown is a
+  third answer, not a synonym for public.
+- The desktop emits it on playback load, on every driver change, after a seek,
+  and whenever a moving cursor crosses a change. It is silent when nothing
+  changed.
+- The pair server caches the latest one, clears it on `playback_loaded` and
+  `playback_close`, and includes it in each subscription snapshot.
+- A phone that missed it — dropped frame, reconnect — re-requests with
+  `{"type":"request_latest","rowType":"driver_restriction"}`. The desktop always
+  replies; `driverIndex` is -1 when no recording is playing. The phone knows it
+  is owed one when `playback_lap_blocks` carried a `playbackDriverIndex` but no
+  restriction has arrived for that driver, and retries every 3 s until answered.
+- The `welcome` frame advertises `driver-restriction`; a phone does not send the
+  request to a desktop that does not.
+
+The app bar labels the driver accordingly, matching the desktop's wording
+("· Public data only") and naming the unknown case rather than hiding it.
+
+**A mid-run change rebroadcasts the affected values.** Losing access is a state
+change, so the values that became unreadable are restated rather than left on
+screen. The recording already stores an `{"available":false}` sample per data
+type at the moment access is withdrawn; playback now projects the tyre-state one
+as an `all_status` patch for that car and, for the selected driver, as a
+`tyre_sets` row. Consumers drop the compound, age and sets they last saw instead
+of presenting them as current. Electron's car-patch merge already cleared the
+fields listed for a type on `available: false`; only the projection was missing.
+Regaining access needs no special handling: the next ordinary sample repopulates
+the values.
+
 ### 10.5 Delivery and backpressure
 
 Each phone receives engine batches in order through its WebSocket. Hot frames

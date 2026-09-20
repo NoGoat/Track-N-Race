@@ -171,6 +171,13 @@ public:
     std::optional<uint8_t> playerDriverIndex() const;
     const std::vector<V6DriverHeader>& driverHeaders() const;
     const V6DriverHeader* driverHeader(uint8_t) const;
+    // That driver's "Your Telemetry" setting as of a logical playback time,
+    // i.e. the header's initial setting with every change at or before it
+    // applied. Unknown until the first Participants update that carried one.
+    TelemetrySetting telemetrySettingAt(uint8_t, float) const;
+    // Whether the driver's private data is readable at that time: the recording
+    // player's own car always is, regardless of what they broadcast.
+    bool privateDataAvailableAt(uint8_t, float) const;
     std::vector<V6LapSummary> driverLapSummaries(uint8_t) const;
     const std::vector<V6ChunkInfo>& v6Chunks() const;
     const std::vector<V6SharedRecord>& sharedRecords() const;

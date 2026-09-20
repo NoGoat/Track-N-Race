@@ -87,6 +87,18 @@ private:
     jmethodID onBinary_{};
 };
 
+// Logical row ids (Engine's rowTypeOf) the Kotlin store consumes: telemetry (its
+// packed binary lane is gated by this bit too), status, damage, lap, session,
+// timing, participants, all_status, tyre_sets and positions. Everything else
+// libtnrp can produce -- race_event, motion, session_history_fastest (a full
+// lap/stint history per car in V6), strategy -- would be marshalled through JNI
+// and JSON-parsed on the source thread only to be discarded. Control rows
+// (protocol_*, recording_error, ...) carry no row id and are never masked, and
+// recording ignores the mask, so TNRD files still contain every row.
+constexpr uint32_t kAndroidRowMask =
+    (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
+    (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13);
+
 std::unique_ptr<AndroidSink> gSink;
 std::unique_ptr<tnrp::Engine> gEngine;
 std::unique_ptr<tnrp::PairDiscoveryBrowser> gDiscovery;
@@ -126,6 +138,7 @@ Java_com_tracknrace_android_NativeTelemetry_nativeStart(
         stopLocked();
         return env->NewStringUTF(error.empty() ? "Unable to bind UDP listener" : error.c_str());
     }
+    gEngine->setDataRequirements(kAndroidRowMask, 0, 0.0f);
     return nullptr;
 }
 

@@ -85,6 +85,10 @@ internal class TelemetryController(
         if (!isDirectSource()) pairedTelemetry.requestParticipants()
     }
 
+    fun requestDriverRestriction() {
+        if (!isDirectSource()) pairedTelemetry.requestDriverRestriction()
+    }
+
     fun setActivePage(page: PairedTelemetryPage) {
         pairedTelemetry.setPage(page)
     }

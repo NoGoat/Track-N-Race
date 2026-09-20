@@ -3,7 +3,7 @@
 The Android app is a native Kotlin/Jetpack Compose Material 3 application. It
 uses the shared C++ `protocol_parser_library` through a Kotlin/JNI
 host, supports direct UDP telemetry and paired desktop telemetry, and records
-TNRD V5 sessions through the shared engine.
+TNRD V6 sessions through the shared engine.
 
 There is no WebView, JavaScript runtime, Capacitor bridge, React bundle, or
 per-packet Compose state update. Native and paired binary batches are decoded
@@ -11,6 +11,11 @@ on their worker threads. Only the newest telemetry and all-car position samples
 are atomically published, and the visible dashboard samples them once per
 display frame. Cold rows update Compose snapshot state on the main thread at
 their native cadence.
+
+In paired mode each page declares the data it shows (`DataRequirements.kt`) and
+asks the desktop for exactly that union of row families and V6 fields. Playback
+of a V6 recording arrives as field patches, which the store merges, and the app
+follows whichever driver the desktop has selected; the app bar shows their name.
 
 Material 3 provides the UI components and dynamic Material You color is used
 on Android 12 and later, with light/dark fallback schemes on older devices.

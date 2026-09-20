@@ -3,6 +3,7 @@ package com.tracknrace.android
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -15,6 +16,10 @@ import kotlin.math.roundToInt
 private const val MAX_LIVE_LAP_PROGRESS_SAMPLES = 20_000
 private const val MAX_PLAYBACK_DELTA_CURVES = 8
 
+// Car indices are 0..21 on the wire (24-slot arrays); anything above is the
+// game's 255 "no such car" marker, e.g. a spectator's player index.
+private const val MAX_CARS = 24
+
 private data class LiveLapSample(
     val sessionTime: Double,
     val lapNumber: Int,
@@ -26,6 +31,81 @@ private data class LiveLapSample(
     val sector: Int,
     val invalid: Boolean,
 )
+
+private val BLANK_LIVE_LAP = LiveLapSample(
+    sessionTime = Double.NaN,
+    lapNumber = 0,
+    lastLapMs = 0,
+    currentLapMs = 0,
+    lapDistanceM = Double.NaN,
+    sector1Ms = 0,
+    sector2Ms = 0,
+    sector = 0,
+    invalid = false,
+)
+
+/** One car's timing fields as a patch row carried them; null means unchanged. */
+private class TimingCarPatch(
+    val index: Int,
+    val position: Int?,
+    val lapNumber: Int?,
+    val currentLapMs: Int?,
+    val lastLapMs: Int?,
+    val gapMs: Int?,
+    val pitStatus: Int?,
+    val lapInvalid: Boolean?,
+    val penaltiesSeconds: Int?,
+    val driveThroughPenalties: Int?,
+    val stopGoPenalties: Int?,
+    val resultStatus: Int?,
+)
+
+private class TyreStatusPatch(
+    val index: Int,
+    val actualCompound: Int?,
+    val visualCompound: Int?,
+    val ageLaps: Int?,
+    /** False when that car's tyre state stopped being readable. */
+    val available: Boolean?,
+)
+
+private fun mergeTimingCars(
+    current: List<TimingCarEntry>,
+    patches: List<TimingCarPatch>,
+): List<TimingCarEntry> {
+    val merged = LinkedHashMap<Int, TimingCarEntry>()
+    for (car in current) merged[car.index] = car
+    for (patch in patches) {
+        val base = merged[patch.index] ?: TimingCarEntry(
+            index = patch.index,
+            position = 0,
+            lapNumber = 0,
+            currentLapMs = 0,
+            lastLapMs = 0,
+            gapMs = 0,
+            pitStatus = 0,
+            lapInvalid = false,
+            penaltiesSeconds = 0,
+            driveThroughPenalties = 0,
+            stopGoPenalties = 0,
+            resultStatus = 0,
+        )
+        merged[patch.index] = base.copy(
+            position = patch.position ?: base.position,
+            lapNumber = patch.lapNumber ?: base.lapNumber,
+            currentLapMs = patch.currentLapMs ?: base.currentLapMs,
+            lastLapMs = patch.lastLapMs ?: base.lastLapMs,
+            gapMs = patch.gapMs ?: base.gapMs,
+            pitStatus = patch.pitStatus ?: base.pitStatus,
+            lapInvalid = patch.lapInvalid ?: base.lapInvalid,
+            penaltiesSeconds = patch.penaltiesSeconds ?: base.penaltiesSeconds,
+            driveThroughPenalties = patch.driveThroughPenalties ?: base.driveThroughPenalties,
+            stopGoPenalties = patch.stopGoPenalties ?: base.stopGoPenalties,
+            resultStatus = patch.resultStatus ?: base.resultStatus,
+        )
+    }
+    return merged.values.toList()
+}
 
 private data class LapProgressSample(
     val elapsedMs: Int,
@@ -87,6 +167,11 @@ internal class TelemetryStore {
     private val hotRows = AtomicLong()
     private val malformedReported = AtomicBoolean()
     private val messageIds = AtomicLong()
+
+    // Written by whichever source thread is delivering rows (libtnrp or OkHttp).
+    @Volatile private var playerIndex = -1
+    // Merge base for lap rows; main thread only, like the comparison state.
+    private var liveLapState = BLANK_LIVE_LAP
     private var previousLiveLap: LiveLapSample? = null
     private var currentLiveLapNumber = 0
     private val currentLiveProgress = mutableListOf<LapProgressSample>()
@@ -122,6 +207,56 @@ internal class TelemetryStore {
         private set
     val discoveredDesktops = mutableStateListOf<DiscoveredDesktop>()
 
+    /**
+     * Car index whose data the stream currently describes: the player live, or
+     * the driver chosen on the desktop while a V6 recording is playing back.
+     * libtnrp stamps that choice into `player_idx` on every projected row.
+     */
+    var selectedDriverIndex by mutableIntStateOf(-1)
+        private set
+
+    /** Roster name for [selectedDriverIndex]; null until Participants arrives. */
+    val selectedDriverName: String?
+        get() = timing.drivers[selectedDriverIndex]?.name
+
+    // What the desktop last stated, and the driver it stated it for. During V6
+    // playback the roster cannot answer this: a rival's restriction is an
+    // absence of chunks, and the participants row replays the recorded setting
+    // rather than the one in force at the cursor.
+    private var statedRestriction by mutableStateOf<Boolean?>(null)
+    private var statedRestrictionDriver by mutableIntStateOf(-1)
+    // Set once a V6 recording is playing on the desktop, which is the only
+    // situation where a stated restriction is required.
+    private var v6PlaybackActive by mutableStateOf(false)
+
+    /**
+     * Whether the displayed driver's private telemetry is withheld, or null
+     * while that is genuinely unknown. Null must be shown as "unknown", never
+     * collapsed into "public".
+     */
+    val selectedDriverRestricted: Boolean?
+        get() {
+            if (statedRestrictionDriver >= 0 && statedRestrictionDriver == selectedDriverIndex) {
+                return statedRestriction
+            }
+            // Playback owes a stated value; until it arrives this is unknown.
+            if (v6PlaybackActive) return null
+            // Live (direct or paired): the roster's setting is the current one,
+            // exactly as on the desktop. timing.playerIndex is only populated on
+            // pages that subscribe to the timing row, but live every row
+            // describes the receiving player, so the selected driver is them.
+            val player = if (timing.playerIndex >= 0) timing.playerIndex else selectedDriverIndex
+            return timing.restrictionOf(selectedDriverIndex, player)
+        }
+
+    /**
+     * True when the desktop owes a `driver_restriction` the app has not
+     * received, so the caller should ask again.
+     */
+    fun needsDriverRestrictionRefresh(): Boolean =
+        v6PlaybackActive && selectedDriverIndex >= 0 &&
+            statedRestrictionDriver != selectedDriverIndex
+
     fun latestHot(): HotTelemetry = hot.get()
     fun latestMapPositions(): MapPositions = mapPositions.get()
     fun latestLapComparison(): DashboardLapComparisonState = lapComparison.get()
@@ -144,22 +279,49 @@ internal class TelemetryStore {
             return
         }
 
+        // Most V6 rows name the player's car index; the player-scoped rows the
+        // dashboard shows (tyre sets) are matched against it below.
+        row.optionalInt("player_idx")?.takeIf { it in 0 until MAX_CARS }?.let { setSelectedDriver(it) }
+
         when (row.optString("type")) {
+            // A V6 recording arrives as one field group per row, so the hot sample
+            // merges them. Live and paired-live telemetry stay on the binary path.
+            "telemetry" -> {
+                if (row.optionalBoolean("available") == false) {
+                    hot.set(HotTelemetry())
+                } else {
+                    hot.updateAndGet { it.withPatch(row) }
+                }
+            }
+
             "lap" -> {
-                val sample = LiveLapSample(
-                    sessionTime = row.optDouble("session_time", Double.NaN),
-                    lapNumber = row.optInt("lap_num"),
-                    lastLapMs = row.optInt("last_lap_ms"),
-                    currentLapMs = row.optInt("current_lap_ms"),
-                    lapDistanceM = row.optDouble("lap_distance_m", Double.NaN),
-                    sector1Ms = row.optInt("s1_ms"),
-                    sector2Ms = row.optInt("s2_ms"),
-                    sector = row.optInt("sector"),
-                    invalid = row.optBoolean("lap_invalid"),
-                )
+                val sessionTime = row.optionalDouble("session_time")
+                val lapNumber = row.optionalInt("lap_num")
+                val lastLapMs = row.optionalInt("last_lap_ms")
+                val currentLapMs = row.optionalInt("current_lap_ms")
+                val lapDistanceM = row.optionalDouble("lap_distance_m")
+                val sector1Ms = row.optionalInt("s1_ms")
+                val sector2Ms = row.optionalInt("s2_ms")
+                val sector = row.optionalInt("sector")
+                val invalid = row.optionalBoolean("lap_invalid")
+                val position = row.optionalInt("position")
                 post {
+                    // Merge into the last sample: a patch omits what did not change.
+                    val previous = liveLapState
+                    val sample = LiveLapSample(
+                        sessionTime = sessionTime ?: previous.sessionTime,
+                        lapNumber = lapNumber ?: previous.lapNumber,
+                        lastLapMs = lastLapMs ?: previous.lastLapMs,
+                        currentLapMs = currentLapMs ?: previous.currentLapMs,
+                        lapDistanceM = lapDistanceM ?: previous.lapDistanceM,
+                        sector1Ms = sector1Ms ?: previous.sector1Ms,
+                        sector2Ms = sector2Ms ?: previous.sector2Ms,
+                        sector = sector ?: previous.sector,
+                        invalid = invalid ?: previous.invalid,
+                    )
+                    liveLapState = sample
                     cold = cold.copy(
-                        position = row.optInt("position"),
+                        position = position ?: cold.position,
                         lapNumber = sample.lapNumber,
                         currentLapMs = sample.currentLapMs,
                         lastLapMs = sample.lastLapMs,
@@ -179,6 +341,15 @@ internal class TelemetryStore {
             }
 
             "playback_lap_blocks" -> {
+                // Sent again whenever the desktop switches driver, and before
+                // that driver's first projected row, so tyre sets and the top
+                // bar follow the switch immediately.
+                // A driver index here means a V6 recording, the only case where
+                // the desktop owes an explicit restriction.
+                val playbackDriver = row.optionalInt("playbackDriverIndex")
+                    ?.takeIf { it in 0 until MAX_CARS }
+                playbackDriver?.let { setSelectedDriver(it) }
+                post { v6PlaybackActive = playbackDriver != null }
                 val lapTimes = buildMap {
                     val laps = row.optJSONArray("laps")
                     if (laps != null) repeat(laps.length()) { index ->
@@ -247,29 +418,85 @@ internal class TelemetryStore {
                 }
             }
 
-            "playback_close" -> post { resetAllLapComparison() }
-
-            "status" -> post {
-                cold = cold.copy(
-                    statusAvailable = true,
-                    ersPercent = row.optDouble("ers_pct").roundToInt(),
-                    ersMode = row.optInt("ers_mode"),
-                    fuelKg = row.optDouble("fuel_kg"),
-                    fuelLaps = row.optDouble("fuel_laps"),
-                    brakeBias = row.optInt("front_brake_bias"),
-                    tyreCompound = row.optInt("visual_compound"),
-                    tyreAgeLaps = row.optInt("tyre_age_laps"),
-                )
+            // The desktop states this per selected driver, because restricted
+            // data arrives as missing rows rather than as a value. driverIndex
+            // -1 is the reply to a request made while nothing is playing.
+            "driver_restriction" -> {
+                val driver = row.optionalInt("driverIndex") ?: -1
+                val restricted = row.optionalBoolean("restricted")
+                val known = row.optionalBoolean("known") ?: false
+                post {
+                    if (driver < 0) {
+                        statedRestriction = null
+                        statedRestrictionDriver = -1
+                        v6PlaybackActive = false
+                    } else {
+                        statedRestriction = if (known) restricted else null
+                        statedRestrictionDriver = driver
+                    }
+                }
             }
 
-            "damage" -> post {
-                cold = cold.copy(
-                    tyreWearFl = row.optDouble("tyre_wear_fl").toFloat(),
-                    tyreWearFr = row.optDouble("tyre_wear_fr").toFloat(),
-                    tyreWearRl = row.optDouble("tyre_wear_rl").toFloat(),
-                    tyreWearRr = row.optDouble("tyre_wear_rr").toFloat(),
-                    tyreWearAvailable = true,
-                )
+            "playback_close" -> post {
+                resetAllLapComparison()
+                statedRestriction = null
+                statedRestrictionDriver = -1
+                v6PlaybackActive = false
+            }
+
+            "status" -> {
+                // Restricted telemetry is an explicit {"available":false}, not an
+                // omission: it must clear the values, not leave the last ones up.
+                val unavailable = row.optionalBoolean("available") == false
+                val ersPercent = row.optionalDouble("ers_pct")?.roundToInt()
+                val ersMode = row.optionalInt("ers_mode")
+                val fuelKg = row.optionalDouble("fuel_kg")
+                val fuelLaps = row.optionalDouble("fuel_laps")
+                val brakeBias = row.optionalInt("front_brake_bias")
+                val tyreCompound = row.optionalInt("visual_compound")
+                val tyreAgeLaps = row.optionalInt("tyre_age_laps")
+                val carriesFields = ersPercent != null || ersMode != null || fuelKg != null ||
+                    fuelLaps != null || brakeBias != null || tyreCompound != null ||
+                    tyreAgeLaps != null
+                post {
+                    cold = when {
+                        unavailable -> cold.copy(statusAvailable = false)
+                        !carriesFields -> cold
+                        else -> cold.copy(
+                            statusAvailable = true,
+                            ersPercent = ersPercent ?: cold.ersPercent,
+                            ersMode = ersMode ?: cold.ersMode,
+                            fuelKg = fuelKg ?: cold.fuelKg,
+                            fuelLaps = fuelLaps ?: cold.fuelLaps,
+                            brakeBias = brakeBias ?: cold.brakeBias,
+                            tyreCompound = tyreCompound ?: cold.tyreCompound,
+                            tyreAgeLaps = tyreAgeLaps ?: cold.tyreAgeLaps,
+                        )
+                    }
+                }
+            }
+
+            "damage" -> {
+                val unavailable = row.optionalBoolean("available") == false
+                val wearFl = row.optionalDouble("tyre_wear_fl")?.toFloat()
+                val wearFr = row.optionalDouble("tyre_wear_fr")?.toFloat()
+                val wearRl = row.optionalDouble("tyre_wear_rl")?.toFloat()
+                val wearRr = row.optionalDouble("tyre_wear_rr")?.toFloat()
+                val carriesWear = wearFl != null || wearFr != null || wearRl != null ||
+                    wearRr != null
+                post {
+                    cold = when {
+                        unavailable -> cold.copy(tyreWearAvailable = false)
+                        !carriesWear -> cold
+                        else -> cold.copy(
+                            tyreWearFl = wearFl ?: cold.tyreWearFl,
+                            tyreWearFr = wearFr ?: cold.tyreWearFr,
+                            tyreWearRl = wearRl ?: cold.tyreWearRl,
+                            tyreWearRr = wearRr ?: cold.tyreWearRr,
+                            tyreWearAvailable = true,
+                        )
+                    }
+                }
             }
 
             // Indexed/legacy TNRD playback keeps Positions as JSON rather than
@@ -320,6 +547,22 @@ internal class TelemetryStore {
             }
 
             "tyre_sets" -> {
+                val carIdx = row.optionalInt("car_idx")
+                // Rows projected from a V6 recording are scoped to the driver the
+                // desktop selected, and say so before any row names the player.
+                val v6Projected = row.has("_v6_type")
+                if (!ownsTyreSets(carIdx, playerIndex, v6Projected)) return
+                if (v6Projected && carIdx != null && carIdx in 0 until MAX_CARS) {
+                    setSelectedDriver(carIdx)
+                }
+                // The desktop rebroadcasts this type when the driver's access
+                // changes. A withdrawal carries no "sets", and the sets it last
+                // sent are no longer readable, so drop them.
+                if (row.optionalBoolean("available") == false) {
+                    post { cold = cold.copy(tyreSets = emptyList()) }
+                    return
+                }
+                if (row.optJSONArray("sets") == null) return
                 val sets = row.optJSONArray("sets")?.let { array ->
                     List(array.length()) { index ->
                         val set = array.optJSONObject(index) ?: JSONObject()
@@ -341,27 +584,35 @@ internal class TelemetryStore {
             }
 
             "timing" -> {
-                val cars = row.optJSONArray("cars")?.let { array ->
+                val patches = row.optJSONArray("cars")?.let { array ->
                     List(array.length()) { arrayIndex ->
                         val car = array.optJSONObject(arrayIndex) ?: JSONObject()
-                        TimingCarEntry(
+                        TimingCarPatch(
                             index = car.optInt("idx", arrayIndex),
-                            position = car.optInt("position"),
-                            lapNumber = car.optInt("lap_num"),
-                            currentLapMs = car.optInt("current_lap_ms"),
-                            lastLapMs = car.optInt("last_lap_ms"),
-                            gapMs = car.optInt("gap_ms"),
-                            pitStatus = car.optInt("pit_status"),
-                            lapInvalid = car.optBoolean("lap_invalid"),
-                            penaltiesSeconds = car.optInt("penalties_s"),
-                            driveThroughPenalties = car.optInt("num_dt_pens"),
-                            stopGoPenalties = car.optInt("num_sg_pens"),
-                            resultStatus = car.optInt("result_status"),
+                            position = car.optionalInt("position"),
+                            lapNumber = car.optionalInt("lap_num"),
+                            currentLapMs = car.optionalInt("current_lap_ms"),
+                            lastLapMs = car.optionalInt("last_lap_ms"),
+                            gapMs = car.optionalInt("gap_ms"),
+                            pitStatus = car.optionalInt("pit_status"),
+                            lapInvalid = car.optionalBoolean("lap_invalid"),
+                            penaltiesSeconds = car.optionalInt("penalties_s"),
+                            driveThroughPenalties = car.optionalInt("num_dt_pens"),
+                            stopGoPenalties = car.optionalInt("num_sg_pens"),
+                            resultStatus = car.optionalInt("result_status"),
                         )
                     }
                 }.orEmpty()
-                val playerIndex = row.optInt("player_idx", -1)
-                post { timing = timing.copy(playerIndex = playerIndex, cars = cars) }
+                val rowPlayer = row.optionalInt("player_idx")?.takeIf { it >= 0 }
+                // A V6 patch names one car and merges into the tower; a complete
+                // row is the whole grid and replaces it.
+                val partial = row.has("_v6_type")
+                post {
+                    timing = timing.copy(
+                        playerIndex = rowPlayer ?: timing.playerIndex,
+                        cars = mergeTimingCars(if (partial) timing.cars else emptyList(), patches),
+                    )
+                }
             }
 
             "participants" -> {
@@ -383,6 +634,7 @@ internal class TelemetryStore {
                                     name = name,
                                     raceNumber = driver.optInt("race_number"),
                                     teamColor = driver.optString("livery_color", "#8e8e8e"),
+                                    yourTelemetry = driver.optionalInt("your_telemetry"),
                                 ),
                             )
                         }
@@ -401,25 +653,56 @@ internal class TelemetryStore {
             }
 
             "all_status" -> {
-                val statuses = row.optJSONArray("cars")?.let { array ->
-                    buildMap {
-                        repeat(array.length()) { arrayIndex ->
-                            val status = array.optJSONObject(arrayIndex) ?: return@repeat
-                            put(
-                                status.optInt("idx", arrayIndex),
-                                TimingTyreStatus(
-                                    actualCompound = status.optInt("tyre_compound"),
-                                    visualCompound = status.optInt("visual_compound"),
-                                    ageLaps = status.optInt("tyre_age_laps"),
-                                ),
-                            )
-                        }
+                val patches = row.optJSONArray("cars")?.let { array ->
+                    List(array.length()) { arrayIndex ->
+                        val car = array.optJSONObject(arrayIndex) ?: JSONObject()
+                        TyreStatusPatch(
+                            index = car.optInt("idx", arrayIndex),
+                            actualCompound = car.optionalInt("tyre_compound"),
+                            visualCompound = car.optionalInt("visual_compound"),
+                            ageLaps = car.optionalInt("tyre_age_laps"),
+                            available = car.optionalBoolean("available"),
+                        )
                     }
                 }.orEmpty()
-                post { timing = timing.copy(tyreStatuses = statuses) }
+                val partial = row.has("_v6_type")
+                post {
+                    val merged: MutableMap<Int, TimingTyreStatus> = if (partial) {
+                        timing.tyreStatuses.toMutableMap()
+                    } else {
+                        mutableMapOf()
+                    }
+                    for (patch in patches) {
+                        // The desktop rebroadcasts the type when a driver's
+                        // access changes, so the tower drops the compound and
+                        // age it last saw rather than showing them as current.
+                        if (patch.available == false) {
+                            merged.remove(patch.index)
+                            continue
+                        }
+                        // Other all-car status fields (DRS, fuel, ...) are not shown
+                        // here; a patch without tyre fields is not a tyre status.
+                        if (patch.actualCompound == null && patch.visualCompound == null &&
+                            patch.ageLaps == null
+                        ) continue
+                        val base = merged[patch.index] ?: TimingTyreStatus(0, 0, 0)
+                        merged[patch.index] = base.copy(
+                            actualCompound = patch.actualCompound ?: base.actualCompound,
+                            visualCompound = patch.visualCompound ?: base.visualCompound,
+                            ageLaps = patch.ageLaps ?: base.ageLaps,
+                        )
+                    }
+                    timing = timing.copy(tyreStatuses = merged)
+                }
             }
 
             "protocol_context" -> {
+                setSelectedDriver(-1)
+                post {
+                    statedRestriction = null
+                    statedRestrictionDriver = -1
+                    v6PlaybackActive = false
+                }
                 mapPositions.lazySet(MapPositions())
                 val year = row.optionalInt("protocol_year")
                 val formula = row.optionalInt("formula")
@@ -461,9 +744,12 @@ internal class TelemetryStore {
                 }
             }
 
-            "participants_reset" -> post {
-                resetAllLapComparison()
-                timing = timing.copy(drivers = emptyMap(), hasParticipants = false)
+            "participants_reset" -> {
+                setSelectedDriver(-1)
+                post {
+                    resetAllLapComparison()
+                    timing = timing.copy(drivers = emptyMap(), hasParticipants = false)
+                }
             }
 
             "protocol_status" -> {
@@ -495,6 +781,24 @@ internal class TelemetryStore {
                 updateSource("error", "Recording $operation failed: $detail")
                 showMessage("Recording $operation failed: $detail")
             }
+        }
+    }
+
+    private fun setSelectedDriver(index: Int) {
+        if (playerIndex == index) return
+        playerIndex = index
+        // What is on screen belongs to the previous driver, and a patch stream
+        // only carries changes, so start the new driver from blank. The desktop
+        // re-sends this driver's current state right after switching.
+        hot.set(HotTelemetry())
+        post {
+            selectedDriverIndex = index
+            liveLapState = BLANK_LIVE_LAP
+            cold = cold.copy(
+                statusAvailable = false,
+                tyreWearAvailable = false,
+                tyreSets = emptyList(),
+            )
         }
     }
 
@@ -533,10 +837,8 @@ internal class TelemetryStore {
         if (lapComparison.get() != value) lapComparison.lazySet(value)
     }
 
-    private fun JSONObject.optionalInt(name: String): Int? =
-        if (!has(name) || isNull(name)) null else optInt(name)
-
     private fun resetLiveLapComparison() {
+        liveLapState = BLANK_LIVE_LAP
         previousLiveLap = null
         currentLiveLapNumber = 0
         currentLiveProgress.clear()

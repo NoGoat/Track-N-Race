@@ -369,6 +369,21 @@ struct PlaybackLapBlocksRow {
     std::vector<AnalysisDriverLapCatalog> analysisDrivers;
 };
 
+// Emitted for the driver whose rows playback is projecting: on load, on every
+// driver change, and whenever the setting changes under a moving cursor. Paired
+// clients cannot derive this from the row stream, because restricted data is an
+// absence of chunks rather than a value, so the desktop states it outright and
+// caches it for re-request.
+struct DriverRestrictionRow {
+    std::string type{"driver_restriction"};
+    int         driverIndex{-1};
+    // True when that driver's private telemetry is not readable at the cursor.
+    bool        restricted{};
+    // False until a Participants update supplied the setting. An unknown
+    // setting is not the same as a public one and must not be shown as either.
+    bool        known{};
+};
+
 struct PlaybackLapDataRow {
     std::string                type{"playback_lap_data"};
     int                        lapNum{};

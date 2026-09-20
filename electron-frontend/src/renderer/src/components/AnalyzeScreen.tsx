@@ -60,12 +60,7 @@ export interface AnalysisDriverSelection {
   driverIndex: number
 }
 
-export interface LapBlock {
-  lapNum: number
-  startSessionTime: number
-  endSessionTime: number
-  statusHistory: Array<{ tyre_compound: number; visual_compound: number }>
-}
+export type LapBlock = AnalysisDriverLapCatalog['blocks'][number]
 interface SelectOption { value: string; label: string }
 interface LapOption {
   value: number
@@ -467,13 +462,14 @@ function AnalyzeDriverField({
 }
 
 function AnalyzeComparisonGroup({
-  title, colorPicker, showColorPicker, driverValue, driverOptions,
+  title, colorPicker, showColorPicker, driverValue, lapValue, driverOptions,
   onDriverChange, driverStyles, driverDisplayOnly = false, driverDisabled = false, children,
 }: {
   title: string
   colorPicker: ReactNode
   showColorPicker: boolean
   driverValue: AnalysisDriverOption | null
+  lapValue: ComparisonLapOption | null
   driverOptions: GroupBase<AnalysisDriverOption>[]
   onDriverChange: (option: SingleValue<AnalysisDriverOption>) => void
   driverStyles: ReturnType<typeof buildSelectStyles>
@@ -482,22 +478,56 @@ function AnalyzeComparisonGroup({
   children: ReactNode
 }) {
   const idBase = title.toLowerCase().replace(/\s+/g, '-')
+  const contentId = `analyze-${idBase}-fields`
+  const [collapsed, setCollapsed] = useState(false)
   return <section className="overflow-hidden border-t border-[var(--border)] last:border-b">
-    <div className="flex h-9 items-center border-b border-[var(--border)] pl-2 pr-0">
-      <span className="text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{title}</span>
+    <div className={`flex h-9 items-center pl-2 pr-0 ${collapsed ? '' : 'border-b border-[var(--border)]'}`}>
+      {collapsed ? <span className="flex min-w-0 items-center gap-1.5 truncate text-[10px] font-semibold">
+        <span className="truncate text-[var(--text-primary)]">{driverValue?.label ?? '-'}</span>
+        <span className="text-[var(--text-secondary)]">·</span>
+        <span style={{ color: lapValue?.compoundColor ?? 'var(--text-secondary)' }}>{lapValue?.compound ?? '-'}</span>
+        <span className="text-[var(--text-secondary)]">·</span>
+        <span className="shrink-0 text-[var(--text-primary)]">{lapValue ? `Lap ${lapValue.lapNum}` : '-'}</span>
+        <span className="text-[var(--text-secondary)]">·</span>
+        <span className="shrink-0 text-[var(--text-primary)]">{lapValue?.lapTime ?? '-'}</span>
+      </span> : <span className="text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{title}</span>}
       <div className="ml-auto flex items-center">
         <div className={`analyze-map-color-slot ${showColorPicker ? 'analyze-map-color-slot--visible' : ''}`}>
           <div className="analyze-map-color-slot__inner">{colorPicker}</div>
         </div>
+        <button
+          type="button"
+          className="analyze-input-comparison__action mr-2"
+          onClick={() => setCollapsed(previous => !previous)}
+          aria-expanded={!collapsed}
+          aria-controls={contentId}
+          aria-label={collapsed ? `Expand ${title}` : `Collapse ${title}`}
+          title={collapsed ? `Expand ${title}` : `Collapse ${title}`}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2" strokeLinecap="round" aria-hidden="true" focusable="false">
+            <path d="M5 12h14" />
+            <path d="M12 5v14" className="analyze-input-comparison__toggle-stroke" />
+          </svg>
+        </button>
       </div>
     </div>
-    <div className="space-y-1.5 p-2">
-      <AnalyzeDriverField
-        id={`analyze-${idBase}-driver`} value={driverValue} options={driverOptions}
-        onChange={onDriverChange} styles={driverStyles}
-        displayOnly={driverDisplayOnly} isDisabled={driverDisabled}
-      />
-      {children}
+    <div
+      id={contentId}
+      className={`analyze-comparison-group__body ${collapsed ? '' : 'analyze-comparison-group__body--expanded'}`}
+      aria-hidden={collapsed}
+      inert={collapsed}
+    >
+      <div className="analyze-comparison-group__body-inner">
+        <div className="space-y-1.5 p-2">
+          <AnalyzeDriverField
+            id={`analyze-${idBase}-driver`} value={driverValue} options={driverOptions}
+            onChange={onDriverChange} styles={driverStyles}
+            displayOnly={driverDisplayOnly} isDisabled={driverDisabled}
+          />
+          {children}
+        </div>
+      </div>
     </div>
   </section>
 }
@@ -1375,7 +1405,7 @@ export default function AnalyzeScreen({
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${fixedLapMode.enabled ? 'analyze-toggle-button--active' : ''}`}
                 ><ListChevronsUpDown size={15} /></button>
               </div>
-              {playbackFilename && blocks && <div className="space-y-1">
+              {playbackFilename && blocks && <div className="mb-1 space-y-1">
                 <div className="h-8 flex items-center gap-1 min-w-0">
                   <span
                     className={`flex-1 min-w-0 truncate text-[11px] ${secondaryFile ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}
@@ -1405,7 +1435,7 @@ export default function AnalyzeScreen({
                 >
                   <AnalyzeComparisonGroup
                     title="Lap A" showColorPicker={mapVisible}
-                    driverValue={optionForDriver(lapADriver)} driverOptions={driverOptionGroups}
+                    driverValue={optionForDriver(lapADriver)} lapValue={lapAValue} driverOptions={driverOptionGroups}
                     onDriverChange={option => {
                       if (!option) return
                       onFixedLapModeChange({
@@ -1434,7 +1464,7 @@ export default function AnalyzeScreen({
                   </AnalyzeComparisonGroup>
                   <AnalyzeComparisonGroup
                     title="Lap B" showColorPicker={mapVisible}
-                    driverValue={optionForDriver(lapBDriver)} driverOptions={driverOptionGroups}
+                    driverValue={optionForDriver(lapBDriver)} lapValue={lapBValue} driverOptions={driverOptionGroups}
                     onDriverChange={option => {
                       if (!option) return
                       onFixedLapModeChange({
@@ -1469,7 +1499,7 @@ export default function AnalyzeScreen({
                 >
                   <AnalyzeComparisonGroup
                     title="Current" showColorPicker={mapVisible} driverDisplayOnly
-                    driverValue={currentDriverValue} driverOptions={driverOptionGroups}
+                    driverValue={currentDriverValue} lapValue={currentLapValue} driverOptions={driverOptionGroups}
                     onDriverChange={() => {}} driverStyles={lapSelectStyles}
                     colorPicker={<ColorPicker
                       label="Current"
@@ -1489,7 +1519,7 @@ export default function AnalyzeScreen({
                   </AnalyzeComparisonGroup>
                   <AnalyzeComparisonGroup
                     title="Compare" showColorPicker={mapVisible}
-                    driverValue={optionForDriver(compareDriver)} driverOptions={driverOptionGroups}
+                    driverValue={optionForDriver(compareDriver)} lapValue={compareValue} driverOptions={driverOptionGroups}
                     onDriverChange={option => {
                       if (!option) return
                       onCompareDriverChange({ source: option.source, driverIndex: option.driverIndex })

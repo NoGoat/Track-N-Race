@@ -11,36 +11,55 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import org.json.JSONArray
 import org.json.JSONObject
 
-private const val ROW_TELEMETRY = 1 shl 1
-private const val ROW_STATUS = 1 shl 2
-private const val ROW_DAMAGE = 1 shl 3
-private const val ROW_LAP = 1 shl 4
-private const val ROW_SESSION = 1 shl 5
-private const val ROW_TIMING = 1 shl 7
-private const val ROW_PARTICIPANTS = 1 shl 8
-private const val ROW_ALL_STATUS = 1 shl 9
-private const val ROW_TYRE_SETS = 1 shl 10
-
-/** Complete paired-stream requirement for one visible Android page. */
+/**
+ * The data one visible Android page needs, as the consumers it shows. The
+ * desktop is asked for exactly their union: row families and V6 fields.
+ */
 internal enum class PairedTelemetryPage(
     val pageId: String,
-    val streamMask: Int,
+    val consumers: List<DataConsumer>,
 ) {
+    // DRIVER_ROSTER is on every top-bar page: the app bar names the selected
+    // driver, and the desktop only sends the roster to a subscription that asks.
     DASHBOARD(
         "dashboard",
-        ROW_TELEMETRY or ROW_STATUS or ROW_DAMAGE or ROW_LAP or ROW_SESSION,
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.SESSION_INFO,
+            DataConsumer.DRIVING_INPUTS,
+            DataConsumer.TYRE_TEMPERATURES,
+            DataConsumer.TYRE_WEAR,
+            DataConsumer.POWER_UNIT,
+            DataConsumer.FITTED_TYRE,
+            DataConsumer.LAP_PROGRESS,
+        ),
     ),
     TIMING(
         "timing",
-        ROW_TIMING or ROW_PARTICIPANTS or ROW_ALL_STATUS,
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.TIMING_TOWER,
+            DataConsumer.TIMING_TYRES,
+        ),
     ),
     TYRES(
         "tyres",
-        ROW_SESSION or ROW_TYRE_SETS,
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.SESSION_INFO,
+            DataConsumer.TYRE_SETS,
+        ),
     ),
-    NONE("none", 0),
+    NONE("none", emptyList());
+
+    /** Row families this page needs: the union of its consumers'. */
+    val streamMask: Int = consumers.fold(0) { mask, consumer -> mask or consumer.streamMask }
+
+    /** V6 fields this page needs: the union of its consumers', ascending. */
+    val v6Types: List<Int> = consumers.flatMap { it.v6Types }.distinct().sorted()
 }
 
 internal class PairedTelemetryClient(
@@ -75,7 +94,8 @@ internal class PairedTelemetryClient(
         private const val PREF_PORT = "pairing.port"
         private const val PREF_TOKEN = "pairing.token"
         private const val PREF_DEVICE_ID = "pairing.device_id"
-        private const val PAIR_PROTOCOL_VERSION = 1
+        // 2: subscribe carries v6Types, and playback rows are field patches.
+        private const val PAIR_PROTOCOL_VERSION = 2
         private const val BINARY_ROWS_VERSION = 2
 
         private fun preferences(context: Context): SharedPreferences =
@@ -111,6 +131,7 @@ internal class PairedTelemetryClient(
     private var subscribedSocket: WebSocket? = null
     private var activePage = PairedTelemetryPage.DASHBOARD
     private var lapDeltaSupported = false
+    private var driverRestrictionSupported = false
 
     fun setPage(page: PairedTelemetryPage) {
         synchronized(subscriptionLock) {
@@ -126,6 +147,23 @@ internal class PairedTelemetryClient(
             JSONObject()
                 .put("type", "request_latest")
                 .put("rowType", "participants")
+                .toString(),
+        )
+    }
+
+    /**
+     * Asks the desktop to restate the selected driver's telemetry restriction,
+     * for when the subscription snapshot was missed or the connection dropped.
+     * The desktop always replies, with driver -1 when nothing is playing.
+     */
+    fun requestDriverRestriction() {
+        val active = synchronized(subscriptionLock) {
+            subscribedSocket?.takeIf { driverRestrictionSupported }
+        }
+        active?.send(
+            JSONObject()
+                .put("type", "request_latest")
+                .put("rowType", "driver_restriction")
                 .toString(),
         )
     }
@@ -283,10 +321,13 @@ internal class PairedTelemetryClient(
             if (socket !== webSocket) return
             subscribedSocket = webSocket
             val capabilities = message.optJSONArray("capabilities")
-            lapDeltaSupported = capabilities != null &&
-                (0 until capabilities.length()).any {
-                    capabilities.optString(it) == "lap-delta"
+            val advertised = buildSet {
+                if (capabilities != null) {
+                    repeat(capabilities.length()) { add(capabilities.optString(it)) }
                 }
+            }
+            lapDeltaSupported = "lap-delta" in advertised
+            driverRestrictionSupported = "driver-restriction" in advertised
             sendSubscription(webSocket, activePage)
         }
         listener.onState("connected", endpoint.name)
@@ -299,6 +340,7 @@ internal class PairedTelemetryClient(
                 .put("type", "subscribe")
                 .put("pageId", page.pageId)
                 .put("streamMask", page.streamMask)
+                .put("v6Types", JSONArray(page.v6Types))
                 .put("historyMask", 0)
                 .put("backfill", "none")
                 .put("requestId", subscriptionIds.incrementAndGet())
@@ -311,6 +353,7 @@ internal class PairedTelemetryClient(
             if (subscribedSocket === webSocket) {
                 subscribedSocket = null
                 lapDeltaSupported = false
+                driverRestrictionSupported = false
             }
         }
     }
@@ -334,6 +377,7 @@ internal class PairedTelemetryClient(
         synchronized(subscriptionLock) {
             subscribedSocket = null
             lapDeltaSupported = false
+            driverRestrictionSupported = false
         }
         active?.close(1000, "Android page closed")
     }
