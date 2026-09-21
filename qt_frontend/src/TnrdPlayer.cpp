@@ -1,4 +1,5 @@
 #include "TnrdPlayer.h"
+#include "PlaybackPatchMerger.h"
 
 #include <QMetaObject>
 #include <QJsonArray>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <string_view>
 #include <type_traits>
 
@@ -28,41 +30,61 @@ std::string_view typeOf(std::string_view json) {
     return end == std::string_view::npos ? std::string_view{} : json.substr(value, end - value);
 }
 
-void appendHistoryRow(PlaybackHistoryBatch& batch, const tnrp::AnyRow& row) {
+float historyNumber(int value) {
+    return value == kPlaybackMissingInt
+        ? std::numeric_limits<float>::quiet_NaN()
+        : static_cast<float>(value);
+}
+
+template <typename T>
+void replaceSameTimestamp(QVector<T>& rows, float time, bool coalesce) {
+    if (coalesce && !rows.isEmpty() && rows.last().t == time) rows.removeLast();
+}
+
+void appendHistoryRow(PlaybackHistoryBatch& batch, const tnrp::AnyRow& row,
+                      bool coalesce = false) {
     auto& data = batch.data;
     if (const auto* t = std::get_if<TelemetryRow>(&row)) {
-        data.onTelemetry(t->session_time, static_cast<float>(t->speed_kph), t->rpm,
-                         t->gear, t->throttle, t->brake,
+        replaceSameTimestamp(data.telBuf, t->session_time, coalesce);
+        replaceSameTimestamp(data.tyreBuf, t->session_time, coalesce);
+        data.onTelemetry(t->session_time, historyNumber(t->speed_kph),
+                         historyNumber(t->rpm), historyNumber(t->gear),
+                         t->throttle, t->brake,
                          static_cast<float>(t->steering));
         data.onTyre(t->session_time,
-            static_cast<float>(t->tyre_temp_surface_fl), static_cast<float>(t->tyre_temp_surface_fr),
-            static_cast<float>(t->tyre_temp_surface_rl), static_cast<float>(t->tyre_temp_surface_rr),
-            static_cast<float>(t->tyre_temp_inner_fl), static_cast<float>(t->tyre_temp_inner_fr),
-            static_cast<float>(t->tyre_temp_inner_rl), static_cast<float>(t->tyre_temp_inner_rr),
-            static_cast<float>(t->brake_temp_fl), static_cast<float>(t->brake_temp_fr),
-            static_cast<float>(t->brake_temp_rl), static_cast<float>(t->brake_temp_rr),
+            historyNumber(t->tyre_temp_surface_fl), historyNumber(t->tyre_temp_surface_fr),
+            historyNumber(t->tyre_temp_surface_rl), historyNumber(t->tyre_temp_surface_rr),
+            historyNumber(t->tyre_temp_inner_fl), historyNumber(t->tyre_temp_inner_fr),
+            historyNumber(t->tyre_temp_inner_rl), historyNumber(t->tyre_temp_inner_rr),
+            historyNumber(t->brake_temp_fl), historyNumber(t->brake_temp_fr),
+            historyNumber(t->brake_temp_rl), historyNumber(t->brake_temp_rr),
             0.0f, 0.0f, 0.0f, 0.0f);
     } else if (const auto* s = std::get_if<StatusRow>(&row)) {
+        replaceSameTimestamp(data.stsBuf, s->session_time, coalesce);
         data.onStatus(s->session_time, static_cast<float>(s->ers_pct),
                       static_cast<float>(s->fuel_kg),
                       static_cast<float>(s->engine_power_ice_kw),
                       static_cast<float>(s->engine_power_mguk_kw),
-                      static_cast<float>(s->ers_harvested_mguk_j),
-                      static_cast<float>(s->ers_harvested_mguh_j),
+                      historyNumber(s->ers_harvested_mguk_j),
+                      historyNumber(s->ers_harvested_mguh_j),
                       s->tyre_compound, s->visual_compound, s->tyre_age_laps);
     } else if (const auto* d = std::get_if<DamageRow>(&row)) {
+        replaceSameTimestamp(data.damageBuf, d->session_time, coalesce);
         data.onDamage(d->session_time, static_cast<float>(d->tyre_wear_fl),
                       static_cast<float>(d->tyre_wear_fr),
                       static_cast<float>(d->tyre_wear_rl),
                       static_cast<float>(d->tyre_wear_rr));
     } else if (const auto* l = std::get_if<LapRow>(&row)) {
+        replaceSameTimestamp(batch.progress, l->session_time, coalesce);
         batch.progress.push_back({l->session_time, l->current_lap_ms,
                                   static_cast<float>(l->lap_distance_m), l->sector});
         data.latestTime = std::max(data.latestTime, l->session_time);
     } else if (const auto* m = std::get_if<MotionRow>(&row)) {
+        replaceSameTimestamp(data.motionBuf, m->session_time, coalesce);
         data.onMotion(m->session_time, static_cast<float>(m->g_lat),
                       static_cast<float>(m->g_long));
     } else if (const auto* m = std::get_if<MotionExRow>(&row)) {
+        replaceSameTimestamp(data.motionExBuf, m->session_time, coalesce);
         data.onMotionEx(m->session_time,
                         static_cast<float>(m->front_aero_height_mm),
                         static_cast<float>(m->rear_aero_height_mm));
@@ -155,6 +177,12 @@ void TnrdPlayer::post(WorkKind kind, std::function<void()> work, bool replacePen
         if (replacePending) {
             if (kind == WorkKind::Close || kind == WorkKind::Load) {
                 work_.clear();
+            } else if (kind == WorkKind::Driver) {
+                std::erase_if(work_, [](const WorkItem& item) {
+                    return item.kind == WorkKind::Driver ||
+                           item.kind == WorkKind::Seek ||
+                           item.kind == WorkKind::SeekDecode;
+                });
             } else {
                 std::erase_if(work_, [kind](const WorkItem& item) {
                     return item.kind == kind ||
@@ -282,6 +310,46 @@ void TnrdPlayer::setSpeed(float mult) {
         engine->playerSetSpeed(mult);
 }
 
+void TnrdPlayer::selectDriver(int driverIndex, bool useRecordedRows) {
+    tnrp::Engine* engine = engine_.load(std::memory_order_acquire);
+    if (!engine || !loaded_ || driverIndex < 0) return;
+
+    // Electron changes the engine projection first and then seeks back to the
+    // current percentage. Keep that ordering in one worker item so rapid
+    // selections cannot interleave a driver change with another cursor rebuild.
+    resumeAfterSeek_ = resumeAfterSeek_ || playing_;
+    if (playing_) engine->playerPause();
+    const float duration = std::max(0.0f, totalTime_ - startTime_);
+    const float progress = duration > 0.0f
+        ? std::clamp((currentTime_ - startTime_) / duration, 0.0f, 1.0f)
+        : 0.0f;
+    const uint64_t requirementsId =
+        latestRequirementsRequest_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    engine->requestDataRequirements(requirementsId);
+    const uint64_t requestId =
+        latestSeekRequest_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    engine->playerRequestSeek(requestId);
+    emit seekStarted(requestId);
+    emit seeked();
+
+    const uint32_t mask = historyMask_;
+    const float window = historyWindowSeconds_ < 0.0f ? 0.0f : historyWindowSeconds_;
+    const bool allHistory = historyWindowSeconds_ < 0.0f;
+    const uint32_t streamMask = streamMask_;
+    const uint32_t historyMask = historyMask_;
+    const float requirementWindow = historyWindowSeconds_;
+    post(WorkKind::Driver,
+         [this, driverIndex, useRecordedRows, progress, requestId, mask, window,
+          allHistory, requirementsId, streamMask, historyMask, requirementWindow] {
+        if (auto* current = engine_.load(std::memory_order_acquire)) {
+            current->playerSetDriver(driverIndex, useRecordedRows);
+            current->setDataRequirements(streamMask, historyMask,
+                                         requirementWindow, requirementsId);
+            current->playerSeek(progress, allHistory, requestId, mask, window);
+        }
+    }, true);
+}
+
 void TnrdPlayer::setDataRequirements(uint32_t streamMask, uint32_t historyMask,
                                      float windowSeconds) {
     if (requirementsApplied_ && streamMask_ == streamMask && historyMask_ == historyMask &&
@@ -386,6 +454,12 @@ bool TnrdPlayer::handleControlRow(const QByteArray& json) {
         }, false);
         return true;
     }
+    if (type == "driver_restriction") {
+        tnrp::DriverRestrictionRow row;
+        if (!glz::read_json(row, source))
+            emit driverRestrictionChanged(row.driverIndex, row.restricted, row.known);
+        return true;
+    }
     if (type == "playback_seek_flush") return true;
     return false;
 }
@@ -450,13 +524,14 @@ TnrdPlayer::decodeHistory(const std::shared_ptr<EngineSeekFlush>& flush,
     }
 
     qsizetype offset = 0;
+    PlaybackPatchMerger patchMerger;
     while (offset < flush->coldJson.size()) {
         qsizetype end = flush->coldJson.indexOf('\n', offset);
         if (end < 0) end = flush->coldJson.size();
         if (end > offset) {
-            const std::string_view line(flush->coldJson.constData() + offset,
-                                        static_cast<size_t>(end - offset));
-            if (auto row = tnrp::parseRow(line)) appendHistoryRow(*result, *row);
+            const QByteArray line = flush->coldJson.mid(offset, end - offset);
+            if (auto decoded = patchMerger.decode(line))
+                appendHistoryRow(*result, decoded->row, decoded->sparse);
         }
         offset = end + 1;
     }
@@ -487,14 +562,14 @@ std::shared_ptr<PlaybackHistoryBatch> TnrdPlayer::decodeLapData(const QByteArray
     result->additive = true;
     result->isolatedLapRequest = true;
 
-    auto appendArray = [&result, &object](const char* name) {
+    PlaybackPatchMerger patchMerger;
+    auto appendArray = [&result, &object, &patchMerger](const char* name) {
         const QJsonArray rows = object.value(QString::fromLatin1(name)).toArray();
         for (const QJsonValue& value : rows) {
             if (!value.isObject()) continue;
             const QByteArray encoded = QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact);
-            if (auto row = tnrp::parseRow(std::string_view(
-                    encoded.constData(), static_cast<size_t>(encoded.size()))))
-                appendHistoryRow(*result, *row);
+            if (auto decoded = patchMerger.decode(encoded))
+                appendHistoryRow(*result, decoded->row, decoded->sparse);
         }
     };
     appendArray("telemetry");

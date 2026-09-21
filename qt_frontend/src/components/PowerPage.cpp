@@ -247,7 +247,10 @@ void PowerPage::update(const StatusRow* status) {
 
     float iceKw  = (float)status->engine_power_ice_kw;
     float mgukKw = (float)status->engine_power_mguk_kw;
-    float totalKw = iceKw + mgukKw;
+    const bool haveIce = std::isfinite(iceKw);
+    const bool haveMguk = std::isfinite(mgukKw);
+    const bool havePower = haveIce && haveMguk;
+    float totalKw = havePower ? iceKw + mgukKw : NAN;
 
     float icePct = totalKw > 0 ? (iceKw / totalKw * 100.0f) : 0.0f;
     float ersPctS= totalKw > 0 ? (mgukKw / totalKw * 100.0f) : 0.0f;
@@ -258,24 +261,29 @@ void PowerPage::update(const StatusRow* status) {
 
     // Per-key resolver: value text + colour-spec key + the value the conditional
     // rules test against (NAN where the colour is unconditional).
-    struct PCard { const char* key; QString value; const char* colorSpec; double self; };
+    const auto number = [](float value, int precision) {
+        return std::isfinite(value) ? QString::number(value, 'f', precision)
+                                    : QStringLiteral("—");
+    };
+    struct PCard { const char* key; QString value; const char* colorSpec; double self; bool available; };
     const PCard cards[] = {
-        { "total",    QString::number(std::round(totalKw)),                              "power.total", totalKw },
-        { "ice",      QString::number(std::round(iceKw)),                                "power.ice",   NAN },
-        { "mguk",     QString::number(std::round(mgukKw)),                               "power.mguk",  NAN },
-        { "split",    QString("%1:%2").arg(std::round(icePct)).arg(std::round(ersPctS)), "power.split", NAN },
-        { "ersStore", QString::number(ersMj, 'f', 2),                                    "power.ers",   ersPct },
-        { "ersPct",   QString::number(std::round(ersPct)),                               "power.ers",   ersPct },
-        { "fuel",     QString::number(fuelKg, 'f', 1),                                   "power.fuel",  NAN },
+        { "total",    havePower ? QString::number(std::round(totalKw)) : QStringLiteral("—"), "power.total", totalKw, havePower },
+        { "ice",      haveIce ? QString::number(std::round(iceKw)) : QStringLiteral("—"), "power.ice", NAN, haveIce },
+        { "mguk",     haveMguk ? QString::number(std::round(mgukKw)) : QStringLiteral("—"), "power.mguk", NAN, haveMguk },
+        { "split",    havePower ? QString("%1:%2").arg(std::round(icePct)).arg(std::round(ersPctS)) : QStringLiteral("—"), "power.split", NAN, havePower },
+        { "ersStore", number(ersMj, 2), "power.ers", ersPct, std::isfinite(ersPct) },
+        { "ersPct",   std::isfinite(ersPct) ? QString::number(std::round(ersPct)) : QStringLiteral("—"), "power.ers", ersPct, std::isfinite(ersPct) },
+        { "fuel",     number(fuelKg, 1), "power.fuel", NAN, std::isfinite(fuelKg) },
     };
     for (const PCard& pc : cards) {
         QLabel* l = cardValue_.value(pc.key);
         if (!l) continue;
         if (l->text() != pc.value) l->setText(pc.value);
-        const QColor c = tnr::cardColor(pc.colorSpec, pc.self);
-        if (c.isValid() && l->palette().color(QPalette::WindowText) != c) {
+        const QColor c = pc.available ? tnr::cardColor(pc.colorSpec, pc.self) : QColor();
+        const QColor desired = c.isValid() ? c : palette().color(QPalette::WindowText);
+        if (l->palette().color(QPalette::WindowText) != desired) {
             QPalette p = l->palette();
-            p.setColor(QPalette::WindowText, c);
+            p.setColor(QPalette::WindowText, desired);
             l->setPalette(p);
         }
     }

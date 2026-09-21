@@ -11,6 +11,11 @@ class QLabel;
 class QMenu;
 class QToolButton;
 
+struct PlaybackDriverOption {
+    int index = -1;
+    QString label;
+};
+
 // The main window's top toolbar: page dropdown, session timer, chart window-size
 // dropdown, the Open/Edit Layout/Settings actions, and the custom "⋯"
 // overflow that collapses low-priority items when the window is too narrow.
@@ -42,6 +47,9 @@ public:
                                  bool lapCoordinatesAvailable);
     void setChartOptions(ChartWindow window, int referenceLap,
                          bool sectorBoundaries, bool cursorSync);
+    void setPlaybackDrivers(const QVector<PlaybackDriverOption>& drivers,
+                            int selectedDriverIndex);
+    void clearPlaybackDrivers();
 
 signals:
     void pageSelected(int index);
@@ -52,6 +60,7 @@ signals:
     void openRecordingRequested();
     void editLayoutRequested();
     void settingsRequested();
+    void playbackDriverChanged(int driverIndex);
     void analyzeZoomInRequested();
     void analyzeZoomOutRequested();
     void analyzePanLeftRequested();
@@ -70,6 +79,7 @@ protected:
 private:
     void relayout();                   // collapse/expand into the ⋯ menu
     void applyChartWindow(int idx);    // sync inline/menu state + emit chartWindowChanged
+    void applyPlaybackDriver(int idx); // sync inline/menu state + emit playbackDriverChanged
     void rebuildChartWindowOptions();  // omit modes unavailable in the current session
     void refreshThemedIcons();
 
@@ -77,6 +87,8 @@ private:
     QAction*      pageAct_      = nullptr;   // kept inline during overflow
     QComboBox*    windowBtn_    = nullptr;   // window-size dropdown (frameless combo box)
     QAction*      windowAct_    = nullptr;   // its toolbar action (hide to free space)
+    QComboBox*    driverBtn_    = nullptr;   // TNRD V6 playback-only driver selector
+    QAction*      driverAct_    = nullptr;
     QComboBox*    referenceLap_ = nullptr;
     QToolButton*  sectorBtn_ = nullptr;
     QToolButton*  syncBtn_ = nullptr;
@@ -94,6 +106,7 @@ private:
     QWidget*      extButton_    = nullptr;   // Qt's native QToolBar extension — kept hidden
     ChartWindow   window_       = ChartWindow::Seconds30; // persisted choice; UI may fall back
     bool          playback_ = false;
+    bool          playbackDriversVisible_ = false;
     bool          lapCoordinatesAvailable_ = true;
     bool          analyzeVisible_ = false;
 

@@ -64,6 +64,8 @@ set(SOURCES
     src/AppToolbar.h
     src/PlaybackController.cpp
     src/PlaybackController.h
+    src/PlaybackPatchMerger.cpp
+    src/PlaybackPatchMerger.h
     src/EngineSink.h
     src/HotRowSmoother.h
     src/PresentationScheduler.h

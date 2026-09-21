@@ -258,7 +258,13 @@ void TyresPage::updateTyreCards(const TelemetryRow* telemetry, const DamageRow* 
 // ── Tyre sets table updater ───────────────────────────────────────────────
 
 void TyresPage::updateTyreSets(const tnrp::TyreSetsRow* tyreSets) {
-    if (!drySetsTable_ || !wetSetsTable_ || !tyreSets || tyreSets->sets.empty()) return;
+    if (!drySetsTable_ || !wetSetsTable_ || !tyreSets) return;
+    if (tyreSets->sets.empty()) {
+        drySetsTable_->setRowCount(0);
+        wetSetsTable_->setRowCount(0);
+        if (graphsFitted_) graphsFitted_->setText(QStringLiteral("—"));
+        return;
+    }
 
     // Fitted-tyre summary for the graphs header: compound · wear · life remaining.
     if (graphsFitted_) {

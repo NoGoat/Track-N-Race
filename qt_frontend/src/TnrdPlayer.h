@@ -66,6 +66,9 @@ public:
     void seek(float pct);
     void seekToTime(float absoluteTime);
     void setSpeed(float mult);
+    // Selects a TNRD V6 driver and rebuilds the current playback cursor through
+    // the same generation-safe seek path used by the scrubber.
+    void selectDriver(int driverIndex, bool useRecordedRows);
     void setDataRequirements(uint32_t streamMask, uint32_t historyMask,
                              float windowSeconds);
     void requestLapData(int lapNum, uint32_t rowTypeMask);
@@ -90,6 +93,7 @@ signals:
     void loadFailed(const QString& reason);
     void stateChanged(bool playing, float currentTime, float totalTime, float speed);
     void seekStarted(uint64_t requestId);
+    void driverRestrictionChanged(int driverIndex, bool restricted, bool known);
     void historyDecoded(const std::shared_ptr<PlaybackHistoryBatch>& batch);
     void seeked();
     void finished();
@@ -97,7 +101,7 @@ signals:
 
 private:
     enum class WorkKind {
-        Load, Seek, Requirements, LapData,
+        Load, Seek, Driver, Requirements, LapData,
         SeekDecode, RequirementsDecode, LapDataDecode, Close
     };
     struct WorkItem { WorkKind kind; std::function<void()> run; };

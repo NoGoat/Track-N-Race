@@ -4,6 +4,7 @@
 #include <QSettings>
 #include <QByteArray>
 #include <QHash>
+#include <QSet>
 #include <QVector>
 
 #include <string>
@@ -14,6 +15,7 @@
 #include <tnrp/AnyRow.h>
 
 #include "HotRowSmoother.h"
+#include "PlaybackPatchMerger.h"
 #include "CompactSettings.h"
 #include "GraphViewSettings.h"
 #include "components/OverviewLayout.h"
@@ -236,8 +238,17 @@ private:
     bool         playbackRequirementsPending_ = false;
     uint64_t     playbackSeekGeneration_ = 0;
     QHash<QByteArray, QByteArray> pendingSeekStateRows_;
+    PlaybackPatchMerger playbackPatchMerger_;
+    bool         playerStatusDrsAvailable_ = true;
+    QSet<int>    allStatusDrsAvailable_;
+    bool         playbackDriverRestricted_ = false;
+    int          selectedPlaybackDriverIndex_ = -1;
+    bool         playbackParticipantsReady_ = false;
+    bool         playbackSparseRebuildPending_ = false;
     QWidget*     container_      = nullptr;
     QWidget*     loadingOverlay_ = nullptr;
+    void refreshPlaybackDriverSelector();
+    void resetPlaybackDriverSelection();
 
     // ── Excel export (playback bar → here) ────────────────────────
     // Export runs off the GUI thread (XlsxExportWorker on exportThread_); progress
@@ -346,10 +357,12 @@ private:
     void setRenderingActive(bool on);   // start/stop the rendering subsystems
 
     // ── Live data routing ─────────────────────────────────────────
-    void emitLiveData(const tnrp::AnyRow& row);
+    void emitLiveData(const tnrp::AnyRow& row,
+                      const QJsonObject* sparseObject = nullptr);
     // Shared tail of the live paths (JSON cold rows, binary hot rows, fills):
     // panels + SessionModel + forward-fill smoother.
-    void routeLiveRow(const tnrp::AnyRow& row);
+    void routeLiveRow(const tnrp::AnyRow& row,
+                      const QJsonObject* sparseObject = nullptr);
 
     // Event toast notifications live in ToastHost; lastSafetyCarStatus_ tracks
     // the session packet's SC state so changes can be toasted (routing decision).

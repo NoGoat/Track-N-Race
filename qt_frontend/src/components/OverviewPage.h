@@ -6,6 +6,7 @@
 #include <QPointer>
 
 #include <optional>
+#include <limits>
 
 #include <tnrp/rows.h>
 
@@ -101,12 +102,17 @@ private:
     // Latest values the card resolvers read; updated per row by the on*()
     // methods, then refreshCards() recomputes every visible card.
     struct OvCache {
-        float speed = 0; int rpm = 0; int gear = 0; float throttle = 0; float brake = 0;
-        bool drs = false; bool slm = false; int engineTemp = 0;
-        float ersPct = 0; int ersMode = -1; bool ersFault = false; bool drsFault = false;
-        float fuelKg = 0; float fuelLaps = 0;
-        int tyreCompound = -1; int visualCompound = -1; int tyreAgeLaps = 0; int fuelMix = -1;
-        int pos = 0; int lapNum = 0;
+        static constexpr float missingFloat = std::numeric_limits<float>::quiet_NaN();
+        static constexpr int missingInt = std::numeric_limits<int>::min();
+        float speed = missingFloat; int rpm = missingInt; int gear = missingInt;
+        float throttle = missingFloat; float brake = missingFloat;
+        int drs = missingInt; int slm = missingInt; int engineTemp = missingInt;
+        float ersPct = missingFloat; int ersMode = missingInt;
+        int ersFault = missingInt; int drsFault = missingInt;
+        float fuelKg = missingFloat; float fuelLaps = missingFloat;
+        int tyreCompound = missingInt; int visualCompound = missingInt;
+        int tyreAgeLaps = missingInt; int fuelMix = missingInt;
+        int pos = missingInt; int lapNum = missingInt;
     } cache_;
     std::optional<DamageRow> lastDamage_;   // last damage row, replayed after a compact rebuild
     bool cardsDirty_ = true;

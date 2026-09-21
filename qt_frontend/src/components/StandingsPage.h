@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QSet>
 #include <QWidget>
 #include <QColor>
 #include <QSettings>
@@ -34,7 +35,9 @@ public:
                          const tnrp::ParticipantsRow* participants,
                          const LapRow* playerLap,
                          const StatusRow* playerStatus,
-                         const AllStatusRow* allStatus);
+                         const AllStatusRow* allStatus,
+                         bool playerDrsAvailable = true,
+                         const QSet<int>* allStatusDrsAvailable = nullptr);
 
     // Fastest-lap tracking, fed from the row stream ("fastest_lap" /
     // "session_history_fastest"). The latter returns true when the fastest
@@ -45,6 +48,9 @@ public:
     void showLayoutEditor();
     void setTableDensity(tnr::DensityMode mode);
     void setCardDensity(int card, tnr::DensityMode mode);
+    // Playback driver changes select the same timing row the Electron header
+    // selects; -1 restores the ordinary player-following state.
+    void selectDriver(int driverIndex);
 
 protected:
     void resizeEvent(QResizeEvent* event) override;

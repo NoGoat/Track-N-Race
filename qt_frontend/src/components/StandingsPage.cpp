@@ -30,6 +30,7 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <unordered_map>
 #include <vector>
@@ -532,13 +533,21 @@ void StandingsPage::resetForNewSession() {
     sessionHistoryBest_.clear();
 }
 
+void StandingsPage::selectDriver(int driverIndex) {
+    if (selectedCarIdx_ == driverIndex) return;
+    selectedCarIdx_ = driverIndex;
+    emit refreshRequested();
+}
+
 // ── Race panel updater ────────────────────────────────────────────────────
 
 void StandingsPage::updateRacePanel(const TimingRow* timing,
                                     const tnrp::ParticipantsRow* participants,
                                     const LapRow* playerLap,
                                     const StatusRow* playerStatus,
-                                    const AllStatusRow* allStatus) {
+                                    const AllStatusRow* allStatus,
+                                    bool playerDrsAvailable,
+                                    const QSet<int>* allStatusDrsAvailable) {
     if (!rp_lapNum) return;
 
     int playerIdx    = timing ? timing->player_idx : -1;
@@ -607,7 +616,7 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
     }
 
     // Generic over StatusRow and AllStatusCar — same status field names.
-    auto applyStatus = [&](const auto& st) {
+    auto applyStatus = [&](const auto& st, bool drsAvailable) {
         float ersPct    = (float)st.ers_pct;
         int   ersMode   = st.ers_mode;
         float fuelKg    = (float)st.fuel_kg;
@@ -619,22 +628,30 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
         float brakeBias = (float)st.front_brake_bias;
         bool  drsOk     = st.drs_allowed;
 
-        setLabelText(rp_ersPct, QString::number((int)ersPct) + "%");
-        if (rp_ersBar->value() != (int)ersPct) rp_ersBar->setValue((int)ersPct);
+        const bool haveErs = std::isfinite(ersPct);
+        setLabelText(rp_ersPct, haveErs ? QString::number((int)ersPct) + "%" : "—");
+        const int ersBarValue = haveErs ? (int)ersPct : 0;
+        if (rp_ersBar->value() != ersBarValue) rp_ersBar->setValue(ersBarValue);
         const char* ersColor = ersPct > 60 ? "#4488ff" : ersPct > 30 ? "#ffd700" : "#C4162A";
-        const QString ersStyle = QString("QProgressBar::chunk { background-color: %1; }").arg(ersColor);
+        const QString ersStyle = haveErs
+            ? QString("QProgressBar::chunk { background-color: %1; }").arg(ersColor)
+            : QString();
         if (rp_ersBar->styleSheet() != ersStyle) rp_ersBar->setStyleSheet(ersStyle);
 
         // ERS deploy mode label (protocol-aware: "Overtake" → "Boost" in 2026).
         setLabelText(rp_ersMode, ersMode >= 0 && ersMode < 4 ? tnr::Ln("ers.mode", ersMode) : "—");
 
-        setLabelText(rp_drs, drsOk ? "AVAILABLE" : "LOCKED");
-        setLabelStyle(rp_drs, drsOk ? "color: #37872D; font-weight: bold;" : "");
+        setLabelText(rp_drs, drsAvailable ? (drsOk ? "AVAILABLE" : "LOCKED") : "—");
+        setLabelStyle(rp_drs, drsAvailable && drsOk
+            ? "color: #37872D; font-weight: bold;" : "");
 
-        setLabelText(rp_fuelKg, QString::number(fuelKg, 'f', 1) + " kg");
-        setLabelText(rp_fuelLaps, QString::number(fuelLaps, 'f', 1) + "L");
+        const bool haveFuelKg = std::isfinite(fuelKg);
+        const bool haveFuelLaps = std::isfinite(fuelLaps);
+        setLabelText(rp_fuelKg, haveFuelKg ? QString::number(fuelKg, 'f', 1) + " kg" : "—");
+        setLabelText(rp_fuelLaps, haveFuelLaps ? QString::number(fuelLaps, 'f', 1) + "L" : "—");
         const char* fuelColor = fuelLaps > 1.0f ? "#37872D" : fuelLaps >= 0.0f ? "#ffd700" : "#C4162A";
-        setLabelStyle(rp_fuelKg, QString("color: %1; font-weight: bold;").arg(fuelColor));
+        setLabelStyle(rp_fuelKg, haveFuelKg && haveFuelLaps
+            ? QString("color: %1; font-weight: bold;").arg(fuelColor) : QString());
 
         static const char* mixes[] = {"Lean", "Standard", "Rich", "Max Power"};
         setLabelText(rp_fuelMix, fuelMix >= 0 && fuelMix < 4 ? mixes[fuelMix] : "—");
@@ -644,16 +661,20 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
         setLabelStyle(rp_tyre, tyreFg.isValid()
             ? QString("color: %1; font-weight: bold;").arg(tyreFg.name())
             : "font-weight: bold;");
-        setLabelText(rp_tyreAge, tyreAge > 0 ? QString::number(tyreAge) + "L" : "—");
-        setLabelText(rp_brakeBias, brakeBias > 0 ? QString::number(brakeBias, 'f', 1) + "% front" : "—");
+        setLabelText(rp_tyreAge, tyreAge >= 0 ? QString::number(tyreAge) + "L" : "—");
+        setLabelText(rp_brakeBias, brakeBias >= 0 ? QString::number(brakeBias, 'f', 1) + "% front" : "—");
     };
 
     if (viewingOther && allStatus) {
         for (const AllStatusCar& car : allStatus->cars) {
-            if (car.idx == selectedCarIdx_) { applyStatus(car); break; }
+            if (car.idx == selectedCarIdx_) {
+                applyStatus(car, !allStatusDrsAvailable ||
+                                  allStatusDrsAvailable->contains(car.idx));
+                break;
+            }
         }
     } else if (playerStatus) {
-        applyStatus(*playerStatus);
+        applyStatus(*playerStatus, playerDrsAvailable);
     }
 }
 

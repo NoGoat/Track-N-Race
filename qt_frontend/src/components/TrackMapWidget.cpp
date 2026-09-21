@@ -817,11 +817,13 @@ void TrackMapWidget::setControlledMode(bool on) {
 bool TrackMapWidget::interpCar(int idx, double t, double& outX, double& outZ) const {
     const Car* cur = nullptr;
     for (const Car& c : curSnap_.cars) if (c.idx == idx) { cur = &c; break; }
-    if (!cur || (cur->x == 0.0 && cur->z == 0.0)) return false;
+    if (!cur || !std::isfinite(cur->x) || !std::isfinite(cur->z) ||
+        (cur->x == 0.0 && cur->z == 0.0)) return false;
     outX = cur->x; outZ = cur->z;
     for (const Car& pv : prevSnap_.cars)
         if (pv.idx == idx) {
-            if (!(pv.x == 0.0 && pv.z == 0.0)) {
+            if (std::isfinite(pv.x) && std::isfinite(pv.z) &&
+                !(pv.x == 0.0 && pv.z == 0.0)) {
                 outX = pv.x + (cur->x - pv.x) * t;
                 outZ = pv.z + (cur->z - pv.z) * t;
             }

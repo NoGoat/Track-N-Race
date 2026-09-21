@@ -1,6 +1,7 @@
 #include "SessionModel.h"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 #include <QSettings>
 #include <QSet>
@@ -46,7 +47,7 @@ void mergeTimed(QVector<T>& target, QVector<T>&& incoming) {
 
 // ── SessionData: lap segmentation + buffering ───────────────────────────────
 
-void SessionData::onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering) {
+void SessionData::onTelemetry(float t, float speed, float rpm, float gear, float throttle, float brake, float steering) {
     latestTime = t;
     telBuf.push_back({ t, speed, rpm, gear, throttle, brake, steering });
     if (curLapNum >= 0) curLap.tel.push_back({ t, speed, rpm, gear, throttle, brake, steering });
@@ -61,9 +62,12 @@ void SessionData::onStatus(float t, float ers, float fuel_kg, float ice_kw, floa
         const bool compoundsValid = previous.tyre_compound > 0 && tyre_compound > 0;
         const bool compoundChanged = compoundsValid &&
             (previous.tyre_compound != tyre_compound || previous.visual_compound != visual_compound);
-        const int ageDelta = tyre_age_laps - previous.tyre_age_laps;
-        const bool usedSetFitted = ageDelta > 1 && t - previous.t < 30.0f;
-        if (compoundChanged || ageDelta < 0 || usedSetFitted) currentStintStartTime = t;
+        const bool agesValid = previous.tyre_age_laps != std::numeric_limits<int>::min() &&
+                               tyre_age_laps != std::numeric_limits<int>::min();
+        const int ageDelta = agesValid ? tyre_age_laps - previous.tyre_age_laps : 0;
+        const bool usedSetFitted = agesValid && ageDelta > 1 && t - previous.t < 30.0f;
+        if (compoundChanged || (agesValid && ageDelta < 0) || usedSetFitted)
+            currentStintStartTime = t;
     } else {
         currentStintStartTime = t;
     }
@@ -435,7 +439,7 @@ void SessionModel::setLiveFlushActive(bool on) {
     }
 }
 
-void SessionModel::onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering) {
+void SessionModel::onTelemetry(float t, float speed, float rpm, float gear, float throttle, float brake, float steering) {
     if (playbackMode_ && !(playbackRequestedHistoryMask_ & rowBit(1))) {
         d_.latestTime = qMax(d_.latestTime, t);
         return;

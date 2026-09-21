@@ -70,6 +70,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <limits>
 #include <map>
 
 #include <tnrp/Engine.h>
@@ -80,6 +81,12 @@
 // std::optional cache → nullable pointer for the page update methods.
 template <class T>
 static const T* optPtr(const std::optional<T>& o) { return o ? &*o : nullptr; }
+
+static float playbackNumber(int value) {
+    return value == kPlaybackMissingInt
+        ? std::numeric_limits<float>::quiet_NaN()
+        : static_cast<float>(value);
+}
 
 // Packet IDs, header layout, duplicate-frame tables and the F1 24/25 packet
 // parsers used to live here; they now belong to libtnrp (tnrp::Parser /
@@ -291,7 +298,8 @@ MainWindow::MainWindow(QWidget* parent)
                                           optPtr(lastAllStatusData));
         standingsPage_->updateRacePanel(optPtr(lastTimingData), optPtr(lastParticipantsData),
                                         optPtr(lastPlayerLapData), optPtr(lastPlayerStatusData),
-                                        optPtr(lastAllStatusData));
+                                        optPtr(lastAllStatusData), playerStatusDrsAvailable_,
+                                        &allStatusDrsAvailable_);
     });
     stack->addWidget(sessionPage_ = new SessionPage);   // Session
     stack->addWidget(tyresPage_ = new TyresPage(model_));   // Tyres
@@ -313,6 +321,30 @@ MainWindow::MainWindow(QWidget* parent)
     playback_ = new PlaybackController(model_, nullptr, this);
     playback_->setShowLabels(toolbarLabelsEnabled());   // match the toolbar labels option
     playback_->setDensityMode(densitySection(tnr::CompactSection::PlaybackBar));
+    connect(playback_, &PlaybackController::playbackDriverCatalogChanged,
+            this, &MainWindow::refreshPlaybackDriverSelector);
+    connect(toolbar_, &AppToolbar::playbackDriverChanged, this, [this](int driverIndex) {
+        if (!inPlayback_ || !playback_ ||
+            playback_->tnrdVersion() != QStringLiteral("TNRD_V6") ||
+            driverIndex == selectedPlaybackDriverIndex_)
+            return;
+        const int original = playback_->originalPlaybackDriverIndex();
+        selectedPlaybackDriverIndex_ = driverIndex;
+        playbackDriverRestricted_ = driverIndex != original;
+        if (lastParticipantsData) {
+            const auto participant = std::find_if(
+                lastParticipantsData->drivers.cbegin(), lastParticipantsData->drivers.cend(),
+                [driverIndex](const tnrp::Driver& driver) { return driver.idx == driverIndex; });
+            if (participant != lastParticipantsData->drivers.cend())
+                playbackDriverRestricted_ = driverIndex != original &&
+                    (!participant->your_telemetry || *participant->your_telemetry != 1);
+        }
+        dirtyStrategy_ = true;
+        scheduleUiRefresh();
+        refreshPlaybackDriverSelector();
+        if (standingsPage_) standingsPage_->selectDriver(driverIndex);
+        playback_->selectPlaybackDriver(driverIndex, driverIndex == original);
+    });
 
     // Stack + separator + playback bar stacked vertically as the central widget
     container_ = new QWidget(this);
@@ -380,7 +412,11 @@ MainWindow::MainWindow(QWidget* parent)
     connect(analyzePage_, &AnalyzePage::dataRequirementsChanged,
             this, &MainWindow::updatePlaybackDataRequirements);
     connect(toolbar_, &AppToolbar::pageSelected, this, [this](int i) {
+        const Page previousPage = currentPage_;
         currentPage_ = static_cast<Page>(i);   // refresh the newly-shown page from any pending data
+        if (previousPage == Strategy && currentPage_ != Strategy && inPlayback_ &&
+            playback_ && playback_->tnrdVersion() == QStringLiteral("TNRD_V6"))
+            playbackSparseRebuildPending_ = true;
         if (currentPage_ == Overview || currentPage_ == Tyres) dirtyTyres_ = true;
         toolbar_->setEditLayoutEnabled(currentPage_ == Overview || currentPage_ == Input ||
                                        currentPage_ == Power || currentPage_ == Misc ||
@@ -423,6 +459,12 @@ MainWindow::MainWindow(QWidget* parent)
             [this](const tnrp::HeaderRow& hdr, float currentTime) {
         loadingOverlay_->hide();
         inPlayback_ = true;
+        playbackPatchMerger_.clear();
+        playerStatusDrsAvailable_ = true;
+        allStatusDrsAvailable_.clear();
+        playbackDriverRestricted_ = false;
+        playbackSparseRebuildPending_ = false;
+        resetPlaybackDriverSelection();
         // Resolve labels against the recorded clip's Formula-gated presentation
         // format (DRS vs Straight Line Mode, etc.) for playback.
         if (hdr.protocol > 0) {
@@ -470,24 +512,45 @@ MainWindow::MainWindow(QWidget* parent)
             this, &MainWindow::updatePlaybackDataRequirements);
     connect(playback_, &PlaybackController::activeLapChanged,
             this, [this](int) { updatePlaybackDataRequirements(); });
+    connect(playback_, &PlaybackController::driverRestrictionChanged,
+            this, [this](int driverIndex, bool restricted, bool) {
+        if (selectedPlaybackDriverIndex_ >= 0 &&
+            driverIndex != selectedPlaybackDriverIndex_)
+            return;
+        if (playbackDriverRestricted_ == restricted) return;
+        playbackDriverRestricted_ = restricted;
+        dirtyStrategy_ = true;
+        scheduleUiRefresh();
+    });
     connect(playback_, &PlaybackController::seekStarted, this, [this](uint64_t generation) {
         playbackSeekInstalling_ = true;
         playbackSeekGeneration_ = generation;
         pendingSeekStateRows_.clear();
+        playbackPatchMerger_.clear();
     });
     connect(playback_, &PlaybackController::historyInstalled, this, [this](uint64_t generation) {
         if (!playbackSeekInstalling_ || generation != playbackSeekGeneration_) return;
         playbackSeekInstalling_ = false;
         static const QByteArray orderedTypes[] = {
             "session", "participants", "timing", "all_status", "lap",
-            "status", "damage", "positions", "tyre_sets", "strategy"
+            "telemetry", "status", "damage", "positions", "tyre_sets", "strategy"
         };
         for (const QByteArray& type : orderedTypes) {
             const auto it = pendingSeekStateRows_.constFind(type);
             if (it == pendingSeekStateRows_.cend()) continue;
-            if (auto parsed = tnrp::parseRow(std::string_view(
-                    it->constData(), static_cast<size_t>(it->size()))))
-                emitLiveData(*parsed);
+            if (auto decoded = playbackPatchMerger_.decode(*it)) {
+                if (currentPage_ == Strategy && playback_ &&
+                    playback_->tnrdVersion() == QStringLiteral("TNRD_V6") &&
+                    !decoded->sparse &&
+                    (std::holds_alternative<TelemetryRow>(decoded->row) ||
+                     std::holds_alternative<StatusRow>(decoded->row) ||
+                     std::holds_alternative<DamageRow>(decoded->row) ||
+                     std::holds_alternative<AllStatusRow>(decoded->row) ||
+                     std::holds_alternative<tnrp::TyreSetsRow>(decoded->row)))
+                    continue;
+                emitLiveData(decoded->row,
+                             decoded->sparse ? &decoded->normalizedObject : nullptr);
+            }
         }
         pendingSeekStateRows_.clear();
         // The active seek window changed, while the independent indexed-lap
@@ -521,6 +584,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(playback_, &PlaybackController::exited, this, [this] {
         inPlayback_ = false;
+        resetPlaybackDriverSelection();
         lastRaceLeader_.reset();
         hotSmoother_.reset();   // back to live: start the fill state fresh
         applyEngineLogging();   // back to live: resume recording if it was enabled
@@ -535,6 +599,11 @@ MainWindow::MainWindow(QWidget* parent)
         model_->setPlaybackMode(false);
         playbackSeekInstalling_ = false;
         pendingSeekStateRows_.clear();
+        playbackPatchMerger_.clear();
+        playerStatusDrsAvailable_ = true;
+        allStatusDrsAvailable_.clear();
+        playbackDriverRestricted_ = false;
+        playbackSparseRebuildPending_ = false;
         setWindowTitle("Track N Race Background Recorder");
     });
 
@@ -1287,6 +1356,7 @@ QString MainWindow::recreateEngine() {
     cfg.bindAddress     = udpBindAddress().toStdString();
     cfg.protocol        = tnrp::overrideFromString(currentProtocolOverride().toStdString());
     cfg.binaryPlayback  = true;
+    cfg.sparseV6Playback = true;
     cfg.hotRowsAsJson   = false;
     cfg.loggingEnabled  = wantRecord && !outputDirectory.isEmpty() && !inPlayback_;
     cfg.outputDirectory = outputDirectory.toStdString();
@@ -1398,25 +1468,39 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     // inPlayback_ before the following initial snapshot rows are routed.
     if (playback_ && playback_->handleControlRow(json)) return;
 
+    std::optional<PlaybackDecodedRow> playbackDecoded;
+    std::optional<tnrp::AnyRow> parsed;
+    const QByteArray* normalizedJson = &json;
+    const QJsonObject* sparseObject = nullptr;
+    if (inPlayback_) {
+        playbackDecoded = playbackPatchMerger_.decode(json);
+        if (!playbackDecoded) return;
+        normalizedJson = &playbackDecoded->normalizedJson;
+        if (playbackDecoded->sparse)
+            sparseObject = &playbackDecoded->normalizedObject;
+    } else {
+        parsed = tnrp::parseRow(std::string_view(json.constData(), (size_t)json.size()));
+        if (!parsed) return;
+    }
+    tnrp::AnyRow& row = inPlayback_ ? playbackDecoded->row : *parsed;
+
     if (inPlayback_ && playbackSeekInstalling_) {
         const QByteArray key("\"type\":\"");
-        const qsizetype begin = json.indexOf(key);
+        const qsizetype begin = normalizedJson->indexOf(key);
         if (begin >= 0) {
             const qsizetype value = begin + key.size();
-            const qsizetype end = json.indexOf('"', value);
-            if (end > value) pendingSeekStateRows_.insert(json.mid(value, end - value), json);
+            const qsizetype end = normalizedJson->indexOf('"', value);
+            if (end > value)
+                pendingSeekStateRows_.insert(normalizedJson->mid(value, end - value),
+                                             *normalizedJson);
         }
         return;
     }
 
-    std::optional<tnrp::AnyRow> parsed =
-        tnrp::parseRow(std::string_view(json.constData(), (size_t)json.size()));
-    if (!parsed) return;
-
     // Track the active packet format so UI labels resolve through the library's
     // i18n catalog (tnr::Labels). The engine emits protocol_status on connect and
     // on every format change, so labels re-theme when 2025↔2026 switches.
-    if (const auto* ps = std::get_if<tnrp::ProtocolStatusRow>(&*parsed)) {
+    if (const auto* ps = std::get_if<tnrp::ProtocolStatusRow>(&row)) {
         if (ps->detected_format) lastDetectedProtocolFormat_ = *ps->detected_format;
         if (ps->active_format) {
             const uint16_t fmt = (uint16_t)ps->presentation_format.value_or(
@@ -1433,7 +1517,7 @@ void MainWindow::onEngineRow(const QByteArray& json) {
         if (!inPlayback_) return;
     }
 
-    if (const auto* warning = std::get_if<tnrp::ProtocolWarningRow>(&*parsed)) {
+    if (const auto* warning = std::get_if<tnrp::ProtocolWarningRow>(&row)) {
         const int detected = warning->detected_format && warning->forced_format
             ? *warning->detected_format : 0;
         const int forced = warning->detected_format && warning->forced_format
@@ -1447,9 +1531,23 @@ void MainWindow::onEngineRow(const QByteArray& json) {
         if (!inPlayback_) return;
     }
 
+    // Strategy's in-engine reducer deliberately requests complete compatibility
+    // rows even when V6 sparse output is enabled. They are reducer inputs, not a
+    // truthful frontend projection: allowing them into the Qt caches would turn
+    // unavailable private values into zero while this page is open. The derived
+    // strategy row and shared/public rows still flow normally.
+    if (inPlayback_ && currentPage_ == Strategy && playback_ &&
+        playback_->tnrdVersion() == QStringLiteral("TNRD_V6") && !sparseObject &&
+        (std::holds_alternative<TelemetryRow>(row) ||
+         std::holds_alternative<StatusRow>(row) ||
+         std::holds_alternative<DamageRow>(row) ||
+         std::holds_alternative<AllStatusRow>(row) ||
+         std::holds_alternative<tnrp::TyreSetsRow>(row)))
+        return;
+
     // The same typed path serves live and playback. In playback, histories are
     // bounded by SessionModel and authoritative seeks replace them atomically.
-    routeLiveRow(*parsed);
+    routeLiveRow(row, sparseObject);
 }
 
 // Hot 60 Hz rows (telemetry/motion/motion_ex/positions) as one packed batch —
@@ -1481,8 +1579,9 @@ void MainWindow::onEngineBinary(const QByteArray& batch) {
 }
 
 // Shared tail of the live paths: panels + SessionModel + forward-fill smoother.
-void MainWindow::routeLiveRow(const tnrp::AnyRow& row) {
-    emitLiveData(row);
+void MainWindow::routeLiveRow(const tnrp::AnyRow& row,
+                              const QJsonObject* sparseObject) {
+    emitLiveData(row, sparseObject);
     ingestForModel(row);
     if (!inPlayback_) feedHotSmoother(row);
 }
@@ -1516,7 +1615,8 @@ void MainWindow::onHotFillTick() {
 
 // ── Live data extraction → signals ─────────────────────────────────────────
 
-void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
+void MainWindow::emitLiveData(const tnrp::AnyRow& row,
+                              const QJsonObject* sparseObject) {
     // Every packet that carries the header session_time drives the toolbar timer.
     const float st = tnrp::rowSessionTime(row);
     if (st >= 0.0f && toolbar_) toolbar_->updateSessionTimer(st);
@@ -1526,6 +1626,8 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
         lastPlayerTelemetryData = *tel;
         dirtyTyres_ = true; scheduleUiRefresh();
     } else if (const auto* status = std::get_if<StatusRow>(&row)) {
+        playerStatusDrsAvailable_ = playbackFieldAvailable(
+            sparseObject, "drs_allowed");
         if (overviewPage_) overviewPage_->onStatus(*status);
         lastPlayerStatusData = *status;
         dirtyRacePanel_ = true; dirtyPower_ = true; scheduleUiRefresh();
@@ -1594,8 +1696,16 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
         dirtyTiming_ = true; dirtyProximity_ = true; scheduleUiRefresh();
     } else if (const auto* part = std::get_if<tnrp::ParticipantsRow>(&row)) {
         lastParticipantsData = *part;
+        if (inPlayback_) {
+            playbackParticipantsReady_ = true;
+            refreshPlaybackDriverSelector();
+        }
         dirtyTiming_ = true; dirtyTrackMapParticipants_ = true; scheduleUiRefresh();
     } else if (const auto* as = std::get_if<AllStatusRow>(&row)) {
+        allStatusDrsAvailable_.clear();
+        for (const AllStatusCar& car : as->cars)
+            if (playbackCarFieldAvailable(sparseObject, car.idx, "drs_allowed"))
+                allStatusDrsAvailable_.insert(car.idx);
         lastAllStatusData = *as;
         dirtyTiming_ = true; scheduleUiRefresh();
     } else if (const auto* strategy = std::get_if<tnrp::StrategySnapshotRow>(&row)) {
@@ -1612,6 +1722,53 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
     }
 }
 
+void MainWindow::resetPlaybackDriverSelection() {
+    selectedPlaybackDriverIndex_ = -1;
+    playbackParticipantsReady_ = false;
+    playbackDriverRestricted_ = false;
+    if (toolbar_) toolbar_->clearPlaybackDrivers();
+    if (standingsPage_) standingsPage_->selectDriver(-1);
+}
+
+void MainWindow::refreshPlaybackDriverSelector() {
+    if (!toolbar_ || !playback_ || !inPlayback_ ||
+        playback_->tnrdVersion() != QStringLiteral("TNRD_V6")) {
+        if (toolbar_) toolbar_->clearPlaybackDrivers();
+        selectedPlaybackDriverIndex_ = -1;
+        return;
+    }
+
+    const int original = playback_->originalPlaybackDriverIndex();
+    if (selectedPlaybackDriverIndex_ < 0) {
+        selectedPlaybackDriverIndex_ = playback_->currentPlaybackDriverIndex();
+        if (selectedPlaybackDriverIndex_ < 0) selectedPlaybackDriverIndex_ = original;
+    }
+
+    QVector<PlaybackDriverOption> options;
+    const auto& catalog = playback_->playbackDriverCatalog();
+    options.reserve(static_cast<qsizetype>(catalog.size()));
+    for (const tnrp::AnalysisDriverLapCatalog& entry : catalog) {
+        QString name = QString::fromStdString(entry.driverName);
+        bool publicDataOnly = entry.driverIndex != original;
+        if (playbackParticipantsReady_ && lastParticipantsData) {
+            const auto participant = std::find_if(
+                lastParticipantsData->drivers.cbegin(), lastParticipantsData->drivers.cend(),
+                [&entry](const tnrp::Driver& driver) {
+                    return driver.idx == entry.driverIndex;
+                });
+            if (participant != lastParticipantsData->drivers.cend()) {
+                if (!participant->name.empty()) name = QString::fromStdString(participant->name);
+                publicDataOnly = entry.driverIndex != original &&
+                    (!participant->your_telemetry || *participant->your_telemetry != 1);
+            }
+        }
+        if (name.isEmpty()) name = QStringLiteral("Car %1").arg(entry.driverIndex);
+        if (publicDataOnly) name += QStringLiteral(" · Public data only");
+        options.push_back({entry.driverIndex, name});
+    }
+    toolbar_->setPlaybackDrivers(options, selectedPlaybackDriverIndex_);
+}
+
 QWidget* MainWindow::buildStrategyPage() {
     strategyPage_ = new StrategyPage(this);
     connect(strategyPage_, &StrategyPage::minimumStopsChanged, this, [this](int stops) {
@@ -1622,7 +1779,7 @@ QWidget* MainWindow::buildStrategyPage() {
 
 void MainWindow::updateStrategyPage() {
     if (!strategyPage_) return;
-    strategyPage_->update(optPtr(lastStrategyData));
+    strategyPage_->update(playbackDriverRestricted_ ? nullptr : optPtr(lastStrategyData));
 }
 
 // The Overview and Tyres pages show the same per-corner tyre cards, refreshed
@@ -1658,7 +1815,7 @@ void MainWindow::flushUiRefresh() {
             break;
         case Standings:
             if (dirtyTiming_)    { standingsPage_->updateTimingTable(optPtr(lastTimingData), optPtr(lastParticipantsData), optPtr(lastAllStatusData)); dirtyTiming_ = false; }
-            if (dirtyRacePanel_) { standingsPage_->updateRacePanel(optPtr(lastTimingData), optPtr(lastParticipantsData), optPtr(lastPlayerLapData), optPtr(lastPlayerStatusData), optPtr(lastAllStatusData)); dirtyRacePanel_ = false; }
+            if (dirtyRacePanel_) { standingsPage_->updateRacePanel(optPtr(lastTimingData), optPtr(lastParticipantsData), optPtr(lastPlayerLapData), optPtr(lastPlayerStatusData), optPtr(lastAllStatusData), playerStatusDrsAvailable_, &allStatusDrsAvailable_); dirtyRacePanel_ = false; }
             break;
         case Session:
             if (dirtyProximity_) { sessionPage_->updateProximity(optPtr(lastTimingData), optPtr(lastParticipantsData)); dirtyProximity_ = false; }
@@ -1709,19 +1866,22 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
             dirtyEvents_ = true;
             model_->truncateAfter(t->session_time);
         }
-        model_->onTelemetry(t->session_time, (float)t->speed_kph, t->rpm, t->gear,
+        model_->onTelemetry(t->session_time, playbackNumber(t->speed_kph),
+                            playbackNumber(t->rpm), playbackNumber(t->gear),
                             t->throttle, t->brake, (float)t->steering);
         // Combine live tyre temps with last-seen wear from the damage packet.
         const DamageRow* d = optPtr(lastPlayerDamageData);
         model_->onTyre(t->session_time,
-            (float)t->tyre_temp_surface_fl, (float)t->tyre_temp_surface_fr,
-            (float)t->tyre_temp_surface_rl, (float)t->tyre_temp_surface_rr,
-            (float)t->tyre_temp_inner_fl,   (float)t->tyre_temp_inner_fr,
-            (float)t->tyre_temp_inner_rl,   (float)t->tyre_temp_inner_rr,
-            (float)t->brake_temp_fl,        (float)t->brake_temp_fr,
-            (float)t->brake_temp_rl,        (float)t->brake_temp_rr,
-            d ? (float)d->tyre_wear_fl : 0.0f, d ? (float)d->tyre_wear_fr : 0.0f,
-            d ? (float)d->tyre_wear_rl : 0.0f, d ? (float)d->tyre_wear_rr : 0.0f);
+            playbackNumber(t->tyre_temp_surface_fl), playbackNumber(t->tyre_temp_surface_fr),
+            playbackNumber(t->tyre_temp_surface_rl), playbackNumber(t->tyre_temp_surface_rr),
+            playbackNumber(t->tyre_temp_inner_fl),   playbackNumber(t->tyre_temp_inner_fr),
+            playbackNumber(t->tyre_temp_inner_rl),   playbackNumber(t->tyre_temp_inner_rr),
+            playbackNumber(t->brake_temp_fl),        playbackNumber(t->brake_temp_fr),
+            playbackNumber(t->brake_temp_rl),        playbackNumber(t->brake_temp_rr),
+            d ? (float)d->tyre_wear_fl : std::numeric_limits<float>::quiet_NaN(),
+            d ? (float)d->tyre_wear_fr : std::numeric_limits<float>::quiet_NaN(),
+            d ? (float)d->tyre_wear_rl : std::numeric_limits<float>::quiet_NaN(),
+            d ? (float)d->tyre_wear_rr : std::numeric_limits<float>::quiet_NaN());
     }
     else if (const auto* s = std::get_if<StatusRow>(&row))
         model_->onStatus(s->session_time,
@@ -1729,8 +1889,8 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
                          (float)s->fuel_kg,
                          (float)s->engine_power_ice_kw,
                          (float)s->engine_power_mguk_kw,
-                         (float)s->ers_harvested_mguk_j,
-                         (float)s->ers_harvested_mguh_j,
+                         playbackNumber(s->ers_harvested_mguk_j),
+                         playbackNumber(s->ers_harvested_mguh_j),
                          s->tyre_compound, s->visual_compound, s->tyre_age_laps);
     else if (const auto* d = std::get_if<DamageRow>(&row))
         model_->onDamage(d->session_time,
@@ -1770,7 +1930,7 @@ void MainWindow::updatePlaybackDataRequirements() {
     // Global clock/session banners plus the active page. These are logical TNRD
     // row-family bits, not UDP packet ids. History is narrower than streaming:
     // cards and tables need only their latest state.
-    uint32_t stream = bit(1) | bit(4) | bit(5) | bit(6) | bit(8) | bit(14);
+    uint32_t stream = bit(4) | bit(5) | bit(6) | bit(8) | bit(14);
     uint32_t history = 0;
     QVector<tnr::GraphSection> sections;
     switch (currentPage_) {
@@ -1845,6 +2005,11 @@ void MainWindow::updatePlaybackDataRequirements() {
     playback_->setDataRequirements(stream, history, windowSeconds);
 
     if (!inPlayback_) return;
+    if (playbackSparseRebuildPending_) {
+        playbackSparseRebuildPending_ = false;
+        playback_->rebuildCurrentCursor();
+        return;
+    }
     QSet<int> requestedLaps;
     const LapBlock* currentLap = model_->data().currentLapAt(playback_->currentTime());
     if (currentPage_ == Analyze && analyzePage_) {

@@ -84,6 +84,7 @@ public:
 
 private:
     static QString format(double v, GraphTable::Fmt f) {
+        if (!std::isfinite(v)) return QStringLiteral("—");
         switch (f) {
             case GraphTable::Time:   return GraphTable::fmtTime(float(v));
             case GraphTable::Fixed0: return QString::number(v, 'f', 0);

@@ -6,8 +6,10 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include "CompactSettings.h"
+#include <tnrp/control_rows.h>
 
 class QComboBox;
 class QFrame;
@@ -18,7 +20,7 @@ class QWidget;
 class SessionModel;
 class TnrdPlayer;
 struct EngineSeekFlush;
-namespace tnrp { class Engine; struct HeaderRow; }
+namespace tnrp { class Engine; }
 
 // Owns the .tnrd playback controls: the engine-backed TnrdPlayer facade and the bottom transport
 // bar (seek buttons, play/pause, scrub slider, time label, lap/speed combos,
@@ -43,6 +45,8 @@ public:
     void setDataRequirements(uint32_t streamMask, uint32_t historyMask,
                              float windowSeconds);
     void requestLapData(int lapNum, uint32_t rowTypeMask);
+    void selectPlaybackDriver(int driverIndex, bool useRecordedRows);
+    void rebuildCurrentCursor();
     void setEngine(tnrp::Engine* engine);
     void quiesce();
     void shutdown();
@@ -50,6 +54,12 @@ public:
     // Path of the currently-loaded .tnrd (empty when none). Used by the Export-to-
     // Excel action, whose exporter opens its own reader on this file.
     QString loadedPath() const { return loadedPath_; }
+    QString tnrdVersion() const { return tnrdVersion_; }
+    int originalPlaybackDriverIndex() const { return originalPlaybackDriverIndex_; }
+    int currentPlaybackDriverIndex() const { return currentPlaybackDriverIndex_; }
+    const std::vector<tnrp::AnalysisDriverLapCatalog>& playbackDriverCatalog() const {
+        return playbackDriverCatalog_;
+    }
 
     // Follows the toolbar's "Show button labels" option: icon-only vs a labelled
     // "Close File" button (kept in sync from MainWindow::setToolbarLabels).
@@ -67,6 +77,8 @@ signals:
     void seekStarted(uint64_t requestId);          // freeze old-timeline presentation
     void historyInstalled(uint64_t requestId);     // authoritative model swap completed
     void lapCatalogInstalled();                    // lap-relative requests can now be resolved
+    void playbackDriverCatalogChanged();           // V6 version/driver metadata changed
+    void driverRestrictionChanged(int driverIndex, bool restricted, bool known);
     void activeLapChanged(int lapNum);             // refresh Current/Previous lap data
     void timeChanged(float absoluteTime);          // per playback tick / scrub
     void exportRequested();                        // Export-to-Excel button clicked
@@ -76,6 +88,11 @@ private:
     TnrdPlayer*   player_ = nullptr;
 
     QString loadedPath_;               // the .tnrd currently open (for the export action)
+    QString tnrdVersion_;
+    int originalPlaybackDriverIndex_ = -1;
+    int currentPlaybackDriverIndex_ = -1;
+    bool playbackDriverMetadataReady_ = false;
+    std::vector<tnrp::AnalysisDriverLapCatalog> playbackDriverCatalog_;
 
     bool    seekerUpdating_ = false;
     qint64  lastSeekMs_     = 0;       // leading-edge throttle for scrub-bar seeks

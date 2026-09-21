@@ -10,7 +10,7 @@
 #include "ChartSettings.h"
 
 // Slim per-sample records — only what the Speed/RPM/ERS chart needs.
-struct TelSample { float t = 0; float speed = 0; int rpm = 0; int gear = 0; float throttle = 0; float brake = 0; float steering = 0; };
+struct TelSample { float t = 0; float speed = 0; float rpm = 0; float gear = 0; float throttle = 0; float brake = 0; float steering = 0; };
 
 struct TyreSample {
     float t = 0;
@@ -82,7 +82,7 @@ struct SessionData {
     float currentStintStartTime = 0;
     bool  trimBuffers   = true;    // source histories use Electron's 750,000-row cap
 
-    void onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering);
+    void onTelemetry(float t, float speed, float rpm, float gear, float throttle, float brake, float steering);
     void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j,
                   int tyre_compound = 0, int visual_compound = 0, int tyre_age_laps = 0);
     void onDamage(float t, float wearFl, float wearFr, float wearRl, float wearRr);
@@ -129,7 +129,7 @@ public:
     // Live ingest.
     void beginIngestBatch();
     void endIngestBatch();
-    void onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering);
+    void onTelemetry(float t, float speed, float rpm, float gear, float throttle, float brake, float steering);
     void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j,
                   int tyre_compound = 0, int visual_compound = 0, int tyre_age_laps = 0);
     void onDamage(float t, float wearFl, float wearFr, float wearRl, float wearRr);

@@ -571,8 +571,8 @@ void OverviewPage::onTelemetry(const TelemetryRow& row) {
     cache_.gear       = row.gear;
     cache_.throttle   = row.throttle;
     cache_.brake      = row.brake;
-    cache_.drs        = row.drs != 0;
-    cache_.slm        = row.slm != 0;
+    cache_.drs        = row.drs;
+    cache_.slm        = row.slm;
     cache_.engineTemp = row.engine_temp;
     cardsDirty_ = true;
 }
@@ -591,8 +591,8 @@ void OverviewPage::onStatus(const StatusRow& row) {
 
 void OverviewPage::onDamage(const DamageRow& row) {
     lastDamage_ = row;   // cached so a compact-mode rebuild can repaint while paused
-    cache_.drsFault = row.drs_fault == 1;
-    cache_.ersFault = row.ers_fault == 1;
+    cache_.drsFault = row.drs_fault;
+    cache_.ersFault = row.ers_fault;
     cardsDirty_ = true;
     damageDirty_ = true;
 }
@@ -658,6 +658,8 @@ void OverviewPage::refreshTitles() {
 void OverviewPage::refreshCards() {
     const OvCache& c = cache_;
     static const char* FUEL_MIX[] = { "Lean", "Std", "Rich", "Max" };
+    const auto haveInt = [](int value) { return value != OvCache::missingInt; };
+    const auto haveFloat = [](float value) { return std::isfinite(value); };
 
     auto setCard = [this](const QString& key, const QString& value, const QColor& color) {
         if (QLabel* l = cardValue_.value(key)) {
@@ -675,42 +677,63 @@ void OverviewPage::refreshCards() {
         }
     };
 
-    setCard("speed", QString::number((int)c.speed), tnr::cardColor("speed"));
-    setCard("rpm",   QLocale().toString(c.rpm),     tnr::cardColor("rpm"));
-    setCard("gear",  c.gear <= 0 ? (c.gear < 0 ? QStringLiteral("R") : QStringLiteral("N"))
-                                 : QString::number(c.gear),
-            tnr::cardColor("gear", c.gear));
-    setCard("throttle", QString::number((int)(c.throttle * 100)), tnr::cardColor("throttle"));
-    setCard("brake",    QString::number((int)(c.brake * 100)),
-            tnr::cardColor("brake", NAN, { {"brake", c.brake} }));
+    setCard("speed", haveFloat(c.speed) ? QString::number((int)c.speed) : QStringLiteral("—"),
+            haveFloat(c.speed) ? tnr::cardColor("speed") : QColor());
+    setCard("rpm", haveInt(c.rpm) ? QLocale().toString(c.rpm) : QStringLiteral("—"),
+            haveInt(c.rpm) ? tnr::cardColor("rpm") : QColor());
+    const QString gear = !haveInt(c.gear) ? QStringLiteral("—")
+        : c.gear <= 0 ? (c.gear < 0 ? QStringLiteral("R") : QStringLiteral("N"))
+                      : QString::number(c.gear);
+    setCard("gear", gear, haveInt(c.gear) ? tnr::cardColor("gear", c.gear) : QColor());
+    setCard("throttle", haveFloat(c.throttle)
+            ? QString::number((int)(c.throttle * 100)) : QStringLiteral("—"),
+            haveFloat(c.throttle) ? tnr::cardColor("throttle") : QColor());
+    setCard("brake", haveFloat(c.brake)
+            ? QString::number((int)(c.brake * 100)) : QStringLiteral("—"),
+            haveFloat(c.brake)
+                ? tnr::cardColor("brake", NAN, { {"brake", c.brake} }) : QColor());
 
     // Wing card: data field is format-aware (drs in 2025, slm in 2026).
-    const bool wingOpen = (tnr::Labels::instance().t("card.wing.key") == "slm") ? c.slm : c.drs;
-    setCard("drs", wingOpen ? QStringLiteral("ON") : QStringLiteral("OFF"),
-            tnr::cardColor("wing", wingOpen ? 1 : 0));
-    setSub("drs", c.drsFault ? QStringLiteral("FAULT") : QString(),
-           c.drsFault ? QColor("#C4162A") : QColor());
+    const int wingValue = (tnr::Labels::instance().t("card.wing.key") == "slm") ? c.slm : c.drs;
+    const bool haveWing = haveInt(wingValue);
+    const bool wingOpen = haveWing && wingValue != 0;
+    setCard("drs", haveWing ? (wingOpen ? QStringLiteral("ON") : QStringLiteral("OFF"))
+                             : QStringLiteral("—"),
+            haveWing ? tnr::cardColor("wing", wingOpen ? 1 : 0) : QColor());
+    const bool haveDrsFault = haveInt(c.drsFault);
+    setSub("drs", haveDrsFault && c.drsFault == 1 ? QStringLiteral("FAULT") : QString(),
+           haveDrsFault && c.drsFault == 1 ? QColor("#C4162A") : QColor());
 
-    setCard("engine", QString::number(c.engineTemp), tnr::cardColor("engine", c.engineTemp));
+    setCard("engine", haveInt(c.engineTemp) ? QString::number(c.engineTemp) : QStringLiteral("—"),
+            haveInt(c.engineTemp) ? tnr::cardColor("engine", c.engineTemp) : QColor());
 
-    setCard("ers", QString::number((int)c.ersPct),
-            tnr::cardColor("ers", c.ersPct, { {"ers_mode", (double)c.ersMode}, {"ers_pct", c.ersPct} }));
-    if (c.ersFault)
+    setCard("ers", haveFloat(c.ersPct) ? QString::number((int)c.ersPct) : QStringLiteral("—"),
+            haveFloat(c.ersPct)
+                ? tnr::cardColor("ers", c.ersPct, { {"ers_mode", (double)c.ersMode}, {"ers_pct", c.ersPct} })
+                : QColor());
+    if (haveInt(c.ersFault) && c.ersFault == 1)
         setSub("ers", QStringLiteral("FAULT"), QColor("#C4162A"));
     else
         setSub("ers", (c.ersMode >= 0 && c.ersMode < 4) ? tnr::Ln("ers.mode", c.ersMode) : QString());
 
-    setCard("fuel", QString::number(c.fuelKg, 'f', 1),
-            tnr::cardColor("fuel", NAN, { {"fuel_laps", c.fuelLaps} }));
-    setSub("fuel", QString("%1%2 vs fin").arg(c.fuelLaps >= 0 ? "+" : "").arg(c.fuelLaps, 0, 'f', 1));
+    setCard("fuel", haveFloat(c.fuelKg) ? QString::number(c.fuelKg, 'f', 1) : QStringLiteral("—"),
+            haveFloat(c.fuelKg) && haveFloat(c.fuelLaps)
+                ? tnr::cardColor("fuel", NAN, { {"fuel_laps", c.fuelLaps} }) : QColor());
+    setSub("fuel", haveFloat(c.fuelLaps)
+        ? QString("%1%2 vs fin").arg(c.fuelLaps >= 0 ? "+" : "").arg(c.fuelLaps, 0, 'f', 1)
+        : QString());
 
-    setCard("pos", "P" + QString::number(c.pos), QColor());
-    setSub("pos", "Lap " + QString::number(c.lapNum));
+    setCard("pos", haveInt(c.pos) && c.pos > 0 ? "P" + QString::number(c.pos) : QStringLiteral("—"), QColor());
+    setSub("pos", haveInt(c.lapNum) && c.lapNum > 0 ? "Lap " + QString::number(c.lapNum) : QString());
 
-    setCard("tyre", tyreLabel(c.tyreCompound),
-            tnr::cardColor("tyre", NAN, { {"visual_compound", (double)c.visualCompound} }));
-    setSub("tyre", QString("%1L · %2")
-        .arg(c.tyreAgeLaps).arg(c.fuelMix >= 0 && c.fuelMix < 4 ? FUEL_MIX[c.fuelMix] : ""));
+    setCard("tyre", haveInt(c.tyreCompound) ? tyreLabel(c.tyreCompound) : QStringLiteral("—"),
+            haveInt(c.visualCompound)
+                ? tnr::cardColor("tyre", NAN, { {"visual_compound", (double)c.visualCompound} })
+                : QColor());
+    setSub("tyre", haveInt(c.tyreAgeLaps)
+        ? QString("%1L%2").arg(c.tyreAgeLaps)
+              .arg(c.fuelMix >= 0 && c.fuelMix < 4 ? QString(" · %1").arg(FUEL_MIX[c.fuelMix]) : QString())
+        : QString());
 }
 
 // ── Playback plumbing ─────────────────────────────────────────────────────
@@ -791,7 +814,7 @@ void OverviewPage::refreshTelemetryTable() {
     // ERS lives in stsBuf, sampled independently of telBuf — match each telemetry
     // sample to the most recent status sample at or before it.
     auto ersAt = [&](float t) -> float {
-        if (status.isEmpty()) return 0.0f;
+        if (status.isEmpty()) return std::numeric_limits<float>::quiet_NaN();
         auto it = std::upper_bound(status.begin(), status.end(), t,
             [](float key, const StsSample& x) { return key < x.t; });
         if (it == status.begin()) return it->ers;

@@ -173,6 +173,22 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     spacerLay->addWidget(deltaLabel_);
     addWidget(spacer);
 
+    // TNRD V6 recordings can project playback onto any recorded participant.
+    // Keep the selector independent from the chart/Analyze segment so changing
+    // pages never hides it; narrow windows move it into the existing overflow.
+    driverBtn_ = new QComboBox(this);
+    driverBtn_->setFrame(false);
+    driverBtn_->setMinimumContentsLength(14);
+    driverBtn_->setMaximumWidth(280);
+    driverBtn_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    driverBtn_->setToolTip(
+        "Playback driver. Drivers marked Public data only have private status "
+        "and damage values hidden by the game.");
+    driverAct_ = addWidget(driverBtn_);
+    driverAct_->setVisible(false);
+    connect(driverBtn_, QOverload<int>::of(&QComboBox::activated),
+            this, &AppToolbar::applyPlaybackDriver);
+
     // Analyze owns a lap-relative X axis, so its navigation controls replace the
     // rolling chart-window selector while that page is active.
     analyzeControls_ = new QWidget;
@@ -495,6 +511,38 @@ void AppToolbar::setChartOptions(ChartWindow window, int referenceLap,
     }
 }
 
+void AppToolbar::setPlaybackDrivers(const QVector<PlaybackDriverOption>& drivers,
+                                    int selectedDriverIndex)
+{
+    if (!driverBtn_ || !driverAct_) return;
+    driverBtn_->blockSignals(true);
+    driverBtn_->clear();
+    for (const PlaybackDriverOption& driver : drivers)
+        driverBtn_->addItem(driver.label, driver.index);
+    const int selected = driverBtn_->findData(selectedDriverIndex);
+    driverBtn_->setCurrentIndex(selected >= 0 ? selected :
+        (driverBtn_->count() > 0 ? 0 : -1));
+    driverBtn_->blockSignals(false);
+    playbackDriversVisible_ = !drivers.isEmpty();
+    relayout();
+}
+
+void AppToolbar::clearPlaybackDrivers() {
+    if (!driverBtn_ || !driverAct_) return;
+    driverBtn_->blockSignals(true);
+    driverBtn_->clear();
+    driverBtn_->blockSignals(false);
+    playbackDriversVisible_ = false;
+    driverAct_->setVisible(false);
+    relayout();
+}
+
+void AppToolbar::applyPlaybackDriver(int idx) {
+    if (!driverBtn_ || idx < 0 || idx >= driverBtn_->count()) return;
+    if (driverBtn_->currentIndex() != idx) driverBtn_->setCurrentIndex(idx);
+    emit playbackDriverChanged(driverBtn_->itemData(idx).toInt());
+}
+
 // Collapse low-priority toolbar items into the "⋯" menu when the window is too
 // narrow to fit everything, expanding them back as it widens. The compact page
 // dropdown remains inline; icon actions and then the chart-window controls move
@@ -525,6 +573,7 @@ void AppToolbar::relayout() {
     const int wPage  = actW(pageAct_);
     const int wAnalyzeContext = actW(analyzeContextAct_);
     const int wAnalyzeNav = actW(analyzeAct_);
+    const int wDriver = playbackDriversVisible_ ? actW(driverAct_) : 0;
     const int wSeg = analyzeVisible_
         ? wAnalyzeContext + wAnalyzeNav + (wAnalyzeContext && wAnalyzeNav ? spacing : 0)
         : actW(windowAct_);
@@ -539,12 +588,14 @@ void AppToolbar::relayout() {
                             ? deltaLabel_->sizeHint().width() : 0);
     // Inter-item gaps: 6 toolbar items (page dropdown, spacer, segment, 3 icons)
     // create 5 gaps. The timer adds no gap of its own (it rides in the spacer).
-    const int needAll = wPage + wSeg + wIcons + wTimer + spacing * 5;
+    const int needAll = wPage + wDriver + wSeg + wIcons + wTimer +
+        spacing * (playbackDriversVisible_ ? 6 : 5);
 
     if (avail >= needAll + kSlack) {              // comfortably fits — everything inline
         if (windowAct_) windowAct_->setVisible(!analyzeVisible_);
         if (analyzeContextAct_) analyzeContextAct_->setVisible(analyzeVisible_);
         if (analyzeAct_) analyzeAct_->setVisible(analyzeVisible_);
+        if (driverAct_) driverAct_->setVisible(playbackDriversVisible_);
         setIconsVisible(true);
         pageAct_->setVisible(true);
         overflowAct_->setVisible(false);
@@ -557,21 +608,34 @@ void AppToolbar::relayout() {
     const int budget = avail - wOver - spacing - kSlack;
     int inlineW = needAll;
     bool segIn = true, iconsIn = true, analyzeNavIn = true;
+    bool driverIn = playbackDriversVisible_;
     if (inlineW > budget && iconsIn) { iconsIn = false; inlineW -= wIcons + spacing; }
     if (inlineW > budget && analyzeVisible_ && analyzeNavIn) {
         analyzeNavIn = false;
         inlineW -= wAnalyzeNav + spacing;
     }
     if (inlineW > budget && segIn && !analyzeVisible_) { segIn = false; inlineW -= wSeg + spacing; }
+    if (inlineW > budget && driverIn) { driverIn = false; inlineW -= wDriver + spacing; }
 
     pageAct_->setVisible(true);
     if (windowAct_) windowAct_->setVisible(!analyzeVisible_ && segIn);
     if (analyzeContextAct_) analyzeContextAct_->setVisible(analyzeVisible_);
     if (analyzeAct_) analyzeAct_->setVisible(analyzeVisible_ && analyzeNavIn);
+    if (driverAct_) driverAct_->setVisible(playbackDriversVisible_ && driverIn);
     setIconsVisible(iconsIn);
 
     // Rebuild the overflow menu from whatever collapsed.
     overflowMenu_->clear();
+    if (playbackDriversVisible_ && !driverIn) {
+        overflowMenu_->addSection("Playback Driver");
+        for (int i = 0; i < driverBtn_->count(); ++i) {
+            QAction* driver = overflowMenu_->addAction(driverBtn_->itemText(i));
+            driver->setCheckable(true);
+            driver->setChecked(i == driverBtn_->currentIndex());
+            connect(driver, &QAction::triggered, this,
+                    [this, i] { applyPlaybackDriver(i); });
+        }
+    }
     if (!segIn && !analyzeVisible_) {
         overflowMenu_->addSection("Chart Window");
         for (int i = 0; i < windowBtn_->count(); ++i) {

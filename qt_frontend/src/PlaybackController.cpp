@@ -17,6 +17,8 @@
 #include <QWheelEvent>
 #include <QFont>
 
+#include <algorithm>
+
 namespace {
 
 QIcon playPauseIcon(bool playing, QWidget* w, const QColor& tint) {
@@ -207,6 +209,12 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
 
     connect(player_, &TnrdPlayer::loaded, this, [this](const tnrp::HeaderRow& hdr) {
         if (model_) model_->clear();
+        tnrdVersion_.clear();
+        originalPlaybackDriverIndex_ = -1;
+        currentPlaybackDriverIndex_ = -1;
+        playbackDriverMetadataReady_ = false;
+        playbackDriverCatalog_.clear();
+        emit playbackDriverCatalogChanged();
         sep_->show();
         bar_->show();
         playBtn_->setIcon(playPauseIcon(false, bar_, bar_->palette().color(QPalette::Text)));
@@ -219,6 +227,22 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
 
     connect(player_, &TnrdPlayer::lapBlocksReady, this,
             [this](const tnrp::PlaybackLapBlocksRow& blocks) {
+        tnrdVersion_ = QString::fromStdString(blocks.tnrdVersion);
+        currentPlaybackDriverIndex_ = blocks.playbackDriverIndex;
+        playbackDriverCatalog_ = blocks.analysisDrivers;
+        if (!playbackDriverMetadataReady_) {
+            originalPlaybackDriverIndex_ = blocks.playbackDriverIndex;
+            if (originalPlaybackDriverIndex_ < 0) {
+                const auto original = std::find_if(
+                    blocks.analysisDrivers.cbegin(), blocks.analysisDrivers.cend(),
+                    [](const tnrp::AnalysisDriverLapCatalog& driver) {
+                        return driver.isPlayer;
+                    });
+                if (original != blocks.analysisDrivers.cend())
+                    originalPlaybackDriverIndex_ = original->driverIndex;
+            }
+            playbackDriverMetadataReady_ = true;
+        }
         if (model_) model_->setPlaybackCatalog(blocks);
         if (lapCombo_) {
             lapCombo_->blockSignals(true);
@@ -231,6 +255,7 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
             lapCombo_->blockSignals(false);
         }
         lastActiveLapNum_ = -1;
+        emit playbackDriverCatalogChanged();
         emit lapCatalogInstalled();
     });
 
@@ -250,6 +275,8 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
 
     connect(player_, &TnrdPlayer::seeked, this, &PlaybackController::seeked);
     connect(player_, &TnrdPlayer::seekStarted, this, &PlaybackController::seekStarted);
+    connect(player_, &TnrdPlayer::driverRestrictionChanged,
+            this, &PlaybackController::driverRestrictionChanged);
 
     connect(player_, &TnrdPlayer::stateChanged, this,
             [this](bool playing, float cur, float total, float /*speed*/) {
@@ -311,6 +338,12 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
         if (model_) model_->clear();
         lastActiveLapNum_ = -1;
         loadedPath_.clear();
+        tnrdVersion_.clear();
+        originalPlaybackDriverIndex_ = -1;
+        currentPlaybackDriverIndex_ = -1;
+        playbackDriverMetadataReady_ = false;
+        playbackDriverCatalog_.clear();
+        emit playbackDriverCatalogChanged();
         sep_->hide();
         bar_->hide();
         emit exited();
@@ -459,6 +492,14 @@ void PlaybackController::setDataRequirements(uint32_t streamMask,
 
 void PlaybackController::requestLapData(int lapNum, uint32_t rowTypeMask) {
     if (player_) player_->requestLapData(lapNum, rowTypeMask | (1u << 4));
+}
+
+void PlaybackController::selectPlaybackDriver(int driverIndex, bool useRecordedRows) {
+    if (player_) player_->selectDriver(driverIndex, useRecordedRows);
+}
+
+void PlaybackController::rebuildCurrentCursor() {
+    if (player_) player_->seekToTime(player_->currentTime());
 }
 
 void PlaybackController::setEngine(tnrp::Engine* engine) {

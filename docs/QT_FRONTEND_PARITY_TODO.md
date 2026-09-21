@@ -12,6 +12,14 @@ It is not permission to redesign either frontend.
 Audit date: 2026-09-02
 Audited revision: `c681a2b`
 
+Incremental audit date: 2026-09-21
+Incrementally audited revision: `b9b6ad8`
+
+The incremental audit covers reachable Electron behavior added after the
+original `c681a2b` baseline. The September 15 re-audit at the end of this file
+was intentionally limited to the fixed original backlog, so it did not capture
+the later Electron additions now listed as open tasks.
+
 ## Inclusion rule
 
 An item belongs in this file only when all of the following are true:
@@ -100,14 +108,16 @@ Do not rebuild these features:
   and the map-only enlarged view.
 - Toast notifications and their duration setting.
 
-## Priority summary
+## Current open priority summary
 
 | Priority | Items |
 | --- | --- |
-| P0 | SAFE-001, SAFE-002, NET-001, NET-002 |
-| P1 | CHART-001 through CHART-006, ANALYZE-001 through ANALYZE-005 |
-| P2 | LAYOUT-001 through LAYOUT-005, DENSITY-001, STRATEGY-001, NOTIFY-001 |
-| P3 | RUNTIME-001 through RUNTIME-003, PLAY-001, PLAY-002, DESKTOP-001, DESKTOP-003, DESKTOP-004 |
+| P1 | PAIR-001, ANALYZE-009 |
+| P2 | ANALYZE-006, ANALYZE-008, APPEAR-001, APPEAR-002 |
+| P3 | ANALYZE-007, RUNTIME-004, DESKTOP-006 |
+
+All tasks from the original fixed-revision backlog are checked off below. The
+table above lists only gaps found by the 2026-09-21 incremental audit.
 
 ---
 
@@ -248,6 +258,47 @@ TODO:
       request the restart, matching Electron's current order.
 - [x] On failure, retain the edited values and show the returned error; do not add
       rollback behavior under this parity task.
+
+### PAIR-001 — Android paired-display host controls
+
+Electron evidence:
+
+- `electron-frontend/src/main/pairHostAdapter.ts` adapts the public
+  `tnrp::Engine::pair*` controls, persists the engine's opaque state, and
+  publishes public service/device state.
+- `electron-frontend/src/main/bridgeManager.ts` supplies pairing construction
+  state and receives pair-state callbacks before renderer visibility gating.
+- `electron-frontend/src/renderer/src/components/Settings.tsx`,
+  `renderPairing()`, exposes the paired-mode and saved-device UI.
+
+Electron behavior to match:
+
+- A persisted **Enable paired mode** toggle starts/stops the desktop service
+  without making the Qt UI own discovery, authentication, sockets, filtering,
+  caching, or backpressure.
+- **Pair a device** opens a two-minute pairing window and displays the engine's
+  QR payload and matching code; **Cancel pairing** closes it.
+- Saved Android displays show their name and Connected/Offline state and can be
+  removed individually.
+- Service errors are shown on the same Settings page.
+- Ordinary application shutdown stops the running service without clearing the
+  user's enabled preference or saved devices.
+
+Qt gap:
+
+- Qt exposes none of the existing public `tnrp::Engine::pair*` controls and has
+  no Paired Devices settings page.
+
+TODO:
+
+- [ ] Add the paired-mode toggle, pairing-window controls, QR/matching-code
+      presentation, saved-device list, connection state, removal, and error UI.
+- [ ] Persist and restore only the same host preference/opaque engine state as
+      Electron; do not duplicate the pair protocol in Qt.
+- [ ] Keep the service attached to the engine rather than to page visibility so
+      changing pages or hiding the window does not disconnect a display.
+- [ ] Use the existing public engine pairing APIs and callbacks. Do not modify
+      `protocol_parser_library/` for this task.
 
 ---
 
@@ -619,6 +670,156 @@ Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}` and
 resolved sector starts, and chart inspection switches the Analysis view to the
 corresponding focused map position.
 
+### ANALYZE-006 — Split view, delta summary, and controls help
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/components/AnalyzeScreen.tsx` implements
+  the Graphs/Split/Map view controls, `AnalysisDeltaReadout`, chart inspection,
+  and the **Analysis Controls** help dialog.
+- `electron-frontend/src/renderer/src/lib/analyzeMetrics.ts` persists the
+  three-way Analysis view.
+
+Electron behavior to match:
+
+- Playback Analysis offers Graphs, Split, and Map. Split presents the graph and
+  map simultaneously in equal-width panes.
+- Split and Map are disabled during live telemetry and when the loaded primary
+  and secondary files are known to use different circuits.
+- Inspecting a graph location while in Graphs changes to Split and focuses the
+  map at that location; it does not discard the graph.
+- The Analysis toolbar displays S1, S2, S3, and Lap delta summaries. Ordinary
+  comparison follows the primary playback cursor; fixed Lap A/Lap B comparison
+  shows the selected-lap result. Positive/negative colors follow the Delta
+  metric, and sector-local mode is reflected in the summary.
+- Sector summaries are hidden for mismatched files. Missing values use the
+  placeholder state rather than a fabricated zero.
+- The help action opens the reachable Analysis Controls dialog describing the
+  view toggles and chart interactions.
+
+Qt gap:
+
+- Qt offers Graph and Map only. Chart inspection replaces the graph with Map,
+  and there is no top-bar delta summary or Analysis controls help dialog.
+
+TODO:
+
+- [ ] Add the persisted Split view with Electron's playback/circuit gates.
+- [ ] Keep graph-to-map inspection in Split and focus the corresponding map
+      position.
+- [ ] Add the cursor-aware S1/S2/S3/Lap delta readout with Electron's missing,
+      mismatch, sector-delta, and color behavior.
+- [ ] Add the Analysis Controls help dialog for the controls that exist in Qt.
+
+### ANALYZE-007 — Custom comparison labels and collapsible selection groups
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/lib/analyzeMetrics.ts` stores Current,
+  Compare, Lap A, and Lap B labels.
+- `electron-frontend/src/renderer/src/components/AnalyzeScreen.tsx` renders the
+  label fields and collapsible Current/Compare/Lap A/Lap B groups.
+- `electron-frontend/src/renderer/src/components/AnalyzeMapComparison.tsx` and
+  the Analysis chart components consume the resolved labels.
+
+Electron behavior to match:
+
+- Current/Compare mode and fixed Lap A/Lap B mode each expose two optional name
+  fields, limited to 40 characters and persisted with the Analysis settings.
+- Empty names resolve to Current, Compare, Lap A, and Lap B.
+- Resolved names appear consistently in chart tooltips, map markers, and the
+  map data-comparison overlay.
+- Each Current/Compare/Lap A/Lap B group can be collapsed independently. Its
+  collapsed summary shows the selected driver, compound, lap, and lap time.
+
+Qt gap:
+
+- Qt hard-codes Current/Compare/Lap A/Lap B and exposes one flat set of lap
+  selectors with no per-selection collapse state.
+
+TODO:
+
+- [ ] Add and persist the four optional labels with the same defaults and
+      length limit.
+- [ ] Use the resolved labels on every Analysis chart/map surface.
+- [ ] Group the comparison controls by side and add independent collapse/expand
+      behavior with the Electron summary fields.
+
+### ANALYZE-008 — Draggable map data-comparison overlay
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/components/AnalyzeInputComparison.tsx`.
+- `electron-frontend/src/renderer/src/components/AnalyzeMapComparison.tsx`
+  mounts the overlay over every Analysis map comparison.
+
+Electron behavior to match:
+
+- The Analysis map has a **Data Comparison** overlay for both selected laps.
+- It shows color-coded Steering, Brake, and Throttle bars plus Speed and Gear.
+- Samples follow the same elapsed cursor as the map at 50 ms cadence, hold the
+  latest row, and clamp each lap independently at its end.
+- The overlay can be collapsed and dragged anywhere inside the map. Its
+  normalized position persists across resizing/restarts.
+- The drag handle is keyboard movable with arrow keys; Shift selects the fine
+  step. Missing telemetry is shown as missing, not zero.
+
+Qt gap:
+
+- `AnalyzeMapComparison` renders paths, markers, and transport only.
+
+TODO:
+
+- [ ] Add the two-lap steering/brake/throttle/speed/gear overlay.
+- [ ] Drive it from the existing Analysis map cursor without adding another
+      playback timer or reader.
+- [ ] Add collapse, bounded pointer dragging, keyboard movement, and persisted
+      normalized position.
+- [ ] Match end-of-lap clamping and missing-value behavior.
+
+### ANALYZE-009 — Multi-driver Analysis for TNRD V6
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/components/AnalyzeScreen.tsx` builds
+  per-file driver groups and driver-scoped lap selectors/caches.
+- `electron-frontend/src/main/bridgeManager.ts` passes file source and driver
+  index to `analysisGetLapData()` and `analysisCompareLaps()`.
+- `electron-frontend/src/preload/index.ts` exposes those driver-qualified
+  Analysis calls.
+- `electron-frontend/src/renderer/src/types.ts` defines
+  `AnalysisDriverLapCatalog`.
+
+Electron behavior to match:
+
+- TNRD V6 recordings expose every recorded driver's lap catalog in Analysis.
+- Current/Compare mode displays the current primary playback driver and lets
+  Compare select a driver from the primary or secondary file. Fixed comparison
+  lets Lap A and Lap B select their drivers independently.
+- Each lap selector lists only laps belonging to its selected driver and clears
+  when that driver changes.
+- Lap data and delta requests are qualified by file, driver, and lap so equal
+  lap numbers from different sources cannot collide.
+- Replacing/clearing a secondary file clears selections that referenced its
+  drivers. Older player-only recordings continue to expose one Recorded driver.
+
+Qt gap:
+
+- Qt Analysis qualifies selections by primary/secondary file and lap only.
+  `AnalysisFileReader::requestLapData()` has no driver parameter and Qt has no
+  per-driver catalog or selector.
+
+TODO:
+
+- [ ] Retain the primary and secondary per-driver lap catalogs exposed by the
+      existing engine control data.
+- [ ] Add driver selectors to Current/Compare and Lap A/Lap B with Electron's
+      source grouping and reset behavior.
+- [ ] Key lazy lap data and delta results by file, driver, lap, and row mask.
+- [ ] Preserve the single Recorded driver fallback for pre-V6 files.
+- [ ] Use existing public reader/engine APIs; do not change the TNRD format or
+      `protocol_parser_library/` for this task.
+
 ---
 
 ## D. Page layouts and density
@@ -940,7 +1141,81 @@ confirm surname and configured duration, and verify playback stays silent.
 
 ---
 
-## F. Runtime and appearance
+## F. Runtime, appearance, and diagnostics
+
+### APPEAR-001 — Team color overrides and livery color source
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/components/Settings.tsx`,
+  `renderTeamColors()`.
+- `electron-frontend/src/main/teamColors.ts` validates persisted fixed/livery
+  overrides.
+- `electron-frontend/src/main/bridgeManager.ts` reads the catalog through
+  `teamColorCatalog()` and applies changes through `setTeamColorOverrides()`.
+
+Electron behavior to match:
+
+- Settings has a **Team Colors** page with separate 2024, 2025, and 2026
+  catalogs grouped exactly as the engine supplies them.
+- Each team can use a custom fixed hex color and can be reset individually;
+  each group can be reset together.
+- For 2025 and 2026, a team or complete group can instead use each car's game
+  livery color. Mixed-source groups show an indeterminate/mixed selection.
+- 2024 supports fixed colors only.
+- Valid overrides persist, apply immediately to the live engine, and are
+  supplied when the engine is recreated. Invalid team/format/color entries are
+  discarded rather than forwarded.
+
+Qt gap:
+
+- Qt has no Team Colors settings page and never calls the existing public
+  catalog/override engine APIs.
+
+TODO:
+
+- [ ] Add the three format catalogs, grouped team rows, hex picker, individual
+      and group reset actions.
+- [ ] Add Fixed/Livery source selection for 2025/2026 with mixed group state;
+      do not offer Livery for 2024.
+- [ ] Sanitize and persist only the Electron-supported fixed/livery values and
+      apply them immediately and at engine construction.
+- [ ] Use `tnrp::Engine::teamColorCatalogJson()` and
+      `setTeamColorOverrides()` without changing `protocol_parser_library/`.
+
+### APPEAR-002 — Formula 2 tyre compounds
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/lib/tyreCompounds.ts` defines the F2
+  actual-compound colors and dry ordering.
+- `electron-frontend/src/renderer/src/lib/labels.tsx` recognizes actual compound
+  IDs 11 through 15.
+- `RacePanel.tsx`, `TimingTower.tsx`, `TyresPanel.tsx`, `StrategyPanel.tsx`,
+  `AnalyzeScreen.tsx`, and `lib/cards.tsx` use the shared helper.
+
+Electron behavior to match:
+
+- F2 actual compounds display as SS, S, M, H, and WET for IDs 11–15.
+- Their colors are keyed by actual compound regardless of the visual-compound
+  field: purple, red, yellow, white, and blue respectively.
+- F2 wet (15) is grouped with wet sets. F2 dry sets sort SS, S, M, H.
+- The behavior is consistent across overview/race cards, timing/standings,
+  Tyres, Strategy, and Analysis selectors.
+
+Qt gap:
+
+- `qt_frontend/src/components/TyreHelpers.h` accepts only F1 actual compound
+  IDs and derives color only from F1 visual compounds, so F2 values fall back to
+  an em dash/default color and the Tyres set ordering is not equivalent.
+
+TODO:
+
+- [ ] Extend the Qt frontend tyre presentation helper for F2 IDs 11–15 and the
+      Electron actual-compound colors.
+- [ ] Apply the helper consistently to every Qt surface that shows compounds.
+- [ ] Match the F2 dry/wet grouping and ordering in the Tyres page.
+- [ ] Keep this frontend-only; do not modify shared labels or parser code.
 
 ### RUNTIME-001 — Reduce Animations
 
@@ -1033,6 +1308,49 @@ timer remains packet-driven and telemetry/recording paths are unchanged.
 Source/diff review only; owner runtime checks: compare laps at each cadence in
 live and playback modes while confirming the session clock stays responsive.
 
+### RUNTIME-004 — Optional diagnostics and open diagnostics folder
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/components/Settings.tsx`, `renderDebug()`
+  and the launch-diagnostics action in `renderAbout()`.
+- `electron-frontend/src/main/diagnostics.ts` starts/stops the optional memory
+  sampler.
+- `electron-frontend/src/main/application.ts` handles
+  `diagnostics:open-folder` and reports shell-open failures.
+- `electron-frontend/src/main/bridgeManager.ts` applies the additional-logging
+  preference to reachable telemetry/playback/pair diagnostics.
+
+Electron behavior to match:
+
+- A persisted **Additional logging** toggle enables detailed pipeline,
+  playback, pairing, renderer, and performance diagnostics. The UI warns that
+  development instrumentation is fully applied on the next start.
+- A persisted **Memory log** toggle samples process/retained-telemetry memory
+  once per second into `launch-diagnostics/ram_usage.log` and can be changed
+  while the app is running.
+- The About page can open the launch-diagnostics directory in the operating
+  system. Failure shows **Unable to Open Launch Diagnostics**.
+- Startup/fatal logging remains active regardless of the optional toggles.
+- Electron's **Show Node-API exceptions** switch is specific to its N-API host
+  and is not itself a Qt parity requirement.
+
+Qt gap:
+
+- Qt has the early/fatal log from DESKTOP-004 but no optional detailed/memory
+  diagnostic controls and no action that opens its diagnostics directory.
+
+TODO:
+
+- [ ] Add persisted Qt-equivalent Additional logging and Memory log controls
+      without disabling the always-on startup/fatal log.
+- [ ] Sample the Qt process and relevant retained frontend state at the same
+      one-second cadence while Memory log is enabled.
+- [ ] Add an About-page action to open the existing Qt launch-diagnostics
+      directory and an equivalent failure message.
+- [ ] Do not invent a Node-API setting in Qt; expose only diagnostics that have
+      a real Qt/native equivalent.
+
 ---
 
 ## G. Playback and desktop integration
@@ -1099,6 +1417,67 @@ Open remembers a selection before the separate load confirmation, and export
 remembers its destination before writing. Source/diff review only; owner runtime
 checks: open/close recordings, resize with a long filename, alternate all three
 dialogs, cancel selections, and verify the directory survives an app restart.
+
+### PLAY-003 — TNRD V6 playback driver selection
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/app/AppShell.tsx` owns the selected and
+  originally recorded driver and reconstructs playback after a change.
+- `electron-frontend/src/renderer/src/app/components/AppHeader.tsx` and
+  `AppHeaderMacOS.tsx` expose the playback-only driver selector.
+- `electron-frontend/src/main/bridgeManager.ts` calls the existing
+  `tnrp::Engine::playerSetDriver()` API.
+- `electron-frontend/src/renderer/src/stores/telemetryStore.ts` consumes TNRD V6
+  driver catalogs and sparse driver projections.
+
+Electron behavior to match:
+
+- The header shows a searchable driver selector only while a TNRD V6 recording
+  is open. Older formats retain the single recorded-driver behavior.
+- Every recorded participant is selectable. A non-original driver whose
+  `your_telemetry` value is not public is labelled **Public data only**.
+- Changing driver selects that row in the timing UI, tells the engine whether
+  to use the original recorded rows or a driver projection, and rebuilds the UI
+  at the current playback percentage.
+- Missing private status/damage/input fields display their missing state; they
+  are not converted to zero, OFF, neutral gear, or a fabricated compound.
+- Loading/closing a recording clears the prior selector state. The originally
+  recorded driver remains the default.
+
+Qt gap:
+
+- Qt does not retain the TNRD version/recorded-player metadata, expose a
+  playback driver selector, or call `playerSetDriver()`.
+
+TODO:
+
+- [x] Retain the TNRD V6 driver catalog and original-player identity at the Qt
+      playback host boundary.
+- [x] Add the V6-only driver selector with Public data only annotation.
+- [x] On change, call the existing engine driver API and reuse Qt's
+      seek/reconstruction path at the current cursor.
+- [x] Audit cards, charts, tables, map, and Strategy for missing projected data
+      so unavailable fields remain visibly missing.
+- [x] Reset selection on playback lifecycle changes and keep pre-V6 behavior
+      unchanged.
+- [x] Do not modify the TNRD format or `protocol_parser_library/`.
+
+Implemented in `qt_frontend/src/{TnrdPlayer,PlaybackController,PlaybackPatchMerger,AppToolbar,MainWindow}.{h,cpp}`,
+`qt_frontend/src/SessionModel.{h,cpp}`, and the affected page/chart widgets. Qt
+now retains the one-shot V6 catalog and original-player identity, shows the
+playback-only driver selector (including **Public data only** labels), selects
+the matching timing row, and serializes the engine driver change with the
+existing cursor-preserving seek reconstruction. The Qt host opts into the same
+sparse V6 projection contract as Electron and merges field/car patches without
+changing `protocol_parser_library/`. Withdrawn values become dashes or chart
+gaps instead of zeros, stale tyre-set rows are cleared, unavailable map
+coordinates are skipped, and restricted Strategy data stays in its waiting
+state. Open/close and non-V6 lifecycle paths clear the selector. Source/diff
+review only; owner runtime checks: switch between recorded/public-only drivers,
+scrub across telemetry-setting changes, inspect every card/chart/table/map page,
+open Strategy for a restricted driver, return to chart pages, and confirm older
+TNRD formats retain their existing playback behavior.
 
 ### DESKTOP-001 — Single instance and operating-system file opening
 
@@ -1247,17 +1626,48 @@ Electron evidence:
 parity and requested removal of its implementation. Do not implement it as
 part of this backlog.
 
+### DESKTOP-006 — About links and non-affiliation notice
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/components/Settings.tsx`,
+  `renderAbout()`.
+
+Electron behavior to match:
+
+- About exposes both the official Track N Race website and the GitHub
+  repository as external links.
+- It identifies the creator and shows the current non-affiliation notice for
+  EA, Codemasters, Formula One, the FIA, drivers, and teams.
+- These additions do not replace the existing license/attribution view.
+
+Qt gap:
+
+- Qt About already links the GitHub repository and provides stronger native
+  license details, but has no official-site link or matching non-affiliation
+  notice.
+
+TODO:
+
+- [ ] Add the official website link and the current non-affiliation notice to
+      Qt About.
+- [ ] Identify the creator as Electron does.
+- [ ] Preserve Qt's existing repository link, project license, and third-party
+      attribution controls.
+
 
 ---
 
 ## Suggested implementation order
 
-1. SAFE-001, SAFE-002, NET-001, NET-002.
-2. CHART-001 through CHART-006.
-3. ANALYZE-001 through ANALYZE-005.
-4. LAYOUT-001 through LAYOUT-005 and DENSITY-001.
-5. STRATEGY-001 and NOTIFY-001.
-6. Runtime, theme, playback, and desktop tasks.
+The original fixed-revision items are complete. For the incremental backlog:
+
+1. ANALYZE-009, which can reuse the TNRD V6 driver identity now retained for
+   PLAY-003.
+2. PAIR-001, using the already-shipped public engine pairing surface.
+3. ANALYZE-006 through ANALYZE-008.
+4. APPEAR-001 and APPEAR-002.
+5. RUNTIME-004 and DESKTOP-006.
 
 Do not use this ordering—or permission to implement any listed item—as permission
 to modify `protocol_parser_library/` or another shared-library contract.
@@ -1285,7 +1695,7 @@ Checklist assessment is from read-only source and diff review, not execution.
 visibility gates remain connected in source; runtime verification remains the
 repository owner's responsibility under the build/test freeze above.
 
-## Final parity re-audit
+## Historical fixed-baseline parity re-audit
 
 After completing this backlog:
 
@@ -1298,10 +1708,33 @@ After completing this backlog:
       features as parity gaps.
 
 Re-audited 2026-09-15 by source inspection. The cited header, Settings, layout,
-Analysis, playback, modal, and lifecycle behavior remains reachable and every
-backlog item above now has a Qt implementation annotation. No cited behavior was
-removed, so no task was deleted. **Background Mode/System Tray** and
-**Application Fullscreen** remain the owner's explicit product exceptions in
-DESKTOP-002 and DESKTOP-005; native titlebar/window controls remain native Qt
-behavior rather than copied Electron chrome. No additional feature was folded
-into this fixed-revision backlog without an independently cited parity task.
+Analysis, playback, modal, and lifecycle behavior remained reachable and every
+item in the original `c681a2b` backlog had a Qt implementation annotation. No
+cited behavior was removed, so no task was deleted. **Background Mode/System
+Tray** and **Application Fullscreen** remain the owner's explicit product
+exceptions in DESKTOP-002 and DESKTOP-005; native titlebar/window controls
+remain native Qt behavior rather than copied Electron chrome. That re-audit
+deliberately did not fold later Electron work into the fixed-revision backlog.
+
+## Incremental parity re-audit
+
+Re-audited 2026-09-21 through Electron revision `b9b6ad8` by comparing the
+reachable Electron main/preload/renderer paths with the current Qt host,
+Settings, playback, Analysis, and presentation code.
+
+The newly confirmed Qt gaps are PAIR-001, ANALYZE-006 through ANALYZE-009,
+APPEAR-001, APPEAR-002, RUNTIME-004, PLAY-003, and DESKTOP-006. Each has current
+Electron source evidence and an observable behavior description above.
+
+The following post-baseline Electron changes do not create separate Qt parity
+tasks:
+
+- Electron dependency updates, memory/compression tuning, sparse-history
+  optimizations, and page-mount/view-transition scheduling do not add an
+  independently reachable product behavior.
+- The macOS Electron close crash and Chromium CoreAnimation workaround are
+  Electron-specific implementation fixes.
+- **Show Node-API exceptions** is specific to Electron's Node-API bridge; the
+  portable diagnostic controls are covered by RUNTIME-004.
+- F2 team catalog additions flow through the engine catalog and are covered by
+  APPEAR-001; F2 compound presentation is separately covered by APPEAR-002.

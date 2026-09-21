@@ -17,7 +17,7 @@ template<class V, class F, class X>
 void collect(const V& values, float start, float end, QVector<double>& xs, QVector<double>& ys, F value, X coordinate) {
     auto first = std::lower_bound(values.cbegin(), values.cend(), start, [](const auto& s, float t){ return s.t < t; });
     for (auto it=first; it!=values.cend() && it->t<=end; ++it) {
-        const double x=coordinate(*it),y=value(*it); if (!std::isfinite(x)||!std::isfinite(y)) continue;
+        const double x=coordinate(*it),y=value(*it); if (!std::isfinite(x)) continue;
         if (!xs.isEmpty() && qFuzzyCompare(xs.last()+1.0,x+1.0)) { ys.last()=y; continue; }
         xs.push_back(x); ys.push_back(y);
     }

@@ -17,6 +17,8 @@
 #include <QShowEvent>
 #include <QVector>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 static const char* kCornerNames[]  = { "FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT" };
 static const char* kCornerAbbrev[] = { "FL", "FR", "RL", "RR" };
@@ -486,7 +488,10 @@ void TyreCardsWidget::update(const TelemetryRow* telemetry, const DamageRow* dam
         if (label->styleSheet() != style) label->setStyleSheet(style);
     };
     // Per-corner values in FL, FR, RL, RR order (matching the card slots).
-    int surf[4] = {}, inner[4] = {}, brake[4] = {};
+    constexpr int missing = std::numeric_limits<int>::min();
+    int surf[4] = {missing, missing, missing, missing};
+    int inner[4] = {missing, missing, missing, missing};
+    int brake[4] = {missing, missing, missing, missing};
     if (telemetry) {
         const int s[4] = { telemetry->tyre_temp_surface_fl, telemetry->tyre_temp_surface_fr,
                            telemetry->tyre_temp_surface_rl, telemetry->tyre_temp_surface_rr };
@@ -496,10 +501,14 @@ void TyreCardsWidget::update(const TelemetryRow* telemetry, const DamageRow* dam
                            telemetry->brake_temp_rl, telemetry->brake_temp_rr };
         std::copy(s, s + 4, surf); std::copy(n, n + 4, inner); std::copy(b, b + 4, brake);
     }
-    int wear[4] = {}, blisters[4] = {};
+    int wear[4] = {missing, missing, missing, missing};
+    int blisters[4] = {missing, missing, missing, missing};
     if (damage) {
-        const int w[4]  = { (int)damage->tyre_wear_fl, (int)damage->tyre_wear_fr,
-                            (int)damage->tyre_wear_rl, (int)damage->tyre_wear_rr };
+        const auto wearValue = [missing](double value) {
+            return std::isfinite(value) ? qRound(value) : missing;
+        };
+        const int w[4]  = { wearValue(damage->tyre_wear_fl), wearValue(damage->tyre_wear_fr),
+                            wearValue(damage->tyre_wear_rl), wearValue(damage->tyre_wear_rr) };
         const int bl[4] = { damage->blisters_fl, damage->blisters_fr,
                             damage->blisters_rl, damage->blisters_rr };
         std::copy(w, w + 4, wear); std::copy(bl, bl + 4, blisters);
@@ -507,28 +516,30 @@ void TyreCardsWidget::update(const TelemetryRow* telemetry, const DamageRow* dam
 
     for (int i = 0; i < 4; ++i) {
         if (telemetry) {
-            setLabel(surfaceTemp_[i], QString::number(surf[i]) + "°C",
-                     "color: " + tyreTempColor(surf[i]).name() + "; font-weight: bold;");
-            setLabel(innerTemp_[i], QString::number(inner[i]) + "°C",
-                     "color: " + tyreTempColor(inner[i]).name() + "; font-weight: bold;");
-            setLabel(brakeTemp_[i], QString::number(brake[i]) + "°C",
-                     "color: " + brakeTempColor(brake[i]).name() + "; font-weight: bold;");
+            setLabel(surfaceTemp_[i], surf[i] != missing ? QString::number(surf[i]) + "°C" : "—",
+                     surf[i] != missing ? "color: " + tyreTempColor(surf[i]).name() + "; font-weight: bold;" : QString());
+            setLabel(innerTemp_[i], inner[i] != missing ? QString::number(inner[i]) + "°C" : "—",
+                     inner[i] != missing ? "color: " + tyreTempColor(inner[i]).name() + "; font-weight: bold;" : QString());
+            setLabel(brakeTemp_[i], brake[i] != missing ? QString::number(brake[i]) + "°C" : "—",
+                     brake[i] != missing ? "color: " + brakeTempColor(brake[i]).name() + "; font-weight: bold;" : QString());
         }
 
         if (damage) {
-            const QString wearCol = wearPctColor(wear[i]).name();
-            setLabel(wearLabel_[i], QString::number(wear[i]) + "%",
-                     "color: " + wearCol + "; font-weight: bold;");
+            const bool haveWear = wear[i] != missing;
+            const QString wearCol = haveWear ? wearPctColor(wear[i]).name() : QString();
+            setLabel(wearLabel_[i], haveWear ? QString::number(wear[i]) + "%" : "—",
+                     haveWear ? "color: " + wearCol + "; font-weight: bold;" : QString());
             if (wear_[i]) {   // no wear bar in compact mode
-                if (wear_[i]->value() != wear[i]) wear_[i]->setValue(wear[i]);
-                const QString wearStyle = QString(
+                const int barValue = haveWear ? wear[i] : 0;
+                if (wear_[i]->value() != barValue) wear_[i]->setValue(barValue);
+                const QString wearStyle = haveWear ? QString(
                     "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
                     "QProgressBar::chunk { background: %1; border-radius: 3px; }"
-                ).arg(wearCol);
+                ).arg(wearCol) : QString();
                 if (wear_[i]->styleSheet() != wearStyle) wear_[i]->setStyleSheet(wearStyle);
             }
             if (blisters_[i]) {   // no blister line in compact mode
-                if (blisters[i] > 0) {
+                if (blisters[i] != missing && blisters[i] > 0) {
                     const QString text = QString("· %1% blisters").arg(blisters[i]);
                     if (blisters_[i]->text() != text) blisters_[i]->setText(text);
                     if (!blisters_[i]->isVisible()) blisters_[i]->setVisible(true);
