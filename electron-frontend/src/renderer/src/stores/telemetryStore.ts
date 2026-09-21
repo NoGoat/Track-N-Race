@@ -2453,12 +2453,19 @@ export function startTelemetryBridge(): void {
       if (end === -1) end = coldJson.length
       if (end > start) {
         try {
-          const msg = JSON.parse(coldJson.slice(start, end)) as StatusRow | DamageRow
+          const msg = JSON.parse(coldJson.slice(start, end)) as GatewayMsg
           if (additionalLoggingEnabled) {
             rendererDiagnostics.jsonRows++
-            observeRendererRow(msg as GatewayMsg, 'telemetry-resume-json')
+            observeRendererRow(msg, 'telemetry-resume-json')
           }
-          if (msg.type === 'status') {
+          // Sparse V6 playback delivers the hot families as JSON patches rather
+          // than packed binary. They append exactly like their binary
+          // counterparts above and publish through recompute(), not per-row
+          // set(), so routing them through handleMsg costs no extra renders.
+          if (msg.type === 'telemetry' || msg.type === 'motion' || msg.type === 'motion_ex') {
+            dirty |= dirtySliceFor(msg)
+            handleMsg(msg)
+          } else if (msg.type === 'status') {
             latestStatus = appendPlaybackPatch(stsBufRef, msg, MAX_ROWS)
             if (!isPlaybackFlag && Number.isFinite(latestStatus.fuel_kg) && latestStatus.fuel_kg >= 0 && latestStatus.fuel_kg > fuelMaxReceived) {
               fuelMaxReceived = latestStatus.fuel_kg

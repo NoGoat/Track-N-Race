@@ -243,18 +243,30 @@ let hiddenBinary: TimedBinary[] = []
 let hiddenJson: TimedJson[] = []
 let hiddenBinaryStart = 0
 let hiddenJsonStart = 0
+// Sparse V6 playback projects the hot families as JSON patches, so this cache
+// grows far faster than it does for the cold-only rows of the other formats.
+// The time window alone can be up to 600 s, so cap the retained characters too.
+const MAX_RESUME_JSON_CHARS = 32 * 1024 * 1024
+let hiddenJsonChars = 0
 
 function clearResumeCache(): void {
   hiddenBinary = []
   hiddenJson = []
   hiddenBinaryStart = 0
   hiddenJsonStart = 0
+  hiddenJsonChars = 0
+}
+
+function dropOldestResumeJson(): void {
+  hiddenJsonChars -= hiddenJson[hiddenJsonStart].data.length
+  hiddenJsonStart++
 }
 
 function trimResumeCache(now: number): void {
   const cutoff = now - resumeWindowMs
   while (hiddenBinaryStart < hiddenBinary.length && hiddenBinary[hiddenBinaryStart].at < cutoff) hiddenBinaryStart++
-  while (hiddenJsonStart < hiddenJson.length && hiddenJson[hiddenJsonStart].at < cutoff) hiddenJsonStart++
+  while (hiddenJsonStart < hiddenJson.length && hiddenJson[hiddenJsonStart].at < cutoff) dropOldestResumeJson()
+  while (hiddenJsonChars > MAX_RESUME_JSON_CHARS && hiddenJsonStart < hiddenJson.length) dropOldestResumeJson()
   // Compact in chunks rather than slicing a long window on every 60 Hz tick.
   if (hiddenBinaryStart >= 4096) {
     hiddenBinary = hiddenBinary.slice(hiddenBinaryStart)
@@ -273,10 +285,20 @@ function cacheResumeJson(batch: string, now: number): void {
     if (end === -1) end = batch.length
     if (end > start) {
       const row = batch.slice(start, end)
-      // Only cold chart histories need backfilling. Other panels receive their
+      // Only chart histories need backfilling. Other panels receive their
       // next current-state row normally, without replaying stale banners/events.
-      if (row.includes('"type":"status"') || row.includes('"type":"damage"')) {
+      //
+      // status/damage are cold JSON rows in every format. telemetry/motion/
+      // motion_ex normally arrive packed on the binary channel (and are cached
+      // by chartHistoryRecords), but sparse V6 playback projects them as JSON
+      // patches, so for TNRD V6 they reach the renderer through here — dropping
+      // them while hidden is what left V6 charts with a hole after a restore.
+      // Positions stay excluded for the same reason as in the binary cache.
+      if (row.includes('"type":"status"') || row.includes('"type":"damage"') ||
+          row.includes('"type":"telemetry"') || row.includes('"type":"motion"') ||
+          row.includes('"type":"motion_ex"')) {
         hiddenJson.push({ at: now, data: row })
+        hiddenJsonChars += row.length
       }
     }
     start = end + 1

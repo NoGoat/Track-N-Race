@@ -31,6 +31,21 @@
 
 namespace tnrp::detail {
 
+// Compression level for every V6 chunk and shared record. TNRD_ZSTD_LEVEL
+// overrides the default so a capture can be re-encoded at other levels to
+// compare file sizes; it is read once and clamped to zstd's valid range.
+int zstdLevel() {
+    static const int level = [] {
+        const char* raw = std::getenv("TNRD_ZSTD_LEVEL");
+        if (!raw || !*raw) return 3;
+        char* end = nullptr;
+        const long value = std::strtol(raw, &end, 10);
+        if (end == raw || value < ZSTD_minCLevel() || value > ZSTD_maxCLevel()) return 3;
+        return static_cast<int>(value);
+    }();
+    return level;
+}
+
 // External linkage is required by Glaze's compile-time aggregate reflection
 // on MSVC (internal-linkage aggregate types trigger C7631).
 struct V6Metadata {
@@ -271,6 +286,9 @@ struct TnrdV6Writer::Impl {
         bool known{};
         bool open{};
         bool seenActive{};
+        // The car's race is over (retired, finished, disqualified). Its
+        // telemetry is done, but the game keeps updating its classification,
+        // so a LapTiming-only lap stays open for it. See terminate().
         bool terminal{};
         V6Phase terminalPhase{V6Phase::Race};
         float terminalTime{-1.0f};
@@ -321,9 +339,12 @@ struct TnrdV6Writer::Impl {
         if (!state.open && !state.terminal) startLap(index, 0, time);
         return state;
     }
-    void startLap(uint8_t index, uint32_t number, float time) {
+    // `resume` false keeps a car whose race is over in its terminal state, so
+    // the lap being opened collects classification samples only.
+    void startLap(uint8_t index, uint32_t number, float time, bool resume = true) {
         auto& state = drivers[index];
-        state.open = true; state.terminal = false; state.terminalTime = -1.0f; state.current = {};
+        state.open = true; state.current = {};
+        if (resume) { state.terminal = false; state.terminalTime = -1.0f; }
         state.current.lapId = nextLapId++; state.current.driverIndex = index;
         state.current.lapNumber = number; state.current.phase = phase;
         state.current.startSessionTime = time; state.current.endSessionTime = time;
@@ -336,7 +357,10 @@ struct TnrdV6Writer::Impl {
     }
     void add(uint8_t index, V6DataType type, float time, std::string value, bool updateState = true) {
         if (index >= drivers.size() || type == V6DataType::Unknown || !std::isfinite(time)) return;
-        if (drivers[index].terminal || ((!player || index != *player) && !drivers[index].known)) return;
+        // Once a car's race is over its telemetry is stale, but the game keeps
+        // reclassifying it, so LapTiming is the one family that still records.
+        if (drivers[index].terminal && type != V6DataType::LapTiming) return;
+        if ((!player || index != *player) && !drivers[index].known) return;
         auto& state = ensure(index, time);
         if (!state.open) return;
         const bool missing = value.find("\"available\":false") != std::string::npos;
@@ -401,11 +425,21 @@ struct TnrdV6Writer::Impl {
         }
         state.open = false; state.chunks.clear();
     }
+    // Ends a car's racing record. Its current lap is flushed, because a car
+    // that has retired or finished produces no further telemetry worth
+    // storing. Its classification is a different matter: the game demotes a
+    // retirement through the order for a minute or more after the retirement
+    // event, and writes the final result at session end. Keep a lap-number-0
+    // lap open (invisible to the lap catalogs, which skip lap 0) so add() can
+    // still record those LapTiming samples. Without it the archive freezes the
+    // car at the position it held when it retired, and playback then shows it
+    // sharing a position with a car still running.
     void terminate(uint8_t index, float time) {
         auto& state = drivers[index];
         if (!state.known || state.terminal) return;
         closeLap(index,time,0,0,0,0,false,!state.currentInvalid,false);
         state.terminal = true; state.terminalPhase = phase; state.terminalTime = time;
+        startLap(index, 0, time, false);
     }
     bool eligible(const PendingLap& lap, bool force) const {
         return force || phaseRank(phase) > phaseRank(lap.deadlinePhase) ||
@@ -422,7 +456,7 @@ struct TnrdV6Writer::Impl {
         if (!compressor) compressor = ZSTD_createCCtx();
         if (!compressor) { fail(errorOut, "could not allocate V6 compression context"); return false; }
         if (ZSTD_isError(ZSTD_CCtx_reset(compressor, ZSTD_reset_session_only)) ||
-            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_compressionLevel, 3)) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_compressionLevel, zstdLevel())) ||
             ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_checksumFlag, 1))) {
             fail(errorOut, "could not configure V6 compression"); return false;
         }
@@ -457,7 +491,7 @@ struct TnrdV6Writer::Impl {
         if (scratch.size() < bound) { scratch.resize(bound); compressionAllocated += scratch.capacity(); }
         if (!compressor) compressor = ZSTD_createCCtx();
         if (!compressor || ZSTD_isError(ZSTD_CCtx_reset(compressor, ZSTD_reset_session_only)) ||
-            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_compressionLevel, 3)) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_compressionLevel, zstdLevel())) ||
             ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_checksumFlag, 1))) {
             fail(errorOut, "could not configure V6 shared-record compression"); return false;
         }
@@ -858,21 +892,26 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
             const bool active = car.result_status == 2;
             const bool ended = (car.result_status >= 3 && car.result_status <= 7) ||
                 (car.result_status == 1 && existing.seenActive);
-            if ((!active && !ended) || existing.terminal) continue;
+            if (!active && !ended) continue;
             auto& state = ensure(index, time);
             if (!state.open) continue;
             if (active) state.seenActive = true;
-            const uint32_t lapNumber = car.lap_num > 0 ? static_cast<uint32_t>(car.lap_num) : 0;
-            if (state.current.lapNumber != lapNumber || state.current.phase != phase) {
-                const uint32_t s1 = car.s1_ms > 0 ? static_cast<uint32_t>(car.s1_ms) : 0;
-                const uint32_t s2 = car.s2_ms > 0 ? static_cast<uint32_t>(car.s2_ms) : 0;
-                const uint32_t total = car.last_lap_ms > 0 ? static_cast<uint32_t>(car.last_lap_ms) : 0;
-                const uint32_t s3 = total > s1 + s2 ? total - s1 - s2 : 0;
-                boundary(index, lapNumber, time, total, s1, s2, s3,
-                         lapNumber > state.current.lapNumber && total > 0,
-                         !state.currentInvalid);
+            // A car whose race is over is on its classification lap: its racing
+            // laps are closed and its lap number no longer advances, so only
+            // the standings sample below still applies to it.
+            if (!state.terminal) {
+                const uint32_t lapNumber = car.lap_num > 0 ? static_cast<uint32_t>(car.lap_num) : 0;
+                if (state.current.lapNumber != lapNumber || state.current.phase != phase) {
+                    const uint32_t s1 = car.s1_ms > 0 ? static_cast<uint32_t>(car.s1_ms) : 0;
+                    const uint32_t s2 = car.s2_ms > 0 ? static_cast<uint32_t>(car.s2_ms) : 0;
+                    const uint32_t total = car.last_lap_ms > 0 ? static_cast<uint32_t>(car.last_lap_ms) : 0;
+                    const uint32_t s3 = total > s1 + s2 ? total - s1 - s2 : 0;
+                    boundary(index, lapNumber, time, total, s1, s2, s3,
+                             lapNumber > state.current.lapNumber && total > 0,
+                             !state.currentInvalid);
+                }
+                state.currentInvalid = car.lap_invalid;
             }
-            state.currentInvalid = car.lap_invalid;
             std::vector<std::pair<std::string,std::string>> values{
                 {"position",integer(car.position)},{"lap_num",integer(car.lap_num)},
                 {"current_lap_ms",integer(car.current_lap_ms)},{"last_lap_ms",integer(car.last_lap_ms)},
