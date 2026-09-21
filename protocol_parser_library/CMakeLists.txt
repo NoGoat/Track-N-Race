@@ -196,9 +196,3 @@ if(TNRP_BUILD_TESTS)
     target_link_libraries(live_history_store PRIVATE tnrp)
     add_test(NAME live_history_store COMMAND live_history_store)
 endif()
-
-# Offline length-prefixed UDP capture converter. Kept out of the default build;
-# tools/udp_capture_to_tnrd/convert_capture.py builds this target explicitly.
-add_executable(udp_capture_to_tnrd EXCLUDE_FROM_ALL
-    ../tools/udp_capture_to_tnrd/UdpCaptureToTnrd.cpp)
-target_link_libraries(udp_capture_to_tnrd PRIVATE tnrp)

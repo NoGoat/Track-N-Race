@@ -2,12 +2,14 @@ import { useEffect, useRef, type MutableRefObject } from 'react'
 import { ChartTooltipPortal, useChartTooltip } from '../../hooks/useChartTooltip'
 import { ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, type AnalyzeSeriesConfig, type AnalyzeSource } from '../../lib/analyzeMetrics'
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
+import { createCursorLinesPlugin, type CursorLine, type CursorLinesConfig, type CursorLinesHandle } from '../../lib/timechart/cursorLines'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/core/alignedData'
 import { buildLapProgressMap, findSectorSplits, interpolateLapElapsed, type LapProgressMap, type SectorSplit } from '../../lib/lapDelta'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { themeSeriesColor } from '../../lib/themeColors'
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../../lib/playbackCursor'
+import { getAnalyzeCursorElapsed } from '../../lib/analyzeCursor'
 import type { AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData } from '../../types'
 
 export interface AnalyzeTimeChartProps {
@@ -42,6 +44,10 @@ export interface AnalyzeTimeChartProps {
   syncedTooltip?: boolean
   sectorBoundaries?: boolean
   sectorDelta?: boolean
+  /** Split mode: mark where each compared car sits on the map with a cursor. */
+  showMapCursors?: boolean
+  mapCurrentColor?: string
+  mapComparisonColor?: string
 }
 
 export interface AnalyzeChartControls {
@@ -401,6 +407,7 @@ export default function AnalyzeTimeChart({
   deltaData,
   metricScope, showXAxis = true, interactionEnabled = true, stackedMode = false,
   tooltipEnabled = true, syncedTooltip = false, sectorBoundaries = false, sectorDelta = false,
+  showMapCursors = false, mapCurrentColor = '#ffffff', mapComparisonColor = '#ffffff',
 }: AnalyzeTimeChartProps) {
   // Series topology is fixed for the lifetime of this chart. Stacked mode
   // includes every metric as channels on one shared WebGL canvas.
@@ -421,6 +428,8 @@ export default function AnalyzeTimeChart({
   const buffersRef = useRef<Buffers | null>(null)
   const seriesRef = useRef<SeriesRecord | null>(null)
   const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
+  const cursorCfgRef = useRef<{ current: CursorLinesConfig } | null>(null)
+  const cursorHandleRef = useRef<CursorLinesHandle | null>(null)
   const deltaSeriesRef = useRef<{ positive: any; negative: any } | null>(null)
   const stackedViewportAnimationRef = useRef(0)
   const stackedAxisPanelsRef = useRef(new Map<string, StackedAxisPanel>())
@@ -483,6 +492,10 @@ export default function AnalyzeTimeChart({
       xGap: 2, yGap: 4, showYGrid: true, extraYAxes: [],
     } satisfies AxisConfig }
     axisCfgRef.current = axisCfg
+    const cursorCfg = { current: { lines: [] } satisfies CursorLinesConfig }
+    const cursorHandle: CursorLinesHandle = { redraw: null }
+    cursorCfgRef.current = cursorCfg
+    cursorHandleRef.current = cursorHandle
     const rawSeries: any[] = []
     for (const role of ['comparison', 'current'] as Role[]) {
       for (const def of scopedMetrics) {
@@ -519,6 +532,7 @@ export default function AnalyzeTimeChart({
         lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair,
         nearestPoint: corePlugins.nearestPoint,
         axis: createAxisPlugin(axisCfg),
+        cursorLines: createCursorLinesPlugin(cursorCfg, cursorHandle),
       } as any,
     } as any)
     chartRef.current = chart
@@ -773,6 +787,7 @@ export default function AnalyzeTimeChart({
       if (stackedViewportAnimationRef.current) cancelAnimationFrame(stackedViewportAnimationRef.current)
       if (combinedSeriesAnimationRef.current) cancelAnimationFrame(combinedSeriesAnimationRef.current)
       chartRef.current = null; buffersRef.current = null; seriesRef.current = null; axisCfgRef.current = null
+      cursorCfgRef.current = null; cursorHandleRef.current = null
       deltaSeriesRef.current = null
       stackedAxisPanelsRef.current.clear()
       stackedExitingMetricIdsRef.current.clear()
@@ -1267,6 +1282,61 @@ export default function AnalyzeTimeChart({
       if (animationFrame) cancelAnimationFrame(animationFrame)
     }
   }, [realtimeCurrent])
+
+  // The comparison clock lives on the map, which owns playback in split mode.
+  // Follow it on its own animation frame: the cursor moves every frame while a
+  // lap plays, and neither React nor the WebGL traces need to repaint for it.
+  useEffect(() => {
+    const cfg = cursorCfgRef.current
+    if (!cfg) return
+    const redraw = () => cursorHandleRef.current?.redraw?.()
+    const laps = showMapCursors
+      ? [
+          { lap: current, color: mapCurrentColor },
+          ...(comparison ? [{ lap: comparison, color: mapComparisonColor }] : []),
+        ].filter(entry => entry.lap.endSessionTime > entry.lap.startSessionTime)
+      : []
+    if (laps.length === 0) {
+      cfg.current = { lines: [] }
+      redraw()
+      return
+    }
+    // Compared laps are immutable, so build their distance lookups here rather
+    // than inside the frame, exactly as the data sync does.
+    const progressByLap = laps.map(entry => distanceMode ? buildLapProgressMap(entry.lap) : null)
+    const lines: CursorLine[] = laps.map(entry => ({ x: NaN, color: entry.color }))
+    cfg.current = { lines }
+    redraw()
+    let animationFrame = 0
+    const tick = () => {
+      animationFrame = requestAnimationFrame(tick)
+      const elapsed = getAnalyzeCursorElapsed()
+      let moved = false
+      for (let index = 0; index < laps.length; index++) {
+        const { lap } = laps[index]
+        const progress = progressByLap[index]
+        // Hold each cursor at its own lap end, just as the map holds its marker.
+        const clamped = elapsed === null
+          ? NaN
+          : Math.max(0, Math.min(lap.endSessionTime - lap.startSessionTime, elapsed))
+        const x = Number.isNaN(clamped)
+          ? NaN
+          : distanceMode
+            ? progress ? interpolateDistance(progress, lap.startSessionTime + clamped) : NaN
+            : clamped
+        if (x === lines[index].x || (Number.isNaN(x) && Number.isNaN(lines[index].x))) continue
+        lines[index].x = x
+        moved = true
+      }
+      if (moved) redraw()
+    }
+    tick()
+    return () => {
+      cancelAnimationFrame(animationFrame)
+      cfg.current = { lines: [] }
+      redraw()
+    }
+  }, [comparison, current, distanceMode, mapComparisonColor, mapCurrentColor, showMapCursors])
 
   useEffect(() => {
     const chart = chartRef.current

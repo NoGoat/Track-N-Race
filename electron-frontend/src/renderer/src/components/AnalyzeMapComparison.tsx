@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PlaybackBar from '../app/components/PlaybackBar'
+import { setAnalyzeCursorSource } from '../lib/analyzeCursor'
 import { getPlaybackCursorTime } from '../lib/playbackCursor'
 import { useModalPresence } from '../lib/useModalPresence'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -188,6 +189,14 @@ export default function AnalyzeMapComparison({
     }
     return output
   }, [comparison, comparisonColor, comparisonLabel, current, currentColor, currentLabel, elapsedSource])
+
+  // Split mode draws this clock as a scrubber on the charts. Only the fixed
+  // comparison owns a clock of its own; otherwise the cursor already follows
+  // playback or a chart hover, which the charts know about without the map.
+  useEffect(() => {
+    if (!fixedMode) return
+    return setAnalyzeCursorSource(elapsedSource)
+  }, [elapsedSource, fixedMode])
 
   const togglePlay = useCallback(() => {
     const clock = clockRef.current

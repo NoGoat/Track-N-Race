@@ -596,6 +596,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   currentLapNum, comparison, comparisonSelected, currentLabel, comparisonLabel, fixedMode, primaryOverride, distanceMode,
   analysisView, syncedTooltip, sectorBoundaries, sectorDelta,
   deltaData, graphControlsRef, stackedControlsRef, onInspectMap,
+  showMapCursors, mapCurrentColor, mapComparisonColor,
 }: {
   isDark: boolean
   selected: AnalyzeSeriesConfig[]
@@ -617,6 +618,9 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   graphControlsRef: MutableRefObject<AnalyzeChartControls | null>
   stackedControlsRef: MutableRefObject<AnalyzeChartControls | null>
   onInspectMap?: (elapsedSeconds: number) => void
+  showMapCursors: boolean
+  mapCurrentColor: string
+  mapComparisonColor: string
 }) {
   const stackedPresence = useModalPresence(analysisView === 'charts', ANALYSIS_PRESENCE_DURATION, {
     animateInitialEnter: false,
@@ -694,6 +698,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
     deltaData,
     syncedTooltip, sectorBoundaries, sectorDelta,
     onInspectMap,
+    showMapCursors, mapCurrentColor, mapComparisonColor,
   }
 
   return <div className="absolute inset-0">
@@ -1699,6 +1704,9 @@ export default function AnalyzeScreen({
               graphControlsRef={graphControlsRef}
               stackedControlsRef={stackedControlsRef}
               onInspectMap={playbackFilename && !mismatchedFiles ? inspectMapAt : undefined}
+              showMapCursors={splitView && fixedLapMode.enabled}
+              mapCurrentColor={config.mapCurrentColor}
+              mapComparisonColor={config.mapComparisonColor}
             />
           </div>
           {mapPresence.mounted && <div
