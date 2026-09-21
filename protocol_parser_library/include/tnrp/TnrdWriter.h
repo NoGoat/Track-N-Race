@@ -122,6 +122,10 @@ public:
     // Source-compatible default recording entry point: writes TNRD V6.
     void setLogging(bool enabled, const std::string& outputDir);
     void setLoggingZstd(bool enabled, const std::string& outputDir);
+    // Zstandard level applied to V6 recordings opened after this call. Live
+    // recording keeps the default; bulk offline conversion can afford more.
+    void setCompressionLevel(int level);
+    int compressionLevel() const { return compressionLevel_; }
     [[deprecated("TNRD V1/gzip writing is retained only for compatibility; use setLoggingZstd")]]
     void setLoggingGzip(bool enabled, const std::string& outputDir);
     bool loggingEnabled() const { return wantRecord_; }
@@ -191,6 +195,7 @@ private:
     std::atomic<bool>       recording_{false};  // mirrors "logging enabled" intent
 
     bool        wantRecord_         = false;
+    int         compressionLevel_   = 3;
     TnrdFormat  writeFormat_        = TnrdFormat::ChunkedV6;
     std::string outputDirectory_;
     std::unique_ptr<detail::TnrdOutputStream> activeStream_;

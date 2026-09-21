@@ -191,8 +191,13 @@ public:
     bool readMultiDriverLatest(float, const std::vector<uint8_t>&,
                                const std::vector<uint8_t>&,
                                std::vector<V6TimedRow>&, std::string*);
+    // True when this recording was opened by rebuilding its index from the
+    // chunk stream, because the writer was interrupted before writing one.
+    // Callers should surface this: the final lap of each driver may be absent.
+    bool wasRecovered() const;
 
 private:
+    bool recoverByScan(HeaderRow&, std::string*);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -209,6 +214,11 @@ public:
     bool appendRow(std::string_view, float, std::string*);
     bool advanceSessionTime(float, std::string*);
     bool checkpoint(std::string*);
+    // Zstandard level for chunks and shared records. Out-of-range values fall
+    // back to the default. Bulk offline conversion can afford a higher level
+    // than live recording; see docs/TNRD_V6_WRITER_EFFICIENCY_DESIGN.md.
+    void setCompressionLevel(int);
+    int compressionLevel() const;
     bool rewind(float, std::string*);
     void abort();
     bool finish(std::string*);

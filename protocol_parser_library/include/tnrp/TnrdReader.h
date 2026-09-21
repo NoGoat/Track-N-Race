@@ -48,6 +48,10 @@ public:
     void close();
     bool isLoaded() const;
     TnrdFormat loadedFormat() const { return loadedFormat_; }
+    // True when a V6 recording was opened by rebuilding its index from the
+    // chunk stream because the writer was interrupted. The final lap of each
+    // driver may be absent; callers should say so rather than stay silent.
+    bool wasRecoveredV6() const;
     const std::string& lastError() const { return lastError_; }
 
     // Enable packed binary delivery for hot playback rows and seek flushes.

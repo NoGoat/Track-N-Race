@@ -31,21 +31,6 @@
 
 namespace tnrp::detail {
 
-// Compression level for every V6 chunk and shared record. TNRD_ZSTD_LEVEL
-// overrides the default so a capture can be re-encoded at other levels to
-// compare file sizes; it is read once and clamped to zstd's valid range.
-int zstdLevel() {
-    static const int level = [] {
-        const char* raw = std::getenv("TNRD_ZSTD_LEVEL");
-        if (!raw || !*raw) return 3;
-        char* end = nullptr;
-        const long value = std::strtol(raw, &end, 10);
-        if (end == raw || value < ZSTD_minCLevel() || value > ZSTD_maxCLevel()) return 3;
-        return static_cast<int>(value);
-    }();
-    return level;
-}
-
 // External linkage is required by Glaze's compile-time aggregate reflection
 // on MSVC (internal-linkage aggregate types trigger C7631).
 struct V6Metadata {
@@ -71,12 +56,14 @@ constexpr size_t CHUNK_PREFIX_SIZE = 32;
 constexpr size_t CHUNK_ENTRY_SIZE = 56;
 constexpr uint32_t CHUNK_MAGIC = 0x364b4843u;  // CHK6
 constexpr uint32_t SHARED_MAGIC = 0x36524853u; // SHR6
+constexpr uint32_t SESSION_MAGIC = 0x36534553u; // SES6
 constexpr uint32_t FOOTER_MAGIC = 0x36444e45u; // END6
 constexpr uint32_t MAX_CHUNKS = 5'000'000;
 constexpr uint64_t MAX_CHUNK_PLAIN = 512ull * 1024ull * 1024ull;
 constexpr uint64_t MAX_METADATA_BYTES = 128ull * 1024ull * 1024ull;
 constexpr size_t DEFAULT_CACHE_BYTES = 64ull * 1024ull * 1024ull;
 constexpr float WRITE_DELAY = 30.0f;
+constexpr int DEFAULT_COMPRESSION_LEVEL = 3;
 constexpr glz::opts kPartialRead{.null_terminated = false, .error_on_unknown_keys = false};
 const std::array<uint8_t, 8> MAGIC{{'T','N','R','D','_','V','6','\0'}};
 
@@ -323,6 +310,7 @@ struct TnrdV6Writer::Impl {
     std::array<float, 2> phaseTime{{-1.0f, -1.0f}};
     std::array<float, 2> committedThrough{{-1.0f, -1.0f}};
     ZSTD_CCtx* compressor{};
+    int compressionLevel{DEFAULT_COMPRESSION_LEVEL};
     std::vector<uint8_t> scratch;
     uint64_t chunkWrites{}, plainBytes{}, compressedBytes{}, compressionAllocated{}, checkpoints{};
     size_t lastPlain{}, lastCompressed{}, peakScratch{};
@@ -456,7 +444,7 @@ struct TnrdV6Writer::Impl {
         if (!compressor) compressor = ZSTD_createCCtx();
         if (!compressor) { fail(errorOut, "could not allocate V6 compression context"); return false; }
         if (ZSTD_isError(ZSTD_CCtx_reset(compressor, ZSTD_reset_session_only)) ||
-            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_compressionLevel, zstdLevel())) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_compressionLevel, compressionLevel)) ||
             ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_checksumFlag, 1))) {
             fail(errorOut, "could not configure V6 compression"); return false;
         }
@@ -491,7 +479,7 @@ struct TnrdV6Writer::Impl {
         if (scratch.size() < bound) { scratch.resize(bound); compressionAllocated += scratch.capacity(); }
         if (!compressor) compressor = ZSTD_createCCtx();
         if (!compressor || ZSTD_isError(ZSTD_CCtx_reset(compressor, ZSTD_reset_session_only)) ||
-            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_compressionLevel, zstdLevel())) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_compressionLevel, compressionLevel)) ||
             ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_checksumFlag, 1))) {
             fail(errorOut, "could not configure V6 shared-record compression"); return false;
         }
@@ -591,7 +579,31 @@ struct TnrdV6Writer::Impl {
         }
         return true;
     }
+    // True when some pending item has reached its write deadline. Nothing in
+    // the writer's live state depends on a commit that would do no work:
+    // participant names and telemetry-restriction changes are applied to
+    // liveHeaders as they arrive (see appendRow), so skipping an idle commit
+    // leaves exactly the state a commit would have rebuilt. advanceSessionTime
+    // runs this for every datagram, so it must stay cheap.
+    bool commitDue() const {
+        for (uint8_t index = 0; index < drivers.size(); ++index)
+            for (const auto& lap : drivers[index].pending)
+                if (eligible(lap, false)) return true;
+        const float time = now();
+        for (const auto& record : pendingShared)
+            if (phaseRank(phase) > phaseRank(record.phase) ||
+                (phase == record.phase && record.sessionTime < time - WRITE_DELAY)) return true;
+        for (const auto& pending : pendingRestrictions)
+            if (phaseRank(phase) > phaseRank(pending.change.phase) ||
+                (phase == pending.change.phase && pending.change.sessionTime < time - WRITE_DELAY)) return true;
+        for (const auto& pending : pendingTyreHistory)
+            if (phaseRank(phase) > phaseRank(pending.phase) ||
+                (phase == pending.phase && pending.time < time - WRITE_DELAY)) return true;
+        return false;
+    }
+
     bool commit(bool force, std::string* errorOut) {
+        if (!force && !commitDue()) return true;
         const size_t chunksBefore = chunks.size();
         for (uint8_t index = 0; index < drivers.size(); ++index) {
             auto& state = drivers[index]; auto lap = state.pending.begin();
@@ -633,8 +645,10 @@ struct TnrdV6Writer::Impl {
         }
         if (!commitControl(force, errorOut)) return false;
         rebuildLiveMetadata();
-        if (!force && chunks.size() != chunksBefore)
-            return snapshot(errorOut);
+        (void)chunksBefore;
+        // No checkpoint here. The index is written once by finish(), and a
+        // recording interrupted before that is rebuilt by the reader's
+        // recovery scan. See docs/TNRD_V6_WRITER_EFFICIENCY_DESIGN.md.
         return true;
     }
 
@@ -683,107 +697,23 @@ struct TnrdV6Writer::Impl {
         return snapshotTo(file, chunks, committedShared, true, errorOut);
     }
 
-    bool compactAndReplace(std::string* errorOut) {
-        const std::string stagingPath = path + ".compact.tmp";
-        std::FILE* compacted = openTnrdFile(stagingPath, "w+b");
-        if (!compacted) {
-            fail(errorOut, "could not create compacted V6 file");
-            return false;
+    // Writes the session HeaderRow as an uncompressed SES6 record directly
+    // after the file header. A recording interrupted before its index is
+    // written has no metadata JSON, so this is the only place the track,
+    // session type and protocol survive for the recovery scan to find.
+    bool writeSessionRecord(std::string* errorOut) {
+        const std::string json = jsonOf(session);
+        if (json.empty() || json.size() > MAX_METADATA_BYTES) {
+            fail(errorOut, "V6 session record exceeds its format limit"); return false;
         }
-
-        const auto discardStaging = [&] {
-            std::fclose(compacted);
-            std::error_code ignored;
-            std::filesystem::remove(std::filesystem::u8path(stagingPath), ignored);
-        };
-        std::vector<uint8_t> blank(HEADER_SIZE);
-        if (!writeAll(compacted, blank.data(), blank.size())) {
-            fail(errorOut, "could not initialize compacted V6 file");
-            discardStaging();
-            return false;
+        std::vector<uint8_t> prefix; put32(prefix, SESSION_MAGIC);
+        while (prefix.size() < 8) prefix.push_back(0);
+        put64(prefix, json.size()); put64(prefix, json.size());
+        while (prefix.size() < CHUNK_PREFIX_SIZE) prefix.push_back(0);
+        if (!seekEnd(file) || !writeAll(file, prefix.data(), prefix.size()) ||
+            !writeAll(file, json.data(), json.size()) || std::fflush(file) != 0) {
+            fail(errorOut, "could not write V6 session record"); return false;
         }
-
-        std::vector<uint8_t> copyBuffer(1024 * 1024);
-        const auto copyBlock = [&](uint64_t payloadOffset, uint64_t compressedSize,
-                                   uint64_t& newPayloadOffset) {
-            if (payloadOffset < CHUNK_PREFIX_SIZE ||
-                compressedSize > UINT64_MAX - CHUNK_PREFIX_SIZE || !seekEnd(compacted))
-                return false;
-            const uint64_t blockOffset = payloadOffset - CHUNK_PREFIX_SIZE;
-            uint64_t remaining = compressedSize + CHUNK_PREFIX_SIZE;
-            uint64_t sourceOffset = blockOffset;
-            const uint64_t destinationOffset = tellFile(compacted);
-            if (destinationOffset == UINT64_MAX) return false;
-            while (remaining) {
-                const size_t amount = static_cast<size_t>(std::min<uint64_t>(remaining, copyBuffer.size()));
-                if (!readAt(file, sourceOffset, copyBuffer.data(), amount) ||
-                    !writeAll(compacted, copyBuffer.data(), amount)) return false;
-                sourceOffset += amount;
-                remaining -= amount;
-            }
-            newPayloadOffset = destinationOffset + CHUNK_PREFIX_SIZE;
-            return true;
-        };
-
-        auto compactedChunks = chunks;
-        for (auto& chunk : compactedChunks) {
-            if (!copyBlock(chunk.offset, chunk.compressedSize, chunk.offset)) {
-                fail(errorOut, "could not copy a V6 chunk while compacting");
-                discardStaging();
-                return false;
-            }
-        }
-        auto compactedShared = committedShared;
-        for (auto& record : compactedShared) {
-            if (!copyBlock(record.offset, record.compressedSize, record.offset)) {
-                fail(errorOut, "could not copy a V6 shared record while compacting");
-                discardStaging();
-                return false;
-            }
-        }
-        if (!snapshotTo(compacted, compactedChunks, compactedShared, false, errorOut)) {
-            discardStaging();
-            return false;
-        }
-        if (std::fclose(compacted) != 0) {
-            compacted = nullptr;
-            std::error_code ignored;
-            std::filesystem::remove(std::filesystem::u8path(stagingPath), ignored);
-            if (errorOut && errorOut->empty()) *errorOut = "could not close compacted V6 file";
-            return false;
-        }
-        compacted = nullptr;
-
-        if (std::fclose(file) != 0) {
-            file = nullptr;
-            fail(errorOut, "could not close V6 file before compaction install");
-            std::error_code ignored;
-            std::filesystem::remove(std::filesystem::u8path(stagingPath), ignored);
-            return false;
-        }
-        file = nullptr;
-
-        bool installed = false;
-#ifdef _WIN32
-        const auto source = windowsExtendedPath(stagingPath);
-        const auto destination = windowsExtendedPath(path);
-        installed = !source.empty() && !destination.empty() &&
-            MoveFileExW(source.c_str(), destination.c_str(),
-                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-        std::error_code installError;
-        std::filesystem::rename(std::filesystem::u8path(stagingPath),
-                                std::filesystem::u8path(path), installError);
-        installed = !installError;
-#endif
-        if (!installed) {
-            fail(errorOut, "could not install compacted V6 file");
-            std::error_code ignored;
-            std::filesystem::remove(std::filesystem::u8path(stagingPath), ignored);
-            return false;
-        }
-        chunks = std::move(compactedChunks);
-        committedShared = std::move(compactedShared);
         return true;
     }
 
@@ -1115,14 +1045,33 @@ TnrdV6Writer::~TnrdV6Writer() { if (isOpen()) { std::string ignored; (void)finis
 bool TnrdV6Writer::isOpen() const { return impl_ && impl_->file; }
 bool TnrdV6Writer::open(const std::string& path, const HeaderRow& header, std::string* errorOut) {
     if (isOpen()) { fail(errorOut,"V6 writer is already open"); return false; }
-    impl_ = std::make_unique<Impl>(); impl_->path = path; impl_->file = openTnrdFile(path,"w+b");
+    // open() starts a fresh Impl, so anything configured on the writer before
+    // it has to survive the swap. The compression level is set once, ahead of
+    // the first stream, and would otherwise silently revert to the default.
+    const int level = impl_ ? impl_->compressionLevel : DEFAULT_COMPRESSION_LEVEL;
+    impl_ = std::make_unique<Impl>(); impl_->compressionLevel = level;
+    impl_->path = path; impl_->file = openTnrdFile(path,"w+b");
     if (!impl_->file) { fail(errorOut,"could not create V6 file: " + std::string(std::strerror(errno))); return false; }
     impl_->session = header; impl_->session.magic = "TNRD_V6"; impl_->session.compression = "zstd";
-    std::vector<uint8_t> blank(HEADER_SIZE); if (!writeAll(impl_->file,blank.data(),blank.size())) {
+    // A sentinel header: correct magic, version and CRC, but an empty index.
+    // The file identifies itself as V6 from its first byte, while a reader
+    // seeing metadataSize == 0 knows the index was never written and routes to
+    // the recovery scan rather than rejecting the file.
+    const auto sentinel = makeHeader(0, 0, 0, 0, 0);
+    if (!writeAll(impl_->file,sentinel.data(),sentinel.size())) {
         fail(errorOut,"could not initialize V6 file"); std::fclose(impl_->file); impl_->file=nullptr; return false;
+    }
+    if (!impl_->writeSessionRecord(errorOut)) {
+        std::fclose(impl_->file); impl_->file=nullptr; return false;
     }
     return true;
 }
+void TnrdV6Writer::setCompressionLevel(int level) {
+    if (!impl_) return;
+    impl_->compressionLevel = level < ZSTD_minCLevel() || level > ZSTD_maxCLevel()
+        ? DEFAULT_COMPRESSION_LEVEL : level;
+}
+int TnrdV6Writer::compressionLevel() const { return impl_ ? impl_->compressionLevel : DEFAULT_COMPRESSION_LEVEL; }
 bool TnrdV6Writer::appendRow(std::string_view row,float time,std::string* errorOut) {
     if (!isOpen()) { fail(errorOut,"V6 writer is not open"); return false; }
     return impl_->appendRow(row,time,errorOut);
@@ -1155,14 +1104,16 @@ bool TnrdV6Writer::finish(std::string* errorOut) {
     const float time = std::max(0.0f,impl_->now());
     for (uint8_t index=0;index<impl_->drivers.size();++index) if (impl_->drivers[index].open)
         impl_->closeLap(index,time,0,0,0,0,false,!impl_->drivers[index].currentInvalid,false);
-    if (!impl_->commit(true,errorOut) || !impl_->snapshot(errorOut)) return false;
-    if (impl_->compactAndReplace(errorOut)) return true;
+    // One index, written once, directly after the last chunk. With no
+    // superseded checkpoints there is nothing to reclaim, so the file is
+    // already in its compacted layout and closing is the whole of finishing.
+    const bool ok = impl_->commit(true,errorOut) && impl_->snapshot(errorOut);
     if (impl_->file) {
         const bool closed = std::fclose(impl_->file) == 0;
         impl_->file = nullptr;
-        if (!closed && errorOut && errorOut->empty()) *errorOut = "could not close V6 file";
+        if (!closed && ok) { fail(errorOut,"could not close V6 file"); return false; }
     }
-    return false;
+    return ok;
 }
 TnrdV6WriterMemoryStats TnrdV6Writer::memoryStats() const {
     TnrdV6WriterMemoryStats out; out.open=isOpen(); if(!impl_) return out;
@@ -1182,6 +1133,7 @@ struct TnrdV6Archive::Impl {
 
     std::FILE* file{};
     uint64_t fileSize{};
+    bool recovered{};
     HeaderRow session;
     std::vector<V6DriverHeader> drivers;
     std::vector<V6LapSummary> lapSummaries;
@@ -1298,13 +1250,76 @@ std::string withDriver(std::string_view json, uint8_t driver) {
 TnrdV6Archive::TnrdV6Archive() : impl_(std::make_unique<Impl>()) {}
 TnrdV6Archive::~TnrdV6Archive() { close(); }
 
+namespace {
+
+// One record as the recovery scan sees it: a 32-byte prefix at `at`, followed
+// by `compressedSize` payload bytes.
+struct ScannedRecord {
+    uint32_t magic{};
+    uint64_t payloadOffset{};
+    uint64_t compressedSize{};
+    uint64_t uncompressedSize{};
+    uint8_t driverIndex{};
+    uint8_t typeId{};
+    uint8_t flags{};
+    V6Phase phase{V6Phase::Race};
+    uint32_t lapId{};
+    uint32_t sampleCount{};
+};
+
+// Reads one flat sample field, e.g. scanField(line, "lap_num"). Samples written
+// by the V6 writer are flat single-line objects, so a key search is enough and
+// no JSON parse is needed.
+bool scanField(std::string_view json, std::string_view key, double& valueOut) {
+    std::string needle;
+    needle.reserve(key.size() + 3);
+    needle.push_back('"');
+    needle.append(key);
+    needle.append("\":");
+    const auto at = json.find(needle);
+    if (at == std::string_view::npos) return false;
+    const auto start = at + needle.size();
+    if (start >= json.size()) return false;
+    if (json[start] == 't' || json[start] == 'f') {
+        valueOut = json[start] == 't' ? 1.0 : 0.0;
+        return true;
+    }
+    char* parsedEnd = nullptr;
+    const double value = std::strtod(json.data() + start, &parsedEnd);
+    if (parsedEnd == json.data() + start) return false;
+    valueOut = value;
+    return true;
+}
+
+double fieldOr(std::string_view json, std::string_view key, double fallback) {
+    double value = fallback;
+    return scanField(json, key, value) ? value : fallback;
+}
+
+std::string_view firstLine(std::string_view plain) {
+    const auto end = plain.find('\n');
+    return end == std::string_view::npos ? plain : plain.substr(0, end);
+}
+
+std::string_view lastLine(std::string_view plain) {
+    auto end = plain.size();
+    while (end && plain[end - 1] == '\n') --end;
+    if (!end) return {};
+    const auto start = plain.rfind('\n', end - 1);
+    return plain.substr(start == std::string_view::npos ? 0 : start + 1,
+                        start == std::string_view::npos ? end : end - start - 1);
+}
+
+} // namespace
+
 bool TnrdV6Archive::open(const std::string& path, HeaderRow& headerOut, std::string* errorOut) {
     close(); impl_ = std::make_unique<Impl>();
     impl_->file = openTnrdFile(path, "rb");
     if (!impl_->file) { fail(errorOut, "could not open V6 file"); return false; }
-    if (!seekEnd(impl_->file) || (impl_->fileSize = tellFile(impl_->file)) < HEADER_SIZE + FOOTER_SIZE) {
+    if (!seekEnd(impl_->file) || (impl_->fileSize = tellFile(impl_->file)) < HEADER_SIZE) {
         fail(errorOut, "truncated V6 file"); close(); return false;
     }
+    if (impl_->fileSize < HEADER_SIZE + FOOTER_SIZE) return recoverByScan(headerOut, errorOut);
     std::array<uint8_t, HEADER_SIZE> header{};
     if (!readAt(impl_->file, 0, header.data(), header.size()) ||
         !std::equal(MAGIC.begin(), MAGIC.end(), header.begin()) || get16(header.data() + 8) != 6 ||
@@ -1324,7 +1339,7 @@ bool TnrdV6Archive::open(const std::string& path, HeaderRow& headerOut, std::str
         !rangeOk(impl_->fileSize, footerOffset, FOOTER_SIZE) ||
         metadataOffset + metadataSize != directoryOffset ||
         directoryOffset + uint64_t(chunkCount) * CHUNK_ENTRY_SIZE != footerOffset) {
-        fail(errorOut, "invalid V6 control-plane ranges"); close(); return false;
+        return recoverByScan(headerOut, errorOut);
     }
     std::array<uint8_t, FOOTER_SIZE> footer{};
     if (!readAt(impl_->file, footerOffset, footer.data(), footer.size()) ||
@@ -1332,18 +1347,18 @@ bool TnrdV6Archive::open(const std::string& path, HeaderRow& headerOut, std::str
         get16(footer.data() + 6) != FOOTER_SIZE || get64(footer.data() + 8) != metadataOffset ||
         get64(footer.data() + 16) != directoryOffset || get32(footer.data() + 24) != chunkCount ||
         get32(footer.data() + 28) != metadataSize) {
-        fail(errorOut, "invalid V6 footer"); close(); return false;
+        return recoverByScan(headerOut, errorOut);
     }
     std::string metadata(metadataSize, '\0');
     std::vector<uint8_t> directory(uint64_t(chunkCount) * CHUNK_ENTRY_SIZE);
     if (!readAt(impl_->file, metadataOffset, metadata.data(), metadata.size()) ||
         !readAt(impl_->file, directoryOffset, directory.data(), directory.size()) ||
         get32(footer.data() + 32) != controlCrc(metadata, directory)) {
-        fail(errorOut, "invalid V6 control-plane checksum"); close(); return false;
+        return recoverByScan(headerOut, errorOut);
     }
     V6Metadata decoded;
     if (const auto ec = glz::read_json(decoded, metadata); ec) {
-        fail(errorOut, "invalid V6 metadata JSON"); close(); return false;
+        return recoverByScan(headerOut, errorOut);
     }
     impl_->session = std::move(decoded.session); impl_->drivers = std::move(decoded.drivers);
     impl_->lapSummaries = std::move(decoded.laps);
@@ -1421,6 +1436,236 @@ bool TnrdV6Archive::open(const std::string& path, HeaderRow& headerOut, std::str
     }
     impl_->playback = impl_->player.value_or(impl_->drivers.empty() ? 0 : impl_->drivers.front().vehicleIndex);
     impl_->rebuildCompatibility(); headerOut = impl_->session; return true;
+}
+
+bool TnrdV6Archive::wasRecovered() const { return impl_ && impl_->recovered; }
+
+// Rebuilds a recording whose index is missing, stale or corrupt by walking the
+// append-only record stream. Everything the index held is derivable: chunk
+// entries from their prefixes, lap summaries by replaying LapTiming samples the
+// way the writer's boundary() derives them, driver headers from the chunks that
+// exist plus the participants rows in the shared records, and the session
+// header from the SES6 record written at open(). The scan stops at the first
+// record that does not validate, which is how a torn tail costs the partial
+// chunk instead of the recording. It never writes to the file: a live recorder
+// may still hold it open.
+bool TnrdV6Archive::recoverByScan(HeaderRow& headerOut, std::string* errorOut) {
+    impl_->drivers.clear(); impl_->lapSummaries.clear();
+    impl_->v6Chunks.clear(); impl_->shared.clear();
+    impl_->driverByIndex.clear(); impl_->player.reset();
+
+    std::map<uint8_t, V6DriverHeader> headers;
+    struct LapAccum {
+        V6LapSummary summary;
+        bool haveBounds{};
+        bool haveTiming{};
+        uint32_t nextLapTimeMs{}, nextS1Ms{}, nextS2Ms{};
+        uint32_t firstLapNumber{};
+        bool lastInvalid{};
+    };
+    std::map<uint32_t, LapAccum> laps;
+    std::map<uint8_t, std::vector<uint32_t>> driverLapOrder;
+    std::vector<uint8_t> compressed;
+    std::string plain;
+    uint64_t at = HEADER_SIZE;
+    uint64_t sequence = 1;
+    bool sawSession = false;
+
+    while (at + CHUNK_PREFIX_SIZE <= impl_->fileSize) {
+        std::array<uint8_t, CHUNK_PREFIX_SIZE> prefix{};
+        if (!readAt(impl_->file, at, prefix.data(), prefix.size())) break;
+        const uint32_t magic = get32(prefix.data());
+        if (magic != CHUNK_MAGIC && magic != SHARED_MAGIC && magic != SESSION_MAGIC) break;
+
+        ScannedRecord record;
+        record.magic = magic;
+        record.payloadOffset = at + CHUNK_PREFIX_SIZE;
+        if (magic == CHUNK_MAGIC) {
+            record.driverIndex = prefix[4]; record.typeId = prefix[5]; record.flags = prefix[6];
+            record.phase = static_cast<V6Phase>(prefix[7]);
+            record.lapId = get32(prefix.data() + 8);
+            record.compressedSize = get64(prefix.data() + 12);
+            record.uncompressedSize = get64(prefix.data() + 20);
+            record.sampleCount = get32(prefix.data() + 28);
+            if (record.driverIndex >= 24 || record.typeId == 0 ||
+                record.typeId >= static_cast<uint8_t>(V6DataType::Count) ||
+                record.phase > V6Phase::Formation || record.lapId == 0) break;
+        } else {
+            record.phase = static_cast<V6Phase>(prefix[4]);
+            record.compressedSize = get64(prefix.data() + 8);
+            record.uncompressedSize = get64(prefix.data() + 16);
+            if (magic == SHARED_MAGIC && record.phase > V6Phase::Formation) break;
+        }
+        // A truncated tail: the declared payload runs past end of file.
+        if (!record.compressedSize || !record.uncompressedSize ||
+            record.uncompressedSize > MAX_CHUNK_PLAIN ||
+            !rangeOk(impl_->fileSize, record.payloadOffset, record.compressedSize)) break;
+
+        compressed.resize(static_cast<size_t>(record.compressedSize));
+        if (!readAt(impl_->file, record.payloadOffset, compressed.data(), compressed.size())) break;
+        if (magic == SESSION_MAGIC) {
+            if (record.compressedSize != record.uncompressedSize) break;
+            plain.assign(reinterpret_cast<const char*>(compressed.data()), compressed.size());
+        } else {
+            // zstd frames carry a checksum (writeChunk sets checksumFlag), so a
+            // corrupt but correctly sized payload fails here rather than
+            // silently decoding to garbage.
+            plain.assign(static_cast<size_t>(record.uncompressedSize), char{0});
+            const size_t size = ZSTD_decompress(plain.data(), plain.size(),
+                                                compressed.data(), compressed.size());
+            if (ZSTD_isError(size) || size != record.uncompressedSize) break;
+        }
+        at = record.payloadOffset + record.compressedSize;
+
+        if (magic == SESSION_MAGIC) {
+            HeaderRow decoded;
+            if (!glz::read_json(decoded, plain)) { impl_->session = std::move(decoded); sawSession = true; }
+            continue;
+        }
+        if (magic == SHARED_MAGIC) {
+            const float time = scanTime(firstLine(plain));
+            const float stamp = std::isfinite(time) ? time : 0.0f;
+            impl_->shared.push_back({record.phase, stamp, plain});
+            if (rowType(plain) == "participants") {
+                ParticipantsRow row;
+                if (!glz::read<kPartialRead>(row, plain)) {
+                    if (row.player_idx >= 0 && row.player_idx < 24)
+                        impl_->player = static_cast<uint8_t>(row.player_idx);
+                    for (const auto& driver : row.drivers) {
+                        if (driver.idx < 0 || driver.idx >= 24) continue;
+                        auto& header = headers[static_cast<uint8_t>(driver.idx)];
+                        header.vehicleIndex = static_cast<uint8_t>(driver.idx);
+                        if (header.driverName.empty()) {
+                            header.driverName = driver.name;
+                            header.teamId = driver.team_id;
+                            header.raceNumber = driver.race_number;
+                        }
+                        header.isPlayer = driver.idx == row.player_idx;
+                        const auto setting = !driver.your_telemetry ? TelemetrySetting::Unknown
+                            : (*driver.your_telemetry == 1 ? TelemetrySetting::Public
+                                                           : TelemetrySetting::Restricted);
+                        if (setting == TelemetrySetting::Unknown) continue;
+                        if (header.initialTelemetrySetting == TelemetrySetting::Unknown) {
+                            header.initialTelemetrySetting = setting;
+                        } else {
+                            const auto previous = header.restrictionChanges.empty()
+                                ? header.initialTelemetrySetting
+                                : header.restrictionChanges.back().setting;
+                            if (previous != setting)
+                                header.restrictionChanges.push_back({record.phase, stamp, setting});
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        // A chunk. Its directory entry is the prefix plus the sample time range
+        // and payload checksum, which only the payload carries.
+        float first = std::numeric_limits<float>::max();
+        float last = std::numeric_limits<float>::lowest();
+        for (size_t start = 0; start < plain.size();) {
+            auto end = plain.find(char{10}, start);
+            if (end == std::string::npos) end = plain.size();
+            if (end > start) {
+                const float time = scanTime(std::string_view(plain.data() + start, end - start));
+                if (std::isfinite(time)) { first = std::min(first, time); last = std::max(last, time); }
+            }
+            start = end + 1;
+        }
+        if (first > last) { first = 0.0f; last = 0.0f; }
+
+        V6ChunkInfo chunk{record.driverIndex, record.lapId, record.typeId, record.flags,
+                          record.phase, first, last, record.payloadOffset,
+                          record.compressedSize, record.uncompressedSize, record.sampleCount,
+                          static_cast<uint32_t>(::crc32(0, reinterpret_cast<const Bytef*>(plain.data()),
+                                                        static_cast<uInt>(plain.size()))),
+                          sequence++};
+        impl_->v6Chunks.push_back(chunk);
+
+        auto& header = headers[record.driverIndex];
+        header.vehicleIndex = record.driverIndex;
+        header.availableTypeMask |= v6DataTypeBit(static_cast<V6DataType>(record.typeId));
+
+        auto [lapIt, inserted] = laps.try_emplace(record.lapId);
+        auto& accum = lapIt->second;
+        if (inserted) {
+            accum.summary.lapId = record.lapId;
+            accum.summary.driverIndex = record.driverIndex;
+            accum.summary.phase = record.phase;
+            driverLapOrder[record.driverIndex].push_back(record.lapId);
+            header.lapIds.push_back(record.lapId);
+        }
+        if (!accum.haveBounds) {
+            accum.summary.startSessionTime = first; accum.summary.endSessionTime = last;
+            accum.haveBounds = true;
+        } else {
+            accum.summary.startSessionTime = std::min(accum.summary.startSessionTime, first);
+            accum.summary.endSessionTime = std::max(accum.summary.endSessionTime, last);
+        }
+        if (static_cast<V6DataType>(record.typeId) == V6DataType::LapTiming && !plain.empty()) {
+            const auto head = firstLine(plain);
+            const auto tail = lastLine(plain);
+            accum.haveTiming = true;
+            accum.firstLapNumber = static_cast<uint32_t>(std::max(0.0, fieldOr(head, "lap_num", 0.0)));
+            accum.nextLapTimeMs = static_cast<uint32_t>(std::max(0.0, fieldOr(head, "last_lap_ms", 0.0)));
+            accum.nextS1Ms = static_cast<uint32_t>(std::max(0.0, fieldOr(head, "s1_ms", 0.0)));
+            accum.nextS2Ms = static_cast<uint32_t>(std::max(0.0, fieldOr(head, "s2_ms", 0.0)));
+            accum.lastInvalid = fieldOr(tail.empty() ? head : tail, "lap_invalid", 0.0) != 0.0;
+        }
+    }
+
+    if (impl_->v6Chunks.empty()) {
+        fail(errorOut, sawSession ? "V6 recording contains no recoverable data"
+                                  : "invalid V6 file: no index and no recoverable records");
+        close(); return false;
+    }
+
+    // The game reports a lap time one lap late, so a lap's time and sectors come
+    // from the first sample of that driver's next lap. This mirrors boundary()
+    // in the writer; the two must stay in step.
+    for (const auto& entry : driverLapOrder) {
+        const auto& order = entry.second;
+        for (size_t i = 0; i < order.size(); ++i) {
+            auto& accum = laps[order[i]];
+            accum.summary.lapNumber = accum.firstLapNumber;
+            accum.summary.isValid = !accum.lastInvalid;
+            if (i + 1 < order.size()) {
+                const auto& next = laps[order[i + 1]];
+                if (next.haveTiming) {
+                    const uint32_t total = next.nextLapTimeMs;
+                    accum.summary.lapTimeMs = total;
+                    accum.summary.s1Ms = next.nextS1Ms;
+                    accum.summary.s2Ms = next.nextS2Ms;
+                    accum.summary.s3Ms = total > next.nextS1Ms + next.nextS2Ms
+                        ? total - next.nextS1Ms - next.nextS2Ms : 0;
+                    accum.summary.isCompleted =
+                        next.firstLapNumber > accum.summary.lapNumber && total > 0;
+                }
+            }
+            accum.summary.isPartial = !accum.summary.isCompleted;
+        }
+    }
+    impl_->lapSummaries.reserve(laps.size());
+    for (auto& entry : laps) impl_->lapSummaries.push_back(entry.second.summary);
+
+    impl_->drivers.reserve(headers.size());
+    for (auto& entry : headers) impl_->drivers.push_back(std::move(entry.second));
+    for (size_t i = 0; i < impl_->drivers.size(); ++i) {
+        const auto id = impl_->drivers[i].vehicleIndex;
+        if (id >= 24) { fail(errorOut, "invalid V6 driver table after recovery"); close(); return false; }
+        impl_->driverByIndex[id] = i;
+        if (impl_->drivers[i].isPlayer) impl_->player = id;
+    }
+    impl_->playback = impl_->player.value_or(
+        impl_->drivers.empty() ? 0 : impl_->drivers.front().vehicleIndex);
+    impl_->session.magic = "TNRD_V6";
+    impl_->session.compression = "zstd";
+    impl_->recovered = true;
+    impl_->rebuildCompatibility();
+    headerOut = impl_->session;
+    if (errorOut) errorOut->clear();
+    return true;
 }
 
 void TnrdV6Archive::close() {

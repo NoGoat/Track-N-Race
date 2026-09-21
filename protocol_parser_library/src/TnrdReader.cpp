@@ -393,6 +393,11 @@ static uint8_t scanType(const char* d, int len) {
 TnrdReader::TnrdReader() = default;
 TnrdReader::~TnrdReader() { close(); }
 
+bool TnrdReader::wasRecoveredV6() const {
+    if (loadedFormat_ != TnrdFormat::ChunkedV6 || !indexedArchive_) return false;
+    const auto* v6 = dynamic_cast<const detail::TnrdV6Archive*>(indexedArchive_.get());
+    return v6 && v6->wasRecovered();
+}
 bool TnrdReader::isLoaded() const {
     return tempFile_ != nullptr || (indexedArchive_ && indexedArchive_->isOpen());
 }

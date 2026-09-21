@@ -302,6 +302,7 @@ void TnrdWriter::setLogging(bool enabled, const std::string& outputDir) {
     setLoggingZstd(enabled, outputDir);
 }
 
+void TnrdWriter::setCompressionLevel(int level) { compressionLevel_ = level; }
 void TnrdWriter::setLoggingZstd(bool enabled, const std::string& outputDir) {
     setLoggingForFormat(enabled, outputDir, TnrdFormat::ChunkedV6);
 }
@@ -576,6 +577,7 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int 
     std::string openError;
     if (writeFormat_ == TnrdFormat::ChunkedV6) {
         v6Writer_ = std::make_unique<detail::TnrdV6Writer>();
+        v6Writer_->setCompressionLevel(compressionLevel_);
         if (!v6Writer_->open(activePath_, hdr, &openError)) v6Writer_.reset();
     } else {
         activeStream_ = openVersionWriter(writeFormat_, activePath_, false, openError);
