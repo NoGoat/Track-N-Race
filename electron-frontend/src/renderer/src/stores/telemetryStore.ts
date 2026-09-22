@@ -254,6 +254,8 @@ export interface TelemetryStoreState {
   lapBoundaries: Array<{ lapNum: number; sessionTime: number }>
   allLapsLapBoundaries: Array<{ lapNum: number; sessionTime: number }>
   currentStintStartTime: number
+  // True from a playback seek start until its data is installed (or fails).
+  seekPending: boolean
 }
 
 export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
@@ -276,6 +278,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   lapBoundaries: [],
   allLapsLapBoundaries: [],
   currentStintStartTime: -Infinity,
+  seekPending: false,
 }))
 
 const set = useTelemetryStore.setState
@@ -390,6 +393,13 @@ const historyV6Types = new Set<number>()
 let pendingV6HistoryBackfillMask = 0
 let seekTimelineGeneration = 0
 let seekRendererPending = false
+// The batch gate reads the module flag; the store copy only drives the seek
+// loading overlay, so it is published once per transition, never per batch.
+function setSeekPending(pending: boolean): void {
+  if (seekRendererPending === pending) return
+  seekRendererPending = pending
+  set({ seekPending: pending })
+}
 // Rows Electron main deliberately forwards across a pending seek. They describe
 // the loaded recording or the selected driver rather than the playhead, so the
 // pending-seek gate below must keep them: a V6 driver change emits its lap
@@ -845,7 +855,7 @@ function resetSession(): void {
   historyCoverageStart.clear()
   historyV6Types.clear()
   pendingV6HistoryBackfillMask = 0
-  seekRendererPending = false
+  setSeekPending(false)
   authoritativeLapStatusStart = -Infinity
   authoritativeLapStatusPrefix = []
   analyzeLapRevisionVal++
@@ -1512,7 +1522,7 @@ function handleMsg(msg: GatewayMsg): void {
       void processPlaybackSeekFlush(msg as any).catch(error => {
         console.error('Failed to decode playback seek flush:', error)
         waitingForAllLapsHistory = false
-        if ((msg as any).authoritativeSeek !== false) seekRendererPending = false
+        if ((msg as any).authoritativeSeek !== false) setSeekPending(false)
         recompute(DirtySlice.All)
         const requestId = Number((msg as any).requestId)
         if (Number.isFinite(requestId) && requestId > 0)
@@ -1522,7 +1532,7 @@ function handleMsg(msg: GatewayMsg): void {
     }
     case 'playback_seek_flush_failed':
       waitingForAllLapsHistory = false
-      seekRendererPending = false
+      setSeekPending(false)
       requestedHistoryRowMask = 0
       break
     case 'playback_lap_blocks': {
@@ -2039,7 +2049,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   if (latestLap) { lapState = latestLap; set({ lap: latestLap }) }
   recompute(dirtySliceForHistoryMask(payload.rowTypeMask))
   requestVisibleWindowHistory()
-  if (authoritative) seekRendererPending = false
+  if (authoritative) setSeekPending(false)
   if (authoritative && Number.isFinite(Number(payload.requestId)) && Number(payload.requestId) > 0)
     window.playerBridge.seekInstalled(Number(payload.requestId))
   } finally {
@@ -2335,7 +2345,7 @@ export function startTelemetryBridge(): void {
     // Freeze the published timeline immediately, before the seek IPC can race
     // with already-queued playback batches. Electron main holds all rows from
     // the new cursor until processPlaybackSeekFlush acknowledges installation.
-    seekRendererPending = true
+    setSeekPending(true)
     playbackDebug('seek-started-in-renderer', {
       allHistory,
       historyRowMask: `0x${historyRowMask.toString(16)}`,

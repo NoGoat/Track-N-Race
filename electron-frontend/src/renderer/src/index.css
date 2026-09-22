@@ -888,6 +888,49 @@ html[data-page-transition='true'] .session-map-transition {
   view-transition-name: app-page;
 }
 
+/* Compositor-driven delay: a seek that installs within 100ms unmounts the
+   overlay before it becomes visible, with no JS timer to schedule or cancel. */
+.seek-loading-overlay {
+  opacity: 0;
+  animation: seekLoadingFadeIn 150ms ease-out 100ms forwards;
+}
+
+.seek-loading-bar {
+  animation: seekLoadingScan 1.5s linear infinite;
+}
+
+/* Loading scrims stay dark in every theme, so their label and bar use fixed
+   light colors rather than theme text tokens that turn dark in light mode. */
+.loading-scrim {
+  background: rgba(0, 0, 0, 0.9);
+  backdrop-filter: blur(8px);
+}
+
+.loading-scrim-label {
+  color: #eef0f6;
+}
+
+.loading-scrim-muted {
+  color: rgba(238, 240, 246, 0.62);
+}
+
+.loading-scrim-track {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.loading-scrim-fill {
+  background: #5794F2;
+}
+
+@keyframes seekLoadingFadeIn {
+  to { opacity: 1; }
+}
+
+@keyframes seekLoadingScan {
+  from { left: -50%; }
+  to { left: 100%; }
+}
+
 html[data-page-transition='true']::view-transition {
   pointer-events: none;
 }

@@ -15,6 +15,7 @@ import PlaybackBar from './components/PlaybackBar'
 import TabContent from './components/TabContent'
 import FullscreenBanner from './components/FullscreenBanner'
 import StatusOverlays from './components/StatusOverlays'
+import SeekLoadingOverlay from './components/SeekLoadingOverlay'
 import LayoutEditor from './components/LayoutEditor'
 import PlaybackDialogs from './components/PlaybackDialogs'
 import RaceLeaderWatcher from './components/RaceLeaderWatcher'
@@ -617,7 +618,7 @@ export default function AppShell() {
 
       {/* Content */}
       <RaceLeaderWatcher enabled={!playback.state?.filename} onLeaderChange={handleLeaderChange} />
-      <main className="app-page-transition flex-1 min-h-0">
+      <main className="app-page-transition relative flex-1 min-h-0">
         <ChartWindowOverridesProvider
           globalWindow={chartWindow}
           overrides={chartWindowOverrides}
@@ -672,6 +673,7 @@ export default function AppShell() {
         />}
         </ChartCoordinatesProvider>
         </ChartWindowOverridesProvider>
+        <SeekLoadingOverlay />
       </main>
 
       {/* Playback Controls Bar */}
