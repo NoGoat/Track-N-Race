@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type PointerEvent, type KeyboardEvent } from 'react'
 import { GripVertical } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
-import type { AnalyzeLapData, TelemetryRow } from '../types'
+import type { AnalyzeLapData, StatusRow, TelemetryRow } from '../types'
 
 interface Props {
   current: AnalyzeLapData | null
@@ -14,6 +14,11 @@ interface Props {
 }
 
 interface Position { x: number; y: number }
+
+interface ComparisonSample {
+  telemetry: TelemetryRow | null
+  status: StatusRow | null
+}
 
 function clampPosition(value: number): number {
   return Math.max(0, Math.min(1, value))
@@ -33,14 +38,8 @@ function readPosition(value: unknown): Position {
   return { x: 0, y: 0 }
 }
 
-// Hold the latest sample at the map cursor, including discrete gear changes.
-// Clamp each lap independently, just as the map holds its marker at lap end.
-function sampleAt(lap: AnalyzeLapData | null, elapsed: number): TelemetryRow | null {
-  if (!lap || lap.telemetry.length === 0) return null
-  const rows = lap.telemetry
-  const target = lap.startSessionTime + Math.max(0, Math.min(
-    Math.max(0, lap.endSessionTime - lap.startSessionTime), elapsed,
-  ))
+function rowAt<T extends { session_time: number }>(rows: readonly T[], target: number): T | null {
+  if (rows.length === 0) return null
   let lo = 0
   let hi = rows.length
   while (lo < hi) {
@@ -51,14 +50,27 @@ function sampleAt(lap: AnalyzeLapData | null, elapsed: number): TelemetryRow | n
   return rows[Math.max(0, lo - 1)]
 }
 
+// Hold each source's latest sample at the map cursor, including discrete gear
+// and ERS updates. Clamp each lap independently, as the map does its marker.
+function sampleAt(lap: AnalyzeLapData | null, elapsed: number): ComparisonSample {
+  if (!lap) return { telemetry: null, status: null }
+  const target = lap.startSessionTime + Math.max(0, Math.min(
+    Math.max(0, lap.endSessionTime - lap.startSessionTime), elapsed,
+  ))
+  return {
+    telemetry: rowAt(lap.telemetry, target),
+    status: rowAt(lap.statusHistory, target),
+  }
+}
+
 function finite(value: number | undefined): number | null {
   return value !== undefined && Number.isFinite(value) ? value : null
 }
 
 function InputBars({ label, field, samples, colors, labels }: {
   label: string
-  field: 'steering' | 'brake' | 'throttle'
-  samples: readonly (TelemetryRow | null)[]
+  field: 'steering' | 'brake' | 'throttle' | 'ers_pct'
+  samples: readonly ComparisonSample[]
   colors: readonly string[]
   labels: readonly string[]
 }) {
@@ -67,7 +79,9 @@ function InputBars({ label, field, samples, colors, labels }: {
     <span className="text-[var(--text-secondary)]">{label}</span>
     <div className={`analyze-input-comparison__bars ${signed ? 'analyze-input-comparison__bars--signed' : ''}`}>
       {samples.map((sample, index) => {
-        const raw = finite(sample?.[field])
+        const raw = finite(field === 'ers_pct'
+          ? sample.status ? sample.status.ers_pct / 100 : undefined
+          : sample.telemetry?.[field])
         const value = raw === null ? null : Math.max(signed ? -1 : 0, Math.min(1, raw))
         const reading = value === null ? 'No data' : signed
           ? `${value < 0 ? 'L ' : value > 0 ? 'R ' : ''}${Math.round(Math.abs(value) * 100)}%`
@@ -157,7 +171,7 @@ export default function AnalyzeInputComparison({
     savePosition(next)
   }
   const contentId = useId()
-  const [samples, setSamples] = useState<readonly [TelemetryRow | null, TelemetryRow | null]>(() => {
+  const [samples, setSamples] = useState<readonly [ComparisonSample, ComparisonSample]>(() => {
     const elapsed = elapsedSource()
     return [sampleAt(current, elapsed), sampleAt(comparison, elapsed)]
   })
@@ -168,7 +182,10 @@ export default function AnalyzeInputComparison({
       const elapsed = elapsedSource()
       const primary = sampleAt(current, elapsed)
       const reference = sampleAt(comparison, elapsed)
-      setSamples(previous => previous[0] === primary && previous[1] === reference
+      setSamples(previous => previous[0].telemetry === primary.telemetry &&
+        previous[0].status === primary.status &&
+        previous[1].telemetry === reference.telemetry &&
+        previous[1].status === reference.status
         ? previous : [primary, reference])
     }
     update()
@@ -218,22 +235,27 @@ export default function AnalyzeInputComparison({
           <InputBars label="Steering" field="steering" samples={samples} colors={colors} labels={labels} />
           <InputBars label="Brake" field="brake" samples={samples} colors={colors} labels={labels} />
           <InputBars label="Throttle" field="throttle" samples={samples} colors={colors} labels={labels} />
-          {(['speed_kph', 'gear'] as const).map(field => <div key={field} className="analyze-input-comparison__row">
-            <span className="text-[var(--text-secondary)]">{field === 'gear' ? 'Gear' : 'Speed'}</span>
-            <div className="analyze-input-comparison__values">
-              {samples.map((sample, index) => {
-                const value = finite(sample?.[field])
-                const reading = value === null ? '—' : field === 'gear'
-                  ? value < 0 ? 'R' : value === 0 ? 'N' : String(Math.round(value))
-                  : String(Math.round(value))
-                return <span key={index} style={{ color: colors[index] }}
-                  aria-label={`${labels[index]} ${field === 'gear' ? 'gear' : 'speed'}: ${value === null ? 'No data' : reading}${field === 'speed_kph' && value !== null ? ' km/h' : ''}`}>
-                  {reading}
-                </span>
-              })}
-              {field === 'speed_kph' && <span className="text-[9px] font-normal text-[var(--text-secondary)]">km/h</span>}
+          <InputBars label="ERS" field="ers_pct" samples={samples} colors={colors} labels={labels} />
+          {(['speed_kph', 'gear'] as const).map(field => {
+            const fieldLabel = field === 'speed_kph' ? 'Speed' : 'Gear'
+            const unit = field === 'speed_kph' ? 'km/h' : ''
+            return <div key={field} className="analyze-input-comparison__row">
+              <span className="text-[var(--text-secondary)]">{fieldLabel}</span>
+              <div className="analyze-input-comparison__values">
+                {samples.map((sample, index) => {
+                  const value = finite(sample.telemetry?.[field])
+                  const reading = value === null ? '—' : field === 'gear'
+                    ? value < 0 ? 'R' : value === 0 ? 'N' : String(Math.round(value))
+                    : String(Math.round(value))
+                  return <span key={index} style={{ color: colors[index] }}
+                    aria-label={`${labels[index]} ${fieldLabel}: ${value === null ? 'No data' : `${reading}${unit ? ` ${unit}` : ''}`}`}>
+                    {reading}
+                  </span>
+                })}
+                <span className="text-[9px] font-normal text-[var(--text-secondary)]">{unit}</span>
+              </div>
             </div>
-          </div>)}
+          })}
         </div>
       </div>
     </div>

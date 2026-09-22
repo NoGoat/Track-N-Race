@@ -75,9 +75,10 @@ export const DATA_CONSUMERS = {
   rideHeightHistory: { stream: DATA_ROW.motionEx, history: DATA_ROW.motionEx, types: [V6_DATA.rideHeight] },
   analyzeLapCoordinates: { stream: DATA_ROW.lap, history: DATA_ROW.lap, types: [V6_DATA.lapTiming] },
   analyzeMap: {
-    stream: DATA_ROW.positions | DATA_ROW.lap | DATA_ROW.telemetry,
-    history: DATA_ROW.positions | DATA_ROW.lap | DATA_ROW.telemetry,
-    types: [V6_DATA.position, V6_DATA.lapTiming, V6_DATA.speed],
+    stream: DATA_ROW.positions | DATA_ROW.lap | DATA_ROW.telemetry | DATA_ROW.status,
+    history: DATA_ROW.positions | DATA_ROW.lap | DATA_ROW.telemetry | DATA_ROW.status,
+    types: [V6_DATA.position, V6_DATA.lapTiming, V6_DATA.speed, V6_DATA.gear,
+      V6_DATA.throttle, V6_DATA.brake, V6_DATA.steering, V6_DATA.ersStore],
   },
 } as const satisfies Record<string, Requirement>
 
