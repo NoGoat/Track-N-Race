@@ -9,6 +9,8 @@ const storeAPI = {
 
 interface DebugSettings {
   additionalLogging: boolean
+  reactScan: boolean
+  webglMonitor: boolean
   memoryLog: boolean
   nodeApiExceptions: boolean
 }
@@ -126,6 +128,10 @@ const debugBridge = {
   get: (): Promise<DebugSettings> => ipcRenderer.invoke('debug-settings-get'),
   setAdditionalLogging: (enabled: boolean): void =>
     ipcRenderer.send('debug-settings-set', 'additionalLogging', enabled),
+  setReactScan: (enabled: boolean): void =>
+    ipcRenderer.send('debug-settings-set', 'reactScan', enabled),
+  setWebglMonitor: (enabled: boolean): void =>
+    ipcRenderer.send('debug-settings-set', 'webglMonitor', enabled),
   setMemoryLog: (enabled: boolean): void =>
     ipcRenderer.send('debug-settings-set', 'memoryLog', enabled),
   setNodeApiExceptions: (enabled: boolean): void =>

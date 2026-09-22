@@ -16,19 +16,22 @@ document.addEventListener('visibilitychange', () => {
 })
 
 async function bootstrap(): Promise<void> {
-  // React Scan and WebGL stats are opt-in because they add instrumentation to
-  // the render path. They must install before React DOM loads, so this part of
-  // the Additional logging setting takes effect on the next application launch.
-  if (getDebugSettings().additionalLogging) {
-    const [{ scan }, { installStatsGlDiagnostics }] = await Promise.all([
-      import('react-scan'),
-      import('./diagnostics/statsGlDiagnostics'),
-    ])
+  // React Scan and the WebGL monitor are opt-in because they add
+  // instrumentation to the render path. They must install before React DOM
+  // loads, so their settings take effect on the next application launch.
+  const debugSettings = getDebugSettings()
+
+  if (debugSettings.reactScan) {
+    const { scan } = await import('react-scan')
     scan({
       enabled: true,
       showToolbar: true,
       dangerouslyForceRunInProduction: true,
     })
+  }
+
+  if (debugSettings.webglMonitor) {
+    const { installStatsGlDiagnostics } = await import('./diagnostics/statsGlDiagnostics')
     installStatsGlDiagnostics()
   }
 

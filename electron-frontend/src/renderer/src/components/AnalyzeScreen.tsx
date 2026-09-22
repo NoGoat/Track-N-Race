@@ -73,6 +73,9 @@ interface LapOption {
 interface ComparisonLapOption extends Omit<LapOption, 'value'> {
   value: string
   lapNum: number
+  // The lap is still running: its elapsed time is written straight to the DOM
+  // by LiveLapTime instead of being baked into this option.
+  liveElapsed?: boolean
 }
 export interface SecondaryFileData {
   filename: string
@@ -93,6 +96,8 @@ const analysisLapKey = (selection: AnalysisDriverSelection, lapNum: number) =>
   `${analysisDriverKey(selection)}:${lapNum}`
 const ANALYZE_TOGGLE_BUTTON_CLASS = 'analyze-toggle-button flex h-8 min-w-0 flex-1 items-center justify-center rounded focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35'
 const ANALYZE_COMPARISON_COLOR_CLASS = 'h-5 w-5 shrink-0 cursor-pointer rounded border border-[var(--border)] shadow-inner'
+const EMPTY_LAP_OPTION_GROUPS: GroupBase<ComparisonLapOption>[] = []
+const noop = () => {}
 const ANALYSIS_MOTION_EASING = 'cubic-bezier(0.65, 0, 0.35, 1)'
 const ANALYSIS_MOTION_DURATION = 260
 const ANALYSIS_PRESENCE_DURATION = ANALYSIS_MOTION_DURATION + 20
@@ -256,7 +261,9 @@ function escapeTooltipText(value: string): string {
   })[character]!)
 }
 
-function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, negativeColor, followPlaybackCursor, showSectors }: {
+// The readout writes its numbers straight into its spans from the cursor
+// subscription, so it never needs to re-render with the screen around it.
+const AnalysisDeltaReadout = memo(function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, negativeColor, followPlaybackCursor, showSectors }: {
   deltaData: AnalyzeDeltaData | null
   current: AnalyzeLapData | null
   comparison: AnalyzeLapData | null
@@ -334,7 +341,7 @@ function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, n
       </span>
     })}
   </div>
-}
+})
 
 function lastTyreStatus(block: LapBlock): LapBlock['statusHistory'][number] | null {
   for (let index = block.statusHistory.length - 1; index >= 0; index--) {
@@ -371,11 +378,63 @@ function formatLapOption(option: LapOption) {
   </span>
 }
 
-function formatComparisonLapOption(option: ComparisonLapOption) {
-  return formatLapOption({ ...option, value: option.lapNum })
+// The running lap time changes on every telemetry frame. Feeding it through
+// props would re-render the whole react-select tree that displays it, so this
+// leaf subscribes on its own and writes the text node directly instead.
+function LiveLapTime({ fallback = '', lapNum, prefix = '' }: {
+  fallback?: string
+  lapNum: number
+  prefix?: string
+}) {
+  const ref = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    const write = (state: ReturnType<typeof useTelemetryStore.getState>) => {
+      const lap = state.lap
+      const elapsed = lap && lap.lap_num === lapNum ? formatLapTimeMs(lap.current_lap_ms) : null
+      const next = elapsed ? `${prefix}${elapsed}` : fallback
+      const node = ref.current
+      if (node && node.textContent !== next) node.textContent = next
+    }
+    write(useTelemetryStore.getState())
+    return useTelemetryStore.subscribe(write)
+  }, [fallback, lapNum, prefix])
+  return <span ref={ref} className="tabular-nums" />
 }
 
-function AnalyzeComparisonSelector({
+const LIVE_LAP_TIME_PREFIX = ' · '
+
+function formatComparisonLapOption(option: ComparisonLapOption) {
+  if (!option.liveElapsed) return formatLapOption({ ...option, value: option.lapNum })
+  return <span className="inline-flex items-center min-w-0">
+    {option.compound
+      ? <>
+          <span style={{ color: option.compoundColor ?? 'var(--text-primary)' }}>{option.compound}</span>
+          <span>&nbsp;· Lap {option.lapNum}</span>
+        </>
+      : `Lap ${option.lapNum}`}
+    <LiveLapTime lapNum={option.lapNum} prefix={LIVE_LAP_TIME_PREFIX} />
+  </span>
+}
+
+// Its options, handler and styles are all stable; only the screen around it
+// re-renders, so keep this select out of that path.
+const AddMetricSelect = memo(function AddMetricSelect({ onChange, options, styles }: {
+  onChange: (option: SingleValue<SelectOption>) => void
+  options: GroupBase<SelectOption>[]
+  styles: ReturnType<typeof buildSelectStyles>
+}) {
+  return <Select<SelectOption, false>
+    inputId="analyze-add-metric" aria-label="Add a Metric" value={null} options={options}
+    onChange={onChange} placeholder="Add a Metric" styles={styles}
+    components={selectComponents} isSearchable menuPortalTarget={document.body}
+  />
+})
+
+// Rebuilding this map inline makes react-select remount its internals on every
+// render of the panels around it.
+const displayOnlySelectComponents = { DropdownIndicator: () => null, ClearIndicator: () => null }
+
+const AnalyzeComparisonSelector = memo(function AnalyzeComparisonSelector({
   id, label, placeholder, value, options, onChange, styles, isDisabled = false, displayOnly = false,
 }: {
   id: string
@@ -394,15 +453,15 @@ function AnalyzeComparisonSelector({
       <Select<ComparisonLapOption, false, GroupBase<ComparisonLapOption>>
         inputId={id} value={value} options={options} placeholder={placeholder} onChange={onChange}
         formatOptionLabel={formatComparisonLapOption} styles={styles}
-        components={displayOnly ? { DropdownIndicator: () => null, ClearIndicator: () => null } : selectComponents}
+        components={displayOnly ? displayOnlySelectComponents : selectComponents}
         isSearchable={false} isClearable={!displayOnly} isDisabled={isDisabled || displayOnly}
         menuPortalTarget={document.body}
       />
     </div>
   </div>
-}
+})
 
-function AnalyzeLabelInput({ id, label, placeholder = label, value, onChange }: {
+const AnalyzeLabelInput = memo(function AnalyzeLabelInput({ id, label, placeholder = label, value, onChange }: {
   id: string
   label: string
   placeholder?: string
@@ -434,9 +493,9 @@ function AnalyzeLabelInput({ id, label, placeholder = label, value, onChange }: 
       ><X size={12} /></button>}
     </div>
   </div>
-}
+})
 
-function AnalyzeDriverField({
+const AnalyzeDriverField = memo(function AnalyzeDriverField({
   id, value, options, onChange, styles, displayOnly = false, isDisabled = false,
 }: {
   id: string
@@ -453,15 +512,15 @@ function AnalyzeDriverField({
       <Select<AnalysisDriverOption, false, GroupBase<AnalysisDriverOption>>
         inputId={id} value={value} options={options} placeholder="Select driver…"
         onChange={onChange} styles={styles}
-        components={displayOnly ? { DropdownIndicator: () => null, ClearIndicator: () => null } : selectComponents}
+        components={displayOnly ? displayOnlySelectComponents : selectComponents}
         isSearchable={false} isClearable={false} isDisabled={isDisabled || displayOnly}
         menuPortalTarget={document.body}
       />
     </div>
   </div>
-}
+})
 
-function AnalyzeComparisonGroup({
+const AnalyzeComparisonGroup = memo(function AnalyzeComparisonGroup({
   title, colorPicker, showColorPicker, driverValue, lapValue, driverOptions,
   onDriverChange, driverStyles, driverDisplayOnly = false, driverDisabled = false, children,
 }: {
@@ -489,7 +548,11 @@ function AnalyzeComparisonGroup({
         <span className="text-[var(--text-secondary)]">·</span>
         <span className="shrink-0 text-[var(--text-primary)]">{lapValue ? `Lap ${lapValue.lapNum}` : '-'}</span>
         <span className="text-[var(--text-secondary)]">·</span>
-        <span className="shrink-0 text-[var(--text-primary)]">{lapValue?.lapTime ?? '-'}</span>
+        <span className="shrink-0 text-[var(--text-primary)]">
+          {lapValue?.liveElapsed
+            ? <LiveLapTime lapNum={lapValue.lapNum} fallback="-" />
+            : lapValue?.lapTime ?? '-'}
+        </span>
       </span> : <span className="text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{title}</span>}
       <div className="ml-auto flex items-center">
         <div className={`analyze-map-color-slot ${showColorPicker ? 'analyze-map-color-slot--visible' : ''}`}>
@@ -530,7 +593,7 @@ function AnalyzeComparisonGroup({
       </div>
     </div>
   </section>
-}
+})
 
 function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
   if (!payload || payload.type !== 'playback_lap_data' || !Number.isFinite(payload.lapNum)) return null
@@ -568,7 +631,17 @@ function parseAnalyzeDeltaData(payload: any): AnalyzeDeltaData | null {
   }
 }
 
-function DeltaColorPicker({
+const SeriesColorPicker = memo(function SeriesColorPicker({ color, label, metricId, onColorChange }: {
+  color: string
+  label: string
+  metricId: string
+  onColorChange: (metricId: string, color: string) => void
+}) {
+  const handleChange = useCallback((next: string) => onColorChange(metricId, next), [metricId, onColorChange])
+  return <ColorPicker label={label} color={color} onChange={handleChange} />
+})
+
+const DeltaColorPicker = memo(function DeltaColorPicker({
   positiveColor, negativeColor, onPositiveChange, onNegativeChange, disabled = false,
 }: {
   positiveColor: string
@@ -589,7 +662,7 @@ function DeltaColorPicker({
       onChange={onNegativeChange}
     />
   </div>
-}
+})
 
 const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   isDark, selected, deltaPositiveColor, deltaNegativeColor,
@@ -1043,17 +1116,21 @@ export default function AnalyzeScreen({
   const compareLapOptions = useMemo(() => lapOptionsForDriver(compareDriver), [compareDriver, lapOptionsForDriver])
   const lapAOptions = useMemo(() => lapOptionsForDriver(lapADriver), [lapADriver, lapOptionsForDriver])
   const lapBOptions = useMemo(() => lapOptionsForDriver(lapBDriver), [lapBDriver, lapOptionsForDriver])
-  const compareOptions = groupedLapOptions(compareDriver, compareLapOptions)
-  const lapASelectOptions = groupedLapOptions(lapADriver, lapAOptions)
-  const lapBSelectOptions = groupedLapOptions(lapBDriver, lapBOptions)
+  const compareOptions = useMemo(
+    () => groupedLapOptions(compareDriver, compareLapOptions), [compareDriver, compareLapOptions, groupedLapOptions])
+  const lapASelectOptions = useMemo(
+    () => groupedLapOptions(lapADriver, lapAOptions), [groupedLapOptions, lapADriver, lapAOptions])
+  const lapBSelectOptions = useMemo(
+    () => groupedLapOptions(lapBDriver, lapBOptions), [groupedLapOptions, lapBDriver, lapBOptions])
   const selectedCompareLapNum = compareLapNum
   const compareValue = selectedCompareLapNum === null ? null
     : compareLapOptions.find(option => option.lapNum === selectedCompareLapNum) ?? null
   const currentLapValue = useMemo<ComparisonLapOption | null>(() => {
     if (effectiveCurrentLapNum === null) return null
     const existing = currentLapOptions.find(option => option.lapNum === effectiveCurrentLapNum)
-    const elapsedMs = liveLap?.lap_num === effectiveCurrentLapNum ? liveLap.current_lap_ms : undefined
-    const lapTime = existing?.lapTime ?? formatLapTimeMs(elapsedMs)
+    // A completed lap carries its own time; a running one is rendered live by
+    // LiveLapTime so this option stays referentially stable between frames.
+    const lapTime = existing?.lapTime ?? null
     return {
       value: `current:${effectiveCurrentLapNum}`,
       lapNum: effectiveCurrentLapNum,
@@ -1062,12 +1139,125 @@ export default function AnalyzeScreen({
       compoundColor: existing?.compoundColor ?? null,
       lapTime,
       isFastest: existing?.isFastest ?? false,
+      liveElapsed: lapTime === null,
     }
-  }, [currentLapOptions, effectiveCurrentLapNum, liveLap?.current_lap_ms, liveLap?.lap_num])
+  }, [currentLapOptions, effectiveCurrentLapNum])
   const lapAValue = fixedLapMode.lapA === null ? null
     : lapAOptions.find(option => option.lapNum === fixedLapMode.lapA) ?? null
   const lapBValue = fixedLapMode.lapB === null ? null
     : lapBOptions.find(option => option.lapNum === fixedLapMode.lapB) ?? null
+  // The Analysis sidebar re-renders with every telemetry frame because the
+  // charts beside it consume live slices. These handlers only change when the
+  // config they edit changes, so the memoized pickers, selects and label inputs
+  // below stay off that path.
+  const handleMapCurrentColorChange = useCallback(
+    (mapCurrentColor: string) => save({ ...config, mapCurrentColor }), [config, save])
+  const handleMapComparisonColorChange = useCallback(
+    (mapComparisonColor: string) => save({ ...config, mapComparisonColor }), [config, save])
+  const handleLapALabelChange = useCallback((lapALabel: string) => save({ ...config, lapALabel }), [config, save])
+  const handleLapBLabelChange = useCallback((lapBLabel: string) => save({ ...config, lapBLabel }), [config, save])
+  const handleCurrentLabelChange = useCallback((currentLabel: string) => save({ ...config, currentLabel }), [config, save])
+  const handleCompareLabelChange = useCallback((compareLabel: string) => save({ ...config, compareLabel }), [config, save])
+  const handleLapADriverSelect = useCallback((option: SingleValue<AnalysisDriverOption>) => {
+    if (!option) return
+    onFixedLapModeChange({
+      ...fixedLapMode,
+      lapA: null,
+      lapADriver: { source: option.source, driverIndex: option.driverIndex },
+    })
+  }, [fixedLapMode, onFixedLapModeChange])
+  const handleLapBDriverSelect = useCallback((option: SingleValue<AnalysisDriverOption>) => {
+    if (!option) return
+    onFixedLapModeChange({
+      ...fixedLapMode,
+      lapB: null,
+      lapBDriver: { source: option.source, driverIndex: option.driverIndex },
+    })
+  }, [fixedLapMode, onFixedLapModeChange])
+  const handleLapASelect = useCallback((option: SingleValue<ComparisonLapOption>) =>
+    onFixedLapModeChange({ ...fixedLapMode, lapA: option?.lapNum ?? null }), [fixedLapMode, onFixedLapModeChange])
+  const handleLapBSelect = useCallback((option: SingleValue<ComparisonLapOption>) =>
+    onFixedLapModeChange({ ...fixedLapMode, lapB: option?.lapNum ?? null }), [fixedLapMode, onFixedLapModeChange])
+  const handleCompareDriverSelect = useCallback((option: SingleValue<AnalysisDriverOption>) => {
+    if (!option) return
+    onCompareDriverChange({ source: option.source, driverIndex: option.driverIndex })
+    onCompareLapChange(null)
+  }, [onCompareDriverChange, onCompareLapChange])
+  const handleCompareLapSelect = useCallback((option: SingleValue<ComparisonLapOption>) =>
+    onCompareLapChange(option?.lapNum ?? null), [onCompareLapChange])
+  const handleSeriesColorChange = useCallback((metricId: string, color: string) =>
+    updateSeries(config.series.map(entry => entry.metricId === metricId ? { ...entry, color } : entry)),
+  [config.series, updateSeries])
+  const handleDeltaPositiveChange = useCallback((color: string) =>
+    updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, color } : entry)),
+  [config.series, updateSeries])
+  const handleDeltaNegativeChange = useCallback((negativeColor: string) =>
+    updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, negativeColor } : entry)),
+  [config.series, updateSeries])
+  // AnalyzeComparisonGroup takes its colour picker and fields as nodes, so they
+  // have to be memoized for its own memo to hold across telemetry frames.
+  const lapAColorPicker = useMemo(() => <ColorPicker
+    label="Lap A" color={config.mapCurrentColor} onChange={handleMapCurrentColorChange}
+    triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
+  />, [config.mapCurrentColor, handleMapCurrentColorChange])
+  const lapBColorPicker = useMemo(() => <ColorPicker
+    label="Lap B" color={config.mapComparisonColor} onChange={handleMapComparisonColorChange}
+    triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
+  />, [config.mapComparisonColor, handleMapComparisonColorChange])
+  const currentColorPicker = useMemo(() => <ColorPicker
+    label="Current" color={config.mapCurrentColor} onChange={handleMapCurrentColorChange}
+    triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
+  />, [config.mapCurrentColor, handleMapCurrentColorChange])
+  const compareColorPicker = useMemo(() => <ColorPicker
+    label="Compare" color={config.mapComparisonColor} onChange={handleMapComparisonColorChange}
+    triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
+  />, [config.mapComparisonColor, handleMapComparisonColorChange])
+  const lapAFields = useMemo(() => <>
+    <AnalyzeComparisonSelector
+      id="analyze-lap-a" label="Lap" value={lapAValue} options={lapASelectOptions} placeholder="Select lap…"
+      onChange={handleLapASelect} styles={lapSelectStyles}
+    />
+    <AnalyzeLabelInput
+      id="analyze-lap-a-label" label="Name" placeholder="Lap A" value={config.lapALabel}
+      onChange={handleLapALabelChange}
+    />
+  </>, [config.lapALabel, handleLapALabelChange, handleLapASelect, lapASelectOptions, lapAValue, lapSelectStyles])
+  const lapBFields = useMemo(() => <>
+    <AnalyzeComparisonSelector
+      id="analyze-lap-b" label="Lap" value={lapBValue} options={lapBSelectOptions} placeholder="Select lap…"
+      onChange={handleLapBSelect} styles={lapSelectStyles}
+    />
+    <AnalyzeLabelInput
+      id="analyze-lap-b-label" label="Name" placeholder="Lap B" value={config.lapBLabel}
+      onChange={handleLapBLabelChange}
+    />
+  </>, [config.lapBLabel, handleLapBLabelChange, handleLapBSelect, lapBSelectOptions, lapBValue, lapSelectStyles])
+  const currentFields = useMemo(() => <>
+    <AnalyzeComparisonSelector
+      id="analyze-current-lap" label="Lap" placeholder="No current lap"
+      value={currentLapValue} options={EMPTY_LAP_OPTION_GROUPS} onChange={noop} styles={lapSelectStyles} displayOnly
+    />
+    <AnalyzeLabelInput
+      id="analyze-current-label" label="Name" placeholder="Current" value={config.currentLabel}
+      onChange={handleCurrentLabelChange}
+    />
+  </>, [config.currentLabel, currentLapValue, handleCurrentLabelChange, lapSelectStyles])
+  const compareFields = useMemo(() => <>
+    <AnalyzeComparisonSelector
+      id="analyze-compare-lap" label="Lap" placeholder="Select lap…"
+      value={compareValue} options={compareOptions}
+      onChange={handleCompareLapSelect}
+      styles={lapSelectStyles} isDisabled={!playbackFilename || !blocks}
+    />
+    <AnalyzeLabelInput
+      id="analyze-compare-label" label="Name" placeholder="Compare" value={config.compareLabel}
+      onChange={handleCompareLabelChange}
+    />
+  </>, [blocks, compareOptions, compareValue, config.compareLabel, handleCompareLabelChange, handleCompareLapSelect,
+    lapSelectStyles, playbackFilename])
+  const lapADriverValue = useMemo(() => optionForDriver(lapADriver), [lapADriver, optionForDriver])
+  const lapBDriverValue = useMemo(() => optionForDriver(lapBDriver), [lapBDriver, optionForDriver])
+  const compareDriverValue = useMemo(() => optionForDriver(compareDriver), [compareDriver, optionForDriver])
   const lapASource: AnalysisFileSource = lapADriver?.source ?? 'file1'
   const lapBSource: AnalysisFileSource = lapBDriver?.source ?? 'file1'
   const comparisonSource: AnalysisFileSource = compareDriver?.source ?? 'file1'
@@ -1345,11 +1535,7 @@ export default function AnalyzeScreen({
             <div className="h-11 px-3 flex items-center gap-3 border-b border-[var(--border)] shrink-0">
               <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)] shrink-0">Analysis</div>
               <div className="flex-1 min-w-0">
-                <Select<SelectOption, false>
-                  inputId="analyze-add-metric" aria-label="Add a Metric" value={null} options={metricOptions}
-                  onChange={addMetric} placeholder="Add a Metric" styles={selectStyles}
-                  components={selectComponents} isSearchable menuPortalTarget={document.body}
-                />
+                <AddMetricSelect options={metricOptions} onChange={addMetric} styles={selectStyles} />
               </div>
             </div>
 
@@ -1440,62 +1626,18 @@ export default function AnalyzeScreen({
                 >
                   <AnalyzeComparisonGroup
                     title="Lap A" showColorPicker={mapVisible}
-                    driverValue={optionForDriver(lapADriver)} lapValue={lapAValue} driverOptions={driverOptionGroups}
-                    onDriverChange={option => {
-                      if (!option) return
-                      onFixedLapModeChange({
-                        ...fixedLapMode,
-                        lapA: null,
-                        lapADriver: { source: option.source, driverIndex: option.driverIndex },
-                      })
-                    }}
+                    driverValue={lapADriverValue} lapValue={lapAValue} driverOptions={driverOptionGroups}
+                    onDriverChange={handleLapADriverSelect}
                     driverStyles={lapSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
-                    colorPicker={<ColorPicker
-                      label="Lap A"
-                      color={config.mapCurrentColor}
-                      onChange={mapCurrentColor => save({ ...config, mapCurrentColor })}
-                      triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
-                    />}
-                  >
-                    <AnalyzeComparisonSelector
-                      id="analyze-lap-a" label="Lap" value={lapAValue} options={lapASelectOptions} placeholder="Select lap…"
-                      onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapA: option?.lapNum ?? null })}
-                      styles={lapSelectStyles}
-                    />
-                    <AnalyzeLabelInput
-                      id="analyze-lap-a-label" label="Name" placeholder="Lap A" value={config.lapALabel}
-                      onChange={lapALabel => save({ ...config, lapALabel })}
-                    />
-                  </AnalyzeComparisonGroup>
+                    colorPicker={lapAColorPicker}
+                  >{lapAFields}</AnalyzeComparisonGroup>
                   <AnalyzeComparisonGroup
                     title="Lap B" showColorPicker={mapVisible}
-                    driverValue={optionForDriver(lapBDriver)} lapValue={lapBValue} driverOptions={driverOptionGroups}
-                    onDriverChange={option => {
-                      if (!option) return
-                      onFixedLapModeChange({
-                        ...fixedLapMode,
-                        lapB: null,
-                        lapBDriver: { source: option.source, driverIndex: option.driverIndex },
-                      })
-                    }}
+                    driverValue={lapBDriverValue} lapValue={lapBValue} driverOptions={driverOptionGroups}
+                    onDriverChange={handleLapBDriverSelect}
                     driverStyles={lapSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
-                    colorPicker={<ColorPicker
-                      label="Lap B"
-                      color={config.mapComparisonColor}
-                      onChange={mapComparisonColor => save({ ...config, mapComparisonColor })}
-                      triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
-                    />}
-                  >
-                    <AnalyzeComparisonSelector
-                      id="analyze-lap-b" label="Lap" value={lapBValue} options={lapBSelectOptions} placeholder="Select lap…"
-                      onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapB: option?.lapNum ?? null })}
-                      styles={lapSelectStyles}
-                    />
-                    <AnalyzeLabelInput
-                      id="analyze-lap-b-label" label="Name" placeholder="Lap B" value={config.lapBLabel}
-                      onChange={lapBLabel => save({ ...config, lapBLabel })}
-                    />
-                  </AnalyzeComparisonGroup>
+                    colorPicker={lapBColorPicker}
+                  >{lapBFields}</AnalyzeComparisonGroup>
                 </div>
                 <div
                   className={`analyze-lap-mode-panel ${!fixedLapMode.enabled ? 'analyze-lap-mode-panel--visible' : 'analyze-lap-mode-panel--hidden-right'}`}
@@ -1505,50 +1647,16 @@ export default function AnalyzeScreen({
                   <AnalyzeComparisonGroup
                     title="Current" showColorPicker={mapVisible} driverDisplayOnly
                     driverValue={currentDriverValue} lapValue={currentLapValue} driverOptions={driverOptionGroups}
-                    onDriverChange={() => {}} driverStyles={lapSelectStyles}
-                    colorPicker={<ColorPicker
-                      label="Current"
-                      color={config.mapCurrentColor}
-                      onChange={mapCurrentColor => save({ ...config, mapCurrentColor })}
-                      triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
-                    />}
-                  >
-                    <AnalyzeComparisonSelector
-                      id="analyze-current-lap" label="Lap" placeholder="No current lap"
-                      value={currentLapValue} options={[]} onChange={() => {}} styles={lapSelectStyles} displayOnly
-                    />
-                    <AnalyzeLabelInput
-                      id="analyze-current-label" label="Name" placeholder="Current" value={config.currentLabel}
-                      onChange={currentLabel => save({ ...config, currentLabel })}
-                    />
-                  </AnalyzeComparisonGroup>
+                    onDriverChange={noop} driverStyles={lapSelectStyles}
+                    colorPicker={currentColorPicker}
+                  >{currentFields}</AnalyzeComparisonGroup>
                   <AnalyzeComparisonGroup
                     title="Compare" showColorPicker={mapVisible}
-                    driverValue={optionForDriver(compareDriver)} lapValue={compareValue} driverOptions={driverOptionGroups}
-                    onDriverChange={option => {
-                      if (!option) return
-                      onCompareDriverChange({ source: option.source, driverIndex: option.driverIndex })
-                      onCompareLapChange(null)
-                    }}
+                    driverValue={compareDriverValue} lapValue={compareValue} driverOptions={driverOptionGroups}
+                    onDriverChange={handleCompareDriverSelect}
                     driverStyles={lapSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
-                    colorPicker={<ColorPicker
-                      label="Compare"
-                      color={config.mapComparisonColor}
-                      onChange={mapComparisonColor => save({ ...config, mapComparisonColor })}
-                      triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
-                    />}
-                  >
-                    <AnalyzeComparisonSelector
-                      id="analyze-compare-lap" label="Lap" placeholder="Select lap…"
-                      value={compareValue} options={compareOptions}
-                      onChange={option => onCompareLapChange(option?.lapNum ?? null)}
-                      styles={lapSelectStyles} isDisabled={!playbackFilename || !blocks}
-                    />
-                    <AnalyzeLabelInput
-                      id="analyze-compare-label" label="Name" placeholder="Compare" value={config.compareLabel}
-                      onChange={compareLabel => save({ ...config, compareLabel })}
-                    />
-                  </AnalyzeComparisonGroup>
+                    colorPicker={compareColorPicker}
+                  >{compareFields}</AnalyzeComparisonGroup>
                 </div>
               </div>
               <button
@@ -1574,8 +1682,8 @@ export default function AnalyzeScreen({
                     <DeltaColorPicker
                       positiveColor={item.color}
                       negativeColor={item.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR}
-                      onPositiveChange={color => updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, color } : entry))}
-                      onNegativeChange={negativeColor => updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, negativeColor } : entry))}
+                      onPositiveChange={handleDeltaPositiveChange}
+                      onNegativeChange={handleDeltaNegativeChange}
                       disabled={!!playbackFilename && !selectedDistanceMode}
                     />
                     <div className="flex-1 min-w-0">
@@ -1604,10 +1712,11 @@ export default function AnalyzeScreen({
                     className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded border border-transparent hover:border-[var(--border)] hover:bg-[var(--bg-hover)] ${draggedMetric === item.metricId ? 'opacity-40' : ''}`}
                   >
                     <GripVertical size={13} className="text-[var(--text-secondary)] cursor-grab shrink-0" />
-                    <ColorPicker
+                    <SeriesColorPicker
                       label={def.label}
                       color={item.color}
-                      onChange={color => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, color } : entry))}
+                      metricId={item.metricId}
+                      onColorChange={handleSeriesColorChange}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="text-[10px] text-[var(--text-primary)] truncate">{def.label}</div>

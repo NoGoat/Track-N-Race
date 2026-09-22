@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import syncedTooltipIcon from '../../assets/icons/synced-tooltip.svg'
 
 interface Props {
@@ -5,9 +6,10 @@ interface Props {
   size?: number
 }
 
-export default function SyncedTooltipIcon({ className = '', size = 16 }: Props) {
-  const mask = `url("${syncedTooltipIcon}")`
+const mask = `url("${syncedTooltipIcon}")`
 
+// The icon renders inside title bars that re-render with live session data.
+export default memo(function SyncedTooltipIcon({ className = '', size = 16 }: Props) {
   return <span
     aria-hidden="true"
     className={`block shrink-0 ${className}`}
@@ -25,4 +27,4 @@ export default function SyncedTooltipIcon({ className = '', size = 16 }: Props) 
       WebkitMaskSize: 'contain',
     }}
   />
-}
+})

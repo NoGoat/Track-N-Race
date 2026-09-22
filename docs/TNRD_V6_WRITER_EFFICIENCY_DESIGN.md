@@ -361,16 +361,18 @@ Level 5 is strictly a bad trade: 2.4% smaller for 52% more time. The curve is
 flat from 3 to 5 and then drops sharply; 7 and 9 are where the gains are, and 7
 to 9 costs only ~7% more time than 7 itself for another 7 points of size.
 
-**Proposed fix.** Make the level a writer setting rather than a literal. A
-temporary `TNRD_ZSTD_LEVEL` environment hook exists in
-`tnrp::detail::zstdLevel()` (`TNRD_V6.cpp:32`), added to run this comparison; it
-defaults to 3 and should be replaced by a proper setting or removed.
+**Resolved.** The level is now a writer setting
+(`TnrdV6Writer::setCompressionLevel()`, surfaced through
+`TnrdWriter::setCompressionLevel()`) rather than a literal, and the temporary
+`TNRD_ZSTD_LEVEL` environment hook is gone. The default is **9** for both live
+recording and offline conversion.
 
-Do **not** raise the live-recording default on the strength of this table. These
-are bulk offline conversions; live recording compresses one chunk at a time on
-the writer thread, so the number that decides it is per-chunk latency at level
-7/9 against the 30 s write delay, which is not measured here. Offline conversion
-is free to default higher.
+Caveat, unchanged by that decision: the table above is bulk offline conversion.
+Live recording compresses one chunk at a time on the writer thread, so the
+number that would validate level 9 for live use is per-chunk latency against the
+30 s write delay, which is still not measured here. If live recording shows
+writer backlog, measure that latency before assuming the cause lies elsewhere,
+and lower the level via `setCompressionLevel()`.
 
 ## 7. Staged plan
 

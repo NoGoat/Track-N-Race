@@ -185,6 +185,8 @@ ipcMain.on('store-set', (_event, key: string, value: unknown) => {
 
 interface DebugSettings {
   additionalLogging: boolean
+  reactScan: boolean
+  webglMonitor: boolean
   memoryLog: boolean
   nodeApiExceptions: boolean
 }
@@ -192,6 +194,8 @@ interface DebugSettings {
 function debugSettings(): DebugSettings {
   return {
     additionalLogging: store.get('debug.additionalLogging', false) === true,
+    reactScan: store.get('debug.reactScan', false) === true,
+    webglMonitor: store.get('debug.webglMonitor', false) === true,
     memoryLog: store.get('debug.memoryLog', false) === true,
     nodeApiExceptions: store.get('debug.nodeApiExceptions', false) === true,
   }
@@ -205,12 +209,15 @@ function publishDebugSettings(): void {
 }
 
 store.onDidChange('debug.additionalLogging', publishDebugSettings)
+store.onDidChange('debug.reactScan', publishDebugSettings)
+store.onDidChange('debug.webglMonitor', publishDebugSettings)
 store.onDidChange('debug.memoryLog', publishDebugSettings)
 store.onDidChange('debug.nodeApiExceptions', publishDebugSettings)
 
 ipcMain.handle('debug-settings-get', debugSettings)
 ipcMain.on('debug-settings-set', (_event, key: keyof DebugSettings, value: unknown) => {
-  if ((key !== 'additionalLogging' && key !== 'memoryLog' && key !== 'nodeApiExceptions') ||
+  if ((key !== 'additionalLogging' && key !== 'reactScan' && key !== 'webglMonitor' &&
+       key !== 'memoryLog' && key !== 'nodeApiExceptions') ||
       typeof value !== 'boolean') return
   store.set(`debug.${key}`, value)
 })

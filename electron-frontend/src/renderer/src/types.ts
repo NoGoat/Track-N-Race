@@ -585,6 +585,14 @@ export interface PairServiceState {
 }
 
 declare global {
+  interface DebugSettingsPayload {
+    additionalLogging: boolean
+    reactScan: boolean
+    webglMonitor: boolean
+    memoryLog: boolean
+    nodeApiExceptions: boolean
+  }
+
   interface TimeChartStatsBridge {
     register(element: HTMLElement, canvas: HTMLCanvasElement): void
     unregister(element: HTMLElement): void
@@ -610,11 +618,13 @@ declare global {
       onStatusChange: (cb: (status: { ok: boolean; error?: string }) => void) => () => void
     }
     debugBridge: {
-      get: () => Promise<{ additionalLogging: boolean; memoryLog: boolean; nodeApiExceptions: boolean }>
+      get: () => Promise<DebugSettingsPayload>
       setAdditionalLogging: (enabled: boolean) => void
+      setReactScan: (enabled: boolean) => void
+      setWebglMonitor: (enabled: boolean) => void
       setMemoryLog: (enabled: boolean) => void
       setNodeApiExceptions: (enabled: boolean) => void
-      onChange: (cb: (settings: { additionalLogging: boolean; memoryLog: boolean; nodeApiExceptions: boolean }) => void) => () => void
+      onChange: (cb: (settings: DebugSettingsPayload) => void) => () => void
     }
     protocolBridge: {
       getConfig:   () => Promise<{ override: string; detected: number | null; lastDetected: number | null; active: number | null }>

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type PointerEvent, type KeyboardEvent } from 'react'
+import { memo, useEffect, useId, useMemo, useRef, useState, type PointerEvent, type KeyboardEvent } from 'react'
 import { GripVertical } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import type { AnalyzeLapData, StatusRow, TelemetryRow } from '../types'
@@ -67,7 +67,7 @@ function finite(value: number | undefined): number | null {
   return value !== undefined && Number.isFinite(value) ? value : null
 }
 
-function InputBars({ label, field, samples, colors, labels }: {
+const InputBars = memo(function InputBars({ label, field, samples, colors, labels }: {
   label: string
   field: 'steering' | 'brake' | 'throttle' | 'ers_pct'
   samples: readonly ComparisonSample[]
@@ -99,9 +99,11 @@ function InputBars({ label, field, samples, colors, labels }: {
       })}
     </div>
   </div>
-}
+})
 
-export default function AnalyzeInputComparison({
+// The map around this overlay re-renders with the analysis screen; the readings
+// here update from their own sampling timer instead.
+export default memo(function AnalyzeInputComparison({
   current, comparison, currentColor, comparisonColor, currentLabel, comparisonLabel, elapsedSource,
 }: Props) {
   const [collapsed, setCollapsed] = useState(false)
@@ -194,8 +196,10 @@ export default function AnalyzeInputComparison({
     return () => window.clearInterval(timer)
   }, [collapsed, comparison, current, elapsedSource])
 
-  const colors = [currentColor, comparisonColor]
-  const labels = [currentLabel || 'Current lap', comparisonLabel || 'Comparison lap']
+  const colors = useMemo(() => [currentColor, comparisonColor], [comparisonColor, currentColor])
+  const labels = useMemo(
+    () => [currentLabel || 'Current lap', comparisonLabel || 'Comparison lap'],
+    [comparisonLabel, currentLabel])
 
   return <section ref={panelRef} className="analyze-input-comparison" data-dragging={dragging} aria-label="Comparison"
     style={{
@@ -260,4 +264,4 @@ export default function AnalyzeInputComparison({
       </div>
     </div>
   </section>
-}
+})

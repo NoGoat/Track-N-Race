@@ -251,14 +251,29 @@ export default function AppShell() {
   const recordingOpen = !!playback.state?.filename
   const driverSelectorVisible = recordingOpen && playbackTnrdVersion === 'TNRD_V6'
   const originalPlayerIdx = recordedPlayerIdx ?? playbackDriverIndex ?? timingPlayerIdx
-  const driverOptions = useMemo(() => (participants?.drivers ?? []).map(driver => {
-    const restricted = driver.idx !== originalPlayerIdx && driver.your_telemetry !== 1
-    return {
-      value: driver.idx,
-      label: restricted ? `${driver.name} · Public data only` : driver.name,
-      isDisabled: false,
+  // Every participants packet replaces the store's roster object, so this list
+  // would otherwise get a new identity several times a second and re-render the
+  // whole title bar through AppHeader's memo. Reuse the previous array whenever
+  // the rendered options are unchanged.
+  const driverOptionsRef = useRef<Array<{ value: number; label: string; isDisabled: boolean }>>([])
+  const driverOptions = useMemo(() => {
+    const next = (participants?.drivers ?? []).map(driver => {
+      const restricted = driver.idx !== originalPlayerIdx && driver.your_telemetry !== 1
+      return {
+        value: driver.idx,
+        label: restricted ? `${driver.name} · Public data only` : driver.name,
+        isDisabled: false,
+      }
+    })
+    const previous = driverOptionsRef.current
+    if (previous.length === next.length &&
+        previous.every((option, index) => option.value === next[index].value &&
+          option.label === next[index].label && option.isDisabled === next[index].isDisabled)) {
+      return previous
     }
-  }), [participants, originalPlayerIdx])
+    driverOptionsRef.current = next
+    return next
+  }, [participants, originalPlayerIdx])
   useEffect(() => {
     setPlaybackDriverIdx(null)
     setRecordedPlayerIdx(null)
@@ -385,8 +400,17 @@ export default function AppShell() {
       : fullLapHistoryEnabled
           ? -1
           : hasLapWindow ? 0 : maxFiniteWindow
+    // Aero (7), TyreState (13) and BrakeBias (20) are edge-encoded in V6: the
+    // writer only records a sample when the value changes. Every other type is
+    // sampled continuously, so if a seek flush omits it the resumed 60Hz stream
+    // refills it within a frame and nobody notices. These three have no such
+    // safety net — a value whose last change was laps ago is never re-sent, so
+    // leaving them out of the history request means the field stays missing
+    // until the car next changes it. That is why the wing card read blank after
+    // every seek. Request them whenever any history is requested.
     const v6HistoryTypes = [...new Set([
       ...dataRequirements.v6HistoryTypes,
+      ...(historyMask ? [7, 13, 20] : []),
       ...(stintLapsEnabled ? [13, 15] : []),
       ...(lapMetadataMask ? [24] : []),
     ])]
@@ -458,6 +482,10 @@ export default function AppShell() {
     setSelectedIdx(prev => prev === idx ? null : idx)
   }, [])
 
+  // usePlayback returns a fresh object on every render, so reading it through a
+  // ref keeps this handler stable for AppHeader's memo.
+  const playbackRef = useRef(playback)
+  playbackRef.current = playback
   const handlePlaybackDriverChange = useCallback((idx: number) => {
     if (!driverSelectorVisible || idx === playbackDriverIdx) return
     const option = driverOptions.find(candidate => candidate.value === idx)
@@ -465,8 +493,9 @@ export default function AppShell() {
     setPlaybackDriverIdx(idx)
     setSelectedIdx(idx)
     window.playerBridge.setDriver(idx, idx === originalPlayerIdx)
-    if (playback.state) playback.seekProgress(playback.state.progressPct)
-  }, [driverOptions, driverSelectorVisible, originalPlayerIdx, playback, playbackDriverIdx])
+    const current = playbackRef.current
+    if (current.state) current.seekProgress(current.state.progressPct)
+  }, [driverOptions, driverSelectorVisible, originalPlayerIdx, playbackDriverIdx])
 
   return (
     <div className="h-dvh bg-[var(--bg-base)] text-[var(--text-primary)] flex flex-col relative">

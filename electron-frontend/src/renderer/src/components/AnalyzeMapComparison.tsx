@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PlaybackBar from '../app/components/PlaybackBar'
 import { setAnalyzeCursorSource } from '../lib/analyzeCursor'
 import { getPlaybackCursorTime } from '../lib/playbackCursor'
@@ -88,7 +88,10 @@ function writeMarkerAt(
   return true
 }
 
-export default function AnalyzeMapComparison({
+// The analysis screen re-renders with every telemetry frame. The map keeps its
+// own clock and draws its markers from a source function, so it only needs to
+// re-render when the laps, colours or view settings around it change.
+export default memo(function AnalyzeMapComparison({
   comparison, comparisonColor, comparisonLabel, compatibleCircuit, current, currentColor, currentLabel,
   fixedMode, isDark, mapDimmed, reduceAnimations,
   sectorColors, trackId, focus,
@@ -260,4 +263,4 @@ export default function AnalyzeMapComparison({
       </div>
     </div>}
   </div>
-}
+})

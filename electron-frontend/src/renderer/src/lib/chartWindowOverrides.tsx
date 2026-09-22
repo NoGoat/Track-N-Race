@@ -102,21 +102,36 @@ export function ChartWindowOverridesProvider({
 
 export function ChartWindowScope({ section, children }: { section: GraphSection; children: React.ReactNode }) {
   const context = useContext(OverrideContext)
+  const clAvailable = context?.clAvailable ?? false
+  const recordingOpen = context?.recordingOpen ?? false
+  const globalWindow = context?.globalWindow ?? 30
+  const override = context?.overrides[section]
+  const lapOverride = context?.referenceLapOverrides[section]
+  const contextReferenceLapNum = context?.referenceLapNum ?? null
+  // The chart bodies around this scope re-render with every telemetry frame.
+  // Keep the scope value referentially stable so the memoized window and lap
+  // selectors below only re-render when the scope itself actually changes.
+  const scope = useMemo<ScopeContextValue>(() => {
+    const availableWindows = getChartWindowOptionGroups(clAvailable, recordingOpen)
+      .flatMap(group => group.options)
+      .map(option => option.value)
+    const isAvailable = (value: ChartWindow): boolean => availableWindows.includes(value)
+    const titlebarWindow = isAvailable(globalWindow) ? globalWindow : 30
+    const window = override !== undefined && isAvailable(override) ? override : titlebarWindow
+    return {
+      section,
+      window,
+      windowSeconds: typeof window === 'number' ? window : 30,
+      referenceLapNum: lapOverride ?? contextReferenceLapNum,
+    }
+  }, [clAvailable, contextReferenceLapNum, globalWindow, lapOverride, override, recordingOpen, section])
   if (!context) return children
-  const availableWindows = getChartWindowOptionGroups(context.clAvailable, context.recordingOpen)
-    .flatMap(group => group.options)
-    .map(option => option.value)
-  const isAvailable = (value: ChartWindow): boolean => availableWindows.includes(value)
-  const titlebarWindow = isAvailable(context.globalWindow) ? context.globalWindow : 30
-  const override = context.overrides[section]
-  const window = override !== undefined && isAvailable(override) ? override : titlebarWindow
+  const { window, referenceLapNum } = scope
   const validLapMode = typeof window !== 'number' && window !== 'AL' && window !== 'SL' &&
-    context.clAvailable && (window !== 'RL' || context.recordingOpen)
+    clAvailable && (window !== 'RL' || recordingOpen)
   const mode = window === 'AL' || window === 'SL' ? window : validLapMode ? window : null
-  const windowSeconds = typeof window === 'number' ? window : 30
-  const referenceLapNum = context.referenceLapOverrides[section] ?? context.referenceLapNum
   return (
-    <ScopeContext.Provider value={{ section, window, windowSeconds, referenceLapNum }}>
+    <ScopeContext.Provider value={scope}>
       <ChartCoordinatesProvider
         mode={mode}
         referenceLapNum={referenceLapNum}

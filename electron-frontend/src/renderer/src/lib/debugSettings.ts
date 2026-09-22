@@ -1,5 +1,7 @@
 export interface DebugSettings {
   additionalLogging: boolean
+  reactScan: boolean
+  webglMonitor: boolean
   memoryLog: boolean
   nodeApiExceptions: boolean
 }
@@ -7,6 +9,8 @@ export interface DebugSettings {
 function readDebugSettings(): DebugSettings {
   return {
     additionalLogging: window.electronStore.get('debug.additionalLogging', false) === true,
+    reactScan: window.electronStore.get('debug.reactScan', false) === true,
+    webglMonitor: window.electronStore.get('debug.webglMonitor', false) === true,
     memoryLog: window.electronStore.get('debug.memoryLog', false) === true,
     nodeApiExceptions: window.electronStore.get('debug.nodeApiExceptions', false) === true,
   }

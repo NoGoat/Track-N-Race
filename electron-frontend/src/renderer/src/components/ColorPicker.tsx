@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
 import { ArrowDownUp } from 'lucide-react'
@@ -6,7 +6,7 @@ import { ArrowDownUp } from 'lucide-react'
 // Shared color picker used by Analysis and Settings. Keeping one component
 // preserves identical positioning, theme integration, keyboard dismissal, and
 // hex-only behavior everywhere colors are edited.
-export default function ColorPicker({
+export default memo(function ColorPicker({
   label, color, onChange, triggerClassName, triggerStyle, disabled = false,
 }: {
   label: string
@@ -120,4 +120,4 @@ export default function ColorPicker({
       document.body,
     )}
   </>
-}
+})

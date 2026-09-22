@@ -29,23 +29,63 @@ interface PlaybackBarProps {
   state: any
 }
 
+type LapOption = { value: number; label: string }
+
+// The playback state ticks every frame, so the bar around these two selects
+// re-renders continuously. Keep react-select out of that path: both leaves take
+// only primitives plus stable callbacks, so their memo holds while playing.
+const SpeedSelect = memo(function SpeedSelect({ className, onChange, speed }: {
+  className: string
+  onChange: (option: SingleValue<(typeof PLAYBACK_SPEED_OPTIONS)[number]>) => void
+  speed: number
+}) {
+  const value = PLAYBACK_SPEED_OPTIONS.find(option => option.value === speed) ?? PLAYBACK_SPEED_OPTIONS[2]
+  return (
+    <div className={className}>
+      <Select value={value} onChange={onChange} options={PLAYBACK_SPEED_OPTIONS} styles={selectStyles} components={selectComponents} menuPlacement="top" isSearchable={false} />
+    </div>
+  )
+})
+
+const LapSelect = memo(function LapSelect({ className, currentLapNum, onChange, options }: {
+  className: string
+  currentLapNum: number | null
+  onChange: (option: SingleValue<LapOption>) => void
+  options: LapOption[]
+}) {
+  const value = currentLapNum !== null ? { value: currentLapNum, label: String(currentLapNum) } : null
+  return (
+    <div className={className}>
+      <Select value={value} options={options} onChange={onChange} isSearchable={false} maxMenuHeight={150} menuPlacement="top" styles={selectStyles} components={selectComponents} placeholder="—" />
+    </div>
+  )
+})
+
 const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, onSeekProgress, progressPct, totalTime }: { compact: DensityMode | boolean; currentTime: number; onSeekProgress: (progress: number) => void; progressPct: number; totalTime: number }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const draggingRef = useRef(false)
   const dragProgressRef = useRef(progressPct)
   const lastSeekRef = useRef(0)
   const [displayPct, setDisplayPct] = useState(progressPct)
+  const progressPctRef = useRef(progressPct)
+  progressPctRef.current = progressPct
+  // While the thumb is not held, the incoming progress is the truth. Mirroring
+  // it into state as well would re-render this bar a second time every frame.
+  const activePct = draggingRef.current ? displayPct : progressPct
   const startSessionTime = currentTime - progressPct * totalTime
   const displayTime = draggingRef.current ? startSessionTime + displayPct * totalTime : currentTime
   const isCompact = compact === true || compact === 'compact'
   const isSpacious = compact === 'spacious'
 
   useEffect(() => {
-    if (!draggingRef.current) {
-      setDisplayPct(progressPct)
-      if (inputRef.current) inputRef.current.value = String(progressPct)
-    }
+    if (!draggingRef.current && inputRef.current) inputRef.current.value = String(progressPct)
   }, [progressPct])
+
+  const startDrag = useCallback(() => {
+    draggingRef.current = true
+    dragProgressRef.current = progressPctRef.current
+    setDisplayPct(current => current === progressPctRef.current ? current : progressPctRef.current)
+  }, [])
 
   const finishDrag = useCallback(() => {
     if (!draggingRef.current) return
@@ -78,10 +118,10 @@ const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, on
       </span>
       {isSpacious && totalTime > 0 && (
         <span className="text-xs font-medium font-mono text-[var(--text-secondary)] tabular-nums shrink-0">
-          ({Math.round(displayPct * 100)}%)
+          ({Math.round(activePct * 100)}%)
         </span>
       )}
-      <input ref={inputRef} type="range" min="0" max="1" step="0.001" defaultValue={progressPct} onMouseDown={() => { draggingRef.current = true }} onMouseUp={finishDrag} onTouchStart={() => { draggingRef.current = true }} onTouchEnd={finishDrag} onChange={handleChange} className={`flex-1 ${isSpacious ? 'h-2' : 'h-1.5'} bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--color-info)] [&::-webkit-slider-thumb]:cursor-pointer`} style={{ background: `linear-gradient(to right, var(--color-info) ${displayPct * 100}%, var(--border) ${displayPct * 100}%)` }} />
+      <input ref={inputRef} type="range" min="0" max="1" step="0.001" defaultValue={progressPct} onMouseDown={startDrag} onMouseUp={finishDrag} onTouchStart={startDrag} onTouchEnd={finishDrag} onChange={handleChange} className={`flex-1 ${isSpacious ? 'h-2' : 'h-1.5'} bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--color-info)] [&::-webkit-slider-thumb]:cursor-pointer`} style={{ background: `linear-gradient(to right, var(--color-info) ${activePct * 100}%, var(--border) ${activePct * 100}%)` }} />
       <span className={`${isSpacious ? 'text-sm font-bold' : 'text-xs'} font-mono text-[var(--text-secondary)] tabular-nums`}>{fmtLap(totalTime)}</span>
     </div>
   )
@@ -90,15 +130,18 @@ const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, on
 export default memo(function PlaybackBar({ compact, currentLapNum = null, exportError = null, exportState = 'idle', onExport, onSeekProgress, onSeekBackward, onSeekForward, onSpeedChange, onTogglePlay, sessionFileStart = 0, showExport = true, showLapSelect = true, speedRpmBlocks = null, state }: PlaybackBarProps) {
   const isCompact = compact === true || compact === 'compact'
   const isSpacious = compact === 'spacious'
-  const speedValue = PLAYBACK_SPEED_OPTIONS.find(option => option.value === state.speed) ?? PLAYBACK_SPEED_OPTIONS[2]
   const lapOptions = useMemo(() => speedRpmBlocks?.map(block => ({ value: block.lapNum, label: String(block.lapNum) })) ?? [], [speedRpmBlocks])
-  const lapValue = currentLapNum !== null ? { value: currentLapNum, label: String(currentLapNum) } : null
   const handleSpeed = useCallback((option: SingleValue<(typeof PLAYBACK_SPEED_OPTIONS)[number]>) => { if (option) onSpeedChange(option.value) }, [onSpeedChange])
-  const handleLap = useCallback((option: SingleValue<{ value: number; label: string }>) => {
-    if (!option || state.totalTime <= 0 || !speedRpmBlocks) {
+  // Seeking needs the live clock, but depending on it here would rebuild the
+  // handler every frame and defeat the lap select's memo.
+  const stateRef = useRef(state)
+  stateRef.current = state
+  const handleLap = useCallback((option: SingleValue<LapOption>) => {
+    const current = stateRef.current
+    if (!option || current.totalTime <= 0 || !speedRpmBlocks) {
       playbackDebug('lap-select-rejected', {
         selectedLap: option?.value ?? null,
-        totalTime: state.totalTime,
+        totalTime: current.totalTime,
         hasBlocks: Boolean(speedRpmBlocks),
       })
       return
@@ -111,21 +154,22 @@ export default memo(function PlaybackBar({ compact, currentLapNum = null, export
       })
       return
     }
-    const ratio = (block.startSessionTime - sessionFileStart) / state.totalTime
+    const ratio = (block.startSessionTime - sessionFileStart) / current.totalTime
     const clampedRatio = Math.max(0, Math.min(1, ratio))
     playbackDebug('lap-select-seek', {
       selectedLap: option.value,
       blockStart: block.startSessionTime,
       blockEnd: block.endSessionTime,
       sessionFileStart,
-      currentTime: state.currentTime,
-      totalTime: state.totalTime,
+      currentTime: current.currentTime,
+      totalTime: current.totalTime,
       rawProgress: ratio,
       sentProgress: clampedRatio,
     })
     window.playerBridge.seek(clampedRatio)
-  }, [sessionFileStart, speedRpmBlocks, state.currentTime, state.totalTime])
+  }, [sessionFileStart, speedRpmBlocks])
 
+  const selectWidth = `${isCompact ? 'w-[3.5rem]' : isSpacious ? 'w-[5.5rem]' : 'w-[4.5rem]'} shrink-0`
   const controlSize = isCompact ? 'w-6 h-6' : isSpacious ? 'w-10 h-10' : 'w-8 h-8'
   const playControlSize = isCompact ? 'w-6 h-6' : isSpacious ? 'w-9 h-9' : 'w-7 h-7'
   const playIconSize = isCompact ? 12 : isSpacious ? 20 : 16
@@ -152,12 +196,12 @@ export default memo(function PlaybackBar({ compact, currentLapNum = null, export
       <ProgressTracker compact={compact} currentTime={state.currentTime} onSeekProgress={onSeekProgress} progressPct={state.progressPct} totalTime={state.totalTime} />
       <div className="flex items-center gap-1.5 shrink-0">
         {isSpacious && <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)]">Speed</span>}
-        <div className={`${isCompact ? 'w-[3.5rem]' : isSpacious ? 'w-[5.5rem]' : 'w-[4.5rem]'} shrink-0`}><Select value={speedValue} onChange={handleSpeed} options={PLAYBACK_SPEED_OPTIONS} styles={selectStyles} components={selectComponents} menuPlacement="top" isSearchable={false} /></div>
+        <SpeedSelect className={selectWidth} onChange={handleSpeed} speed={state.speed} />
       </div>
       {showLapSelect && lapOptions.length > 0 && (
         <div className="flex items-center gap-1.5 shrink-0">
           {isSpacious && <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)]">Lap</span>}
-          <div className={`${isCompact ? 'w-[3.5rem]' : isSpacious ? 'w-[5.5rem]' : 'w-[4.5rem]'} shrink-0`}><Select value={lapValue} options={lapOptions} onChange={handleLap} isSearchable={false} maxMenuHeight={150} menuPlacement="top" styles={selectStyles} components={selectComponents} placeholder="—" /></div>
+          <LapSelect className={selectWidth} currentLapNum={currentLapNum} onChange={handleLap} options={lapOptions} />
         </div>
       )}
       {showExport && onExport && (

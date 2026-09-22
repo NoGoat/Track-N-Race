@@ -63,7 +63,7 @@ constexpr uint64_t MAX_CHUNK_PLAIN = 512ull * 1024ull * 1024ull;
 constexpr uint64_t MAX_METADATA_BYTES = 128ull * 1024ull * 1024ull;
 constexpr size_t DEFAULT_CACHE_BYTES = 64ull * 1024ull * 1024ull;
 constexpr float WRITE_DELAY = 30.0f;
-constexpr int DEFAULT_COMPRESSION_LEVEL = 3;
+constexpr int DEFAULT_COMPRESSION_LEVEL = 9;
 constexpr glz::opts kPartialRead{.null_terminated = false, .error_on_unknown_keys = false};
 const std::array<uint8_t, 8> MAGIC{{'T','N','R','D','_','V','6','\0'}};
 
@@ -165,13 +165,43 @@ std::string retime(std::string_view json, float time) {
     while (end < json.size() && json[end] != ',' && json[end] != '}') ++end;
     std::string out(json); out.replace(start, end - start, number(time)); return out;
 }
-bool stateType(V6DataType type) {
+}  // namespace  — stateType is declared in TNRD_V6.h, so it needs
+   // external linkage and cannot live in the anonymous namespace.
+
+bool stateType(V6DataType type) {  // declared in TNRD_V6.h
     switch (type) {
         case V6DataType::Aero: case V6DataType::TyreState: case V6DataType::BrakeBias:
             return true;
         default: return false;
     }
 }
+
+namespace {
+// The field groups a state type can carry, named by the signature the writer
+// derives for them (the sample's first non-meta key). State types are
+// edge-encoded: Impl::add() drops a sample whose payload matches the previous
+// one, so a chunk holds only the groups that actually changed inside it, and a
+// group's last edge can sit many laps behind the cursor. Restoring state at a
+// cursor therefore means walking back until every group is accounted for, which
+// is only bounded if the reader knows what it is looking for. Keep this in sync
+// with the add() calls for these types in appendRows().
+const std::vector<std::string_view>& stateGroups(V6DataType type) {
+    static const std::vector<std::string_view> aero{"drs", "drs_allowed"};
+    static const std::vector<std::string_view> tyre{"tyre_compound", "sets"};
+    static const std::vector<std::string_view> bias{"front_brake_bias"};
+    static const std::vector<std::string_view> none{};
+    switch (type) {
+        case V6DataType::Aero:      return aero;
+        case V6DataType::TyreState: return tyre;
+        case V6DataType::BrakeBias: return bias;
+        default:                    return none;
+    }
+}
+// Safety valve for the backward walk. A group that is simply never recorded for
+// a driver leaves an empty bucket and costs nothing, but a recording whose
+// restriction transitions are damaged could otherwise drag the walk across a
+// whole race. Hitting the cap returns what was found rather than failing.
+constexpr size_t STATE_BACKFILL_CHUNK_LIMIT = 64;
 int phaseRank(V6Phase phase) { return phase == V6Phase::Formation ? 0 : 1; }
 bool before(V6Phase aPhase, float a, V6Phase bPhase, float b) {
     return phaseRank(aPhase) < phaseRank(bPhase) || (aPhase == bPhase && a < b);
@@ -1144,6 +1174,15 @@ struct TnrdV6Archive::Impl {
     V6ControlSummary control;
     std::map<uint32_t, size_t> lapById;
     std::map<uint8_t, size_t> driverByIndex;
+    // Race-phase chunk indices bucketed by (driver, type) and ordered by
+    // (logical start, sequence). The chunks are already partitioned per driver
+    // and type on disk, but the directory arrives in append order — which is
+    // chronological across all drivers interleaved — so without this every
+    // lookup re-derived the grouping by filtering the entire directory.
+    std::map<uint16_t, std::vector<uint32_t>> raceChunksByDriverType;
+    static uint16_t driverTypeKey(uint8_t driver, uint8_t type) {
+        return static_cast<uint16_t>(static_cast<uint16_t>(driver) << 8 | type);
+    }
     std::optional<uint8_t> player;
     uint8_t playback{};
     std::set<uint8_t> requestedTypes;
@@ -1187,6 +1226,7 @@ struct TnrdV6Archive::Impl {
         std::sort(compatibleLaps.begin(), compatibleLaps.end(), [](const auto& a, const auto& b) {
             return std::tie(a.startSessionTime, a.lapNumber) < std::tie(b.startSessionTime, b.lapNumber);
         });
+        raceChunksByDriverType.clear();
         for (const auto& chunk : v6Chunks) {
             if (chunk.phase != V6Phase::Race) continue;
             const auto lap = lapById.find(chunk.lapId);
@@ -1194,6 +1234,17 @@ struct TnrdV6Archive::Impl {
                 lapSummaries[lap->second].lapNumber,
                 chunk.typeId, chunk.flags, chunk.offset, chunk.compressedSize,
                 chunk.uncompressedSize, chunk.sampleCount, chunk.checksum, chunk.sequence});
+        }
+        for (uint32_t i = 0; i < v6Chunks.size(); ++i) {
+            const auto& chunk = v6Chunks[i];
+            if (chunk.phase != V6Phase::Race) continue;
+            raceChunksByDriverType[driverTypeKey(chunk.driverIndex, chunk.typeId)].push_back(i);
+        }
+        for (auto& [_, bucket] : raceChunksByDriverType) {
+            std::sort(bucket.begin(), bucket.end(), [this](uint32_t a, uint32_t b) {
+                return std::tuple{logical(v6Chunks[a].phase, v6Chunks[a].firstTime), v6Chunks[a].sequence} <
+                       std::tuple{logical(v6Chunks[b].phase, v6Chunks[b].firstTime), v6Chunks[b].sequence};
+            });
         }
         first = std::numeric_limits<float>::infinity(); last = 0.0f;
         for (const auto& lap : lapSummaries)
@@ -1915,60 +1966,91 @@ bool TnrdV6Archive::readMultiDriverLatest(float at, const std::vector<uint8_t>& 
                                            std::string* errorOut) {
     out.clear();
     for (uint8_t driver : drivers) for (uint8_t type : types) {
-        size_t latestChunk = impl_->v6Chunks.size();
-        std::tuple<float, uint64_t> latestKey{-std::numeric_limits<float>::infinity(), 0};
-        for (size_t index = 0; index < impl_->v6Chunks.size(); ++index) {
-            const auto& chunk = impl_->v6Chunks[index];
-            if (chunk.phase != V6Phase::Race || chunk.driverIndex != driver || chunk.typeId != type) continue;
-            const float first = impl_->logical(chunk.phase, chunk.firstTime);
-            if (first > at) continue;
-            const auto key = std::tuple{first, chunk.sequence};
-            if (latestChunk == impl_->v6Chunks.size() || key > latestKey) {
-                latestChunk = index;
-                latestKey = key;
-            }
-        }
-        if (latestChunk == impl_->v6Chunks.size()) continue;
+        const auto bucket = impl_->raceChunksByDriverType.find(Impl::driverTypeKey(driver, type));
+        if (bucket == impl_->raceChunksByDriverType.end()) continue;
+        const auto& ordered = bucket->second;
+        // The bucket is sorted by (logical start, sequence), so the chunks at or
+        // before the cursor are the prefix ending here, newest last.
+        const auto end = std::upper_bound(ordered.begin(), ordered.end(), at,
+            [this](float bound, uint32_t index) {
+                const auto& candidate = impl_->v6Chunks[index];
+                return bound < impl_->logical(candidate.phase, candidate.firstTime);
+            });
+        if (end == ordered.begin()) continue;
 
-        std::vector<V6TimedRow> rows;
-        std::shared_ptr<std::string> plain;
-        if (!loadChunkPlain(latestChunk, plain, errorOut)) return false;
-        const auto& chunk = impl_->v6Chunks[latestChunk];
-        constexpr float offset = 0.0f;
-        if (!parseChunkRows(*plain, chunk, offset, rows,
-                            -std::numeric_limits<float>::infinity(), at)) return false;
-        if (rows.empty()) continue;
-        if (!stateType(static_cast<V6DataType>(type))) {
-            out.push_back(std::move(rows.back()));
-            continue;
-        }
+        const bool state = stateType(static_cast<V6DataType>(type));
+        const auto& groups = stateGroups(static_cast<V6DataType>(type));
 
-        // A state type can contain independently updated field groups. Tyre
-        // state, for example, carries both compound/age and tyre-set allocation.
-        // Restore the latest value of every group, not merely the final line in
-        // the chunk, while still respecting an explicit unavailable transition.
+        // A sample type is written every frame, so its newest chunk always holds
+        // the value at the cursor. A state type is edge-encoded and carries only
+        // the groups that changed inside each chunk, so walk back from the cursor
+        // until every group has been recovered. Stopping at the first chunk (what
+        // this used to do) silently dropped any group whose last edge landed in an
+        // earlier chunk -- `slm`, for instance, stayed missing whenever the newest
+        // Aero chunk happened to hold only a `drs_allowed` change.
         std::map<std::string, V6TimedRow> latest;
-        for (auto& row : rows) {
-            const bool unavailable = row.json.find("\"available\":false") != std::string::npos;
-            if (unavailable) {
-                latest.clear();
-                latest.emplace("available", std::move(row));
+        size_t visited = 0;
+        for (auto it = end; it != ordered.begin() && visited < STATE_BACKFILL_CHUNK_LIMIT; ++visited) {
+            --it;
+            std::vector<V6TimedRow> rows;
+            std::shared_ptr<std::string> plain;
+            if (!loadChunkPlain(*it, plain, errorOut)) return false;
+            const auto& chunk = impl_->v6Chunks[*it];
+            constexpr float offset = 0.0f;
+            if (!parseChunkRows(*plain, chunk, offset, rows,
+                                -std::numeric_limits<float>::infinity(), at)) return false;
+            if (rows.empty()) {
+                if (!state) break;
                 continue;
             }
-            latest.erase("available");
-            size_t cursor = 0;
-            std::string signature;
-            while ((cursor = row.json.find('"', cursor)) != std::string::npos) {
-                const size_t end = row.json.find('"', cursor + 1);
-                if (end == std::string::npos) break;
-                const std::string_view key(row.json.data() + cursor + 1, end - cursor - 1);
-                cursor = end + 1;
-                if (key != "driver_idx" && key != "session_time" && key != "_v6_type") {
-                    signature.assign(key);
-                    break;
-                }
+            if (!state) {
+                out.push_back(std::move(rows.back()));
+                break;
             }
-            if (!signature.empty()) latest.insert_or_assign(std::move(signature), std::move(row));
+
+            // Resolve this chunk on its own first: within a chunk the later row
+            // wins, but across chunks anything already recovered is newer and
+            // must not be overwritten by what we find further back.
+            std::map<std::string, V6TimedRow> chunkLatest;
+            for (auto& row : rows) {
+                const bool unavailable = row.json.find("\"available\":false") != std::string::npos;
+                if (unavailable) {
+                    chunkLatest.clear();
+                    chunkLatest.emplace("available", std::move(row));
+                    continue;
+                }
+                chunkLatest.erase("available");
+                size_t cursor = 0;
+                std::string signature;
+                while ((cursor = row.json.find('"', cursor)) != std::string::npos) {
+                    const size_t keyEnd = row.json.find('"', cursor + 1);
+                    if (keyEnd == std::string::npos) break;
+                    const std::string_view key(row.json.data() + cursor + 1, keyEnd - cursor - 1);
+                    cursor = keyEnd + 1;
+                    if (key != "driver_idx" && key != "session_time" && key != "_v6_type") {
+                        signature.assign(key);
+                        break;
+                    }
+                }
+                if (!signature.empty()) chunkLatest.insert_or_assign(std::move(signature), std::move(row));
+            }
+
+            // An unavailable transition is a floor: nothing older may be
+            // backfilled past it. It only reaches the output when there is no
+            // newer value at all, otherwise the newer value stands.
+            if (chunkLatest.contains("available")) {
+                if (latest.empty()) latest = std::move(chunkLatest);
+                break;
+            }
+            for (auto& [key, row] : chunkLatest)
+                if (!latest.contains(key)) latest.emplace(key, std::move(row));
+
+            // Without a declared group set there is no way to know when the walk
+            // is finished, so keep the old single-chunk behaviour.
+            if (groups.empty()) break;
+            const bool complete = std::all_of(groups.begin(), groups.end(),
+                [&](std::string_view group) { return latest.contains(std::string(group)); });
+            if (complete) break;
         }
         for (auto& [_, row] : latest) out.push_back(std::move(row));
     }

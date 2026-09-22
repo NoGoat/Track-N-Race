@@ -2,6 +2,7 @@ import { memo } from 'react'
 import type { TelemetryRow, StatusRow, LapRow, DamageRow } from '../types'
 import { useLabels } from '../lib/labels'
 import { OVERVIEW_RESOLVERS, useColorFn, type CardCtx, type CardDesc } from '../lib/cards'
+import { playbackDebug } from '../lib/playbackDebug'
 
 import type { DensityMode } from '../lib/graphSections'
 
@@ -120,6 +121,10 @@ const Card = memo(function Card({
   )
 })
 
+// Last reported wing-card resolution, so the diagnostic below logs transitions
+// rather than every render.
+let lastWingReport = ''
+
 const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConnected, visibleCards, isDark, compact }: Props) {
   const { t, tn } = useLabels()
   const color = useColorFn(latest, status, isDark)
@@ -155,6 +160,21 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
     <div className="flex divide-x divide-[var(--border)]">
       {shown.map(d => {
         const v = OVERVIEW_RESOLVERS[d.key]?.(ctx) ?? { value: '-' }
+        if (d.vis === 'drs') {
+          const report = `${d.key}|${v.value}|${latest.slm}|${latest.drs}`
+          if (report !== lastWingReport) {
+            lastWingReport = report
+            playbackDebug('wing-card-resolved', {
+              resolvedKey: d.key,
+              haveResolver: Boolean(OVERVIEW_RESOLVERS[d.key]),
+              renderedValue: v.value,
+              latestSlm: latest.slm === undefined ? 'MISSING' : latest.slm,
+              latestDrs: latest.drs === undefined ? 'MISSING' : latest.drs,
+              latestSessionTime: latest.session_time ?? null,
+              latestV6Type: (latest as unknown as Record<string, unknown>)._v6_type ?? null,
+            })
+          }
+        }
         let sub = v.sub
         const isSpacious = compact === 'spacious'
         const isCompact = compact === true || compact === 'compact'

@@ -115,7 +115,15 @@ function mergePlaybackPatch<T extends Record<string, any>>(previous: T | undefin
   if (!isPlaybackFlag || !Number.isInteger(v6Type)) return patch
   const merged: Record<string, any> = { ...previous, ...patch }
   if (patch.available === false) {
-    for (const field of V6_PATCH_FIELDS[v6Type] ?? []) {
+    const dropped = V6_PATCH_FIELDS[v6Type] ?? []
+    playbackDebug('patch-availability-wipe', {
+      v6Type,
+      rowType: patch.type ?? null,
+      sessionTime: patch.session_time ?? null,
+      droppedFields: dropped,
+      hadSlmBefore: merged.slm !== undefined,
+    })
+    for (const field of dropped) {
       delete merged[field]
     }
   }
@@ -382,6 +390,17 @@ const historyV6Types = new Set<number>()
 let pendingV6HistoryBackfillMask = 0
 let seekTimelineGeneration = 0
 let seekRendererPending = false
+// Rows Electron main deliberately forwards across a pending seek. They describe
+// the loaded recording or the selected driver rather than the playhead, so the
+// pending-seek gate below must keep them: a V6 driver change emits its lap
+// catalog immediately before AppShell re-seeks to the same progress, and
+// dropping that batch leaves the previous driver's lap list, coverage and
+// history-request state in place until some later seek happens to arrive in a
+// batch this gate admits.
+const SEEK_PENDING_ROW_TYPES = new Set([
+  'playback_close', 'playback_loaded', 'playback_lap_data', 'playback_lap_blocks',
+])
+const SEEK_PENDING_ROW_MARKERS = [...SEEK_PENDING_ROW_TYPES].map(type => `"type":"${type}"`)
 let authoritativeLapStatusStart = -Infinity
 let authoritativeLapStatusPrefix: StatusRow[] = []
 let activeSeekDecodeRetention: {
@@ -1998,6 +2017,17 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
       first: stsBufRef.current[0]?.session_time ?? null,
       last: stsBufRef.current[stsBufRef.current.length - 1]?.session_time ?? null,
     },
+    // What the wing card will read once recompute() publishes `latest`.
+    wingCard: (() => {
+      const last = telBufRef.current[telBufRef.current.length - 1] as Record<string, any> | undefined
+      return {
+        haveLastTelemetryRow: last !== undefined,
+        sessionTime: last?.session_time ?? null,
+        slm: last === undefined ? 'no-row' : last.slm === undefined ? 'MISSING' : last.slm,
+        drs: last === undefined ? 'no-row' : last.drs === undefined ? 'MISSING' : last.drs,
+        v6Type: last?._v6_type ?? null,
+      }
+    })(),
   })
   set({
     ...(stsBufRef.current.length ? { status: stsBufRef.current[stsBufRef.current.length - 1] } : {}),
@@ -2331,12 +2361,14 @@ export function startTelemetryBridge(): void {
       rendererDiagnostics.jsonBatches++
       rendererDiagnostics.jsonChars += batchStr.length
     }
-    if (seekRendererPending &&
-        !batchStr.includes('"type":"playback_close"') &&
-        !batchStr.includes('"type":"playback_loaded"') &&
-        // Indexed completed-lap payloads are independent of the playhead and
-        // are explicitly separated from old-cursor rows by the main process.
-        !batchStr.includes('"type":"playback_lap_data"')) return
+    // A batch that carries one of the admitted rows may still be batched
+    // together with old-cursor rows, so filter per row rather than admitting
+    // the whole batch.
+    let seekFiltered = false
+    if (seekRendererPending) {
+      if (!SEEK_PENDING_ROW_MARKERS.some(marker => batchStr.includes(marker))) return
+      seekFiltered = true
+    }
     let dirty = DirtySlice.None
     let start = 0
     while (start < batchStr.length) {
@@ -2349,8 +2381,10 @@ export function startTelemetryBridge(): void {
             rendererDiagnostics.jsonRows++
             observeRendererRow(msg, 'telemetry-batch')
           }
-          dirty |= dirtySliceFor(msg)
-          handleMsg(msg)
+          if (!seekFiltered || SEEK_PENDING_ROW_TYPES.has(msg.type)) {
+            dirty |= dirtySliceFor(msg)
+            handleMsg(msg)
+          }
         }
         catch (e) {
           if (additionalLoggingEnabled) {

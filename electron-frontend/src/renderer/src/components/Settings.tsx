@@ -319,6 +319,12 @@ const Settings = memo(function Settings({
   const [additionalLoggingEnabled, setAdditionalLoggingEnabled] = useState<boolean>(
     () => window.electronStore.get('debug.additionalLogging', false) === true,
   )
+  const [reactScanEnabled, setReactScanEnabled] = useState<boolean>(
+    () => window.electronStore.get('debug.reactScan', false) === true,
+  )
+  const [webglMonitorEnabled, setWebglMonitorEnabled] = useState<boolean>(
+    () => window.electronStore.get('debug.webglMonitor', false) === true,
+  )
   const [memoryLogEnabled, setMemoryLogEnabled] = useState<boolean>(
     () => window.electronStore.get('debug.memoryLog', false) === true,
   )
@@ -467,6 +473,16 @@ const Settings = memo(function Settings({
   function handleAdditionalLoggingToggle(value: boolean) {
     setAdditionalLoggingEnabled(value)
     window.debugBridge.setAdditionalLogging(value)
+  }
+
+  function handleReactScanToggle(value: boolean) {
+    setReactScanEnabled(value)
+    window.debugBridge.setReactScan(value)
+  }
+
+  function handleWebglMonitorToggle(value: boolean) {
+    setWebglMonitorEnabled(value)
+    window.debugBridge.setWebglMonitor(value)
   }
 
   function handleMemoryLogToggle(value: boolean) {
@@ -1293,9 +1309,22 @@ const Settings = memo(function Settings({
       <Row
         label="Additional logging"
         description="Enable detailed telemetry pipeline, playback, pairing, preload, renderer, and performance diagnostics. Startup and fatal-error logging remain enabled."
-        warning="Development instrumentation is applied the next time the app starts."
       >
         <Toggle value={additionalLoggingEnabled} onChange={handleAdditionalLoggingToggle} />
+      </Row>
+      <Row
+        label="React Scan"
+        description="Overlay the React Scan toolbar to highlight component renders and track re-render cost."
+        warning="Render instrumentation is applied the next time the app starts."
+      >
+        <Toggle value={reactScanEnabled} onChange={handleReactScanToggle} />
+      </Row>
+      <Row
+        label="WebGL performance monitor"
+        description="Show the stats.gl panel with frame time, frame rate, and GPU timing for the WebGL charts."
+        warning="Render instrumentation is applied the next time the app starts."
+      >
+        <Toggle value={webglMonitorEnabled} onChange={handleWebglMonitorToggle} />
       </Row>
       <Row
         label="Memory log"

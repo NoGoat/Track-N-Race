@@ -28,6 +28,11 @@ constexpr uint64_t v6DataTypeBit(V6DataType type) {
 }
 const char* v6TypeName(V6DataType type);
 V6DataType v6TypeFromName(std::string_view name);
+// True for the edge-encoded types (Aero, TyreState, BrakeBias): the writer only
+// records a sample when the value changes, so the newest sample at or before a
+// cursor can be arbitrarily far behind it. Consumers restoring state at a cursor
+// have to account for that; see readMultiDriverLatest().
+bool stateType(V6DataType type);
 
 enum class TelemetrySetting : uint8_t { Unknown = 0, Restricted = 1, Public = 2 };
 enum class V6Phase : uint8_t { Race = 0, Formation = 1 };
@@ -215,8 +220,7 @@ public:
     bool advanceSessionTime(float, std::string*);
     bool checkpoint(std::string*);
     // Zstandard level for chunks and shared records. Out-of-range values fall
-    // back to the default. Bulk offline conversion can afford a higher level
-    // than live recording; see docs/TNRD_V6_WRITER_EFFICIENCY_DESIGN.md.
+    // back to the default of 9; see docs/TNRD_V6_WRITER_EFFICIENCY_DESIGN.md.
     void setCompressionLevel(int);
     int compressionLevel() const;
     bool rewind(float, std::string*);

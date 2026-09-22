@@ -42,11 +42,13 @@ const FUEL_MIX   = ['Lean', 'Standard', 'Rich', 'Max power']
 const PIT_STATUS = ['', 'Pitting', 'In pit lane']
 
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+// Every card passes a plain string here, so memoizing keeps these labels out of
+// the timing card's per-packet renders.
+const SectionLabel = memo(function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <div className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest mb-2">{children}</div>
   )
-}
+})
 
 function Panel({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
@@ -55,6 +57,494 @@ function Panel({ children, className = '' }: { children: React.ReactNode; classN
     </div>
   )
 }
+
+// The standings sidebar re-renders with every lap and status packet. These two
+// cards take the values they print instead of the status row, so they only
+// re-render when one of those values actually changes.
+const ErsCard = memo(function ErsCard({
+  compact, drsAllowed, ersBarColor, ersBarWidth, ersDeployedJ, ersJ, ersMode, ersPct,
+  harvestedMgukJ, harvestedMguhJ, hasStatus, isDark,
+}: {
+  compact: DensityMode | boolean
+  drsAllowed: boolean
+  ersBarColor: string
+  ersBarWidth: number
+  ersDeployedJ: number
+  ersJ: number
+  ersMode: number
+  ersPct: number
+  harvestedMgukJ: number
+  harvestedMguhJ: number
+  hasStatus: boolean
+  isDark: boolean
+}) {
+  const { t, tn } = useLabels()
+  const isCompactErs = compact === true || compact === 'compact'
+  const isSpaciousErs = compact === 'spacious'
+  return (
+      <Panel className={isCompactErs ? 'p-3' : isSpaciousErs ? 'p-6' : 'p-4'}>
+        <SectionLabel>Energy Recovery</SectionLabel>
+
+        {isCompactErs ? (
+          /* Compact ERS Layout */
+          hasStatus ? (
+            <div className="space-y-2">
+              <div className="flex justify-between items-baseline">
+                <span className="text-xl font-black tabular-nums" style={{ color: ersBarColor }}>
+                  {ersPct.toFixed(1)}%
+                </span>
+                <span
+                  className="text-xs font-bold"
+                  style={{
+                    color: ersMode === 0 ? 'var(--text-secondary)' :
+                           ersMode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
+                           ersMode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
+                           '#C4162A'
+                  }}
+                >
+                  {tn('ers.mode', ersMode)}
+                </span>
+              </div>
+
+              <div className="w-full h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{ width: `${ersBarWidth}%`, background: ersBarColor }}
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5 pt-1.5 border-t border-[var(--border)] -mx-3 px-3 text-xs">
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Store</div>
+                  <div className="text-[11px] font-bold text-[var(--text-primary)] tabular-nums">
+                    {(ersJ / 1_000_000).toFixed(2)}M
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="text-[11px] font-bold text-[var(--text-primary)] tabular-nums">
+                    {(ersDeployedJ / 1_000_000).toFixed(2)}M
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className={`text-[11px] font-bold ${drsAllowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
+                    {drsAllowed ? 'AVAIL' : 'LOCKED'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex justify-between items-baseline">
+                <span className="text-xl font-black tabular-nums text-[var(--text-muted)]">—%</span>
+                <span className="text-xs font-bold text-[var(--text-muted)]">—</span>
+              </div>
+              <div className="w-full h-1.5 bg-[var(--border)] rounded-full overflow-hidden" />
+              <div className="grid grid-cols-3 gap-1.5 pt-1.5 border-t border-[var(--border)] -mx-3 px-3 text-xs">
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Store</div>
+                  <div className="text-[11px] font-bold text-[var(--text-muted)]">—</div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="text-[11px] font-bold text-[var(--text-muted)]">—</div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className="text-[11px] font-bold text-[var(--text-muted)]">—</div>
+                </div>
+              </div>
+            </div>
+          )
+        ) : isSpaciousErs ? (
+          /* Spacious ERS Layout */
+          hasStatus ? (
+            <div className="space-y-6">
+              {/* Energy bar */}
+              <div>
+                <div className="flex justify-between items-baseline mb-2">
+                  <span className="text-4xl font-black tabular-nums"
+                        style={{ color: ersBarColor }}>
+                    {ersPct.toFixed(1)}%
+                  </span>
+                  <span
+                    className="text-base font-black"
+                    style={{
+                      color: ersMode === 0 ? 'var(--text-secondary)' :
+                             ersMode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
+                             ersMode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
+                             '#C4162A'
+                    }}
+                  >
+                    {tn('ers.mode', ersMode)}
+                  </span>
+                </div>
+                <div className="w-full h-4 bg-[var(--border)] rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{ width: `${ersBarWidth}%`, background: ersBarColor }}
+                  />
+                </div>
+                <div className="text-xs font-semibold text-[var(--text-secondary)] mt-1.5">
+                  {(ersJ / 1_000_000).toFixed(2)} MJ / 4.00 MJ
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 text-base">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="text-xl font-black text-[var(--text-primary)]">
+                    {(ersDeployedJ / 1_000_000).toFixed(2)} MJ
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className={`text-xl font-black ${drsAllowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
+                    {drsAllowed ? 'AVAILABLE' : 'LOCKED'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Harvested</div>
+                  <div className="text-xl font-black text-[var(--text-primary)]">
+                    {(((harvestedMgukJ ?? 0) + (harvestedMguhJ ?? 0)) / 1_000_000).toFixed(2)} MJ
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">ERS Mode</div>
+                  <div className="text-xl font-black text-[var(--text-secondary)]">
+                    {tn('ers.mode', ersMode)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div>
+                <div className="flex justify-between items-baseline mb-2">
+                  <span className="text-4xl font-black tabular-nums text-[var(--text-muted)]">—%</span>
+                  <span className="text-base font-black text-[var(--text-muted)]">—</span>
+                </div>
+                <div className="w-full h-4 bg-[var(--border)] rounded-full overflow-hidden" />
+                <div className="text-xs font-semibold text-[var(--text-muted)] mt-1.5">— MJ / 4.00 MJ</div>
+              </div>
+              <div className="grid grid-cols-2 gap-4 text-base">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">— MJ</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">—</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Harvested</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">— MJ</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">ERS Mode</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">—</div>
+                </div>
+              </div>
+            </div>
+          )
+        ) : (
+          /* Normal ERS Layout */
+          hasStatus ? (
+            <div className="space-y-4">
+              {/* Energy bar */}
+              <div>
+                <div className="flex justify-between items-baseline mb-1.5">
+                  <span className="text-3xl font-black tabular-nums"
+                        style={{ color: ersBarColor }}>
+                    {ersPct.toFixed(1)}%
+                  </span>
+                  <span
+                    className="text-sm font-bold"
+                    style={{
+                      color: ersMode === 0 ? 'var(--text-secondary)' :
+                             ersMode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
+                             ersMode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
+                             '#C4162A'
+                    }}
+                  >
+                    {tn('ers.mode', ersMode)}
+                  </span>
+                </div>
+                <div className="w-full h-3 bg-[var(--border)] rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{ width: `${ersBarWidth}%`, background: ersBarColor }}
+                  />
+                </div>
+                <div className="text-[9px] text-[var(--text-secondary)] mt-1">
+                  {(ersJ / 1_000_000).toFixed(2)} MJ / 4.00 MJ
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="font-bold text-[var(--text-primary)]">
+                    {(ersDeployedJ / 1_000_000).toFixed(2)} MJ
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className={`font-bold ${drsAllowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
+                    {drsAllowed ? 'AVAILABLE' : 'LOCKED'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <div className="flex justify-between items-baseline mb-1.5">
+                  <span className="text-3xl font-black tabular-nums text-[var(--text-muted)]">—%</span>
+                  <span className="text-sm font-bold text-[var(--text-muted)]">—</span>
+                </div>
+                <div className="w-full h-3 bg-[var(--border)] rounded-full overflow-hidden" />
+                <div className="text-[9px] text-[var(--text-muted)] mt-1">— MJ / 4.00 MJ</div>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="font-bold text-[var(--text-muted)]">— MJ</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className="font-bold text-[var(--text-muted)]">—</div>
+                </div>
+              </div>
+            </div>
+          )
+        )}
+      </Panel>
+  )
+})
+
+const StrategyCard = memo(function StrategyCard({
+  compact, frontBrakeBias, fuelKg, fuelLaps, fuelMix, hasStatus, isDark, tyreAge, tyreColor, tyreName,
+}: {
+  compact: DensityMode | boolean
+  frontBrakeBias: number | null
+  fuelKg: number
+  fuelLaps: number
+  fuelMix: number
+  hasStatus: boolean
+  isDark: boolean
+  tyreAge: number | null
+  tyreColor: string
+  tyreName: string | null
+}) {
+  const isCompactStrategy = compact === true || compact === 'compact'
+  const isSpaciousStrategy = compact === 'spacious'
+  return (
+      <Panel className={isCompactStrategy ? 'p-3' : isSpaciousStrategy ? 'p-6' : 'p-4'}>
+        <SectionLabel>Strategy</SectionLabel>
+
+        {isCompactStrategy ? (
+          /* Compact Strategy Layout */
+          hasStatus ? (
+            <div className="grid grid-cols-2 gap-3">
+              {/* Left Column: Fuel */}
+              <div className="space-y-0.5">
+                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Fuel</div>
+                <div className="flex items-baseline gap-1">
+                  <span
+                    className="text-xl font-black tabular-nums"
+                    style={{
+                      color: fuelLaps > 1 ? (isDark ? '#37872D' : '#137333') :
+                             fuelLaps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
+                             '#C4162A'
+                    }}
+                  >
+                    {fuelKg.toFixed(1)}
+                  </span>
+                  <span className="text-[var(--text-secondary)] text-[10px]">kg</span>
+                </div>
+                <div className="text-[11px] font-semibold text-[var(--text-secondary)] tabular-nums">
+                  {fuelLaps >= 0 ? '+' : ''}{fuelLaps.toFixed(1)} laps
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)]">Mix: {FUEL_MIX[fuelMix] ?? ''}</div>
+              </div>
+
+              {/* Right Column: Tyre & Brake */}
+              <div className="space-y-0.5">
+                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Tyre</div>
+                <div className="flex items-baseline gap-1.5">
+                  {tyreName ? (
+                    <span className="text-xl font-black" style={{ color: tyreColor }}>
+                      {tyreName}
+                    </span>
+                  ) : (
+                    <span className="text-xl font-black text-[var(--text-muted)]">—</span>
+                  )}
+                  <span className="text-[11px] font-semibold text-[var(--text-secondary)] tabular-nums">
+                    {tyreAge === null ? '—' : `${tyreAge}L`}
+                  </span>
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)]">
+                  BB: {frontBrakeBias === null ? '—' : `${frontBrakeBias}% F`}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-0.5">
+                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Fuel</div>
+                <div className="text-xl font-black text-[var(--text-muted)]">— kg</div>
+                <div className="text-[11px] text-[var(--text-muted)]">— laps</div>
+                <div className="text-[10px] text-[var(--text-muted)]">Mix: —</div>
+              </div>
+              <div className="space-y-0.5">
+                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Tyre</div>
+                <div className="text-xl font-black text-[var(--text-muted)]">—</div>
+                <div className="text-[10px] text-[var(--text-muted)]">BB: —%</div>
+              </div>
+            </div>
+          )
+        ) : isSpaciousStrategy ? (
+          /* Spacious Strategy Layout */
+          hasStatus ? (
+            <div className="space-y-6">
+              {/* Fuel */}
+              <div>
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Fuel</div>
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className="text-4xl font-black tabular-nums"
+                    style={{
+                      color: fuelLaps > 1 ? (isDark ? '#37872D' : '#137333') :
+                             fuelLaps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
+                             '#C4162A'
+                    }}
+                  >
+                    {fuelKg.toFixed(1)}
+                  </span>
+                  <span className="text-[var(--text-secondary)] text-base font-semibold">kg</span>
+                </div>
+                <div className="text-base font-semibold text-[var(--text-secondary)] mt-1">
+                  {fuelLaps >= 0 ? '+' : ''}{fuelLaps.toFixed(1)} laps vs finish
+                </div>
+                <div className="text-sm text-[var(--text-secondary)] mt-1.5">Mix: {FUEL_MIX[fuelMix] ?? ''}</div>
+              </div>
+
+              {/* Tyre */}
+              <div className="pt-4 -mx-6 px-6 border-t border-[var(--border)]">
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Tyre</div>
+                <div className="flex items-center gap-3">
+                  {tyreName ? (
+                    <span className="text-3xl font-black" style={{ color: tyreColor }}>
+                      {tyreName}
+                    </span>
+                  ) : (
+                    <span className="text-3xl font-black text-[var(--text-muted)]">—</span>
+                  )}
+                  <div className="text-base font-semibold text-[var(--text-secondary)]">
+                    Age: {tyreAge === null ? '—' : `${tyreAge} laps`}
+                  </div>
+                </div>
+                <div className="text-sm text-[var(--text-secondary)] mt-1">
+                  {frontBrakeBias === null
+                    ? 'Brake bias: —'
+                    : `Brake bias: ${frontBrakeBias}% front · ${(100 - frontBrakeBias).toFixed(0)}% rear`}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div>
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Fuel</div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-4xl font-black tabular-nums text-[var(--text-muted)]">—</span>
+                  <span className="text-[var(--text-muted)] text-base font-semibold">kg</span>
+                </div>
+                <div className="text-base font-semibold text-[var(--text-muted)] mt-1">— laps vs finish</div>
+                <div className="text-sm text-[var(--text-muted)] mt-1.5">Mix: —</div>
+              </div>
+              <div className="pt-4 -mx-6 px-6 border-t border-[var(--border)]">
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Tyre</div>
+                <div className="flex items-center gap-3">
+                  <span className="text-3xl font-black text-[var(--text-muted)]">—</span>
+                  <div className="text-base font-semibold text-[var(--text-muted)]">Age: — laps</div>
+                </div>
+                <div className="text-sm text-[var(--text-muted)] mt-1">Brake bias: —% front · —% rear</div>
+              </div>
+            </div>
+          )
+        ) : (
+          /* Normal Strategy Layout */
+          hasStatus ? (
+            <div className="space-y-4">
+              {/* Fuel */}
+              <div>
+                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Fuel</div>
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className="text-3xl font-black tabular-nums"
+                    style={{
+                      color: fuelLaps > 1 ? (isDark ? '#37872D' : '#137333') :
+                             fuelLaps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
+                             '#C4162A'
+                    }}
+                  >
+                    {fuelKg.toFixed(1)}
+                  </span>
+                  <span className="text-[var(--text-secondary)] text-sm">kg</span>
+                </div>
+                <div className="text-sm text-[var(--text-secondary)]">
+                  {fuelLaps >= 0 ? '+' : ''}{fuelLaps.toFixed(1)} laps vs finish
+                </div>
+                <div className="text-xs text-[var(--text-secondary)] mt-1">Mix: {FUEL_MIX[fuelMix] ?? ''}</div>
+              </div>
+
+              {/* Tyre */}
+              <div className="pt-3 -mx-4 px-4 border-t border-[var(--border)]">
+                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Tyre</div>
+                <div className="flex items-center gap-2">
+                  {tyreName ? (
+                    <span className="text-2xl font-black" style={{ color: tyreColor }}>
+                      {tyreName}
+                    </span>
+                  ) : (
+                    <span className="text-2xl font-black text-[var(--text-muted)]">—</span>
+                  )}
+                  <div className="text-sm text-[var(--text-secondary)]">
+                    Age: {tyreAge === null ? '—' : `${tyreAge} laps`}
+                  </div>
+                </div>
+                <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                  Brake bias: {frontBrakeBias === null ? '—' : `${frontBrakeBias}% front`}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Fuel</div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-black tabular-nums text-[var(--text-muted)]">—</span>
+                  <span className="text-[var(--text-muted)] text-sm">kg</span>
+                </div>
+                <div className="text-sm text-[var(--text-muted)]">— laps vs finish</div>
+                <div className="text-xs text-[var(--text-muted)] mt-1">Mix: —</div>
+              </div>
+              <div className="pt-3 -mx-4 px-4 border-t border-[var(--border)]">
+                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Tyre</div>
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl font-black text-[var(--text-muted)]">—</span>
+                  <div className="text-sm text-[var(--text-muted)]">Age: — laps</div>
+                </div>
+                <div className="text-xs text-[var(--text-muted)] mt-0.5">Brake bias: —% front</div>
+              </div>
+            </div>
+          )
+        )}
+      </Panel>
+  )
+})
 
 const RacePanel = memo(function RacePanel({
   lap,
@@ -72,14 +562,8 @@ const RacePanel = memo(function RacePanel({
   const isCompactTiming = compactTiming === true || compactTiming === 'compact'
   const isSpaciousTiming = compactTiming === 'spacious'
 
-  const isCompactErs = compactErs === true || compactErs === 'compact'
-  const isSpaciousErs = compactErs === 'spacious'
-
-  const isCompactStrategy = compactStrategy === true || compactStrategy === 'compact'
-  const isSpaciousStrategy = compactStrategy === 'spacious'
-
   // Hooks must come before any early return
-  const { t, tn } = useLabels()
+  const { tn } = useLabels()
   const prevLapTsRef    = useRef<string | null>(null)
   const prevLapRef      = useRef<LapRow | null>(null)
   const frozenRef       = useRef<{ s1: number; s2: number; s3: number; exp: number } | null>(null)
@@ -614,453 +1098,35 @@ const RacePanel = memo(function RacePanel({
       )}
 
       {/* ── ERS ── */}
-      {showErs && (
-      <Panel className={isCompactErs ? 'p-3' : isSpaciousErs ? 'p-6' : 'p-4'}>
-        <SectionLabel>Energy Recovery</SectionLabel>
-
-        {isCompactErs ? (
-          /* Compact ERS Layout */
-          activeStatus ? (
-            <div className="space-y-2">
-              <div className="flex justify-between items-baseline">
-                <span className="text-xl font-black tabular-nums" style={{ color: ersBarColor }}>
-                  {ersPct.toFixed(1)}%
-                </span>
-                <span
-                  className="text-xs font-bold"
-                  style={{
-                    color: activeStatus.ers_mode === 0 ? 'var(--text-secondary)' :
-                           activeStatus.ers_mode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
-                           activeStatus.ers_mode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
-                           '#C4162A'
-                  }}
-                >
-                  {tn('ers.mode', activeStatus.ers_mode)}
-                </span>
-              </div>
-
-              <div className="w-full h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
-                <div
-                  className="h-full rounded-full transition-all duration-300"
-                  style={{ width: `${ersBarWidth}%`, background: ersBarColor }}
-                />
-              </div>
-
-              <div className="grid grid-cols-3 gap-1.5 pt-1.5 border-t border-[var(--border)] -mx-3 px-3 text-xs">
-                <div>
-                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Store</div>
-                  <div className="text-[11px] font-bold text-[var(--text-primary)] tabular-nums">
-                    {(activeStatus.ers_j / 1_000_000).toFixed(2)}M
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
-                  <div className="text-[11px] font-bold text-[var(--text-primary)] tabular-nums">
-                    {(activeStatus.ers_deployed_j / 1_000_000).toFixed(2)}M
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
-                  <div className={`text-[11px] font-bold ${activeStatus.drs_allowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
-                    {activeStatus.drs_allowed ? 'AVAIL' : 'LOCKED'}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <div className="flex justify-between items-baseline">
-                <span className="text-xl font-black tabular-nums text-[var(--text-muted)]">—%</span>
-                <span className="text-xs font-bold text-[var(--text-muted)]">—</span>
-              </div>
-              <div className="w-full h-1.5 bg-[var(--border)] rounded-full overflow-hidden" />
-              <div className="grid grid-cols-3 gap-1.5 pt-1.5 border-t border-[var(--border)] -mx-3 px-3 text-xs">
-                <div>
-                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Store</div>
-                  <div className="text-[11px] font-bold text-[var(--text-muted)]">—</div>
-                </div>
-                <div>
-                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
-                  <div className="text-[11px] font-bold text-[var(--text-muted)]">—</div>
-                </div>
-                <div>
-                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
-                  <div className="text-[11px] font-bold text-[var(--text-muted)]">—</div>
-                </div>
-              </div>
-            </div>
-          )
-        ) : isSpaciousErs ? (
-          /* Spacious ERS Layout */
-          activeStatus ? (
-            <div className="space-y-6">
-              {/* Energy bar */}
-              <div>
-                <div className="flex justify-between items-baseline mb-2">
-                  <span className="text-4xl font-black tabular-nums"
-                        style={{ color: ersBarColor }}>
-                    {ersPct.toFixed(1)}%
-                  </span>
-                  <span
-                    className="text-base font-black"
-                    style={{
-                      color: activeStatus.ers_mode === 0 ? 'var(--text-secondary)' :
-                             activeStatus.ers_mode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
-                             activeStatus.ers_mode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
-                             '#C4162A'
-                    }}
-                  >
-                    {tn('ers.mode', activeStatus.ers_mode)}
-                  </span>
-                </div>
-                <div className="w-full h-4 bg-[var(--border)] rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-300"
-                    style={{ width: `${ersBarWidth}%`, background: ersBarColor }}
-                  />
-                </div>
-                <div className="text-xs font-semibold text-[var(--text-secondary)] mt-1.5">
-                  {(activeStatus.ers_j / 1_000_000).toFixed(2)} MJ / 4.00 MJ
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 text-base">
-                <div>
-                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
-                  <div className="text-xl font-black text-[var(--text-primary)]">
-                    {(activeStatus.ers_deployed_j / 1_000_000).toFixed(2)} MJ
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
-                  <div className={`text-xl font-black ${activeStatus.drs_allowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
-                    {activeStatus.drs_allowed ? 'AVAILABLE' : 'LOCKED'}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Harvested</div>
-                  <div className="text-xl font-black text-[var(--text-primary)]">
-                    {(((activeStatus.ers_harvested_mguk_j ?? 0) + (activeStatus.ers_harvested_mguh_j ?? 0)) / 1_000_000).toFixed(2)} MJ
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">ERS Mode</div>
-                  <div className="text-xl font-black text-[var(--text-secondary)]">
-                    {tn('ers.mode', activeStatus.ers_mode)}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              <div>
-                <div className="flex justify-between items-baseline mb-2">
-                  <span className="text-4xl font-black tabular-nums text-[var(--text-muted)]">—%</span>
-                  <span className="text-base font-black text-[var(--text-muted)]">—</span>
-                </div>
-                <div className="w-full h-4 bg-[var(--border)] rounded-full overflow-hidden" />
-                <div className="text-xs font-semibold text-[var(--text-muted)] mt-1.5">— MJ / 4.00 MJ</div>
-              </div>
-              <div className="grid grid-cols-2 gap-4 text-base">
-                <div>
-                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
-                  <div className="text-xl font-black text-[var(--text-muted)]">— MJ</div>
-                </div>
-                <div>
-                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
-                  <div className="text-xl font-black text-[var(--text-muted)]">—</div>
-                </div>
-                <div>
-                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Harvested</div>
-                  <div className="text-xl font-black text-[var(--text-muted)]">— MJ</div>
-                </div>
-                <div>
-                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">ERS Mode</div>
-                  <div className="text-xl font-black text-[var(--text-muted)]">—</div>
-                </div>
-              </div>
-            </div>
-          )
-        ) : (
-          /* Normal ERS Layout */
-          activeStatus ? (
-            <div className="space-y-4">
-              {/* Energy bar */}
-              <div>
-                <div className="flex justify-between items-baseline mb-1.5">
-                  <span className="text-3xl font-black tabular-nums"
-                        style={{ color: ersBarColor }}>
-                    {ersPct.toFixed(1)}%
-                  </span>
-                  <span
-                    className="text-sm font-bold"
-                    style={{
-                      color: activeStatus.ers_mode === 0 ? 'var(--text-secondary)' :
-                             activeStatus.ers_mode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
-                             activeStatus.ers_mode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
-                             '#C4162A'
-                    }}
-                  >
-                    {tn('ers.mode', activeStatus.ers_mode)}
-                  </span>
-                </div>
-                <div className="w-full h-3 bg-[var(--border)] rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-300"
-                    style={{ width: `${ersBarWidth}%`, background: ersBarColor }}
-                  />
-                </div>
-                <div className="text-[9px] text-[var(--text-secondary)] mt-1">
-                  {(activeStatus.ers_j / 1_000_000).toFixed(2)} MJ / 4.00 MJ
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
-                  <div className="font-bold text-[var(--text-primary)]">
-                    {(activeStatus.ers_deployed_j / 1_000_000).toFixed(2)} MJ
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
-                  <div className={`font-bold ${activeStatus.drs_allowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
-                    {activeStatus.drs_allowed ? 'AVAILABLE' : 'LOCKED'}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div>
-                <div className="flex justify-between items-baseline mb-1.5">
-                  <span className="text-3xl font-black tabular-nums text-[var(--text-muted)]">—%</span>
-                  <span className="text-sm font-bold text-[var(--text-muted)]">—</span>
-                </div>
-                <div className="w-full h-3 bg-[var(--border)] rounded-full overflow-hidden" />
-                <div className="text-[9px] text-[var(--text-muted)] mt-1">— MJ / 4.00 MJ</div>
-              </div>
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
-                  <div className="font-bold text-[var(--text-muted)]">— MJ</div>
-                </div>
-                <div>
-                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
-                  <div className="font-bold text-[var(--text-muted)]">—</div>
-                </div>
-              </div>
-            </div>
-          )
-        )}
-      </Panel>
-      )}
+      {showErs && <ErsCard
+        compact={compactErs}
+        drsAllowed={activeStatus?.drs_allowed ?? false}
+        ersBarColor={ersBarColor}
+        ersBarWidth={ersBarWidth}
+        ersDeployedJ={activeStatus?.ers_deployed_j ?? 0}
+        ersJ={activeStatus?.ers_j ?? 0}
+        ersMode={activeStatus?.ers_mode ?? 0}
+        ersPct={ersPct}
+        harvestedMgukJ={activeStatus?.ers_harvested_mguk_j ?? 0}
+        harvestedMguhJ={activeStatus?.ers_harvested_mguh_j ?? 0}
+        hasStatus={!!activeStatus}
+        isDark={isDark}
+      />}
 
       {/* ── Fuel & Tyre ── */}
-      {showStrategy && (
-      <Panel className={isCompactStrategy ? 'p-3' : isSpaciousStrategy ? 'p-6' : 'p-4'}>
-        <SectionLabel>Strategy</SectionLabel>
+      {showStrategy && <StrategyCard
+        compact={compactStrategy}
+        frontBrakeBias={frontBrakeBias}
+        fuelKg={activeStatus?.fuel_kg ?? 0}
+        fuelLaps={activeStatus?.fuel_laps ?? 0}
+        fuelMix={activeStatus?.fuel_mix ?? 0}
+        hasStatus={!!activeStatus}
+        isDark={isDark}
+        tyreAge={tyreAge}
+        tyreColor={tyreColor}
+        tyreName={tyreName}
+      />}
 
-        {isCompactStrategy ? (
-          /* Compact Strategy Layout */
-          activeStatus ? (
-            <div className="grid grid-cols-2 gap-3">
-              {/* Left Column: Fuel */}
-              <div className="space-y-0.5">
-                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Fuel</div>
-                <div className="flex items-baseline gap-1">
-                  <span
-                    className="text-xl font-black tabular-nums"
-                    style={{
-                      color: activeStatus.fuel_laps > 1 ? (isDark ? '#37872D' : '#137333') :
-                             activeStatus.fuel_laps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
-                             '#C4162A'
-                    }}
-                  >
-                    {activeStatus.fuel_kg.toFixed(1)}
-                  </span>
-                  <span className="text-[var(--text-secondary)] text-[10px]">kg</span>
-                </div>
-                <div className="text-[11px] font-semibold text-[var(--text-secondary)] tabular-nums">
-                  {activeStatus.fuel_laps >= 0 ? '+' : ''}{activeStatus.fuel_laps.toFixed(1)} laps
-                </div>
-                <div className="text-[10px] text-[var(--text-secondary)]">Mix: {FUEL_MIX[activeStatus.fuel_mix] ?? ''}</div>
-              </div>
-
-              {/* Right Column: Tyre & Brake */}
-              <div className="space-y-0.5">
-                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Tyre</div>
-                <div className="flex items-baseline gap-1.5">
-                  {tyreName ? (
-                    <span className="text-xl font-black" style={{ color: tyreColor }}>
-                      {tyreName}
-                    </span>
-                  ) : (
-                    <span className="text-xl font-black text-[var(--text-muted)]">—</span>
-                  )}
-                  <span className="text-[11px] font-semibold text-[var(--text-secondary)] tabular-nums">
-                    {tyreAge === null ? '—' : `${tyreAge}L`}
-                  </span>
-                </div>
-                <div className="text-[10px] text-[var(--text-secondary)]">
-                  BB: {frontBrakeBias === null ? '—' : `${frontBrakeBias}% F`}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-0.5">
-                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Fuel</div>
-                <div className="text-xl font-black text-[var(--text-muted)]">— kg</div>
-                <div className="text-[11px] text-[var(--text-muted)]">— laps</div>
-                <div className="text-[10px] text-[var(--text-muted)]">Mix: —</div>
-              </div>
-              <div className="space-y-0.5">
-                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Tyre</div>
-                <div className="text-xl font-black text-[var(--text-muted)]">—</div>
-                <div className="text-[10px] text-[var(--text-muted)]">BB: —%</div>
-              </div>
-            </div>
-          )
-        ) : isSpaciousStrategy ? (
-          /* Spacious Strategy Layout */
-          activeStatus ? (
-            <div className="space-y-6">
-              {/* Fuel */}
-              <div>
-                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Fuel</div>
-                <div className="flex items-baseline gap-2">
-                  <span
-                    className="text-4xl font-black tabular-nums"
-                    style={{
-                      color: activeStatus.fuel_laps > 1 ? (isDark ? '#37872D' : '#137333') :
-                             activeStatus.fuel_laps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
-                             '#C4162A'
-                    }}
-                  >
-                    {activeStatus.fuel_kg.toFixed(1)}
-                  </span>
-                  <span className="text-[var(--text-secondary)] text-base font-semibold">kg</span>
-                </div>
-                <div className="text-base font-semibold text-[var(--text-secondary)] mt-1">
-                  {activeStatus.fuel_laps >= 0 ? '+' : ''}{activeStatus.fuel_laps.toFixed(1)} laps vs finish
-                </div>
-                <div className="text-sm text-[var(--text-secondary)] mt-1.5">Mix: {FUEL_MIX[activeStatus.fuel_mix] ?? ''}</div>
-              </div>
-
-              {/* Tyre */}
-              <div className="pt-4 -mx-6 px-6 border-t border-[var(--border)]">
-                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Tyre</div>
-                <div className="flex items-center gap-3">
-                  {tyreName ? (
-                    <span className="text-3xl font-black" style={{ color: tyreColor }}>
-                      {tyreName}
-                    </span>
-                  ) : (
-                    <span className="text-3xl font-black text-[var(--text-muted)]">—</span>
-                  )}
-                  <div className="text-base font-semibold text-[var(--text-secondary)]">
-                    Age: {tyreAge === null ? '—' : `${tyreAge} laps`}
-                  </div>
-                </div>
-                <div className="text-sm text-[var(--text-secondary)] mt-1">
-                  {frontBrakeBias === null
-                    ? 'Brake bias: —'
-                    : `Brake bias: ${frontBrakeBias}% front · ${(100 - frontBrakeBias).toFixed(0)}% rear`}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              <div>
-                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Fuel</div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-4xl font-black tabular-nums text-[var(--text-muted)]">—</span>
-                  <span className="text-[var(--text-muted)] text-base font-semibold">kg</span>
-                </div>
-                <div className="text-base font-semibold text-[var(--text-muted)] mt-1">— laps vs finish</div>
-                <div className="text-sm text-[var(--text-muted)] mt-1.5">Mix: —</div>
-              </div>
-              <div className="pt-4 -mx-6 px-6 border-t border-[var(--border)]">
-                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Tyre</div>
-                <div className="flex items-center gap-3">
-                  <span className="text-3xl font-black text-[var(--text-muted)]">—</span>
-                  <div className="text-base font-semibold text-[var(--text-muted)]">Age: — laps</div>
-                </div>
-                <div className="text-sm text-[var(--text-muted)] mt-1">Brake bias: —% front · —% rear</div>
-              </div>
-            </div>
-          )
-        ) : (
-          /* Normal Strategy Layout */
-          activeStatus ? (
-            <div className="space-y-4">
-              {/* Fuel */}
-              <div>
-                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Fuel</div>
-                <div className="flex items-baseline gap-2">
-                  <span
-                    className="text-3xl font-black tabular-nums"
-                    style={{
-                      color: activeStatus.fuel_laps > 1 ? (isDark ? '#37872D' : '#137333') :
-                             activeStatus.fuel_laps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
-                             '#C4162A'
-                    }}
-                  >
-                    {activeStatus.fuel_kg.toFixed(1)}
-                  </span>
-                  <span className="text-[var(--text-secondary)] text-sm">kg</span>
-                </div>
-                <div className="text-sm text-[var(--text-secondary)]">
-                  {activeStatus.fuel_laps >= 0 ? '+' : ''}{activeStatus.fuel_laps.toFixed(1)} laps vs finish
-                </div>
-                <div className="text-xs text-[var(--text-secondary)] mt-1">Mix: {FUEL_MIX[activeStatus.fuel_mix] ?? ''}</div>
-              </div>
-
-              {/* Tyre */}
-              <div className="pt-3 -mx-4 px-4 border-t border-[var(--border)]">
-                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Tyre</div>
-                <div className="flex items-center gap-2">
-                  {tyreName ? (
-                    <span className="text-2xl font-black" style={{ color: tyreColor }}>
-                      {tyreName}
-                    </span>
-                  ) : (
-                    <span className="text-2xl font-black text-[var(--text-muted)]">—</span>
-                  )}
-                  <div className="text-sm text-[var(--text-secondary)]">
-                    Age: {tyreAge === null ? '—' : `${tyreAge} laps`}
-                  </div>
-                </div>
-                <div className="text-xs text-[var(--text-secondary)] mt-0.5">
-                  Brake bias: {frontBrakeBias === null ? '—' : `${frontBrakeBias}% front`}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div>
-                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Fuel</div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-black tabular-nums text-[var(--text-muted)]">—</span>
-                  <span className="text-[var(--text-muted)] text-sm">kg</span>
-                </div>
-                <div className="text-sm text-[var(--text-muted)]">— laps vs finish</div>
-                <div className="text-xs text-[var(--text-muted)] mt-1">Mix: —</div>
-              </div>
-              <div className="pt-3 -mx-4 px-4 border-t border-[var(--border)]">
-                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Tyre</div>
-                <div className="flex items-center gap-2">
-                  <span className="text-2xl font-black text-[var(--text-muted)]">—</span>
-                  <div className="text-sm text-[var(--text-muted)]">Age: — laps</div>
-                </div>
-                <div className="text-xs text-[var(--text-muted)] mt-0.5">Brake bias: —% front</div>
-              </div>
-            </div>
-          )
-        )}
-      </Panel>
-      )}
 
     </div>
   )

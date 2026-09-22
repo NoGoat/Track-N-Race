@@ -1393,11 +1393,22 @@ std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
             std::vector<V6ProjectedRecord> projectedSnapshot;
             uint64_t projectedOrder = 0;
             for (auto& row : rows) {
+                // An edge-encoded type's newest sample carries the timestamp of
+                // the change that produced it, which can be many seconds — and
+                // whole laps — behind the cursor. That is the right time for a
+                // history row but the wrong one for a seek snapshot: consumers
+                // install these against the cursor's lap window, so a patch
+                // stamped before it is discarded and the field never lands. The
+                // value being restored *is* the state at the cursor, so stamp it
+                // there. Sample types already sit at the cursor and are left be.
+                const bool restoredState =
+                    detail::stateType(static_cast<detail::V6DataType>(row.rowType));
+                const float stampTime = restoredState ? t : row.sessionTime;
                 std::vector<std::pair<uint8_t, std::string>> projected;
-                projectV6Row(row.rowType, row.sessionTime, row.json, projected);
+                projectV6Row(row.rowType, stampTime, row.json, projected);
                 for (auto& [type, json] : projected)
                     projectedSnapshot.push_back({
-                        type, row.sessionTime, projectedOrder++, std::move(json),
+                        type, stampTime, projectedOrder++, std::move(json),
                     });
             }
             std::stable_sort(projectedSnapshot.begin(), projectedSnapshot.end(),
@@ -1798,11 +1809,46 @@ bool TnrdReader::forEachStrategyRow(
                 if (!cancelled || !cancelled()) lastError_ = std::move(error);
                 return false;
             }
+            // V6 keeps a driver's state as per-field families, not as the
+            // composite rows the strategy reducer parses: handing them over raw
+            // leaves it without lap, status and damage, so it never leaves its
+            // waiting state. Project them the way the playback cursor does, and
+            // re-merge each timestamp's families into one row per legacy type —
+            // the reducer replaces its stored row wholesale, so a sparse patch
+            // would blank the fields it does not carry. Shared V6 records and
+            // every V5 row are already composite and pass straight through.
+            const bool projectV6 = loadedFormat_ == TnrdFormat::ChunkedV6;
+            V6ProjectionAssembler assembler;
+            bool assembling = false;
+            float assembledTime = 0.0f;
+            const auto drain = [&] {
+                assembling = false;
+                for (const auto& record : assembler.take())
+                    callback(record.sessionTime, record.json);
+            };
             for (const auto& row : rows) {
                 if (cancelled && cancelled()) return false;
                 if (!includeFrom && row.sessionTime <= fromTime) continue;
+                // A shared record carries its own legacy type and no stored-type
+                // marker, so this also tells the two sources apart: rowType means
+                // a V6 family for one and a legacy family for the other.
+                const uint8_t storedType = projectV6 ? scanV6StoredType(row.json) : 0;
+                if (storedType != 0) {
+                    std::vector<std::pair<uint8_t, std::string>> projected;
+                    projectV6Row(storedType, row.sessionTime, row.json, projected,
+                                 -1, kStrategyDependencyMask);
+                    if (projected.empty()) continue;
+                    if (assembling && row.sessionTime != assembledTime) drain();
+                    assembling = true;
+                    assembledTime = row.sessionTime;
+                    for (auto& [type, json] : projected)
+                        assembler.add(type, row.sessionTime, std::move(json));
+                    continue;
+                }
+                if (assembling) drain();
                 callback(row.sessionTime, row.json);
             }
+            if (assembling) drain();
             return true;
         }
         return forEachIndexedRange(fromTime, toTime, kStrategyDependencyMask,

@@ -237,10 +237,14 @@ Telemetry 2 on pages 16–18.
 
 ### Compression level
 
-The current V6 writer explicitly uses **Zstandard level 3** in
-[`TNRD_V6.cpp`](../protocol_parser_library/src/tnrd/TNRD_V6.cpp). Keep it as the
-baseline and evaluate levels **5 and 7** on the proposed driver/lap/type chunks.
-Level 5 is the first candidate, not an already proven replacement.
+The V6 writer defaults to **Zstandard level 9**
+(`DEFAULT_COMPRESSION_LEVEL` in
+[`TNRD_V6.cpp`](../protocol_parser_library/src/tnrd/TNRD_V6.cpp), mirrored by
+`TnrdWriter::compressionLevel_`). It was raised from 3 on the strength of the
+offline conversion comparison in
+[`TNRD_V6_WRITER_EFFICIENCY_DESIGN.md`](TNRD_V6_WRITER_EFFICIENCY_DESIGN.md#6-finding-4--compression-level),
+which measured −17.38% output size against level 3. Callers that need cheaper
+writes can lower it with `setCompressionLevel()`.
 
 Higher levels generally exchange compression speed for smaller files;
 decompression speed is usually similar across levels. This makes a modest
