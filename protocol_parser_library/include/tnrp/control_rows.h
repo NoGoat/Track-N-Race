@@ -62,6 +62,7 @@ struct WeatherSample {
 struct SessionRow {
     std::string type{"session"};
     std::string ts;
+    std::optional<uint64_t> session_uid; // header identity; absent in older recordings
     int weather{};
     int track_temp{};
     int air_temp{};

@@ -2,6 +2,7 @@ import { memo, useState } from 'react'
 import { tyreCompoundColor } from '../lib/tyreCompounds'
 import type { StrategyPlan, StrategySnapshotMsg, StrategyStint } from '../types'
 import type { DensityMode } from '../lib/graphSections'
+import { useTelemetryStore } from '../stores/telemetryStore'
 
 interface Props { strategy: StrategySnapshotMsg | null; isDark: boolean; compact?: DensityMode | boolean }
 
@@ -9,6 +10,7 @@ const wearColor=(v:number)=>v<20?'#73BF69':v<40?'#A8D436':v<60?'#FADE2A':v<80?'#
 const lapTime=(ms:number)=>{if(!Number.isFinite(ms)||ms<=0)return '—';const s=ms/1000;return `${Math.floor(s/60)}:${(s%60).toFixed(1).padStart(4,'0')}`}
 const delta=(ms:number)=>`${ms>0?'+':ms<0?'−':''}${Math.abs(ms/1000).toFixed(1)}`
 const words=(value:string)=>value.replace(/_/g,' ')
+const tyreSetDelta=(compound:string,deltaMs:number,wear:number|undefined)=>`${compound} ${Math.abs(deltaMs/1000).toFixed(1)}s/L ${deltaMs<0?'faster':'slower'}${wear===undefined?'':wear===0?' · new set':` · ${wear}% worn`}`
 
 const Chip=memo(({name,actual,visual}:{name:string;actual:number;visual:number})=>{const c=tyreCompoundColor(actual,visual)??'var(--text-primary)';return <span className="text-[10px] font-bold px-2 py-0.5 rounded border shrink-0" style={{color:c,borderColor:c,backgroundColor:`color-mix(in srgb, ${c} 10%, transparent)`}}>{name}</span>})
 
@@ -213,7 +215,7 @@ function WaitingSidebar({blue,amber,minimumStops,onMinimumStopsChange}:{blue:str
 function Sidebar({s,blue,amber,minimumStops,onMinimumStopsChange}:{s:StrategySnapshotMsg;blue:string;amber:string;minimumStops:number;onMinimumStopsChange:(value:number)=>void}) {
   const defensiveStop=nextStopLap(s.conservative,s.lap_num)
   const attackingStop=nextStopLap(s.aggressive,s.lap_num)
-  const weather=s.weather_strategy&&s.weather_strategy.crossover_lap>0?s.weather_strategy:null
+  const weather=s.weather_strategy&&(s.weather_strategy.crossover_lap>0||s.weather_strategy.lap_delta_ms!==undefined)?s.weather_strategy:null
   return <div className="w-80 shrink-0 min-h-0 flex flex-col">
     <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[var(--border)]">
     {s.neutralisation&&<section className="p-4" style={{background:s.neutralisation.recommendation==='box'?'color-mix(in srgb, #73BF69 12%, transparent)':'color-mix(in srgb, #FADE2A 10%, transparent)'}}>
@@ -242,8 +244,9 @@ function Sidebar({s,blue,amber,minimumStops,onMinimumStopsChange}:{s:StrategySna
 
     {weather&&<section className="p-4">
       <div className="text-[10px] uppercase tracking-widest text-[var(--text-secondary)] mb-2">Weather window</div>
-      <div className="flex items-baseline gap-2"><b className="text-sm capitalize">{words(weather.recommendation)}</b><b className="ml-auto text-xs">L{weather.crossover_lap}</b></div>
-      <p className="text-[10px] text-[var(--text-secondary)] mt-1">{weather.rain_percentage}% rain · about {weather.minutes_until_change} min</p>
+      <div className="flex items-baseline gap-2"><b className="text-sm capitalize">{words(weather.recommendation)}</b>{weather.crossover_lap>0&&<b className="ml-auto text-xs">L{weather.crossover_lap}</b>}</div>
+      <p className="text-[10px] text-[var(--text-secondary)] mt-1 first-letter:uppercase">{weather.crossover_lap>0?`${weather.rain_percentage}% rain · ${weather.minutes_until_change>0?`about ${weather.minutes_until_change} min`:'now'}`:words(weather.reason)}</p>
+      {weather.lap_delta_ms!==undefined&&<p className="text-[10px] text-[var(--text-secondary)] mt-0.5 first-letter:uppercase">{tyreSetDelta(weather.target_compound,weather.lap_delta_ms,weather.set_wear)}</p>}
     </section>}
 
     {s.rivals.length>0&&<section>
@@ -264,7 +267,18 @@ function Sidebar({s,blue,amber,minimumStops,onMinimumStopsChange}:{s:StrategySna
   </div>
 }
 
+// Shown in place of the plan tables while a seek's Strategy rebuild runs. It
+// fades in after a short delay, so fast rebuilds swap straight to the tables.
+function Rebuilding() {
+  return <div className="flex-1 min-w-0 flex items-center justify-center" role="status" aria-live="polite" aria-label="Recalculating strategy">
+    <div className="seek-loading-overlay">
+      <div className="w-6 h-6 rounded-full border-2 border-[var(--border)] border-t-[#5794F2] animate-spin"/>
+    </div>
+  </div>
+}
+
 const StrategyPanel=memo(function StrategyPanel({strategy,isDark,compact}:Props){
+  const rebuilding=useTelemetryStore(s=>s.strategyRebuilding)
   const blue=isDark?'#5794F2':'#0B57D0'
   const amber=isDark?'#FADE2A':'#8B5200'
   const [minimumStops,setMinimumStops]=useState(1)
@@ -276,11 +290,11 @@ const StrategyPanel=memo(function StrategyPanel({strategy,isDark,compact}:Props)
 
   return <div className="flex flex-col h-full overflow-hidden">
     <Header s={strategy} compact={compact}/>
-    {strategy?.state==='non_race'
+    {strategy?.state==='non_race'&&!rebuilding
       ? <div className="flex-1 flex flex-col items-center justify-center"><b>Race sessions only</b><span className="text-xs text-[var(--text-secondary)] mt-2">Strategy suggestions are available during Race, Race 2, and Race 3 sessions.</span></div>
       : strategy?.state!=='ready'
-        ? <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]"><div className="flex-1 flex items-center justify-center text-[var(--text-secondary)]">Waiting for tyre data…</div><WaitingSidebar blue={blue} amber={amber} minimumStops={minimumStops} onMinimumStopsChange={changeMinimumStops}/></div>
-        : <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]"><div className="flex-1 min-w-0"><PlanColumn plan={strategy.conservative} label="Defensive" accent={blue}/></div><div className="flex-1 min-w-0"><PlanColumn plan={strategy.aggressive} label="Attacking" accent={amber}/></div><Sidebar s={strategy} blue={blue} amber={amber} minimumStops={minimumStops} onMinimumStopsChange={changeMinimumStops}/></div>}
+        ? <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]"><Rebuilding/><WaitingSidebar blue={blue} amber={amber} minimumStops={minimumStops} onMinimumStopsChange={changeMinimumStops}/></div>
+        : <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]">{rebuilding?<Rebuilding/>:<><div className="flex-1 min-w-0"><PlanColumn plan={strategy.conservative} label="Defensive" accent={blue}/></div><div className="flex-1 min-w-0"><PlanColumn plan={strategy.aggressive} label="Attacking" accent={amber}/></div></>}<Sidebar s={strategy} blue={blue} amber={amber} minimumStops={minimumStops} onMinimumStopsChange={changeMinimumStops}/></div>}
   </div>
 })
 export default StrategyPanel

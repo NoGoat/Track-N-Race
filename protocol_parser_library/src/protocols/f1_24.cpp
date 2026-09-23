@@ -72,6 +72,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
         case PID_SESSION: {
             if (length < 708) return {};
             SessionRow sr;
+            sr.session_uid                = ReadUInt64(data, 7);
             sr.ts                         = timestamp;
             sr.weather                    = data[29];
             sr.track_temp                 = ReadInt8(data, 30);

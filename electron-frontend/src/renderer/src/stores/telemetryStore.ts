@@ -256,6 +256,9 @@ export interface TelemetryStoreState {
   currentStintStartTime: number
   // True from a playback seek start until its data is installed (or fails).
   seekPending: boolean
+  // True from a playback seek start until Strategy's rebuilt snapshot arrives.
+  // Strategy reconstructs asynchronously, after the seek itself installs.
+  strategyRebuilding: boolean
 }
 
 export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
@@ -279,6 +282,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   allLapsLapBoundaries: [],
   currentStintStartTime: -Infinity,
   seekPending: false,
+  strategyRebuilding: false,
 }))
 
 const set = useTelemetryStore.setState
@@ -897,6 +901,7 @@ function resetSession(): void {
     statusHistory: [], damageHistory: [],
     status: null, damage: null, lap: null, timing: null, allStatus: null,
     participants: null, session: null, fastestLapCarIdx: null, tyreSets: null, strategy: null,
+    strategyRebuilding: false,
     fastestLapNum: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
     analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
     analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
@@ -1422,7 +1427,10 @@ function handleMsg(msg: GatewayMsg): void {
       break
     }
     case 'tyre_sets':    set({ tyreSets: msg }); break
-    case 'strategy':     set({ strategy: msg as StrategySnapshotMsg }); break
+    // The seek gate drops Strategy rows until the seek installs, and the engine
+    // withholds tick snapshots until its rebuild commits, so the first one
+    // after a seek is the rebuilt result.
+    case 'strategy':     set({ strategy: msg as StrategySnapshotMsg, strategyRebuilding: false }); break
     case 'race_event':
       if ((msg as RaceEventMsg).code === 'FLBK') {
         const target = Number((msg as RaceEventMsg).flashback_session_time)
@@ -1533,6 +1541,8 @@ function handleMsg(msg: GatewayMsg): void {
     case 'playback_seek_flush_failed':
       waitingForAllLapsHistory = false
       setSeekPending(false)
+      // A failed seek queues no Strategy rebuild; keep the previous snapshot.
+      set({ strategyRebuilding: false })
       requestedHistoryRowMask = 0
       break
     case 'playback_lap_blocks': {
@@ -2346,6 +2356,7 @@ export function startTelemetryBridge(): void {
     // with already-queued playback batches. Electron main holds all rows from
     // the new cursor until processPlaybackSeekFlush acknowledges installation.
     setSeekPending(true)
+    set({ strategyRebuilding: true })
     playbackDebug('seek-started-in-renderer', {
       allHistory,
       historyRowMask: `0x${historyRowMask.toString(16)}`,

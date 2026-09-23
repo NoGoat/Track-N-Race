@@ -14,7 +14,7 @@ namespace tnrp::detail {
 
 // Owned exclusively by the Strategy worker. Checkpoints contain the reducer,
 // not historical JSON. The journal holds only the recent inputs actually
-// consumed by that reducer, including snapshot()'s decision-state mutations.
+// consumed by that reducer; snapshot() does not mutate it.
 class StrategyRollback {
 public:
     static constexpr float WINDOW_SECONDS = 30.0f;
@@ -28,8 +28,8 @@ public:
     const StrategyProcessor& processor() const { return processor_; }
 
     // Settings are not telemetry. Save their resulting state before any later
-    // snapshot mutates decisions, so replay never applies those decisions with
-    // the configuration from an older checkpoint.
+    // input commits decisions, so replay never applies those inputs with the
+    // configuration from an older checkpoint.
     void configurationChanged() {
         if (!checkpoints_.empty()) checkpoint();
         trim();
@@ -58,14 +58,7 @@ public:
         trim();
     }
 
-    std::string snapshotJson() {
-        auto result = processor_.snapshotJson();
-        // A null JSON pointer is a snapshot operation, not a telemetry row.
-        journal_.push_back({time_, nextOrdinal_++, {}});
-        journalBytes_ += sizeof(Entry);
-        trim();
-        return result;
-    }
+    std::string snapshotJson() { return processor_.snapshotJson(); }
 
     // False means that the target predates the bounded journal. The caller can
     // reconstruct exceptionally deep rewinds using a streaming history reader.
@@ -85,12 +78,8 @@ public:
         processor_ = selected->processor;
         for (const auto& entry : journal_) {
             if (entry.ordinal < selected->ordinal || entry.time > target) continue;
-            if (entry.json) {
-                processor_.ingestJson(*entry.json);
-                ++stats_.replayedRows;
-            } else {
-                (void)processor_.snapshot();
-            }
+            processor_.ingestJson(*entry.json);
+            ++stats_.replayedRows;
         }
         while (!checkpoints_.empty() && checkpoints_.back().time > target) {
             checkpointBytes_ -= checkpoints_.back().bytes;

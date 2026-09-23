@@ -1771,7 +1771,6 @@ StrategySnapshotRow TnrdReader::strategySnapshotAt(float t, StrategyProcessor* r
     size_t nextBoundary = 0;
     auto checkpoint = [&] {
         const float boundary = boundaries[nextBoundary++];
-        (void)processor.snapshot();
         strategyCheckpoints_.emplace_back(boundary, processor);
         cursor = boundary;
     };
@@ -1829,10 +1828,13 @@ bool TnrdReader::forEachStrategyRow(
             for (const auto& row : rows) {
                 if (cancelled && cancelled()) return false;
                 if (!includeFrom && row.sessionTime <= fromTime) continue;
-                // A shared record carries its own legacy type and no stored-type
-                // marker, so this also tells the two sources apart: rowType means
-                // a V6 family for one and a legacy family for the other.
-                const uint8_t storedType = projectV6 ? scanV6StoredType(row.json) : 0;
+                // Range reads return family rows untagged: only the playback
+                // cursor adds the _v6_type marker. A family row is prefixed with
+                // its driver_idx and its rowType is the V6 family; a shared
+                // record is a plain legacy row whose rowType is its legacy type.
+                const bool familyRow = projectV6 &&
+                    std::string_view(row.json).substr(0, 14) == "{\"driver_idx\":";
+                const uint8_t storedType = familyRow ? row.rowType : 0;
                 if (storedType != 0) {
                     std::vector<std::pair<uint8_t, std::string>> projected;
                     projectV6Row(storedType, row.sessionTime, row.json, projected,

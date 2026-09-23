@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -26,10 +27,13 @@ inline constexpr uint32_t kStrategyDependencyMask =
     (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) |
     (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10);
 
+// total_ms is the whole stop: in-lap loss + out-lap loss + stationary time.
 struct PitLoss {
-    double inlap_ms{11250.0};
-    double outlap_ms{13750.0};
+    double inlap_ms{10125.0};
+    double outlap_ms{12375.0};
     double total_ms{25000.0};
+    bool estimated{}; // true when the track is not in the catalog
+    double stationary_ms() const { return std::max(0.0, total_ms - inlap_ms - outlap_ms); }
 };
 
 PitLoss pitLossForTrack(int trackId);
@@ -160,6 +164,10 @@ struct StrategyWeatherDecision {
     int minutes_until_change{};
     double confidence{};
     std::string reason;
+    // Game lap delta vs the fitted set, and wear, of the least-worn available
+    // set for the target conditions (negative = faster).
+    std::optional<int> lap_delta_ms;
+    std::optional<int> set_wear;
 };
 
 struct StrategyDecisionRecord {
@@ -273,6 +281,11 @@ private:
         int num_pit_stops{};
         int pit_status{};
         int last_pit_lap{-1};
+        // Live flags describe the lap in progress, so latch them per lap and
+        // judge a completed lap by what was seen while it was being driven.
+        int tainted_lap{-1};
+        // A pit visit that began with an unserved drive-through/stop-go.
+        bool penalty_visit{};
         std::vector<RivalLapSample> recent_laps;
     };
 
@@ -292,6 +305,7 @@ private:
         int result_status{};
     };
 
+    int playerIndex() const;
     void refreshRivals();
     bool isRivalThreatCandidate(int idx, bool ahead) const;
     double rivalPaceMs(int idx) const;
@@ -300,7 +314,11 @@ private:
     void rememberPaceLap(int lap, int milliseconds);
     void completeLap(int nextLap, int milliseconds);
     void observeStint(bool changed = false);
-    StrategySnapshotRow makeSnapshot(bool includeHistory);
+    // commit=false leaves the reducer untouched, so snapshot() cadence (panel
+    // visibility, publish throttling, seek checkpoints) never changes results.
+    // Decision state is committed only at deterministic input transitions.
+    StrategySnapshotRow makeSnapshot(bool includeHistory, bool commit);
+    void commitDecisions();
 
     uint16_t format_{2025};
     TeamColorOverrides teamColorOverrides_;
@@ -331,10 +349,17 @@ private:
     std::vector<NeutralCarState> frozenNeutralCars_;
     std::string neutralisationRecommendation_;
     std::vector<StrategyDecisionRecord> decisionHistory_;
+    // Reference gaps for the trend: the gap when the trend last changed, to the
+    // same car. Gradual closing accumulates instead of being lost per row.
     double previousAheadGap_{};
     double previousBehindGap_{};
+    int aheadGapIdx_{-1};
+    int behindGapIdx_{-1};
     bool haveAheadGap_{false};
     bool haveBehindGap_{false};
+    int playerTaintedLap_{-1};
+    // First lap of the player's current tyre stint for the pace model.
+    int paceStintStartLap_{};
     int aheadTrend_{-1};
     int behindTrend_{-1};
     struct StintProgress {
@@ -368,7 +393,7 @@ template <> struct glz::meta<tnrp::StrategyNeutralisation> {
     using T=tnrp::StrategyNeutralisation;
     static constexpr auto value=glz::object("kind",&T::kind,"recommendation",&T::recommendation,"reason",&T::reason,"normal_pit_loss_ms",&T::normal_pit_loss_ms,"effective_pit_loss_ms",&T::effective_pit_loss_ms,"queue_loss_ms",&T::queue_loss_ms,"recoverable_time_ms",&T::recoverable_time_ms,"net_time_ms",&T::net_time_ms,"box_now_cost_ms",&T::box_now_cost_ms,"box_later_cost_ms",&T::box_later_cost_ms,"box_now_advantage_ms",&T::box_now_advantage_ms,"box_later_lap",&T::box_later_lap,"current_position",&T::current_position,"projected_box_position",&T::projected_box_position,"projected_stay_position",&T::projected_stay_position,"projected_later_box_position",&T::projected_later_box_position,"positions_lost",&T::positions_lost,"rivals_boxing",&T::rivals_boxing,"decision_lap",&T::decision_lap,"confidence",&T::confidence,"data_age_s",&T::data_age_s,"position_basis",&T::position_basis,"laps_to_recover",&T::laps_to_recover,"factors",&T::factors);
 };
-template <> struct glz::meta<tnrp::StrategyWeatherDecision> { using T=tnrp::StrategyWeatherDecision; static constexpr auto value=glz::object("recommendation",&T::recommendation,"target_compound",&T::target_compound,"forecast_weather",&T::forecast_weather,"rain_percentage",&T::rain_percentage,"crossover_lap",&T::crossover_lap,"minutes_until_change",&T::minutes_until_change,"confidence",&T::confidence,"reason",&T::reason); };
+template <> struct glz::meta<tnrp::StrategyWeatherDecision> { using T=tnrp::StrategyWeatherDecision; static constexpr auto value=glz::object("recommendation",&T::recommendation,"target_compound",&T::target_compound,"forecast_weather",&T::forecast_weather,"rain_percentage",&T::rain_percentage,"crossover_lap",&T::crossover_lap,"minutes_until_change",&T::minutes_until_change,"confidence",&T::confidence,"reason",&T::reason,"lap_delta_ms",&T::lap_delta_ms,"set_wear",&T::set_wear); };
 template <> struct glz::meta<tnrp::StrategyDecisionRecord> { using T=tnrp::StrategyDecisionRecord; static constexpr auto value=glz::object("event",&T::event,"lap_num",&T::lap_num,"session_time",&T::session_time,"recommendation",&T::recommendation,"reason",&T::reason,"target_idx",&T::target_idx,"target_name",&T::target_name,"start_position",&T::start_position,"projected_position",&T::projected_position,"start_num_pit_stops",&T::start_num_pit_stops,"actual_position",&T::actual_position,"followed",&T::followed,"successful",&T::successful); };
 template <> struct glz::meta<tnrp::StrategySnapshotRow> {
     using T=tnrp::StrategySnapshotRow;

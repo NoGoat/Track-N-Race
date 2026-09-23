@@ -208,9 +208,12 @@ void StrategyPage::rebuild() {
         cols->addWidget(makeVerticalRule());
         cols->addWidget(withMinimumStops(makeSidebar()), 2);
     } else {
-        auto* empty = makeLabel(QStringLiteral("Waiting for tyre data…"));
-        empty->setAlignment(Qt::AlignCenter); empty->setStyleSheet(QStringLiteral("color:palette(mid);"));
-        cols->addWidget(empty, 6);
+        // Strategy is still being calculated: an indeterminate bar, no text.
+        auto* pending = new QWidget; auto* centre = new QVBoxLayout(pending);
+        auto* bar = new QProgressBar; bar->setRange(0, 0); bar->setTextVisible(false);
+        bar->setFixedSize(128, 4);
+        centre->addStretch(); centre->addWidget(bar, 0, Qt::AlignCenter); centre->addStretch();
+        cols->addWidget(pending, 6);
         cols->addWidget(makeVerticalRule());
         cols->addWidget(withMinimumStops(makeWaitingSidebar()), 2);
     }
@@ -483,12 +486,31 @@ QWidget* StrategyPage::makeSidebar() {
         .arg(stopText(defensiveStop), defensiveTarget, stopText(attackingStop), attackingTarget, defensiveColor().name(), attackingColor().name()));
     pitWindow->setWordWrap(true); v->addWidget(pitWindow); v->addWidget(makeRule());
 
-    if (s.weather_strategy && s.weather_strategy->crossover_lap > 0) {
+    if (s.weather_strategy &&
+        (s.weather_strategy->crossover_lap > 0 || s.weather_strategy->lap_delta_ms)) {
         const auto& weather = *s.weather_strategy;
-        v->addWidget(makeLabel(QStringLiteral("<b>WEATHER WINDOW</b><br>%1 · L%2<br>"
-            "<span style='color:palette(mid)'>%3% rain · about %4 min</span>")
-            .arg(words(weather.recommendation).toHtmlEscaped()).arg(weather.crossover_lap)
-            .arg(weather.rain_percentage).arg(weather.minutes_until_change)));
+        const QString when = weather.crossover_lap > 0
+            ? QStringLiteral("%1% rain · %2").arg(weather.rain_percentage)
+                .arg(weather.minutes_until_change > 0
+                    ? QStringLiteral("about %1 min").arg(weather.minutes_until_change)
+                    : QStringLiteral("now"))
+            : words(weather.reason);
+        QString pace;
+        if (weather.lap_delta_ms) {
+            const int delta = *weather.lap_delta_ms;
+            pace = QStringLiteral("%1 %2s/L %3").arg(QString::fromStdString(weather.target_compound))
+                .arg(std::abs(delta) / 1000.0, 0, 'f', 1)
+                .arg(delta < 0 ? QStringLiteral("faster") : QStringLiteral("slower"));
+            if (weather.set_wear)
+                pace += *weather.set_wear == 0 ? QStringLiteral(" · new set")
+                                               : QStringLiteral(" · %1% worn").arg(*weather.set_wear);
+        }
+        v->addWidget(makeLabel(QStringLiteral("<b>WEATHER WINDOW</b><br>%1%2<br>"
+            "<span style='color:palette(mid)'>%3%4</span>")
+            .arg(words(weather.recommendation).toHtmlEscaped(),
+                 weather.crossover_lap > 0 ? QStringLiteral(" · L%1").arg(weather.crossover_lap) : QString(),
+                 when.toHtmlEscaped(),
+                 pace.isEmpty() ? QString() : QStringLiteral("<br>") + pace.toHtmlEscaped())));
         v->addWidget(makeRule());
     }
     if (!s.rivals.empty()) {
