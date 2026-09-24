@@ -13,6 +13,10 @@ import { HISTORY_ROW } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { getTelemetryChartRetentionDiagnostics } from '../diagnostics/telemetryRetention'
 import { getDebugSettings, subscribeDebugSettings } from '../lib/debugSettings'
+import {
+  ColumnTable, V6_PATCH_FIELDS, concatAfter, decodeV6History, emptyView, installHistory,
+  isV6HistoryPayload, viewOfRows, type ColumnView, type HistoryFamily,
+} from '../lib/columnStore'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Telemetry store.
@@ -32,82 +36,24 @@ const MAX_ROWS = 750000
 const RETENTION_S = 600 // reconciliation window used only after a clock reversal
 const MAX_RACE_EVENTS = 1000
 const MAX_ANALYZE_LAP_CACHE = 6
-// Keep a little slack above the hard cap so trimming is chunked instead of
-// copying a large source array on every appended row.
-const TRIM_CHUNK = 4096
 
-// Buffers are sorted by session_time (appendRow enforces ordering), so the
-// windowed views are contiguous suffixes/prefixes — binary-search the boundary
-// instead of filtering the whole buffer every frame.
-function lowerBound<T extends { session_time: number }>(arr: T[], t: number, inclusive: boolean): number {
-  let l = 0, r = arr.length
-  while (l < r) {
-    const mid = (l + r) >> 1
-    const keep = inclusive ? arr[mid].session_time >= t : arr[mid].session_time > t
-    if (keep) r = mid; else l = mid + 1
-  }
-  return l
-}
-
-// Append a row to a buffer in place — O(1) amortized. In ordinary live mode the
+// Append a row to a column table — O(1) amortized. In ordinary live mode the
 // sources are trimmed at lap boundaries to Current + Previous + Previous-previous.
 // All Laps obtains older requested families from the native compressed store.
-// A session_time reversal rebuilds the buffer.
-function appendRow<T extends { session_time: number }>(ref: { current: T[] }, msg: T, maxRows: number): void {
-  const buf = ref.current
-  const last = buf[buf.length - 1]
-  if (last && msg.session_time < last.session_time) {
-    if (allLapsMode) {
-      // A rapid seek can leave a few superseded future rows in flight. AL owns
-      // the full prefix, so reconcile by truncating only that future tail;
-      // applying the ordinary 600-second recovery window here destroys laps.
-      const rebuilt = buf.slice(0, lowerBound(buf, msg.session_time, true))
-      rebuilt.push(msg)
-      ref.current = rebuilt
-      return
-    }
-    const cutoff = msg.session_time - RETENTION_S
-    const rebuilt = buf.filter(d => d.session_time < msg.session_time && d.session_time >= cutoff)
-    rebuilt.push(msg)
-    ref.current = rebuilt
-    return
-  }
-  buf.push(msg)
-  if (buf.length > maxRows + TRIM_CHUNK) {
-    ref.current = buf.slice(buf.length - maxRows)
-  }
+// A session_time reversal rebuilds the table.
+function appendRow<T extends { session_time: number }>(table: ColumnTable<T>, msg: T, maxRows: number): void {
+  reconcileReversal(table, msg.session_time)
+  table.append(msg as T & Record<string, unknown>, maxRows)
 }
 
-const V6_PATCH_FIELDS: Record<number, readonly string[]> = {
-  1: ['speed_kph'],
-  2: ['rpm', 'rev_lights_pct', 'rev_lights_bit_value'],
-  3: ['gear'],
-  4: ['throttle'],
-  5: ['brake'],
-  6: ['steering'],
-  7: ['drs', 'slm', 'drs_allowed'],
-  8: ['tyre_temp_surface_fl', 'tyre_temp_surface_fr', 'tyre_temp_surface_rl', 'tyre_temp_surface_rr'],
-  9: ['tyre_temp_inner_fl', 'tyre_temp_inner_fr', 'tyre_temp_inner_rl', 'tyre_temp_inner_rr'],
-  10: ['brake_temp_fl', 'brake_temp_fr', 'brake_temp_rl', 'brake_temp_rr'],
-  11: ['engine_temp'],
-  12: ['tyre_wear_fl', 'tyre_wear_fr', 'tyre_wear_rl', 'tyre_wear_rr'],
-  13: ['tyre_compound', 'visual_compound', 'tyre_age_laps', 'sets', 'fitted_idx'],
-  14: ['tyre_dmg_fl', 'tyre_dmg_fr', 'tyre_dmg_rl', 'tyre_dmg_rr',
-    'brake_dmg_fl', 'brake_dmg_fr', 'brake_dmg_rl', 'brake_dmg_rr', 'wing_fl', 'wing_fr', 'wing_rear',
-    'floor_damage', 'diffuser_damage', 'sidepod_damage', 'gearbox_damage', 'engine_damage',
-    'drs_fault', 'ers_fault', 'blisters_fl', 'blisters_fr', 'blisters_rl', 'blisters_rr'],
-  15: ['fuel_kg', 'fuel_laps', 'fuel_mix'],
-  16: ['ers_j', 'ers_pct', 'ers_mode'],
-  17: ['ers_harvested_mguk_j', 'ers_harvested_mguh_j'],
-  18: ['ers_deployed_j'],
-  19: ['engine_power_ice_kw', 'engine_power_mguk_kw'],
-  20: ['front_brake_bias'],
-  21: ['g_lat', 'g_long', 'g_vert'],
-  22: ['front_aero_height_mm', 'rear_aero_height_mm'],
-  23: ['x', 'z'],
-  24: ['lap_distance_m', 'position', 'lap_num', 'current_lap_ms', 'last_lap_ms', 's1_ms',
-    's2_ms', 'gap_ms', 'pit_status', 'num_pit_stops', 'lap_invalid', 'penalties_s', 'num_dt_pens',
-    'num_sg_pens', 'sector', 'result_status', 'driver_status'],
+function reconcileReversal(table: ColumnTable<any>, sessionTime: number): void {
+  const last = table.lastTime()
+  if (last === undefined || sessionTime >= last) return
+  // A rapid seek can leave a few superseded future rows in flight. AL owns the
+  // full prefix, so reconcile by truncating only that future tail; applying
+  // the ordinary 600-second recovery window here destroys laps.
+  if (allLapsMode) table.retainRange(-Infinity, sessionTime)
+  else table.retainRange(sessionTime - RETENTION_S, sessionTime)
 }
 
 function mergePlaybackPatch<T extends Record<string, any>>(previous: T | undefined, patch: T): T {
@@ -131,32 +77,18 @@ function mergePlaybackPatch<T extends Record<string, any>>(previous: T | undefin
   return merged as T
 }
 
-function appendPlaybackPatch<T extends { session_time: number } & Record<string, any>>(
-  ref: { current: T[] }, patch: T, maxRows: number,
-): T {
-  const previous = ref.current[ref.current.length - 1]
-  const merged = mergePlaybackPatch(previous, patch)
-  if (previous && previous.session_time === merged.session_time && Number.isInteger(Number(patch._v6_type))) {
-    ref.current[ref.current.length - 1] = merged
+// Playback V6 patches carry forward the previous row's other fields; every
+// other row is appended as it stands.
+function appendPlaybackPatch<T extends { session_time: number }>(
+  table: ColumnTable<T>, patch: T, maxRows: number,
+): void {
+  const row = patch as T & Record<string, unknown>
+  if (isPlaybackFlag && Number.isInteger(Number(row._v6_type))) {
+    reconcileReversal(table, patch.session_time)
+    table.appendPatch(row, maxRows)
   } else {
-    appendRow(ref, merged, maxRows)
+    appendRow(table, patch, maxRows)
   }
-  return merged
-}
-
-export function coalescePlaybackRows<T extends { session_time: number } & Record<string, any>>(rows: T[]): T[] {
-  const ref = { current: [] as T[] }
-  for (const row of rows) {
-    const previous = ref.current[ref.current.length - 1]
-    const merged = Number.isInteger(Number(row._v6_type))
-      ? mergePlaybackPatch(previous, row)
-      : row
-    if (previous && previous.session_time === merged.session_time && Number.isInteger(Number(row._v6_type)))
-      ref.current[ref.current.length - 1] = merged
-    else
-      ref.current.push(merged)
-  }
-  return ref.current
 }
 
 function mergeCarPatches<T extends { cars: Array<Record<string, any>> }>(previous: T | null, patch: T): T {
@@ -178,20 +110,6 @@ function mergeCarPatches<T extends { cars: Array<Record<string, any>> }>(previou
   }
 }
 
-// Double-buffered window views: refill one of two persistent arrays each frame
-// (two, so consumers' identity-based memo deps still see a change and the
-// previous frame's array is never mutated under a holder mid-comparison).
-interface WindowPool<T> { a: T[]; b: T[]; flip: boolean }
-function makeWindowPool<T>(): WindowPool<T> { return { a: [], b: [], flip: false } }
-function fillRange<T>(pool: WindowPool<T>, src: T[], start: number, end: number): T[] {
-  pool.flip = !pool.flip
-  const out = pool.flip ? pool.a : pool.b
-  const n = Math.max(0, end - start)
-  out.length = n
-  for (let i = 0; i < n; i++) out[i] = src[start + i]
-  return out
-}
-
 declare global {
   interface Window {
     telemetryBridge: {
@@ -207,13 +125,13 @@ declare global {
 // The reactive, published view. Components select from this. Everything else is
 // working state kept in the module vars below (the store never publishes it).
 export interface TelemetryStoreState {
-  telemetry: TelemetryRow[]
-  motion: MotionRow[]
-  motionEx: MotionExRow[]
+  telemetry: ColumnView<TelemetryRow>
+  motion: ColumnView<MotionRow>
+  motionEx: ColumnView<MotionExRow>
   status: StatusRow | null
-  statusHistory: StatusRow[]
+  statusHistory: ColumnView<StatusRow>
   damage: DamageRow | null
-  damageHistory: DamageRow[]
+  damageHistory: ColumnView<DamageRow>
   lap: LapRow | null
   timing: TimingMsg | null
   participants: ParticipantsMsg | null
@@ -225,12 +143,12 @@ export interface TelemetryStoreState {
   strategy: StrategySnapshotMsg | null
   latest: TelemetryRow | null
   fastestLapNum: number | null
-  analyzeLapTelemetry: TelemetryRow[]
-  analyzeLapMotion: MotionRow[]
-  analyzeLapMotionEx: MotionExRow[]
-  analyzeLapStatusHistory: StatusRow[]
-  analyzeLapDamageHistory: DamageRow[]
-  analyzeLapProgress: LapProgressPoint[]
+  analyzeLapTelemetry: ColumnView<TelemetryRow>
+  analyzeLapMotion: ColumnView<MotionRow>
+  analyzeLapMotionEx: ColumnView<MotionExRow>
+  analyzeLapStatusHistory: ColumnView<StatusRow>
+  analyzeLapDamageHistory: ColumnView<DamageRow>
+  analyzeLapProgress: ColumnView<LapProgressPoint>
   analyzeLapStartTime: number
   analyzeLapRevision: number
   analyzeDeltaAvailable: boolean
@@ -261,14 +179,27 @@ export interface TelemetryStoreState {
   strategyRebuilding: boolean
 }
 
+// Shared empty publications, so "nothing to show" keeps a stable identity.
+const EMPTY = {
+  telemetry: emptyView<TelemetryRow>('telemetry'),
+  motion: emptyView<MotionRow>('motion'),
+  motionEx: emptyView<MotionExRow>('motion_ex'),
+  status: emptyView<StatusRow>('status'),
+  damage: emptyView<DamageRow>('damage'),
+  lap: emptyView<LapProgressPoint>('lap'),
+}
+const EMPTY_ANALYZE_SLICES = {
+  analyzeLapTelemetry: EMPTY.telemetry, analyzeLapMotion: EMPTY.motion, analyzeLapMotionEx: EMPTY.motionEx,
+  analyzeLapStatusHistory: EMPTY.status, analyzeLapDamageHistory: EMPTY.damage, analyzeLapProgress: EMPTY.lap,
+}
+
 export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
-  telemetry: [], motion: [], motionEx: [],
-  status: null, statusHistory: [], damage: null, damageHistory: [],
+  telemetry: EMPTY.telemetry, motion: EMPTY.motion, motionEx: EMPTY.motionEx,
+  status: null, statusHistory: EMPTY.status, damage: null, damageHistory: EMPTY.damage,
   lap: null, timing: null, participants: null, allStatus: null, strategy: null,
   fastestLapCarIdx: null, raceEvents: [], session: null, tyreSets: null,
   latest: null, fastestLapNum: null,
-  analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
-  analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
+  ...EMPTY_ANALYZE_SLICES, analyzeLapStartTime: 0,
   analyzeLapRevision: 0,
   analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
   playbackAnalysisDrivers: [], playbackDriverIndex: null,
@@ -288,25 +219,18 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
 const set = useTelemetryStore.setState
 
 // ── Working state (never published; the source of truth for computation) ──────
-const telBufRef   = { current: [] as TelemetryRow[] }
-const motBufRef   = { current: [] as MotionRow[] }
-const motExBufRef = { current: [] as MotionExRow[] }
-const dmgBufRef   = { current: [] as DamageRow[] }
-const stsBufRef   = { current: [] as StatusRow[] }
-const lapProgressBufRef = { current: [] as LapProgressPoint[] }
-
-const pools = {
-  tel:    makeWindowPool<TelemetryRow>(),
-  mot:    makeWindowPool<MotionRow>(),
-  motEx:  makeWindowPool<MotionExRow>(),
-  sts:    makeWindowPool<StatusRow>(),
-  dmg:    makeWindowPool<DamageRow>(),
-  analyzeTel:   makeWindowPool<TelemetryRow>(),
-  analyzeMot:   makeWindowPool<MotionRow>(),
-  analyzeMotEx: makeWindowPool<MotionExRow>(),
-  analyzeSts:   makeWindowPool<StatusRow>(),
-  analyzeDmg:   makeWindowPool<DamageRow>(),
-  analyzeLapProgress: makeWindowPool<LapProgressPoint>(),
+// Typed column tables (lib/columnStore.ts). Publications are views onto them:
+// a frozen range for finite windows and lap slices, the table's live view for
+// the full-session All Laps publication.
+const telTable   = new ColumnTable<TelemetryRow>('telemetry')
+const motTable   = new ColumnTable<MotionRow>('motion')
+const motExTable = new ColumnTable<MotionExRow>('motion_ex')
+const dmgTable   = new ColumnTable<DamageRow>('damage')
+const stsTable   = new ColumnTable<StatusRow>('status')
+const lapProgressTable = new ColumnTable<LapRow>('lap')
+const TABLE_OF_FAMILY: Record<HistoryFamily, ColumnTable<any>> = {
+  telemetry: telTable, motion: motTable, motion_ex: motExTable,
+  status: stsTable, damage: dmgTable, lap: lapProgressTable,
 }
 
 const raceEventListeners = new Set<(e: RaceEventMsg) => void>()
@@ -400,6 +324,37 @@ const historyV6Types = new Set<number>()
 let pendingV6HistoryBackfillMask = 0
 let seekTimelineGeneration = 0
 let seekRendererPending = false
+
+// All Laps history already decoded this session, per playback driver. A driver
+// switch always re-seeks with full history; installing the cached copy while
+// that seek runs makes switching back to a driver immediate, and the seek's
+// authoritative flush then replaces it. Each entry holds a full race of
+// columns for the requested families, so only a few drivers are kept.
+const MAX_CACHED_DRIVERS = 3
+type FamilyViews = Record<HistoryFamily, ColumnView<any>>
+const allLapsDriverCache = new Map<number, FamilyViews>()
+// The complete AL history captured at a seek start, before it is cleared.
+let allLapsSnapshot: { driver: number | null; views: FamilyViews } | null = null
+let currentPlaybackDriver: number | null = null
+// True while the tables hold a cached driver's history rather than rows from
+// the pending seek; its authoritative flush then starts from empty tables.
+let tablesFromDriverCache = false
+
+function snapshotTables(): FamilyViews {
+  const views = {} as FamilyViews
+  for (const family of Object.keys(TABLE_OF_FAMILY) as HistoryFamily[]) views[family] = TABLE_OF_FAMILY[family].frozen()
+  return views
+}
+
+function rememberDriverHistory(driver: number, views: FamilyViews): void {
+  allLapsDriverCache.delete(driver)
+  allLapsDriverCache.set(driver, views)
+  while (allLapsDriverCache.size > MAX_CACHED_DRIVERS) {
+    const oldest = allLapsDriverCache.keys().next().value
+    if (oldest === undefined) break
+    allLapsDriverCache.delete(oldest)
+  }
+}
 // The batch gate reads the module flag; the store copy only drives the seek
 // loading overlay, so it is published once per transition, never per batch.
 function setSeekPending(pending: boolean): void {
@@ -419,7 +374,7 @@ const SEEK_PENDING_ROW_TYPES = new Set([
 ])
 const SEEK_PENDING_ROW_MARKERS = [...SEEK_PENDING_ROW_TYPES].map(type => `"type":"${type}"`)
 let authoritativeLapStatusStart = -Infinity
-let authoritativeLapStatusPrefix: StatusRow[] = []
+let authoritativeLapStatusPrefix: ColumnView<StatusRow> = EMPTY.status
 let activeSeekDecodeRetention: {
   binaryBytes: number
   coldJsonChars: number
@@ -483,14 +438,28 @@ function sumRowEstimates(estimates: readonly RowRetentionEstimate[]): RowRetenti
   }), { rows: 0, sampled_rows: 0, estimated_serialized_bytes: 0, estimated_array_reference_bytes: 0 })
 }
 
+// Columns are 8 bytes per field per row; one materialised row gives the width.
+function estimateView(view: ColumnView<any>): RowRetentionEstimate {
+  if (view.length === 0) {
+    return { rows: 0, sampled_rows: 0, estimated_serialized_bytes: 0, estimated_array_reference_bytes: 0 }
+  }
+  const fields = Object.keys(view.row(view.length - 1)).length
+  return {
+    rows: view.length,
+    sampled_rows: 1,
+    estimated_serialized_bytes: view.length * fields * 8,
+    estimated_array_reference_bytes: 0,
+  }
+}
+
 function estimateLapData(data: AnalyzeLapData): RowRetentionEstimate {
   return sumRowEstimates([
-    estimateRows(data.telemetry),
-    estimateRows(data.motion),
-    estimateRows(data.motionEx),
-    estimateRows(data.statusHistory),
-    estimateRows(data.damageHistory),
-    estimateRows(data.lapProgress),
+    estimateView(data.telemetry),
+    estimateView(data.motion),
+    estimateView(data.motionEx),
+    estimateView(data.statusHistory),
+    estimateView(data.damageHistory),
+    estimateView(data.lapProgress),
     estimateRows(data.playerPositions),
   ])
 }
@@ -504,17 +473,22 @@ function lapDataRowCount(data: AnalyzeLapData): number {
 function getRendererTelemetryRetentionDiagnostics(): Record<string, unknown> {
   const state = useTelemetryStore.getState()
   const workingCollections = {
-    telemetry: estimateRows(telBufRef.current),
-    motion: estimateRows(motBufRef.current),
-    motion_ex: estimateRows(motExBufRef.current),
-    status: estimateRows(stsBufRef.current),
-    damage: estimateRows(dmgBufRef.current),
-    lap_progress: estimateRows(lapProgressBufRef.current),
+    telemetry: estimateView(telTable.frozen()),
+    motion: estimateView(motTable.frozen()),
+    motion_ex: estimateView(motExTable.frozen()),
+    status: estimateView(stsTable.frozen()),
+    damage: estimateView(dmgTable.frozen()),
+    lap_progress: estimateView(lapProgressTable.frozen()),
   }
   const working = sumRowEstimates(Object.values(workingCollections))
 
-  const poolArrays = Object.values(pools).flatMap(pool => [pool.a, pool.b])
-  const publishedViewReferences = poolArrays.reduce((total, rows) => total + rows.length, 0)
+  // Published views share the working tables' columns; they hold no rows.
+  const publishedViews = [
+    state.telemetry, state.motion, state.motionEx, state.statusHistory, state.damageHistory,
+    state.analyzeLapTelemetry, state.analyzeLapMotion, state.analyzeLapMotionEx,
+    state.analyzeLapStatusHistory, state.analyzeLapDamageHistory, state.analyzeLapProgress,
+  ]
+  const publishedViewReferences = publishedViews.reduce((total, view) => total + view.length, 0)
 
   const playbackLapCollections = Object.values(state.playbackLapDataCache).map(estimateLapData)
   const playbackLapCache = sumRowEstimates(playbackLapCollections)
@@ -574,22 +548,22 @@ function getRendererTelemetryRetentionDiagnostics(): Record<string, unknown> {
     raceEvents.estimated_serialized_bytes + raceEvents.estimated_array_reference_bytes +
     lapBoundaries.estimated_serialized_bytes + lapBoundaries.estimated_array_reference_bytes +
     currentState.estimated_serialized_bytes + currentState.estimated_array_reference_bytes +
-    (publishedViewReferences + liveLapSnapshotReferences) * 8 +
+    liveLapSnapshotReferences * 8 +
     charts.cpuBytes + charts.gpuTextureBytes + seekRawBytes + seekDecodedBytes
 
   return {
     sampled_at: new Date().toISOString(),
     mode: isPlaybackFlag ? 'playback' : 'realtime',
     estimated_retained_bytes: estimatedRetainedBytes,
-    estimate_basis: 'sampled JSON size plus array references; typed-array and GPU allocations are exact',
+    estimate_basis: 'history columns at 8 bytes per field per row; other state is sampled JSON size; GPU allocations are exact',
     working_source_buffers: {
       ...working,
       collections: workingCollections,
     },
     published_window_views: {
-      arrays: poolArrays.length,
+      arrays: publishedViews.length,
       row_references: publishedViewReferences,
-      estimated_reference_bytes: publishedViewReferences * 8,
+      estimated_reference_bytes: 0,
     },
     playback_lap_cache: {
       laps: playbackLapCollections.length,
@@ -774,12 +748,12 @@ function logRendererHealth(): void {
       lastTelemetryAgeMs: rendererDiagnostics.lastTelemetryAt == null ? null : now - rendererDiagnostics.lastTelemetryAt,
     },
     workingBuffers: {
-      telemetry: telBufRef.current.length,
-      motion: motBufRef.current.length,
-      motionEx: motExBufRef.current.length,
-      status: stsBufRef.current.length,
-      damage: dmgBufRef.current.length,
-      lapProgress: lapProgressBufRef.current.length,
+      telemetry: telTable.length,
+      motion: motTable.length,
+      motionEx: motExTable.length,
+      status: stsTable.length,
+      damage: dmgTable.length,
+      lapProgress: lapProgressTable.length,
     },
     publishedStore: {
       telemetry: state.telemetry.length,
@@ -859,27 +833,20 @@ function configureMemoryLog(enabled: boolean): void {
 function resetSession(): void {
   // Invalidate a seek payload that is still being cooperatively decoded.
   seekTimelineGeneration++
+  allLapsDriverCache.clear()
+  allLapsSnapshot = null
+  currentPlaybackDriver = null
+  tablesFromDriverCache = false
   historyCoverageStart.clear()
   historyV6Types.clear()
   pendingV6HistoryBackfillMask = 0
   setSeekPending(false)
   authoritativeLapStatusStart = -Infinity
-  authoritativeLapStatusPrefix = []
+  authoritativeLapStatusPrefix = EMPTY.status
   analyzeLapRevisionVal++
-  telBufRef.current = []
-  motBufRef.current = []
-  motExBufRef.current = []
-  stsBufRef.current = []
-  dmgBufRef.current = []
-  lapProgressBufRef.current = []
-  for (const pool of Object.values(pools)) {
-    // These arrays may still be held by a chart until React publishes the new
-    // empty views below. Clear both sides so neither stale rows nor their object
-    // graphs survive the close transition.
-    pool.a.length = 0
-    pool.b.length = 0
-    pool.flip = false
-  }
+  // Clearing replaces each table's storage, so views still held by a chart
+  // until React publishes the empty views below keep only their own snapshot.
+  for (const table of Object.values(TABLE_OF_FAMILY)) table.clear()
   lapState = null; lapNum = null; lapStartTime = 0; lapTrackingActive = false
   fastestLapTime = Infinity; fastestLapSet = false
   cancelFastestRecovery()
@@ -901,14 +868,13 @@ function resetSession(): void {
     // republishes these from the working buffers, but requirement masks can
     // deliberately skip a family; relying on that pass leaves its last array
     // visible after playback_close.
-    telemetry: [], motion: [], motionEx: [], latest: null,
-    statusHistory: [], damageHistory: [],
+    telemetry: EMPTY.telemetry, motion: EMPTY.motion, motionEx: EMPTY.motionEx, latest: null,
+    statusHistory: EMPTY.status, damageHistory: EMPTY.damage,
     status: null, damage: null, lap: null, timing: null, allStatus: null,
     participants: null, session: null, fastestLapCarIdx: null, tyreSets: null, strategy: null,
     strategyRebuilding: false,
     fastestLapNum: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
-    analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
-    analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
+    ...EMPTY_ANALYZE_SLICES, analyzeLapStartTime: 0,
     analyzeLapRevision: analyzeLapRevisionVal,
     analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
     playbackAnalysisDrivers: [], playbackDriverIndex: null,
@@ -922,7 +888,9 @@ function resetSession(): void {
   })
 }
 
-function isNewTyreStint(previous: StatusRow, current: StatusRow): boolean {
+interface TyreSample { tyre_compound: number; visual_compound: number; tyre_age_laps: number; session_time: number }
+
+function isNewTyreStint(previous: TyreSample, current: TyreSample): boolean {
   const validCompounds = previous.tyre_compound > 0 && current.tyre_compound > 0
   const compoundChanged = validCompounds && (
     current.tyre_compound !== previous.tyre_compound ||
@@ -936,11 +904,23 @@ function isNewTyreStint(previous: StatusRow, current: StatusRow): boolean {
   return compoundChanged || ageDelta < 0 || usedSetFitted
 }
 
-function findCurrentStintStart(rows: readonly StatusRow[]): number {
+function tyreSampleAt(rows: ColumnView<StatusRow>, i: number, out: TyreSample): TyreSample {
+  out.tyre_compound = rows.num('tyre_compound', i)
+  out.visual_compound = rows.num('visual_compound', i)
+  out.tyre_age_laps = rows.num('tyre_age_laps', i)
+  out.session_time = rows.time(i)
+  return out
+}
+
+function findCurrentStintStart(rows: ColumnView<StatusRow>): number {
   if (rows.length === 0) return -Infinity
-  let start = rows[0].session_time
+  let start = rows.time(0)
+  let previous = tyreSampleAt(rows, 0, { tyre_compound: 0, visual_compound: 0, tyre_age_laps: 0, session_time: 0 })
+  let current: TyreSample = { tyre_compound: 0, visual_compound: 0, tyre_age_laps: 0, session_time: 0 }
   for (let i = 1; i < rows.length; i++) {
-    if (isNewTyreStint(rows[i - 1], rows[i])) start = rows[i].session_time
+    tyreSampleAt(rows, i, current)
+    if (isNewTyreStint(previous, current)) start = current.session_time
+    const swap = previous; previous = current; current = swap
   }
   return start
 }
@@ -950,7 +930,7 @@ type LapBoundary = { lapNum: number; sessionTime: number }
 // Rebuild the lightweight All/ Stint Laps axis only from requested lap
 // history. This deliberately mirrors onLap's garage/attempt handling without
 // invoking its snapshot, fastest-lap, or rewind side effects.
-function reconstructLapBoundaries(rows: readonly LapProgressPoint[]): LapBoundary[] {
+function reconstructLapBoundaries(rows: ColumnView<LapRow>): LapBoundary[] {
   const boundaries: LapBoundary[] = []
   const sessionType = useTelemetryStore.getState().session?.session_type
   const timedSession = sessionType != null && sessionType >= 1 && sessionType <= 14
@@ -961,35 +941,38 @@ function reconstructLapBoundaries(rows: readonly LapProgressPoint[]): LapBoundar
     const index = boundaries.findIndex(boundary => boundary.lapNum === lap)
     if (index !== -1) boundaries.splice(index, 1)
   }
-  const addLap = (row: LapRow): void => {
-    const start = row.session_time - Math.max(0, row.current_lap_ms) / 1000
+  const addLap = (lapNumber: number, sessionTime: number, currentLapMs: number): void => {
+    const start = sessionTime - Math.max(0, currentLapMs) / 1000
     if (!Number.isFinite(start)) return
-    removeLap(row.lap_num)
-    boundaries.push({ lapNum: row.lap_num, sessionTime: start })
+    removeLap(lapNumber)
+    boundaries.push({ lapNum: lapNumber, sessionTime: start })
   }
 
-  for (const point of rows) {
-    const row = point as LapRow
-    if (!Number.isFinite(row.lap_num) || !Number.isFinite(row.session_time) ||
-        !Number.isFinite(row.current_lap_ms)) continue
-    const hasDriverStatus = row.driver_status != null && row.driver_status >= 0
+  for (let i = 0; i < rows.length; i++) {
+    const lapNumber = rows.num('lap_num', i)
+    const sessionTime = rows.time(i)
+    const currentLapMs = rows.num('current_lap_ms', i)
+    if (!Number.isFinite(lapNumber) || !Number.isFinite(sessionTime) ||
+        !Number.isFinite(currentLapMs)) continue
+    const driverStatus = rows.num('driver_status', i)
+    const hasDriverStatus = Number.isFinite(driverStatus) && driverStatus >= 0
     const garageAware = timedSession && hasDriverStatus
-    if (garageAware && row.driver_status !== 1) {
+    if (garageAware && driverStatus !== 1) {
       if (tracking && trackedLap !== null) removeLap(trackedLap)
       trackedLap = null
       tracking = false
       continue
     }
     if (!tracking) {
-      trackedLap = row.lap_num
+      trackedLap = lapNumber
       tracking = true
-      addLap(row)
+      addLap(lapNumber, sessionTime, currentLapMs)
       continue
     }
-    if (trackedLap !== null && row.lap_num < trackedLap) continue
-    if (row.lap_num === trackedLap) continue
-    trackedLap = row.lap_num
-    addLap(row)
+    if (trackedLap !== null && lapNumber < trackedLap) continue
+    if (lapNumber === trackedLap) continue
+    trackedLap = lapNumber
+    addLap(lapNumber, sessionTime, currentLapMs)
   }
   return boundaries.sort((a, b) => a.sessionTime - b.sessionTime)
 }
@@ -1038,40 +1021,27 @@ function mergeRaceEventHistory(history: RaceEventMsg[], trailing: RaceEventMsg[]
   return merged.length > MAX_RACE_EVENTS ? merged.slice(-MAX_RACE_EVENTS) : merged
 }
 
-function truncateAt<T extends { session_time: number }>(ref: { current: T[] }, target: number): void {
-  ref.current = ref.current.slice(0, lowerBound(ref.current, target, false))
-}
-
 function liveLapData(
   boundary: { lapNum: number; sessionTime: number } | undefined,
   endSessionTime: number,
 ): AnalyzeLapData | null {
   if (!boundary || endSessionTime < boundary.sessionTime) return null
-  const range = <T extends { session_time: number }>(rows: T[]): T[] => rows.slice(
-    lowerBound(rows, boundary.sessionTime, true),
-    lowerBound(rows, endSessionTime, false),
+  const range = <T extends { session_time: number }>(table: ColumnTable<T>): ColumnView<T> => table.frozen(
+    table.lowerBound(boundary.sessionTime, true),
+    table.lowerBound(endSessionTime, false),
   )
   return {
     lapNum: boundary.lapNum,
     startSessionTime: boundary.sessionTime,
     endSessionTime,
-    telemetry: range(telBufRef.current),
-    motion: range(motBufRef.current),
-    motionEx: range(motExBufRef.current),
-    statusHistory: range(stsBufRef.current),
-    damageHistory: range(dmgBufRef.current),
-    lapProgress: range(lapProgressBufRef.current),
+    telemetry: range(telTable),
+    motion: range(motTable),
+    motionEx: range(motExTable),
+    statusHistory: range(stsTable),
+    damageHistory: range(dmgTable),
+    lapProgress: range(lapProgressTable),
     playerPositions: [],
   }
-}
-
-function trimBefore<T extends { session_time: number }>(
-  ref: { current: T[] }, cutoff: number, preservePredecessor = false,
-): void {
-  const rows = ref.current
-  let start = lowerBound(rows, cutoff, true)
-  if (preservePredecessor && start > 0) start--
-  if (start > 0) ref.current = rows.slice(start)
 }
 
 // Fastest and Previous are immutable lap snapshots in Zustand, so the mutable
@@ -1081,14 +1051,14 @@ function trimBefore<T extends { session_time: number }>(
 function trimLiveWorkingSet(): void {
   if (isPlaybackFlag || allLapsMode || liveLapBoundaries.length < 3) return
   const cutoff = liveLapBoundaries[liveLapBoundaries.length - 3].sessionTime
-  trimBefore(telBufRef, cutoff)
-  trimBefore(motBufRef, cutoff)
-  trimBefore(motExBufRef, cutoff)
-  trimBefore(lapProgressBufRef, cutoff)
+  telTable.trimBefore(cutoff)
+  motTable.trimBefore(cutoff)
+  motExTable.trimBefore(cutoff)
+  lapProgressTable.trimBefore(cutoff)
   // State histories need the immediately preceding value so a lap/window that
   // starts between sparse packets can reconstruct its initial state.
-  trimBefore(stsBufRef, cutoff, true)
-  trimBefore(dmgBufRef, cutoff, true)
+  stsTable.trimBefore(cutoff, true)
+  dmgTable.trimBefore(cutoff, true)
   if (liveLapBoundaries.length > 3) {
     liveLapBoundaries = liveLapBoundaries.slice(-3)
     set({ lapBoundaries: liveLapBoundaries })
@@ -1103,12 +1073,7 @@ function trimLiveWorkingSet(): void {
 function trimPlaybackWorkingSet(): void {
   if (!isPlaybackFlag || allLapsMode) return
   const latestSessionTime = Math.max(
-    telBufRef.current[telBufRef.current.length - 1]?.session_time ?? -Infinity,
-    motBufRef.current[motBufRef.current.length - 1]?.session_time ?? -Infinity,
-    motExBufRef.current[motExBufRef.current.length - 1]?.session_time ?? -Infinity,
-    stsBufRef.current[stsBufRef.current.length - 1]?.session_time ?? -Infinity,
-    dmgBufRef.current[dmgBufRef.current.length - 1]?.session_time ?? -Infinity,
-    lapProgressBufRef.current[lapProgressBufRef.current.length - 1]?.session_time ?? -Infinity,
+    ...Object.values(TABLE_OF_FAMILY).map(table => table.lastTime() ?? -Infinity),
   )
   if (!Number.isFinite(latestSessionTime)) return
 
@@ -1119,12 +1084,12 @@ function trimPlaybackWorkingSet(): void {
   const cutoff = Math.min(finiteWindowStart, currentLapStart)
   if (!Number.isFinite(cutoff)) return
 
-  trimBefore(telBufRef, cutoff)
-  trimBefore(motBufRef, cutoff)
-  trimBefore(motExBufRef, cutoff)
-  trimBefore(lapProgressBufRef, cutoff)
-  trimBefore(stsBufRef, cutoff, true)
-  trimBefore(dmgBufRef, cutoff, true)
+  telTable.trimBefore(cutoff)
+  motTable.trimBefore(cutoff)
+  motExTable.trimBefore(cutoff)
+  lapProgressTable.trimBefore(cutoff)
+  stsTable.trimBefore(cutoff, true)
+  dmgTable.trimBefore(cutoff, true)
   invalidateHistoryCoverage(historyRowMask)
 }
 
@@ -1134,12 +1099,7 @@ function applyLiveRewind(target: number): void {
   const previousLapNum = liveLapBoundaries[liveLapBoundaries.length - 2]?.lapNum
   const oldCurrentLapNum = lapNum
 
-  truncateAt(telBufRef, target)
-  truncateAt(motBufRef, target)
-  truncateAt(motExBufRef, target)
-  truncateAt(stsBufRef, target)
-  truncateAt(dmgBufRef, target)
-  truncateAt(lapProgressBufRef, target)
+  for (const table of Object.values(TABLE_OF_FAMILY)) table.truncateAt(target)
   raceEventsArr = raceEventsArr.filter(e => e.session_time == null || e.session_time <= target)
   liveLapBoundaries = liveLapBoundaries.filter(boundary => boundary.sessionTime <= target)
   allLapsLapBoundaries = allLapsLapBoundaries.filter(boundary => boundary.sessionTime <= target)
@@ -1152,7 +1112,7 @@ function applyLiveRewind(target: number): void {
   const previousBoundary = liveLapBoundaries[currentIndex - 1]
   lapNum = currentBoundary?.lapNum ?? null
   lapStartTime = currentBoundary?.sessionTime ?? target
-  const lastLap = lapProgressBufRef.current[lapProgressBufRef.current.length - 1] as LapRow | undefined
+  const lastLap = lapProgressTable.last() ?? undefined
   lapState = lastLap ?? null
   const sessionType = useTelemetryStore.getState().session?.session_type
   const garageAware = sessionType != null && sessionType >= 1 && sessionType <= 14 &&
@@ -1175,14 +1135,14 @@ function applyLiveRewind(target: number): void {
   if (invalidatesFastest) fastestLapTime = Infinity
 
   const previousData = liveLapData(previousBoundary, currentBoundary?.sessionTime ?? target)
-  currentStintStartTime = findCurrentStintStart(stsBufRef.current)
+  currentStintStartTime = findCurrentStintStart(stsTable.frozen())
   analyzeLapRevisionVal++
   pendingAnalyzeLapReset = false
 
   set({
     lap: lapState,
-    status: stsBufRef.current[stsBufRef.current.length - 1] ?? null,
-    damage: dmgBufRef.current[dmgBufRef.current.length - 1] ?? null,
+    status: stsTable.last(),
+    damage: dmgTable.last(),
     lapBoundaries: liveLapBoundaries,
     allLapsLapBoundaries,
     livePreviousLapData: previousData,
@@ -1201,7 +1161,7 @@ function applyLiveRewind(target: number): void {
 // The old useEffect([lap]): on a lap-number change, snapshot the completed lap
 // and update live lap times / fastest lap. Runs in the 'lap' handler now.
 function onLap(lap: LapRow): void {
-  if (Number.isFinite(lap.lap_distance_m)) appendRow(lapProgressBufRef, lap, MAX_ROWS)
+  if (Number.isFinite(lap.lap_distance_m)) appendRow(lapProgressTable, lap, MAX_ROWS)
   lapState = lap
   set({ lap })
   const packetLapStart = lap.session_time - Math.max(0, lap.current_lap_ms) / 1000
@@ -1224,8 +1184,7 @@ function onLap(lap: LapRow): void {
       set({
         lapBoundaries: liveLapBoundaries,
         allLapsLapBoundaries,
-        analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
-        analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
+        ...EMPTY_ANALYZE_SLICES,
         analyzeLapStartTime: lapStartTime,
         analyzeLapRevision: analyzeLapRevisionVal,
       })
@@ -1247,8 +1206,7 @@ function onLap(lap: LapRow): void {
     set({
       lapBoundaries: liveLapBoundaries,
       allLapsLapBoundaries,
-      analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
-      analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
+      ...EMPTY_ANALYZE_SLICES,
       analyzeLapStartTime: lapStartTime,
       analyzeLapRevision: analyzeLapRevisionVal,
     })
@@ -1286,16 +1244,18 @@ function onLap(lap: LapRow): void {
   let completedLapData: AnalyzeLapData | null = null
   if (!isPlaybackFlag) {
     const completed = useTelemetryStore.getState()
+    // Published lap slices are frozen column views, so the snapshot can hold
+    // them directly; later appends and trims never rewrite their rows.
     completedLapData = {
       lapNum: prevLapNum,
       startSessionTime: lapStartTime,
       endSessionTime: packetLapStart,
-      telemetry: [...completed.analyzeLapTelemetry],
-      motion: [...completed.analyzeLapMotion],
-      motionEx: [...completed.analyzeLapMotionEx],
-      statusHistory: [...completed.analyzeLapStatusHistory],
-      damageHistory: [...completed.analyzeLapDamageHistory],
-      lapProgress: [...completed.analyzeLapProgress],
+      telemetry: completed.analyzeLapTelemetry,
+      motion: completed.analyzeLapMotion,
+      motionEx: completed.analyzeLapMotionEx,
+      statusHistory: completed.analyzeLapStatusHistory,
+      damageHistory: completed.analyzeLapDamageHistory,
+      lapProgress: completed.analyzeLapProgress,
       playerPositions: [],
     }
     set({ livePreviousLapData: completedLapData })
@@ -1337,29 +1297,28 @@ function handleMsg(msg: GatewayMsg): void {
       break
     }
     case 'telemetry': {
-      const last = telBufRef.current[telBufRef.current.length - 1]
-      const merged = mergePlaybackPatch(last, msg as TelemetryRow)
-      if (last && msg.session_time < last.session_time && !isPlaybackFlag) {
+      const lastTime = telTable.lastTime()
+      if (lastTime !== undefined && msg.session_time < lastTime && !isPlaybackFlag) {
         // Playback can deliver a slightly older hot row around a seek/backfill
         // boundary. appendRow reconciles the renderer history below, but this
         // must not clear the Analyze GPU buffers. Explicit seek flushes carry
         // the revision that identifies a real timeline reset.
         applyLiveRewind(msg.session_time)
       }
-      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.telemetry)) appendPlaybackPatch(telBufRef, msg as TelemetryRow, MAX_ROWS)
-      else telBufRef.current = [merged]
+      appendPlaybackPatch(telTable, msg as TelemetryRow, MAX_ROWS)
+      if (isPlaybackFlag && !(historyRowMask & HISTORY_ROW.telemetry)) telTable.keepLastOnly()
       break
     }
     case 'motion': {
-      appendPlaybackPatch(motBufRef, msg as MotionRow, MAX_ROWS)
+      appendPlaybackPatch(motTable, msg as MotionRow, MAX_ROWS)
       break
     }
     case 'motion_ex': {
-      appendPlaybackPatch(motExBufRef, msg as MotionExRow, MAX_ROWS)
+      appendPlaybackPatch(motExTable, msg as MotionExRow, MAX_ROWS)
       break
     }
     case 'status': {
-      const previous = stsBufRef.current[stsBufRef.current.length - 1]
+      const previous = stsTable.last() ?? undefined
       const merged = mergePlaybackPatch(previous, msg as StatusRow)
       const next: Partial<TelemetryStoreState> = { status: merged }
       const previousStintStartTime = currentStintStartTime
@@ -1376,16 +1335,16 @@ function handleMsg(msg: GatewayMsg): void {
         next.fuelUpperLimit = fuelMaxReceived + 1
       }
       set(next)
-      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.status)) appendPlaybackPatch(stsBufRef, msg as StatusRow, MAX_ROWS)
-      else stsBufRef.current = [merged]
+      appendPlaybackPatch(stsTable, msg as StatusRow, MAX_ROWS)
+      if (isPlaybackFlag && !(historyRowMask & HISTORY_ROW.status)) stsTable.keepLastOnly()
       break
     }
     case 'damage': {
-      const previous = dmgBufRef.current[dmgBufRef.current.length - 1]
+      const previous = dmgTable.last() ?? undefined
       const merged = mergePlaybackPatch(previous, msg as DamageRow)
       set({ damage: merged })
-      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.damage)) appendPlaybackPatch(dmgBufRef, msg as DamageRow, MAX_ROWS)
-      else dmgBufRef.current = [merged]
+      appendPlaybackPatch(dmgTable, msg as DamageRow, MAX_ROWS)
+      if (isPlaybackFlag && !(historyRowMask & HISTORY_ROW.damage)) dmgTable.keepLastOnly()
       break
     }
     case 'lap': {
@@ -1498,20 +1457,29 @@ function handleMsg(msg: GatewayMsg): void {
     case 'live_fastest_lap_data': {
       if (isPlaybackFlag || msg.requestId !== fastestRecoveryGeneration ||
           useTelemetryStore.getState().liveFastestLapData) break
-      const data: AnalyzeLapData = {
-        lapNum: msg.lapNum, startSessionTime: msg.startSessionTime,
-        endSessionTime: msg.endSessionTime, telemetry: [], motion: [], motionEx: [],
-        statusHistory: [], damageHistory: [], lapProgress: [], playerPositions: [],
+      const lapTables = {
+        telemetry: new ColumnTable<TelemetryRow>('telemetry'),
+        motion: new ColumnTable<MotionRow>('motion'),
+        motion_ex: new ColumnTable<MotionExRow>('motion_ex'),
+        status: new ColumnTable<StatusRow>('status'),
+        damage: new ColumnTable<DamageRow>('damage'),
+        lap: new ColumnTable<LapRow>('lap'),
       }
       forEachDecodedBinaryRow(Uint8Array.from(msg.binary), row => {
-        if (row.type === 'telemetry') data.telemetry.push(row)
-        else if (row.type === 'motion') data.motion.push(row)
-        else if (row.type === 'motion_ex') data.motionEx.push(row)
+        if (row.type === 'telemetry' || row.type === 'motion' || row.type === 'motion_ex')
+          lapTables[row.type].append(row as any)
       })
       for (const row of msg.rows) {
-        if (row.type === 'status') data.statusHistory.push(row)
-        else if (row.type === 'damage') data.damageHistory.push(row)
-        else if (row.type === 'lap') data.lapProgress.push(row)
+        if (row.type === 'status' || row.type === 'damage' || row.type === 'lap')
+          lapTables[row.type].append(row as any)
+      }
+      const data: AnalyzeLapData = {
+        lapNum: msg.lapNum, startSessionTime: msg.startSessionTime,
+        endSessionTime: msg.endSessionTime,
+        telemetry: lapTables.telemetry.frozen(), motion: lapTables.motion.frozen(),
+        motionEx: lapTables.motion_ex.frozen(), statusHistory: lapTables.status.frozen(),
+        damageHistory: lapTables.damage.frozen(), lapProgress: lapTables.lap.frozen(),
+        playerPositions: [],
       }
       if (!data.telemetry.length || !data.lapProgress.length) break
       fastestLapTime = msg.lapTimeMs
@@ -1525,12 +1493,12 @@ function handleMsg(msg: GatewayMsg): void {
         lapNum: payload.lapNum,
         startSessionTime: payload.startSessionTime,
         endSessionTime: payload.endSessionTime,
-        telemetry: coalescePlaybackRows(payload.telemetry ?? []),
-        motion: coalescePlaybackRows(payload.motionHistory ?? []),
-        motionEx: coalescePlaybackRows(payload.motionExHistory ?? []),
-        statusHistory: coalescePlaybackRows(payload.statusHistory ?? []),
-        damageHistory: coalescePlaybackRows(payload.damageHistory ?? []),
-        lapProgress: payload.lapProgress ?? [],
+        telemetry: viewOfRows<TelemetryRow>('telemetry', payload.telemetry ?? [], isPlaybackFlag),
+        motion: viewOfRows<MotionRow>('motion', payload.motionHistory ?? [], isPlaybackFlag),
+        motionEx: viewOfRows<MotionExRow>('motion_ex', payload.motionExHistory ?? [], isPlaybackFlag),
+        statusHistory: viewOfRows<StatusRow>('status', payload.statusHistory ?? [], isPlaybackFlag),
+        damageHistory: viewOfRows<DamageRow>('damage', payload.damageHistory ?? [], isPlaybackFlag),
+        lapProgress: viewOfRows<LapProgressPoint>('lap', payload.lapProgress ?? [], false),
         playerPositions: payload.playerPositions ?? [],
         rowTypeMask: payload.rowTypeMask ?? 0xFFFFFFFF,
       }
@@ -1573,6 +1541,13 @@ function handleMsg(msg: GatewayMsg): void {
       isPlaybackFlag = true
       analyzeLapRevisionVal++
       const data = msg as any
+      const nextDriver: number | null = Number.isFinite(data.playbackDriverIndex) ? data.playbackDriverIndex : null
+      const driverChanged = nextDriver !== currentPlaybackDriver
+      if (driverChanged && currentPlaybackDriver !== null && allLapsSnapshot?.driver === currentPlaybackDriver)
+        rememberDriverHistory(currentPlaybackDriver, allLapsSnapshot.views)
+      allLapsSnapshot = null
+      currentPlaybackDriver = nextDriver
+      tablesFromDriverCache = false
       fuelMaxReceived = -Infinity
       playbackLapCacheOrder = []
       historyCoverageStart.clear()
@@ -1581,13 +1556,8 @@ function handleMsg(msg: GatewayMsg): void {
       requestedHistoryRowMask = 0
       waitingForAllLapsHistory = false
       authoritativeLapStatusStart = -Infinity
-      authoritativeLapStatusPrefix = []
-      telBufRef.current = []
-      motBufRef.current = []
-      motExBufRef.current = []
-      stsBufRef.current = []
-      dmgBufRef.current = []
-      lapProgressBufRef.current = []
+      authoritativeLapStatusPrefix = EMPTY.status
+      for (const table of Object.values(TABLE_OF_FAMILY)) table.clear()
       allLapsLapBoundaries = []
       speedRpmBlocksVal = data.blocks
       playbackFastestLapNum = data.fastestLapNum
@@ -1615,11 +1585,30 @@ function handleMsg(msg: GatewayMsg): void {
         playbackDriverIndex: Number.isFinite(data.playbackDriverIndex)
           ? data.playbackDriverIndex : null,
       })
-      const missingHistory = fullSessionHistoryRowMask & ~requestedHistoryRowMask
-      if (allLapsMode && missingHistory !== 0) {
-        waitingForAllLapsHistory = true
-        requestedHistoryRowMask |= missingHistory
-        window.playerBridge.getAllLapsData(missingHistory)
+      if (allLapsMode && seekRendererPending) {
+        // The seek that follows a driver change is already in flight and, in
+        // All Laps, carries the full prefix. A second full-session request here
+        // used to extract and merge the entire race twice per switch.
+        requestedHistoryRowMask |= fullSessionHistoryRowMask
+        const cached = driverChanged && nextDriver !== null ? allLapsDriverCache.get(nextDriver) : undefined
+        if (cached) {
+          for (const family of Object.keys(TABLE_OF_FAMILY) as HistoryFamily[])
+            TABLE_OF_FAMILY[family].replaceWithView(cached[family])
+          tablesFromDriverCache = true
+          waitingForAllLapsHistory = false
+          currentStintStartTime = findCurrentStintStart(stsTable.frozen())
+          set({ currentStintStartTime })
+          recompute(DirtySlice.All)
+        } else {
+          waitingForAllLapsHistory = true
+        }
+      } else {
+        const missingHistory = fullSessionHistoryRowMask & ~requestedHistoryRowMask
+        if (allLapsMode && missingHistory !== 0) {
+          waitingForAllLapsHistory = true
+          requestedHistoryRowMask |= missingHistory
+          window.playerBridge.getAllLapsData(missingHistory)
+        }
       }
       requestVisibleWindowHistory()
       break
@@ -1665,13 +1654,7 @@ function recompute(dirty: DirtySlice): void {
   // complete chart publication visible until the single prefix flush arrives,
   // otherwise the graph briefly collapses to one lap and then expands again.
   if (waitingForAllLapsHistory) return
-  const currentTelBuf = telBufRef.current
-  const latestSessionTime = currentTelBuf[currentTelBuf.length - 1]?.session_time ?? 0
-  const telBuf = currentTelBuf
-  const motBuf = motBufRef.current
-  const motExBuf = motExBufRef.current
-  const stsBuf = stsBufRef.current
-  const dmgBuf = dmgBufRef.current
+  const latestSessionTime = telTable.lastTime() ?? 0
   const cutoff = allLapsMode ? -Infinity : latestSessionTime - secondsVal
   // `current_lap_ms` is legitimately zero at rollover. Falling back to session
   // origin in that state prepends the previous lap to every Analyze/CL slice,
@@ -1682,85 +1665,86 @@ function recompute(dirty: DirtySlice): void {
 
   // Live sessions always retain these slices because the completed current lap
   // becomes the in-memory previous/fastest-lap cache at rollover. Playback has
-  // an indexed lap cache, so it can skip the copies when no distance view uses
+  // an indexed lap cache, so it can skip the slices when no distance view uses
   // them without losing data needed by a later view switch.
   const needsAnalyzeSlices = analyzeLapEnabled || !isPlayback
   let publishAnalyze = needsAnalyzeSlices && lapTrackingActive && !pendingAnalyzeLapReset
   if (needsAnalyzeSlices && pendingAnalyzeLapReset) {
-    const countSince = <T extends { session_time: number }>(rows: T[]) => rows.length - lowerBound(rows, lapStartSessionTime, true)
+    const countSince = (table: ColumnTable<any>) => table.length - table.lowerBound(lapStartSessionTime, true)
     const ready = (bit: number, count: number, minimum: number) =>
       !(historyRowMask & bit) || count >= minimum
-    publishAnalyze = ready(HISTORY_ROW.telemetry, countSince(telBuf), 2) &&
-      ready(HISTORY_ROW.motion, countSince(motBufRef.current), 1) &&
-      ready(HISTORY_ROW.motionEx, countSince(motExBufRef.current), 1) &&
-      ready(HISTORY_ROW.status, countSince(stsBufRef.current), 1) &&
-      ready(HISTORY_ROW.damage, countSince(dmgBufRef.current), 1) &&
-      ready(HISTORY_ROW.lap, countSince(lapProgressBufRef.current), 2)
+    publishAnalyze = ready(HISTORY_ROW.telemetry, countSince(telTable), 2) &&
+      ready(HISTORY_ROW.motion, countSince(motTable), 1) &&
+      ready(HISTORY_ROW.motionEx, countSince(motExTable), 1) &&
+      ready(HISTORY_ROW.status, countSince(stsTable), 1) &&
+      ready(HISTORY_ROW.damage, countSince(dmgTable), 1) &&
+      ready(HISTORY_ROW.lap, countSince(lapProgressTable), 2)
     if (publishAnalyze) {
       pendingAnalyzeLapReset = false
       dirty |= DirtySlice.All
     }
   }
 
+  // Finite windows publish a frozen range; All Laps publishes the table's live
+  // view, which grows in place and wakes its charts through
+  // subscribeAllLapsData instead of a new React value per packet.
+  const windowOf = <T extends { session_time: number }>(table: ColumnTable<T>): ColumnView<T> =>
+    allLapsMode ? table.liveView() : table.frozen(table.lowerBound(cutoff, false))
+  const lapSlice = <T extends { session_time: number }>(table: ColumnTable<T>, withPredecessor = false): ColumnView<T> => {
+    const start = table.lowerBound(lapStartSessionTime, true)
+    return table.frozen(withPredecessor ? Math.max(0, start - 1) : start)
+  }
+
   const next: Partial<TelemetryStoreState> = {}
   if (dirty & DirtySlice.Telemetry) {
-    next.latest = currentTelBuf.length > 0 ? currentTelBuf[currentTelBuf.length - 1] : null
+    next.latest = telTable.last()
     if (historyRowMask & HISTORY_ROW.telemetry) {
-      next.telemetry = allLapsMode ? telBuf : fillRange(pools.tel, telBuf, lowerBound(telBuf, cutoff, false), telBuf.length)
-      if (publishAnalyze) next.analyzeLapTelemetry = fillRange(pools.analyzeTel, currentTelBuf, lowerBound(currentTelBuf, lapStartSessionTime, true), currentTelBuf.length)
+      next.telemetry = windowOf(telTable)
+      if (publishAnalyze) next.analyzeLapTelemetry = lapSlice(telTable)
     }
   }
   if (dirty & DirtySlice.Motion) {
-    const buf = motBuf
-    next.motion = allLapsMode ? buf : fillRange(pools.mot, buf, lowerBound(buf, cutoff, false), buf.length)
-    const current = motBufRef.current
-    if (publishAnalyze) next.analyzeLapMotion = fillRange(pools.analyzeMot, current, lowerBound(current, lapStartSessionTime, true), current.length)
+    next.motion = windowOf(motTable)
+    if (publishAnalyze) next.analyzeLapMotion = lapSlice(motTable)
   }
   if (dirty & DirtySlice.MotionEx) {
-    const buf = motExBuf
-    next.motionEx = allLapsMode ? buf : fillRange(pools.motEx, buf, lowerBound(buf, cutoff, false), buf.length)
-    const current = motExBufRef.current
-    if (publishAnalyze) next.analyzeLapMotionEx = fillRange(pools.analyzeMotEx, current, lowerBound(current, lapStartSessionTime, true), current.length)
+    next.motionEx = windowOf(motExTable)
+    if (publishAnalyze) next.analyzeLapMotionEx = lapSlice(motExTable)
   }
   if (dirty & DirtySlice.Status) {
     if (historyRowMask & HISTORY_ROW.status) {
-      const buf = stsBuf
-      next.statusHistory = allLapsMode ? buf : fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
-      let current = stsBufRef.current
+      next.statusHistory = windowOf(stsTable)
+      let current: ColumnView<StatusRow> = stsTable.frozen()
       if (publishAnalyze && isPlayback &&
           Math.abs(authoritativeLapStatusStart - lapStartSessionTime) < 0.05 &&
           authoritativeLapStatusPrefix.length > 0) {
         const prefix = authoritativeLapStatusPrefix
-        const prefixFirst = prefix[0].session_time
-        const prefixLast = prefix[prefix.length - 1].session_time
-        const currentFirst = current[0]?.session_time ?? Infinity
-        const currentLast = current[current.length - 1]?.session_time ?? -Infinity
+        const prefixFirst = prefix.time(0)
+        const prefixLast = prefix.time(prefix.length - 1)
+        const currentFirst = current.length ? current.time(0) : Infinity
+        const currentLast = current.length ? current.time(current.length - 1) : -Infinity
         const stillContainsPrefix = current.length >= prefix.length &&
           currentFirst <= prefixFirst && currentLast >= prefixLast
         if (!stillContainsPrefix) {
           // A late state-only/secondary response must not replace the complete
           // status history installed by the authoritative seek. Keep that
           // immutable prefix and add only genuinely newer streamed samples.
-          const merged = prefix.slice()
-          for (const row of current) if (row.session_time > prefixLast) merged.push(row)
-          current = merged
+          current = concatAfter(prefix, current)
         }
       }
-      if (publishAnalyze) next.analyzeLapStatusHistory = fillRange(pools.analyzeSts, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
+      if (publishAnalyze) {
+        next.analyzeLapStatusHistory = current.slice(Math.max(0, current.lowerBound(lapStartSessionTime, true) - 1))
+      }
     }
   }
   if (dirty & DirtySlice.Damage) {
     if (historyRowMask & HISTORY_ROW.damage) {
-      const buf = dmgBuf
-      next.damageHistory = allLapsMode ? buf : fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
-      const current = dmgBufRef.current
-      if (publishAnalyze) next.analyzeLapDamageHistory = fillRange(pools.analyzeDmg, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
+      next.damageHistory = windowOf(dmgTable)
+      if (publishAnalyze) next.analyzeLapDamageHistory = lapSlice(dmgTable, true)
     }
   }
   if (dirty & DirtySlice.Lap) {
-    const buf = lapProgressBufRef.current
-    if (publishAnalyze) next.analyzeLapProgress = fillRange(
-      pools.analyzeLapProgress, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
+    if (publishAnalyze) next.analyzeLapProgress = lapSlice(lapProgressTable)
   }
   if (dirty & DirtySlice.Derived) {
     // This revision also identifies authoritative playback timeline installs.
@@ -1788,7 +1772,13 @@ function recompute(dirty: DirtySlice): void {
       next.analyzeLapStartTime = lapStartSessionTime
     }
   }
-  set(next)
+  // The All Laps live views keep their identity across appends; do not hand
+  // React an unchanged value for them.
+  const state = useTelemetryStore.getState()
+  for (const key of ['telemetry', 'motion', 'motionEx', 'statusHistory', 'damageHistory'] as const) {
+    if (next[key] !== undefined && next[key] === state[key]) delete next[key]
+  }
+  if (Object.keys(next).length > 0) set(next)
   if (allLapsMode && (dirty & (DirtySlice.Telemetry | DirtySlice.Motion | DirtySlice.MotionEx | DirtySlice.Status | DirtySlice.Damage))) {
     let changedHistoryMask = 0
     if (dirty & DirtySlice.Telemetry) changedHistoryMask |= HISTORY_ROW.telemetry
@@ -1811,6 +1801,10 @@ function dirtySliceForHistoryMask(value: unknown): DirtySlice {
   if (mask & HISTORY_ROW.damage) dirty |= DirtySlice.Damage
   if (mask & HISTORY_ROW.lap) dirty |= DirtySlice.Lap
   return dirty
+}
+
+function tableSpan(table: ColumnTable<any>): { rows: number; first: number | null; last: number | null } {
+  return { rows: table.length, first: table.firstTime() ?? null, last: table.lastTime() ?? null }
 }
 
 async function processPlaybackSeekFlush(payload: any): Promise<void> {
@@ -1844,8 +1838,8 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
       seekRendererPending,
       historyV6Types: [...historyV6Types].sort((a, b) => a - b),
       pendingV6HistoryBackfillMask: `0x${pendingV6HistoryBackfillMask.toString(16)}`,
-      telemetry: { rows: telBufRef.current.length, first: telBufRef.current[0]?.session_time ?? null, last: telBufRef.current[telBufRef.current.length - 1]?.session_time ?? null },
-      status: { rows: stsBufRef.current.length, first: stsBufRef.current[0]?.session_time ?? null, last: stsBufRef.current[stsBufRef.current.length - 1]?.session_time ?? null },
+      telemetry: tableSpan(telTable),
+      status: tableSpan(stsTable),
     })
     playbackDebug('seek-flush-received', {
     lapNum: payload.lapNum,
@@ -1858,15 +1852,11 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   if (authoritative) {
     historyCoverageStart.clear()
     // AL cleared these at seek-start. Other modes retain the last publication
-    // for display, but their working buffers must start collecting only rows
+    // for display, but their working tables must start collecting only rows
     // from the newly committed timeline while the backfill decodes.
-    if (!allHistory) {
-      telBufRef.current = []
-      motBufRef.current = []
-      motExBufRef.current = []
-      stsBufRef.current = []
-      dmgBufRef.current = []
-      lapProgressBufRef.current = []
+    if (!allHistory || tablesFromDriverCache) {
+      for (const table of Object.values(TABLE_OF_FAMILY)) table.clear()
+      tablesFromDriverCache = false
     }
     analyzeLapRevisionVal++
     pendingAnalyzeLapReset = false
@@ -1881,125 +1871,104 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   await yieldToMainThread()
   if (cancelled()) return
 
-  const tel: TelemetryRow[] = []
-  const mot: MotionRow[] = []
-  const motEx: MotionExRow[] = []
-  const binary = payload.binary as Uint8Array | ArrayBuffer
-  const binaryLength = binary instanceof Uint8Array ? binary.byteLength : binary?.byteLength ?? 0
-  let binaryOffset = 0
-  while (binaryOffset < binaryLength) {
-    binaryOffset = decodeBinaryBatchRange(binary, row => {
-      if (row.type === 'telemetry') tel.push(row)
-      else if (row.type === 'motion') mot.push(row)
-      else if (row.type === 'motion_ex') motEx.push(row)
-    }, binaryOffset, 4096)
-    seekRetention.decodedTelemetryRows = tel.length
-    seekRetention.decodedMotionRows = mot.length
-    seekRetention.decodedMotionExRows = motEx.length
-    if (binaryOffset < binaryLength) {
-      await yieldToMainThread()
-      if (cancelled()) return
-    }
-  }
-
-  const sts: StatusRow[] = []
-  const dmg: DamageRow[] = []
-  const lapProgress: LapProgressPoint[] = []
+  const binaryInput = payload.binary as Uint8Array | ArrayBuffer | null | undefined
+  const binary = binaryInput instanceof Uint8Array ? binaryInput
+    : binaryInput ? new Uint8Array(binaryInput) : new Uint8Array(0)
+  // Families whose rows are V6 patches install as a time-ordered overlay;
+  // other additive history fills only the missing prefix.
+  const incoming: Partial<Record<HistoryFamily, ColumnTable<any>>> = {}
+  const overlay = new Set<HistoryFamily>()
   const raceEvents: RaceEventMsg[] = []
   const decodedV6Types: Record<string, number> = {}
-  let lastLap: LapRow | null = null
-  const coldJson = (payload.coldJson as string) || ''
-  let start = 0
-  let rowsSinceYield = 0
-  while (start < coldJson.length) {
-    let end = coldJson.indexOf('\n', start)
-    if (end === -1) end = coldJson.length
-    if (end > start) {
-      try {
-        const row = JSON.parse(coldJson.slice(start, end)) as GatewayMsg
-        const v6Type = Number((row as any)._v6_type)
-        if (Number.isInteger(v6Type)) {
-          const key = String(v6Type)
-          decodedV6Types[key] = (decodedV6Types[key] ?? 0) + 1
-        }
-        if (row.type === 'telemetry') tel.push(row)
-        else if (row.type === 'motion') mot.push(row)
-        else if (row.type === 'motion_ex') motEx.push(row)
-        else if (row.type === 'status') sts.push(row)
-        else if (row.type === 'damage') dmg.push(row)
-        else if (row.type === 'lap') { lastLap = row; lapProgress.push(row) }
-        else if (row.type === 'race_event') raceEvents.push(row)
-      } catch (e) {}
-    }
-    start = end + 1
-    if (++rowsSinceYield >= 512 && start < coldJson.length) {
-      rowsSinceYield = 0
-      seekRetention.decodedStatusRows = sts.length
-      seekRetention.decodedDamageRows = dmg.length
-      seekRetention.decodedLapRows = lapProgress.length
+
+  if (isV6HistoryPayload(binary)) {
+    // TNRD V6: typed column blocks straight from the recording. No JSON, no
+    // per-sample objects; the decode yields between slices like the old one.
+    const decoded = await decodeV6History(binary, async () => {
       await yieldToMainThread()
-      if (cancelled()) return
+      return !cancelled()
+    })
+    if (!decoded || cancelled()) return
+    Object.assign(incoming, decoded.tables)
+    Object.assign(decodedV6Types, decoded.typeCounts)
+    if (isPlaybackFlag) for (const family of Object.keys(decoded.tables) as HistoryFamily[]) overlay.add(family)
+  } else {
+    // V1-V5 recordings (and V6 on hosts without columnar history): packed hot
+    // rows plus JSON cold rows, appended into temporary tables.
+    const tableFor = (family: HistoryFamily): ColumnTable<any> =>
+      incoming[family] ??= new ColumnTable<any>(family)
+    const add = (family: HistoryFamily, row: Record<string, any>): void => {
+      if (isPlaybackFlag && Number.isInteger(Number(row._v6_type))) {
+        overlay.add(family)
+        tableFor(family).appendPatch(row as any)
+      } else {
+        tableFor(family).append(row as any)
+      }
+    }
+    let binaryOffset = 0
+    while (binaryOffset < binary.byteLength) {
+      binaryOffset = decodeBinaryBatchRange(binary, row => {
+        if (row.type === 'telemetry' || row.type === 'motion' || row.type === 'motion_ex') add(row.type, row)
+      }, binaryOffset, 4096)
+      seekRetention.decodedTelemetryRows = incoming.telemetry?.length ?? 0
+      seekRetention.decodedMotionRows = incoming.motion?.length ?? 0
+      seekRetention.decodedMotionExRows = incoming.motion_ex?.length ?? 0
+      if (binaryOffset < binary.byteLength) {
+        await yieldToMainThread()
+        if (cancelled()) return
+      }
+    }
+
+    const coldJson = (payload.coldJson as string) || ''
+    let start = 0
+    let rowsSinceYield = 0
+    while (start < coldJson.length) {
+      let end = coldJson.indexOf('\n', start)
+      if (end === -1) end = coldJson.length
+      if (end > start) {
+        try {
+          const row = JSON.parse(coldJson.slice(start, end)) as GatewayMsg
+          const v6Type = Number((row as any)._v6_type)
+          if (Number.isInteger(v6Type)) {
+            const key = String(v6Type)
+            decodedV6Types[key] = (decodedV6Types[key] ?? 0) + 1
+          }
+          if (row.type === 'telemetry' || row.type === 'motion' || row.type === 'motion_ex' ||
+              row.type === 'status' || row.type === 'damage' || row.type === 'lap') add(row.type, row)
+          else if (row.type === 'race_event') raceEvents.push(row)
+        } catch (e) {}
+      }
+      start = end + 1
+      if (++rowsSinceYield >= 512 && start < coldJson.length) {
+        rowsSinceYield = 0
+        seekRetention.decodedStatusRows = incoming.status?.length ?? 0
+        seekRetention.decodedDamageRows = incoming.damage?.length ?? 0
+        seekRetention.decodedLapRows = incoming.lap?.length ?? 0
+        await yieldToMainThread()
+        if (cancelled()) return
+      }
     }
   }
-  seekRetention.decodedStatusRows = sts.length
-  seekRetention.decodedDamageRows = dmg.length
-  seekRetention.decodedLapRows = lapProgress.length
+  seekRetention.decodedTelemetryRows = incoming.telemetry?.length ?? 0
+  seekRetention.decodedMotionRows = incoming.motion?.length ?? 0
+  seekRetention.decodedMotionExRows = incoming.motion_ex?.length ?? 0
+  seekRetention.decodedStatusRows = incoming.status?.length ?? 0
+  seekRetention.decodedDamageRows = incoming.damage?.length ?? 0
+  seekRetention.decodedLapRows = incoming.lap?.length ?? 0
   if (cancelled()) return
 
-  const mergedTel = coalescePlaybackRows(tel)
-  const mergedMot = coalescePlaybackRows(mot)
-  const mergedMotEx = coalescePlaybackRows(motEx)
-  const mergedSts = coalescePlaybackRows(sts)
-  const mergedDmg = coalescePlaybackRows(dmg)
-
-  // An authoritative seek owns the decoded prefix; retain only rows streamed
+  // An authoritative seek owns the decoded prefix; it keeps only rows streamed
   // after its endpoint. Additive window/AL responses are different: they may
   // finish after a newer authoritative flush and are allowed only to fill the
-  // missing prefix. Replacing their overlapping suffix used to discard the
-  // correct V6 ERS history and leave one boundary seed plus the live tail.
-  const installRows = <T extends { session_time: number }>(incoming: T[], existing: T[]): T[] => {
-    if (authoritative) {
-      const lastTime = incoming[incoming.length - 1]?.session_time ?? -Infinity
-      for (const row of existing) if (row.session_time > lastTime) incoming.push(row)
-      return incoming.length > MAX_ROWS ? incoming.slice(-MAX_ROWS) : incoming
-    }
-    if (existing.length === 0)
-      return incoming.length > MAX_ROWS ? incoming.slice(-MAX_ROWS) : incoming
-    if (isPlaybackFlag && incoming.some(row => Number.isInteger(Number((row as any)._v6_type)))) {
-      const merged = existing.slice()
-      const indices = new Map<number, number>()
-      for (let i = 0; i < merged.length; i++) indices.set(merged[i].session_time, i)
-      for (const row of incoming) {
-        const index = indices.get(row.session_time)
-        if (index !== undefined) {
-          merged[index] = mergePlaybackPatch(
-            merged[index] as T & Record<string, any>, row as T & Record<string, any>) as T
-        } else {
-          const insertAt = lowerBound(merged, row.session_time, true)
-          merged.splice(insertAt, 0, row)
-          for (let i = insertAt; i < merged.length; i++) indices.set(merged[i].session_time, i)
-        }
-      }
-      return merged.length > MAX_ROWS ? merged.slice(-MAX_ROWS) : merged
-    }
-    const firstExistingTime = existing[0].session_time
-    let lo = 0, hi = incoming.length
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1
-      if (incoming[mid].session_time < firstExistingTime) lo = mid + 1
-      else hi = mid
-    }
-    if (lo === 0) return existing
-    const merged = incoming.slice(0, lo)
-    merged.push(...existing)
-    return merged.length > MAX_ROWS ? merged.slice(-MAX_ROWS) : merged
+  // missing prefix (or, for V6 patches, the fields they carry). Replacing their
+  // overlapping suffix used to discard the correct V6 ERS history and leave one
+  // boundary seed plus the live tail.
+  for (const family of Object.keys(TABLE_OF_FAMILY) as HistoryFamily[]) {
+    const table = incoming[family]
+    if (!table || table.length === 0) continue
+    installHistory(TABLE_OF_FAMILY[family], table.frozen(),
+      authoritative ? 'authoritative' : overlay.has(family) ? 'overlay' : 'prefix', MAX_ROWS)
   }
-  telBufRef.current = installRows(mergedTel, telBufRef.current)
-  motBufRef.current = installRows(mergedMot, motBufRef.current)
-  motExBufRef.current = installRows(mergedMotEx, motExBufRef.current)
-  stsBufRef.current = installRows(mergedSts, stsBufRef.current)
-  dmgBufRef.current = installRows(mergedDmg, dmgBufRef.current)
-  lapProgressBufRef.current = installRows(lapProgress, lapProgressBufRef.current)
   if (!authoritative && Object.keys(decodedV6Types).length > 0) {
     // Sparse V6 page backfills fill fields into timestamps the chart bridges
     // have already consumed. Advance the revision so they rebuild those rows
@@ -2008,9 +1977,8 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   }
   if (authoritative) {
     authoritativeLapStatusStart = Number(payload.currentLapStart)
-    const prefixStart = Math.max(0,
-      lowerBound(stsBufRef.current, authoritativeLapStatusStart, true) - 1)
-    authoritativeLapStatusPrefix = stsBufRef.current.slice(prefixStart)
+    const prefixStart = Math.max(0, stsTable.lowerBound(authoritativeLapStatusStart, true) - 1)
+    authoritativeLapStatusPrefix = stsTable.frozen(prefixStart)
   }
   if (!isPlaybackFlag && (Number(payload.rowTypeMask) & HISTORY_ROW.raceEvent)) {
     const priorEvents = new Set(raceEventsAtDecodeStart)
@@ -2018,7 +1986,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
     raceEventsArr = mergeRaceEventHistory(raceEvents, streamedDuringDecode)
   }
   if (!isPlaybackFlag && allLapsMode && (Number(payload.rowTypeMask) & HISTORY_ROW.lap)) {
-    allLapsLapBoundaries = reconstructLapBoundaries(lapProgressBufRef.current)
+    allLapsLapBoundaries = reconstructLapBoundaries(lapProgressTable.frozen())
   }
   if (!isPlaybackFlag && !allLapsMode && (Number(payload.rowTypeMask) & HISTORY_ROW.lap)) {
     // The user may leave AL while its cooperative decode is in flight. Release
@@ -2026,59 +1994,54 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
     // the next lap transition.
     trimLiveWorkingSet()
   }
-  currentStintStartTime = findCurrentStintStart(stsBufRef.current)
+  currentStintStartTime = findCurrentStintStart(stsTable.frozen())
   if (allHistory) waitingForAllLapsHistory = false
   markHistoryCoverage(payload.rowTypeMask, payload.historyStart)
 
+  const incomingLap = incoming.lap
   playbackDebug('seek-flush-decoded', {
     requestId: payload.requestId,
     authoritative,
     rowTypeMask: `0x${(Number(payload.rowTypeMask) >>> 0).toString(16)}`,
     historyStart: payload.historyStart,
+    columnar: isV6HistoryPayload(binary),
     decodedV6Types,
     lapNum,
     lapStartTime,
     revision: analyzeLapRevisionVal,
-    telemetryRows: tel.length,
-    telemetryFirstTime: tel[0]?.session_time ?? null,
-    telemetryLastTime: tel[tel.length - 1]?.session_time ?? null,
-    motionRows: mot.length,
-    motionExRows: motEx.length,
-    statusRows: sts.length,
-    damageRows: dmg.length,
-    lapProgressRows: lapProgress.length,
+    telemetryRows: incoming.telemetry?.length ?? 0,
+    telemetryFirstTime: incoming.telemetry?.firstTime() ?? null,
+    telemetryLastTime: incoming.telemetry?.lastTime() ?? null,
+    motionRows: incoming.motion?.length ?? 0,
+    motionExRows: incoming.motion_ex?.length ?? 0,
+    statusRows: incoming.status?.length ?? 0,
+    damageRows: incoming.damage?.length ?? 0,
+    lapProgressRows: incomingLap?.length ?? 0,
     raceEventRows: raceEvents.length,
-    lastLapNumber: lastLap?.lap_num ?? null,
-    lastLapTimeMs: lastLap?.current_lap_ms ?? null,
-    installedTelemetry: {
-      rows: telBufRef.current.length,
-      first: telBufRef.current[0]?.session_time ?? null,
-      last: telBufRef.current[telBufRef.current.length - 1]?.session_time ?? null,
-    },
-    installedStatus: {
-      rows: stsBufRef.current.length,
-      first: stsBufRef.current[0]?.session_time ?? null,
-      last: stsBufRef.current[stsBufRef.current.length - 1]?.session_time ?? null,
-    },
+    lastLapNumber: incomingLap ? incomingLap.lastNum('lap_num') : null,
+    lastLapTimeMs: incomingLap ? incomingLap.lastNum('current_lap_ms') : null,
+    installedTelemetry: tableSpan(telTable),
+    installedStatus: tableSpan(stsTable),
     // What the wing card will read once recompute() publishes `latest`.
     wingCard: (() => {
-      const last = telBufRef.current[telBufRef.current.length - 1] as Record<string, any> | undefined
+      const last = telTable.last() as Record<string, any> | null
       return {
-        haveLastTelemetryRow: last !== undefined,
+        haveLastTelemetryRow: last !== null,
         sessionTime: last?.session_time ?? null,
-        slm: last === undefined ? 'no-row' : last.slm === undefined ? 'MISSING' : last.slm,
-        drs: last === undefined ? 'no-row' : last.drs === undefined ? 'MISSING' : last.drs,
-        v6Type: last?._v6_type ?? null,
+        slm: last === null ? 'no-row' : last.slm === undefined ? 'MISSING' : last.slm,
+        drs: last === null ? 'no-row' : last.drs === undefined ? 'MISSING' : last.drs,
       }
     })(),
   })
+  const latestStatus = stsTable.last()
+  const latestDamage = dmgTable.last()
   set({
-    ...(stsBufRef.current.length ? { status: stsBufRef.current[stsBufRef.current.length - 1] } : {}),
-    ...(dmgBufRef.current.length ? { damage: dmgBufRef.current[dmgBufRef.current.length - 1] } : {}),
+    ...(latestStatus ? { status: latestStatus } : {}),
+    ...(latestDamage ? { damage: latestDamage } : {}),
     ...(!isPlaybackFlag && allLapsMode ? { allLapsLapBoundaries } : {}),
     currentStintStartTime,
   })
-  const latestLap = lapProgressBufRef.current[lapProgressBufRef.current.length - 1] as LapRow | undefined
+  const latestLap = lapProgressTable.last()
   if (latestLap) { lapState = latestLap; set({ lap: latestLap }) }
   recompute(dirtySliceForHistoryMask(payload.rowTypeMask))
   requestVisibleWindowHistory()
@@ -2098,21 +2061,16 @@ function requestVisibleWindowHistory(): void {
   if (speedRpmBlocksVal === null) return
   const fileStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
   const currentTime = Math.max(
-    telBufRef.current[telBufRef.current.length - 1]?.session_time ?? 0,
-    motBufRef.current[motBufRef.current.length - 1]?.session_time ?? 0,
-    motExBufRef.current[motExBufRef.current.length - 1]?.session_time ?? 0,
-    stsBufRef.current[stsBufRef.current.length - 1]?.session_time ?? 0,
-    dmgBufRef.current[dmgBufRef.current.length - 1]?.session_time ?? 0,
-    lapProgressBufRef.current[lapProgressBufRef.current.length - 1]?.session_time ?? 0,
+    ...Object.values(TABLE_OF_FAMILY).map(table => table.lastTime() ?? 0),
   )
   if (!Number.isFinite(fileStart) || currentTime <= fileStart) return
   const firstTimes = new Map<number, number | undefined>([
-    [HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time],
-    [HISTORY_ROW.status, stsBufRef.current[0]?.session_time],
-    [HISTORY_ROW.damage, dmgBufRef.current[0]?.session_time],
-    [HISTORY_ROW.motion, motBufRef.current[0]?.session_time],
-    [HISTORY_ROW.motionEx, motExBufRef.current[0]?.session_time],
-    [HISTORY_ROW.lap, lapProgressBufRef.current[0]?.session_time],
+    [HISTORY_ROW.telemetry, telTable.firstTime()],
+    [HISTORY_ROW.status, stsTable.firstTime()],
+    [HISTORY_ROW.damage, dmgTable.firstTime()],
+    [HISTORY_ROW.motion, motTable.firstTime()],
+    [HISTORY_ROW.motionEx, motExTable.firstTime()],
+    [HISTORY_ROW.lap, lapProgressTable.firstTime()],
   ])
   const requestRange = (requestedMask: number, requiredStart: number, windowSeconds: number): void => {
     let missingMask = 0
@@ -2213,12 +2171,12 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
         if ((fullSessionHistoryRowMask & bit) && !historyCovers(bit, firstBlockStart) &&
             (firstTime ?? Infinity) > firstBlockStart + 1) entryMissingMask |= bit
       }
-      missing(HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time)
-      missing(HISTORY_ROW.status, stsBufRef.current[0]?.session_time)
-      missing(HISTORY_ROW.damage, dmgBufRef.current[0]?.session_time)
-      missing(HISTORY_ROW.motion, motBufRef.current[0]?.session_time)
-      missing(HISTORY_ROW.motionEx, motExBufRef.current[0]?.session_time)
-      missing(HISTORY_ROW.lap, lapProgressBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.telemetry, telTable.firstTime())
+      missing(HISTORY_ROW.status, stsTable.firstTime())
+      missing(HISTORY_ROW.damage, dmgTable.firstTime())
+      missing(HISTORY_ROW.motion, motTable.firstTime())
+      missing(HISTORY_ROW.motionEx, motExTable.firstTime())
+      missing(HISTORY_ROW.lap, lapProgressTable.firstTime())
     }
     requestedHistoryRowMask |= fullSessionHistoryRowMask & ~entryMissingMask
     if (entryMissingMask !== 0) {
@@ -2248,8 +2206,7 @@ export function setAnalyzeLapEnabled(enabled: boolean): void {
   }
   if (speedRpmBlocksVal !== null) {
     set({
-      analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
-      analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
+      ...EMPTY_ANALYZE_SLICES,
     })
   }
 }
@@ -2302,29 +2259,29 @@ export function setHistoryRowMask(
   invalidateHistoryCoverage(disabled)
   const cleared: Partial<TelemetryStoreState> = {}
   if (disabled & HISTORY_ROW.telemetry) {
-    telBufRef.current = telBufRef.current.length ? [telBufRef.current[telBufRef.current.length - 1]] : []
-    cleared.telemetry = []
-    cleared.analyzeLapTelemetry = []
+    telTable.keepLastOnly()
+    cleared.telemetry = EMPTY.telemetry
+    cleared.analyzeLapTelemetry = EMPTY.telemetry
   }
   if (disabled & HISTORY_ROW.status) {
-    stsBufRef.current = stsBufRef.current.length ? [stsBufRef.current[stsBufRef.current.length - 1]] : []
-    cleared.statusHistory = []
-    cleared.analyzeLapStatusHistory = []
+    stsTable.keepLastOnly()
+    cleared.statusHistory = EMPTY.status
+    cleared.analyzeLapStatusHistory = EMPTY.status
   }
   if (disabled & HISTORY_ROW.damage) {
-    dmgBufRef.current = dmgBufRef.current.length ? [dmgBufRef.current[dmgBufRef.current.length - 1]] : []
-    cleared.damageHistory = []
-    cleared.analyzeLapDamageHistory = []
+    dmgTable.keepLastOnly()
+    cleared.damageHistory = EMPTY.damage
+    cleared.analyzeLapDamageHistory = EMPTY.damage
   }
   if (disabled & HISTORY_ROW.motion) {
-    motBufRef.current = []
-    cleared.motion = []
-    cleared.analyzeLapMotion = []
+    motTable.clear()
+    cleared.motion = EMPTY.motion
+    cleared.analyzeLapMotion = EMPTY.motion
   }
   if (disabled & HISTORY_ROW.motionEx) {
-    motExBufRef.current = []
-    cleared.motionEx = []
-    cleared.analyzeLapMotionEx = []
+    motExTable.clear()
+    cleared.motionEx = EMPTY.motionEx
+    cleared.analyzeLapMotionEx = EMPTY.motionEx
   }
   if (disabled & HISTORY_ROW.lap) {
     allLapsLapBoundaries = []
@@ -2388,16 +2345,17 @@ export function startTelemetryBridge(): void {
       pendingV6HistoryBackfillMask: `0x${pendingV6HistoryBackfillMask.toString(16)}`,
     })
     if (!allHistory) return
-    // Keep the currently published arrays intact while the worker extracts the
+    // A driver switch is followed by exactly this seek; keep the outgoing
+    // driver's complete history so switching back to them is immediate.
+    allLapsSnapshot = allLapsMode && !waitingForAllLapsHistory && !tablesFromDriverCache && telTable.length > 0
+      ? { driver: currentPlaybackDriver, views: snapshotTables() }
+      : null
+    // Keep the currently published views intact while the worker extracts the
     // new prefix. Fresh post-seek rows accumulate separately and are merged by
     // the authoritative response.
     waitingForAllLapsHistory = true
-    telBufRef.current = []
-    motBufRef.current = []
-    motExBufRef.current = []
-    stsBufRef.current = []
-    dmgBufRef.current = []
-    lapProgressBufRef.current = []
+    tablesFromDriverCache = false
+    for (const table of Object.values(TABLE_OF_FAMILY)) table.clear()
   })
 
   window.telemetryBridge.onBatch((batchStr: string) => {
@@ -2544,13 +2502,15 @@ export function startTelemetryBridge(): void {
             dirty |= dirtySliceFor(msg)
             handleMsg(msg)
           } else if (msg.type === 'status') {
-            latestStatus = appendPlaybackPatch(stsBufRef, msg, MAX_ROWS)
+            appendPlaybackPatch(stsTable, msg, MAX_ROWS)
+            latestStatus = stsTable.last()!
             if (!isPlaybackFlag && Number.isFinite(latestStatus.fuel_kg) && latestStatus.fuel_kg >= 0 && latestStatus.fuel_kg > fuelMaxReceived) {
               fuelMaxReceived = latestStatus.fuel_kg
             }
             dirty |= DirtySlice.Status | DirtySlice.Derived
           } else if (msg.type === 'damage') {
-            latestDamage = appendPlaybackPatch(dmgBufRef, msg, MAX_ROWS)
+            appendPlaybackPatch(dmgTable, msg, MAX_ROWS)
+            latestDamage = dmgTable.last()
             dirty |= DirtySlice.Damage
           }
         }

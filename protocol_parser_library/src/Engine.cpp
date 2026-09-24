@@ -5,6 +5,7 @@
 #include "tnrp/control_rows.h"
 #include "LiveHistoryStore.h"
 #include "StrategyRollback.h"
+#include "tnrd/TNRD_V6.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1483,6 +1484,28 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
         }
     }
 
+    // The history handle is opened after the reader so both see the same file
+    // state; it is a separate FILE* and cache, never touched under mutex_.
+    historyEpoch_.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::lock_guard<std::mutex> hl(historyMutex_);
+        historyArchiveReady_.store(false, std::memory_order_release);
+        historyArchive_.reset();
+        if (ok && config_.columnarV6History && reader_.loadedFormat() == TnrdFormat::ChunkedV6) {
+            auto archive = std::make_unique<detail::TnrdV6Archive>();
+            HeaderRow ignored;
+            std::string error;
+            if (archive->open(path, ignored, &error)) {
+                historyArchive_ = std::move(archive);
+                historyArchiveReady_.store(true, std::memory_order_release);
+            } else {
+                std::fprintf(stderr, "[playback] could not open V6 history handle, using the JSON history path: %s\n",
+                             error.c_str());
+                std::fflush(stderr);
+            }
+        }
+    }
+
     PlaybackLoadedRow loaded;
     loaded.ok = ok;
     if (ok) loaded.header = header;
@@ -1537,6 +1560,46 @@ void Engine::playerRequestSeek(uint64_t requestId) {
                current, requestId, std::memory_order_release, std::memory_order_relaxed)) {}
 }
 
+bool Engine::prepareV6HistoryReadLocked(float from, float to, uint32_t mask,
+                                        V6HistoryRead& out) const {
+    if (!config_.columnarV6History || !config_.binaryPlayback || !config_.sparseV6Playback) return false;
+    if (reader_.loadedFormat() != TnrdFormat::ChunkedV6 ||
+        !historyArchiveReady_.load(std::memory_order_acquire)) return false;
+    const int driver = reader_.effectivePlaybackDriver();
+    if (driver < 0 || driver >= 24) return false;
+    out.driver = static_cast<uint8_t>(driver);
+    // Same type selection and seeding rule as TnrdReader::seekFlush's V6 branch.
+    const auto& history = reader_.playbackV6HistoryTypes();
+    out.types = history.empty() ? reader_.playbackV6Types() : history;
+    out.seed = !out.types.empty();
+    out.mask = mask;
+    out.from = from;
+    out.to = to;
+    out.epoch = historyEpoch_.load(std::memory_order_acquire);
+    return true;
+}
+
+std::shared_ptr<std::vector<uint8_t>> Engine::runV6HistoryRead(
+    const V6HistoryRead& read, const std::function<bool()>& cancelled, bool respectEpoch) {
+    const auto stale = [&] {
+        return (respectEpoch && historyEpoch_.load(std::memory_order_acquire) != read.epoch) ||
+            (cancelled && cancelled());
+    };
+    std::lock_guard<std::mutex> hl(historyMutex_);
+    if (stale()) return nullptr;
+    auto out = std::make_shared<std::vector<uint8_t>>();
+    if (!historyArchive_) return out;
+    std::string error;
+    if (!historyArchive_->columnarHistory(read.driver, read.types, read.mask, read.from, read.to,
+                                         read.seed, *out, &error, stale)) {
+        if (stale()) return nullptr;
+        std::fprintf(stderr, "[playback] columnar V6 history read failed: %s\n", error.c_str());
+        std::fflush(stderr);
+        out->clear();
+    }
+    return stale() ? nullptr : out;
+}
+
 void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
                         uint32_t rowTypeMask, float windowSeconds) {
     std::vector<std::string> state;
@@ -1549,6 +1612,13 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
     StrategyWork strategyWork;
     bool queueStrategyWork = false;
     std::string seekRestrictionMsg;
+    V6HistoryRead historyRead;
+    bool columnarHistory = false;
+    std::vector<std::pair<uint8_t, std::string>> pairRows;
+    const auto cancelled = [this, requestId] {
+        return requestId != 0 && requestId !=
+            latestSeekRequestId_.load(std::memory_order_acquire);
+    };
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
@@ -1561,17 +1631,24 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         historyStart = allHistory ? start
             : windowSeconds > 0.0f ? std::max(start, target - windowSeconds)
             : lapStart;
-        const auto cancelled = [this, requestId] {
-            return requestId != 0 && requestId !=
-                latestSeekRequestId_.load(std::memory_order_acquire);
-        };
         if (config_.binaryPlayback) {
             // Start the V5 target frontier before extracting the prefix. The
             // archive executor can now decompress both sets concurrently, and
             // its in-flight table shares target-containing chunks between them.
             reader_.beginCursorPrime(target);
-            binFlush = reader_.seekFlush(target, lapStart, allHistory, rowTypeMask,
-                                         windowSeconds, false, cancelled);
+            // V6 history is extracted after this lock is released, on the
+            // separate history handle; only its parameters are captured here.
+            columnarHistory = prepareV6HistoryReadLocked(historyStart, target, rowTypeMask, historyRead);
+            if (columnarHistory) {
+                // Paired displays want only the newest row of each family at
+                // the cursor, which the columnar payload does not carry.
+                pairRows = reader_.latestOfTypesTagged(
+                    target, typesInMask(rowTypeMask & (detail::v4TypeBit(1) | detail::v4TypeBit(2) | detail::v4TypeBit(3) |
+                        detail::v4TypeBit(4) | detail::v4TypeBit(11) | detail::v4TypeBit(12))), cancelled);
+            } else {
+                binFlush = reader_.seekFlush(target, lapStart, allHistory, rowTypeMask,
+                                             windowSeconds, false, cancelled);
+            }
             if (cancelled()) return;
             const uint32_t restoreMask = consumerRowMask_ & kRestoreRowMask &
                 (~rowTypeMask | kSeekPanelRestoreMask);
@@ -1610,7 +1687,18 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         queueStrategyWork = preparePlaybackStrategyRebuildLocked(target, strategyWork);
     }
 
-    if (config_.binaryPlayback) {
+    if (columnarHistory) {
+        // Only a newer seek cancels this read: the renderer holds its timeline
+        // until this flush arrives.
+        auto payload = runV6HistoryRead(historyRead, cancelled, false);
+        if (!payload) return;
+        std::string pairJson;
+        for (const auto& [_, row] : pairRows) { pairJson += row; pairJson.push_back('\n'); }
+        pairServer_.publishSeekSnapshot(nullptr, 0, pairJson);
+        binFlush.binaryBegin = 0;
+        binFlush.binaryEnd = payload->size();
+        binFlush.binaryStore = std::move(payload);
+    } else if (config_.binaryPlayback) {
         const size_t pairLength = binFlush.binaryStore &&
                 binFlush.binaryEnd > binFlush.binaryBegin
             ? binFlush.binaryEnd - binFlush.binaryBegin : 0;
@@ -1619,6 +1707,8 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
                 ? binFlush.binaryStore->data() + binFlush.binaryBegin
                 : nullptr,
             pairLength, binFlush.coldJson);
+    }
+    if (config_.binaryPlayback) {
         if (sink_) sink_->onSeekFlush(std::move(binFlush.binaryStore), binFlush.binaryBegin,
                                       binFlush.binaryEnd, std::move(binFlush.coldJson),
                                       lapStart, lapNum, allHistory, requestId, true,
@@ -1658,6 +1748,9 @@ void Engine::playerSetDriver(int driverIndex, bool useRecordedRows) {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
         reader_.setPlaybackDriver(driverIndex, useRecordedRows, currentTime_);
+        // History reads captured for the previous driver stop at their next
+        // chunk. The renderer re-requests on the lap catalog emitted below.
+        historyEpoch_.fetch_add(1, std::memory_order_acq_rel);
         lapBlocks = reader_.lapBlocksMessage();
         // Restated unconditionally on a driver change: a paired client has no
         // other way to learn that the new driver's private data is withheld.
@@ -1732,6 +1825,8 @@ void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {
     int lapNum = 0;
     TnrdReader::SeekFlush flush;
     float historyStart = 0.0f;
+    V6HistoryRead historyRead;
+    bool columnarHistory = false;
     {
         std::unique_lock<std::mutex> lk(mutex_);
         requirementsCv_.wait(lk, [this] {
@@ -1751,8 +1846,9 @@ void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {
                 target, lapStart, rowTypeMask, historyTypes.c_str());
             std::fflush(stderr);
         }
-        flush = reader_.seekFlush(target, lapStart, true, rowTypeMask);
         historyStart = reader_.startTime();
+        columnarHistory = prepareV6HistoryReadLocked(historyStart, target, rowTypeMask, historyRead);
+        if (!columnarHistory) flush = reader_.seekFlush(target, lapStart, true, rowTypeMask);
         if (liveDiagnosticsEnabled_) {
             const size_t binaryBytes = flush.binaryStore && flush.binaryEnd > flush.binaryBegin
                 ? flush.binaryEnd - flush.binaryBegin : 0;
@@ -1762,6 +1858,15 @@ void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {
                 flush.coldJson.size(), historyStart);
             std::fflush(stderr);
         }
+    }
+    if (columnarHistory) {
+        // Read outside mutex_: playback, seeks and driver changes proceed
+        // meanwhile, and a driver change abandons this read via the epoch.
+        auto payload = runV6HistoryRead(historyRead, {}, true);
+        if (!payload) return;
+        flush.binaryBegin = 0;
+        flush.binaryEnd = payload->size();
+        flush.binaryStore = std::move(payload);
     }
     if (sink_) sink_->onSeekFlush(std::move(flush.binaryStore), flush.binaryBegin,
                                   flush.binaryEnd, std::move(flush.coldJson),
@@ -1775,6 +1880,8 @@ void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
     int lapNum = 0;
     TnrdReader::SeekFlush flush;
     float historyStart = 0.0f;
+    V6HistoryRead historyRead;
+    bool columnarHistory = false;
     {
         std::unique_lock<std::mutex> lk(mutex_);
         requirementsCv_.wait(lk, [this] {
@@ -1794,11 +1901,12 @@ void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
                 target, lapStart, windowSeconds, rowTypeMask, historyTypes.c_str());
             std::fflush(stderr);
         }
-        flush = reader_.seekFlush(target, lapStart, false, rowTypeMask, windowSeconds,
-                                  false);
         historyStart = windowSeconds > 0.0f
             ? std::max(reader_.startTime(), target - windowSeconds)
             : lapStart;
+        columnarHistory = prepareV6HistoryReadLocked(historyStart, target, rowTypeMask, historyRead);
+        if (!columnarHistory)
+            flush = reader_.seekFlush(target, lapStart, false, rowTypeMask, windowSeconds, false);
         if (liveDiagnosticsEnabled_) {
             const size_t binaryBytes = flush.binaryStore && flush.binaryEnd > flush.binaryBegin
                 ? flush.binaryEnd - flush.binaryBegin : 0;
@@ -1811,6 +1919,15 @@ void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
     }
     // Finite-window backfill is additive at the renderer just like an AL family
     // request; it does not move the playhead or replace newer buffered rows.
+    if (columnarHistory) {
+        // Read outside mutex_: playback, seeks and driver changes proceed
+        // meanwhile, and a driver change abandons this read via the epoch.
+        auto payload = runV6HistoryRead(historyRead, {}, true);
+        if (!payload) return;
+        flush.binaryBegin = 0;
+        flush.binaryEnd = payload->size();
+        flush.binaryStore = std::move(payload);
+    }
     if (sink_) sink_->onSeekFlush(std::move(flush.binaryStore), flush.binaryBegin,
                                   flush.binaryEnd, std::move(flush.coldJson),
                                   lapStart, lapNum, true, requestId, false,
@@ -1825,6 +1942,14 @@ void Engine::playerClose() {
     // non-blocking and does not delay closing the main playback reader.
     playbackStrategyGeneration_.fetch_add(1, std::memory_order_release);
     stopPlaybackThread();
+    // In-flight history reads see the epoch change between chunks and return,
+    // which releases historyMutex_ for the reset below.
+    historyEpoch_.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::lock_guard<std::mutex> hl(historyMutex_);
+        historyArchiveReady_.store(false, std::memory_order_release);
+        historyArchive_.reset();
+    }
     std::fprintf(stderr, "[close-trace] playback thread stopped; waiting for engine mutex\n");
     std::fflush(stderr);
     std::string liveStatus;

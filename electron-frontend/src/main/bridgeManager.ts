@@ -747,6 +747,7 @@ export function startBridge(): string | null {
       // unchanged, with seeks delivered via the dedicated flush callback.
       binaryPlayback: true,
       sparseV6Playback: true,
+      columnarV6History: true,
       ...pairEngineConfig(),
     }
 
@@ -995,6 +996,14 @@ export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
   return result
 }
 
+// A V6 driver switch runs on a native worker (it rebuilds the lap catalog).
+// Seeks and history requests read the playback timeline, so they wait for any
+// pending switch to land; otherwise they could extract the previous driver.
+let driverSwitch: Promise<void> = Promise.resolve()
+function afterDriverSwitch(run: () => void): void {
+  void driverSwitch.then(run, run)
+}
+
 export function playerPlay(): void { engine?.playerPlay() }
 export function playerPause(): void { engine?.playerPause() }
 export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFFFFFF, windowSeconds = 0): void {
@@ -1021,14 +1030,19 @@ export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFF
       engineReady: Boolean(engine),
     })}`)
   }
-  engine.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds))
+  const target = engine
+  afterDriverSwitch(() => target.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds)))
 }
 export function playerSeekInstalled(requestId: number): void {
   releaseSeekForwarding(requestId)
 }
 export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }
 export function playerSetDriver(driverIndex: number, useRecordedRows = false): void {
-  engine?.playerSetDriver(driverIndex, useRecordedRows)
+  if (!engine) return
+  const target = engine
+  driverSwitch = driverSwitch
+    .then(() => target.playerSetDriver(driverIndex, useRecordedRows))
+    .catch((error: unknown) => console.error('[bridge] playerSetDriver failed:', error))
 }
 export function playerGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): void {
   engine?.playerGetLapData(lapNum, rowTypeMask >>> 0)
@@ -1043,7 +1057,8 @@ export function playerGetAllLapsData(rowTypeMask = 0xFFFFFFFF): void {
       rendererV6HistoryTypes,
     })
   }
-  engine?.playerGetAllLapsData(requestId, rowTypeMask >>> 0)
+  const target = engine
+  if (target) afterDriverSwitch(() => target.playerGetAllLapsData(requestId, rowTypeMask >>> 0))
 }
 export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFFFFF): void {
   const requestId = ++nextPlaybackRequestId
@@ -1056,7 +1071,8 @@ export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFF
       rendererV6HistoryTypes,
     })
   }
-  engine?.playerGetWindowData(Math.max(0, windowSeconds), requestId, rowTypeMask >>> 0)
+  const target = engine
+  if (target) afterDriverSwitch(() => target.playerGetWindowData(Math.max(0, windowSeconds), requestId, rowTypeMask >>> 0))
 }
 export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask = 0,
                                           windowSeconds = 0, v6Types: number[] = [],

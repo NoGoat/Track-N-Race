@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
+import { alignedFromView, sessionTimeAt, type ColumnView } from '../lib/columnStore'
 import type { AlignedTable, MotionRow } from '../types'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
@@ -25,8 +26,8 @@ const COLOR_LONG = '#5794F2'
 const Y_TICKS = [-6, -4, -2, 0, 2, 4, 6]
 
 const SERIES: SeriesDef<MotionRow>[] = [
-  { label: 'Lateral',      color: COLOR_LAT,  getY: d => d.g_lat },
-  { label: 'Longitudinal', color: COLOR_LONG, getY: d => d.g_long },
+  { label: 'Lateral',      color: COLOR_LAT,  getY: (rows, i) => rows.num('g_lat', i) },
+  { label: 'Longitudinal', color: COLOR_LONG, getY: (rows, i) => rows.num('g_long', i) },
 ]
 
 const MODE_CONFIG: Record<GForceChartMode, { title: string; section: GraphSection; order: number; directionHint: string }> = {
@@ -69,7 +70,7 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30, mode =
     visible: !hiddenSeries[series.label],
   })), [hiddenSeries, themedSeries])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotion : s.motion)
-  const getTableValues = useCallback((row: MotionRow) => selectedSeries.map(series => series.getY(row)), [selectedSeries])
+  const getTableValues = useCallback((rows: ColumnView<MotionRow>, i: number) => selectedSeries.map(series => series.getY(rows, i)), [selectedSeries])
   const emptyTableData = useMemo((): AlignedTable => [
     new Float64Array(0),
     ...selectedSeries.map(() => new Float64Array(0)),
@@ -79,13 +80,7 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30, mode =
   // straight into TimeChartView.
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table' || coordinates.allLapsMode) return emptyTableData
-    const ts   = new Float64Array(data.length)
-    const values = selectedSeries.map(() => new Float64Array(data.length))
-    data.forEach((d, i) => {
-      ts[i] = d.session_time
-      selectedSeries.forEach((series, seriesIndex) => { values[seriesIndex][i] = series.getY(d) })
-    })
-    return [ts, ...values]
+    return alignedFromView(data, selectedSeries.map(series => series.getY))
   }, [coordinates.allLapsMode, data, emptyTableData, selectedSeries, view])
 
   const tooltipTimeColor = isDark ? '#7c8098' : '#596168'
@@ -104,9 +99,9 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30, mode =
   const cursorSync = useMemo(() => ({
     id: modeConfig.section,
     order: modeConfig.order,
-    formatRow: (row: MotionRow) => [
+    formatRow: (rows: ColumnView<MotionRow>, i: number) => [
       `<div style="color:${tooltipTimeColor};margin-top:3px">${modeConfig.title}</div>`,
-      formatValues(selectedSeries.map(series => series.getY(row))),
+      formatValues(selectedSeries.map(series => series.getY(rows, i))),
     ].join(''),
   }), [formatValues, modeConfig, selectedSeries, tooltipTimeColor])
 
@@ -141,7 +136,7 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30, mode =
             rows={data}
             allLapsDataMask={HISTORY_ROW.motion}
             comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.motion : undefined}
-            getX={d => d.session_time}
+            getX={sessionTimeAt}
             series={chartSeries}
             windowSeconds={scopedWindowSeconds}
             yRange={{ kind: 'fixed', min: -6, max: 6 }}

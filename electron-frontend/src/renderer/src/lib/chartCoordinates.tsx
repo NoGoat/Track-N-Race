@@ -5,6 +5,7 @@ import { buildLapProgressMap, buildLapProgressMapFromPoints, findSectorSplitsFro
 import type { ChartMode, DistanceChartMode } from '../app/appConfig'
 import { playbackDebug } from './playbackDebug'
 import { DATA_ROW } from './historyDependencies'
+import { emptyView } from './columnStore'
 
 interface ChartCoordinates {
   mode: DistanceChartMode | null
@@ -18,8 +19,9 @@ interface ChartCoordinates {
   lapRevision: number
   progressRevision: string
   lapData: AnalyzeLapData | null
-  getX: (row: { session_time: number }) => number
-  getComparisonX: (row: { session_time: number }) => number
+  /** Chart X for a sample at this session time (distance in distance modes). */
+  getX: (sessionTime: number) => number
+  getComparisonX: (sessionTime: number) => number
   getDeltaAtDistance: (distance: number) => number
   formatX: (x: number) => string
   xTickValues?: (min: number, max: number) => number[]
@@ -39,8 +41,8 @@ const DEFAULT: ChartCoordinates = {
   lapRevision: 0,
   progressRevision: '',
   lapData: null,
-  getX: row => row.session_time,
-  getComparisonX: row => row.session_time,
+  getX: sessionTime => sessionTime,
+  getComparisonX: sessionTime => sessionTime,
   getDeltaAtDistance: () => NaN,
   formatX: x => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`,
   cullXTickLabels: true,
@@ -48,6 +50,7 @@ const DEFAULT: ChartCoordinates = {
 }
 
 const Context = createContext(DEFAULT)
+const EMPTY_PROGRESS = emptyView<LapProgressPoint>('lap')
 function interpolateDistance(points: readonly LapProgressPoint[], sessionTime: number): number {
   if (points.length === 0 || sessionTime > points[points.length - 1].session_time) return NaN
   // Current-lap publications can intentionally include the preceding sparse
@@ -129,7 +132,8 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
     currentProgressMapRef.current = progressMap
     pointsRef.current = progressMap?.points ?? [{ session_time: lapStartTime, current_lap_ms: 0, lap_distance_m: 0 }]
   } else {
-    pointsRef.current = rawProgress
+    // getX is the time identity outside distance modes; nothing reads these.
+    pointsRef.current = []
     currentProgressMapRef.current = null
   }
   if (comparisonMode && comparisonLapData) {
@@ -140,8 +144,8 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
     comparisonPointsRef.current = []
     comparisonProgressMapRef.current = null
   }
-  const getX = useCallback((row: { session_time: number }) => interpolateDistance(pointsRef.current, row.session_time), [])
-  const getComparisonX = useCallback((row: { session_time: number }) => interpolateDistance(comparisonPointsRef.current, row.session_time), [])
+  const getX = useCallback((sessionTime: number) => interpolateDistance(pointsRef.current, sessionTime), [])
+  const getComparisonX = useCallback((sessionTime: number) => interpolateDistance(comparisonPointsRef.current, sessionTime), [])
   const getDeltaAtDistance = useCallback((distance: number) => {
     const current = currentProgressMapRef.current
     const comparison = comparisonProgressMapRef.current
@@ -194,7 +198,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
   }
   if (sectorBoundaryMode && comparisonMode) {
     for (const split of findSectorSplitsFromProgress(
-      comparisonLapData?.lapProgress ?? [],
+      comparisonLapData?.lapProgress ?? EMPTY_PROGRESS,
       comparisonProgressMapRef.current,
     )) sectorSplitsByNumber.set(split.afterSector, split)
   }
@@ -226,7 +230,10 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
     return values.filter((value, index) => index === 0 || Math.abs(value - values[index - 1]) > 1e-6)
   }, [])
   const formatSectorX = useCallback((x: number) => sectorTickLabelsRef.current.get(x) ?? '', [])
-  const lastProgress = rawProgress[rawProgress.length - 1]
+  const lastIndex = rawProgress.length - 1
+  const lastProgress = lastIndex >= 0
+    ? { session_time: rawProgress.time(lastIndex), lap_distance_m: rawProgress.num('lap_distance_m', lastIndex) }
+    : undefined
   const progressRevision = `${lapRevision}:${rawProgress.length}:${lastProgress?.session_time ?? ''}:${lastProgress?.lap_distance_m ?? ''}`
   useEffect(() => {
     if (!isPlayback || mode === null) return
@@ -243,14 +250,14 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
       selectedProgressRows: rawProgress.length,
       lapStartTime,
       lapEndTime,
-      firstProgressTime: rawProgress[0]?.session_time ?? null,
+      firstProgressTime: rawProgress.length ? rawProgress.time(0) : null,
       lastProgressTime: lastProgress?.session_time ?? null,
-      firstDistance: rawProgress[0]?.lap_distance_m ?? null,
+      firstDistance: rawProgress.length ? rawProgress.num('lap_distance_m', 0) : null,
       lastDistance: lastProgress?.lap_distance_m ?? null,
     })
   }, [comparisonLapData, comparisonLapNum, currentLapNum, currentLapRevision, fastestLapNum,
-    isPlayback, lapEndTime, lapStartTime, lastProgress, mode, playbackCurrentLap,
-    progressRevision, rawProgress, currentProgress.length])
+    isPlayback, lapEndTime, lapStartTime, mode, playbackCurrentLap,
+    progressRevision, rawProgress, currentProgress.length, lastProgress?.session_time, lastProgress?.lap_distance_m])
   return <Context.Provider value={{
     mode: enabled ? mode as DistanceChartMode : null,
     distanceMode: enabled,

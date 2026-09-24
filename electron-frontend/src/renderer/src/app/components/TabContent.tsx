@@ -21,8 +21,13 @@ import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/gr
 import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 import { ChartCursorSyncProvider } from '../../lib/chartCursorSync'
+import { emptyView } from '../../lib/columnStore'
+import type { DamageRow, StatusRow, TelemetryRow } from '../../types'
 
 const EMPTY_ROWS: never[] = []
+const EMPTY_TELEMETRY = emptyView<TelemetryRow>('telemetry')
+const EMPTY_STATUS = emptyView<StatusRow>('status')
+const EMPTY_DAMAGE = emptyView<DamageRow>('damage')
 
 // The tab content is the only part of the UI that consumes the hot (per-frame)
 // telemetry slices. Extracting it into its own store-subscribing component is
@@ -100,10 +105,10 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
     coreLayout.showStats || (coreLayout.showThermal && tyreView === 'cards')
   ))
 
-  const telemetry        = useTelemetryStore(s => needsTelemetry ? coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry : EMPTY_ROWS)
-  const statusHistory    = useTelemetryStore(s => tab === 'core' || tab === 'power' ? coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory : EMPTY_ROWS)
+  const telemetry        = useTelemetryStore(s => needsTelemetry ? coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry : EMPTY_TELEMETRY)
+  const statusHistory    = useTelemetryStore(s => tab === 'core' || tab === 'power' ? coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory : EMPTY_STATUS)
   const damage           = useTelemetryStore(s => needsDamage ? s.damage : null)
-  const damageHistory    = useTelemetryStore(s => needsDamage ? coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory : EMPTY_ROWS)
+  const damageHistory    = useTelemetryStore(s => needsDamage ? coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory : EMPTY_DAMAGE)
   const lap              = useTelemetryStore(s => needsLap ? s.lap : null)
   const timing           = useTelemetryStore(s => needsTiming ? s.timing : null)
   const latest           = useTelemetryStore(s => needsLatest ? s.latest : null)

@@ -5,6 +5,7 @@ import type { AlignedTable, TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow }
 import { useLabels } from '../lib/labels'
 import { tyreCompoundColor, dryTyreCompoundOrder } from '../lib/tyreCompounds'
 import TyreTrendCharts from './TyreTrendCharts'
+import type { ColumnView } from '../lib/columnStore'
 import { WheelCard, type TyreCardViews } from './ThermalPanel'
 import { useColorFn } from '../lib/cards'
 import { useSize } from '../hooks/useSize'
@@ -16,8 +17,8 @@ interface Props {
   tyreSets:      TyreSetsMsg | null
   latest:        TelemetryRow | null
   damage:        DamageRow | null
-  damageHistory: DamageRow[]
-  telemetry:     TelemetryRow[]
+  damageHistory: ColumnView<DamageRow>
+  telemetry:     ColumnView<TelemetryRow>
   tyreWearMode:  'wear' | 'life'
   isDark:        boolean
   visibleGraphs: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean }
@@ -42,7 +43,7 @@ type TyresViewTransition = {
   skipTransition?: () => void
 }
 
-function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, boolean>, skip: boolean): Record<Corner, AlignedTable> {
+function useCornerHistories(telemetry: ColumnView<TelemetryRow>, enabled: Record<Corner, boolean>, skip: boolean): Record<Corner, AlignedTable> {
   return useMemo(() => {
     if (skip) return EMPTY_CORNER_HISTORIES
     const requested = CORNERS.filter(corner => enabled[corner])
@@ -51,15 +52,15 @@ function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, b
     const ts = new Float64Array(n)
     const histories = { ...EMPTY_CORNER_HISTORIES }
     for (const corner of requested) histories[corner] = [ts, new Float64Array(n), new Float64Array(n), new Float64Array(n)]
-    telemetry.forEach((d, i) => {
-      ts[i] = d.session_time
+    for (let i = 0; i < n; i++) {
+      ts[i] = telemetry.time(i)
       for (const corner of requested) {
         const history = histories[corner]
-        ;(history[1] as Float64Array)[i] = d[`tyre_temp_surface_${corner}`]
-        ;(history[2] as Float64Array)[i] = d[`tyre_temp_inner_${corner}`]
-        ;(history[3] as Float64Array)[i] = d[`brake_temp_${corner}`]
+        ;(history[1] as Float64Array)[i] = telemetry.num(`tyre_temp_surface_${corner}`, i)
+        ;(history[2] as Float64Array)[i] = telemetry.num(`tyre_temp_inner_${corner}`, i)
+        ;(history[3] as Float64Array)[i] = telemetry.num(`brake_temp_${corner}`, i)
       }
-    })
+    }
     return histories
   }, [telemetry, enabled, skip])
 }

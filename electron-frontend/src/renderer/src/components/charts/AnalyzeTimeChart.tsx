@@ -14,6 +14,7 @@ import { themeSeriesColor } from '../../lib/themeColors'
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../../lib/playbackCursor'
 import { getAnalyzeCursorElapsed } from '../../lib/analyzeCursor'
 import type { AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData } from '../../types'
+import { emptyView, type ColumnView } from '../../lib/columnStore'
 
 export interface AnalyzeTimeChartProps {
   isDark: boolean
@@ -80,6 +81,7 @@ type StackedTransition = {
 }
 
 const SOURCES: AnalyzeSource[] = ['telemetry', 'motion', 'motionEx', 'status', 'damage']
+const EMPTY_ROWS = emptyView<any>()
 const Y_TICKS = [0, 0.25, 0.5, 0.75, 1]
 const TOP_PADDING = 16
 const STACKED_TOP_PADDING = 6
@@ -100,10 +102,17 @@ function easeInOutCubic(progress: number): number {
     : 1 - Math.pow(-2 * progress + 2, 3) / 2
 }
 
-function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): any[] {
+function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): ColumnView<any> {
   if (source === 'status') return lap.statusHistory
   if (source === 'damage') return lap.damageHistory
   return lap[source]
+}
+
+function lastDistance(lap: AnalyzeLapData | null): number {
+  const progress = lap?.lapProgress
+  if (!progress || progress.length === 0) return 0
+  const value = progress.num('lap_distance_m', progress.length - 1)
+  return value === value ? value : 0
 }
 
 function makeBuffers(
@@ -144,7 +153,7 @@ function nearestIndex(data: SeriesData, x: number): number {
 
 function syncSource(
   buffer: AlignedDataBuffer,
-  rows: any[],
+  rows: ColumnView<any>,
   defs: typeof ANALYZE_METRICS,
   origin: number,
   rebuild: boolean,
@@ -162,7 +171,7 @@ function syncSource(
   let lo = 0, hi = rows.length
   while (lo < hi) {
     const mid = (lo + hi) >> 1
-    if (rows[mid].session_time - origin <= lastX) lo = mid + 1
+    if (rows.time(mid) - origin <= lastX) lo = mid + 1
     else hi = mid
   }
   const appendStart = lo
@@ -171,12 +180,12 @@ function syncSource(
   // The same timestamp can continue arriving across separate renderer
   // updates. Replace the buffered value with the final row published for that
   // timestamp instead of retaining the first value or appending a duplicate X.
-  if (buffer.length && lo > 0 && rows[lo - 1].session_time <= maxSessionTime && rows[lo - 1].session_time - origin === lastX) {
-    const row = rows[lo - 1]
+  if (buffer.length && lo > 0 && rows.time(lo - 1) <= maxSessionTime && rows.time(lo - 1) - origin === lastX) {
+    const row = lo - 1
     let differs = false
     for (let channel = 0; channel < defs.length; channel++) {
       const def = defs[channel]
-      const value = def.getValue(row)
+      const value = def.getValue(rows, row)
       const normalized = Number.isFinite(value) ? (value - def.min) / (def.max - def.min) : NaN
       scratch[channel] = normalized
       const previous = buffer.yAt(channel, buffer.length - 1)
@@ -194,15 +203,16 @@ function syncSource(
     // time while the lap timer is stopped (most visibly at 0:00.000). Keep the
     // final row for that timestamp so every source has a strictly unique X.
     let next = i + 1
-    while (next < rows.length && rows[next].session_time === rows[i].session_time) next++
-    const row = rows[next - 1]
-    if (row.session_time > maxSessionTime) break
+    while (next < rows.length && rows.time(next) === rows.time(i)) next++
+    const row = next - 1
+    const sessionTime = rows.time(row)
+    if (sessionTime > maxSessionTime) break
     for (let channel = 0; channel < defs.length; channel++) {
       const def = defs[channel]
-      const value = def.getValue(row)
+      const value = def.getValue(rows, row)
       scratch[channel] = Number.isFinite(value) ? (value - def.min) / (def.max - def.min) : NaN
     }
-    buffer.append(row.session_time - origin, scratch)
+    buffer.append(sessionTime - origin, scratch)
     changed = true
     i = next
   }
@@ -216,7 +226,7 @@ function syncSource(
 
 function syncSourceDistance(
   buffer: AlignedDataBuffer,
-  rows: any[],
+  rows: ColumnView<any>,
   defs: typeof ANALYZE_METRICS,
   progress: LapProgressMap | null,
   rebuild: boolean,
@@ -229,21 +239,22 @@ function syncSourceDistance(
   let lo = 0, hi = rows.length
   while (lo < hi) {
     const mid = (lo + hi) >> 1
-    if (rows[mid].session_time <= cursor.value) lo = mid + 1
+    if (rows.time(mid) <= cursor.value) lo = mid + 1
     else hi = mid
   }
   let changed = false
   for (let i = lo; i < rows.length;) {
     let next = i + 1
-    while (next < rows.length && rows[next].session_time === rows[i].session_time) next++
-    const row = rows[next - 1]
-    if (row.session_time > progress.maxSessionTime || row.session_time > maxSessionTime) break
-    cursor.value = row.session_time
-    const distance = interpolateDistance(progress, row.session_time)
+    while (next < rows.length && rows.time(next) === rows.time(i)) next++
+    const row = next - 1
+    const sessionTime = rows.time(row)
+    if (sessionTime > progress.maxSessionTime || sessionTime > maxSessionTime) break
+    cursor.value = sessionTime
+    const distance = interpolateDistance(progress, sessionTime)
     if (!Number.isFinite(distance)) { i = next; continue }
     for (let channel = 0; channel < defs.length; channel++) {
       const def = defs[channel]
-      const value = def.getValue(row)
+      const value = def.getValue(rows, row)
       scratch[channel] = Number.isFinite(value) ? (value - def.min) / (def.max - def.min) : NaN
     }
     if (buffer.length && distance === buffer.lastX) buffer.replaceLast(scratch)
@@ -899,10 +910,7 @@ export default function AnalyzeTimeChart({
     const fullLapEnd = distanceMode
       ? trackLengthM > 0
         ? trackLengthM
-        : Math.max(
-            current.lapProgress.at(-1)?.lap_distance_m ?? 0,
-            comparison?.lapProgress.at(-1)?.lap_distance_m ?? 0,
-          )
+        : Math.max(lastDistance(current), lastDistance(comparison))
       : Math.max(
           current.endSessionTime - current.startSessionTime,
           comparison ? comparison.endSessionTime - comparison.startSessionTime : 0,
@@ -1406,7 +1414,7 @@ export default function AnalyzeTimeChart({
           if (rebuild) {
             originsRef.current[revisionKey] = lap?.startSessionTime ?? 0
           }
-          const rows = lap ? rowsFor(lap, source) : []
+          const rows = lap ? rowsFor(lap, source) : EMPTY_ROWS
           const buffer = buffers[role][source]!
           const defs = metricsBySourceRef.current[source]
           if (distanceMode) {
@@ -1467,7 +1475,7 @@ export default function AnalyzeTimeChart({
           for (const source of SOURCES) {
             const rows = rowsFor(lap, source)
             if (!rows.length) continue
-            max = Math.max(max, Math.min(rows[rows.length - 1].session_time, cutoff) - lap.startSessionTime)
+            max = Math.max(max, Math.min(rows.time(rows.length - 1), cutoff) - lap.startSessionTime)
           }
         }
         for (const source of activeSourcesRef.current) {

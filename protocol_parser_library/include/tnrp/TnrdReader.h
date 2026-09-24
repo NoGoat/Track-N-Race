@@ -90,6 +90,10 @@ public:
     // every field.
     const std::vector<uint8_t>& playbackV6Types() const { return playbackV6Types_; }
     const std::vector<uint8_t>& playbackV6HistoryTypes() const { return playbackV6HistoryTypes_; }
+    // The V6 driver whose data playback currently follows.
+    int effectivePlaybackDriver() const {
+        return playbackDriverIndex_ >= 0 ? playbackDriverIndex_ : recordedDriverIndex_;
+    }
     // V6 only: project driver-scoped rows for exactly the selected driver.
     // The recorded driver keeps the original private/player rows, but the V6
     // all-car payload attached to those rows is stripped before emission.

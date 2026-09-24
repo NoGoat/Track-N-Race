@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import type { AlignedTable, StatusRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type YRangeSpec } from './charts/TimeChartView'
+import { alignedFromView, sessionTimeAt, type ColumnView } from '../lib/columnStore'
 import type { YAxisBehavior } from '../lib/graphSections'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
@@ -13,7 +14,7 @@ import { HISTORY_ROW } from '../lib/historyDependencies'
 import { POWER_CHART_Y_AXIS_SIZE } from '../lib/powerChartLayout'
 import type { PowerPageLayout } from '../app/appConfig'
 
-interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; harvestUpperLimit?: number; ersHarvestYAxis?: YAxisBehavior }
+interface CP { data: ColumnView<StatusRow>; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; harvestUpperLimit?: number; ersHarvestYAxis?: YAxisBehavior }
 
 const C_ICE    = '#5794F2'
 const C_MGUK   = '#FADE2A'
@@ -39,16 +40,19 @@ const COLS_HARVEST: GraphTableColumn[] = [
 const COLS_STORE: GraphTableColumn[] = [{ header: 'ERS', color: C_ICE, format: v => `${v.toFixed(1)}%` }]
 const COLS_FUEL: GraphTableColumn[] = [{ header: 'Fuel', color: C_FUEL, format: v => `${v.toFixed(2)}kg` }]
 
+// Absent power fields read as zero, as the row version's `?? 0` did.
+function orZero(value: number): number { return value === value ? value : 0 }
+
 const SERIES_SPLIT: SeriesDef<StatusRow>[] = [
-  { label: 'ICE', color: C_ICE, getY: d => d.engine_power_ice_kw ?? 0 },
-  { label: 'MGU-K', color: C_MGUK, getY: d => d.engine_power_mguk_kw ?? 0 },
+  { label: 'ICE', color: C_ICE, getY: (rows, i) => orZero(rows.num('engine_power_ice_kw', i)) },
+  { label: 'MGU-K', color: C_MGUK, getY: (rows, i) => orZero(rows.num('engine_power_mguk_kw', i)) },
 ]
 const SERIES_HARVEST: SeriesDef<StatusRow>[] = [
-  { label: 'MGU-K', color: C_HARV_K, getY: d => (d.ers_harvested_mguk_j ?? 0) / 1000 },
-  { label: 'MGU-H', color: C_HARV_H, getY: d => (d.ers_harvested_mguh_j ?? 0) / 1000 },
+  { label: 'MGU-K', color: C_HARV_K, getY: (rows, i) => orZero(rows.num('ers_harvested_mguk_j', i)) / 1000 },
+  { label: 'MGU-H', color: C_HARV_H, getY: (rows, i) => orZero(rows.num('ers_harvested_mguh_j', i)) / 1000 },
 ]
-const SERIES_STORE: SeriesDef<StatusRow>[] = [{ label: 'ERS', color: C_ICE, getY: d => d.ers_pct }]
-const SERIES_FUEL: SeriesDef<StatusRow>[] = [{ label: 'Fuel', color: C_FUEL, getY: d => d.fuel_kg }]
+const SERIES_STORE: SeriesDef<StatusRow>[] = [{ label: 'ERS', color: C_ICE, getY: (rows, i) => rows.num('ers_pct', i) }]
+const SERIES_FUEL: SeriesDef<StatusRow>[] = [{ label: 'Fuel', color: C_FUEL, getY: (rows, i) => rows.num('fuel_kg', i) }]
 const EMPTY_ALIGNED: AlignedTable = [new Float64Array(0)]
 
 function fmtTime(s: number) {
@@ -91,16 +95,10 @@ function PowerLineChartContent(props: PowerLineProps) {
     return series.visible !== false && column ? [{ series, column, sourceIndex }] : []
   }), [themedColumns, themedSeries])
   const visibleColumns = useMemo(() => visibleEntries.map(e => e.column), [visibleEntries])
-  const getTableValues = useCallback((row: StatusRow) => visibleEntries.map(entry => entry.series.getY(row)), [visibleEntries])
+  const getTableValues = useCallback((rows: ColumnView<StatusRow>, i: number) => visibleEntries.map(entry => entry.series.getY(rows, i)), [visibleEntries])
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
-    const ts = new Float64Array(data.length)
-    const values = visibleEntries.map(() => new Float64Array(data.length))
-    data.forEach((row, i) => {
-      ts[i] = row.session_time
-      visibleEntries.forEach((e, k) => { values[k][i] = e.series.getY(row) })
-    })
-    return [ts, ...values]
+    return alignedFromView(data, visibleEntries.map(entry => entry.series.getY))
   }, [coordinates.allLapsMode, data, view, visibleEntries])
 
   const axisColor = isDark ? '#7c8098' : '#596168'
@@ -120,9 +118,9 @@ function PowerLineChartContent(props: PowerLineProps) {
   const cursorSync = useMemo(() => ({
     id: section,
     order: POWER_CURSOR_ORDER[section] ?? 100,
-    formatRow: (row: StatusRow) => [
+    formatRow: (rows: ColumnView<StatusRow>, i: number) => [
       `<div style="color:${axisColor};margin-top:3px">${title}</div>`,
-      formatValues(themedSeries.map(item => item.getY(row))),
+      formatValues(themedSeries.map(item => item.getY(rows, i))),
     ].join(''),
   }), [axisColor, formatValues, section, themedSeries, title])
 
@@ -162,7 +160,7 @@ function PowerLineChartContent(props: PowerLineProps) {
             rows={data}
             allLapsDataMask={HISTORY_ROW.status}
             comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
-            getX={d => d.session_time}
+            getX={sessionTimeAt}
             series={themedSeries}
             windowSeconds={scopedWindowSeconds}
             yRange={yRange}
@@ -220,7 +218,8 @@ function ERSStoreChart(props: CP) {
 }
 
 function FuelHistoryChart(props: CP) {
-  const upperLimit = props.fuelUpperLimit ?? Math.max(1, (props.data[0]?.fuel_kg ?? 0) + 1)
+  const firstFuel = props.data.length ? props.data.num('fuel_kg', 0) : NaN
+  const upperLimit = props.fuelUpperLimit ?? Math.max(1, (firstFuel === firstFuel ? firstFuel : 0) + 1)
   return <PowerLineChart {...props} section="powerFuel" title="Fuel History" series={SERIES_FUEL} columns={COLS_FUEL}
     yRange={{ kind: 'fixed', min: 0, max: upperLimit }} yFormat={v => `${v.toFixed(1)}kg`} />
 }
@@ -231,7 +230,7 @@ export interface PowerViews {
   ersStore?: 'chart' | 'table'; fuelHistory?: 'chart' | 'table'
 }
 
-export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30, fuelUpperLimit, hasMguh = false, harvestUpperLimit = 8000, ersHarvestYAxis = 'fixed', layout = 'grid' }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; harvestUpperLimit?: number; ersHarvestYAxis?: YAxisBehavior; layout?: PowerPageLayout }) {
+export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30, fuelUpperLimit, hasMguh = false, harvestUpperLimit = 8000, ersHarvestYAxis = 'fixed', layout = 'grid' }: { data: ColumnView<StatusRow>; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; harvestUpperLimit?: number; ersHarvestYAxis?: YAxisBehavior; layout?: PowerPageLayout }) {
   const items = [
     { key: 'powerSplit', el: <PowerSplitChart data={data} isDark={isDark} view={views?.powerSplit} windowSeconds={windowSeconds} /> },
     { key: 'ersHarvest', el: <ERSHarvestChart data={data} isDark={isDark} view={views?.ersHarvest} windowSeconds={windowSeconds} hasMguh={hasMguh} harvestUpperLimit={harvestUpperLimit} ersHarvestYAxis={ersHarvestYAxis} /> },

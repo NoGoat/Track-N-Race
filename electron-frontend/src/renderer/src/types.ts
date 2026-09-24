@@ -1,3 +1,5 @@
+import type { ColumnView } from './lib/columnStore'
+
 export type AlignedTable = Float64Array[]
 
 // Optional V6 additions preserve compatibility with player-only/older rows.
@@ -384,16 +386,17 @@ export interface LapData {
   statusHistory: StatusRow[]
 }
 
+// One lap of history, held as column views (see lib/columnStore.ts).
 export interface AnalyzeLapData {
   lapNum: number
   startSessionTime: number
   endSessionTime: number
-  telemetry: TelemetryRow[]
-  motion: MotionRow[]
-  motionEx: MotionExRow[]
-  statusHistory: StatusRow[]
-  damageHistory: DamageRow[]
-  lapProgress: LapProgressPoint[]
+  telemetry: ColumnView<TelemetryRow>
+  motion: ColumnView<MotionRow>
+  motionEx: ColumnView<MotionExRow>
+  statusHistory: ColumnView<StatusRow>
+  damageHistory: ColumnView<DamageRow>
+  lapProgress: ColumnView<LapProgressPoint>
   playerPositions: PlayerPositionPoint[]
   rowTypeMask?: number
 }

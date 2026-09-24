@@ -153,9 +153,25 @@ drop fields that are absent from the examples above.
 
 ## 5. Chunk contents and directory
 
-Retain Zstandard-compressed JSONL for the first implementation. Each sample stores
-its session time and that type's values for one driver. Driver, lap and type are
-stored in the directory rather than repeated as all-car arrays in every sample.
+Each chunk is a Zstandard-compressed column table. Each sample stores its session
+time and that type's values for one driver. Driver, lap and type are stored in
+the directory rather than repeated as all-car arrays in every sample.
+
+A chunk with flag bit `0x01` (set in both its prefix and its directory entry) is
+columnar: a `V6C1` header with row and column counts, a float32 session-time
+array, one descriptor per field (name, kind, width, dense), then one array per
+field. Integers use the narrowest signed width that fits the chunk's values;
+floats are float32 unless a value would lose precision, which stores float64;
+booleans take one byte; tyre sets stay raw JSON text. A field that is missing
+from some rows, such as `available:false` markers or optional damage values,
+carries a presence bitmap. Numeric arrays are byte-planed, so zstd sees runs
+of similar high bytes. Field names are stored once per chunk, not once per sample.
+The encoder and decoder live in `TNRD_V6.cpp`.
+
+A chunk without the flag is JSONL, written before the change, and still reads.
+The archive hands rows to callers as JSON, rendered only for the rows a request
+selects; `loadChunkPlain` and `forEachChunk` render a whole chunk as JSONL for
+export and inspection. Shared session/event records remain JSON.
 
 Keep the existing units and useful sample precision. Do not downsample as part
 of this format change. Types keep their natural update rates; a combined chart

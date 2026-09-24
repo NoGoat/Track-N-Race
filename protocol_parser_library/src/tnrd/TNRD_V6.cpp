@@ -17,6 +17,7 @@
 #include <set>
 #include <tuple>
 #include <unordered_map>
+#include <variant>
 
 #include <glaze/glaze.hpp>
 #include <zlib.h>
@@ -139,31 +140,444 @@ std::string rowType(std::string_view json) {
     at += 8; const auto end = json.find('"', at);
     return end == json.npos ? std::string{} : std::string(json.substr(at, end - at));
 }
-std::string number(double value) {
-    char buffer[64]; std::snprintf(buffer, sizeof(buffer), "%.9g", value); return buffer;
+void appendNumber(std::string& out, double value) {
+    char buffer[64];
+    const int size = std::snprintf(buffer, sizeof(buffer), "%.9g", value);
+    if (size > 0) out.append(buffer, std::min<size_t>(static_cast<size_t>(size), sizeof(buffer) - 1));
 }
-std::string integer(int64_t value) { return std::to_string(value); }
-std::string boolean(bool value) { return value ? "true" : "false"; }
-std::string sample(float time, std::initializer_list<std::pair<std::string_view, std::string>> fields) {
-    std::string out = "{\"session_time\":" + number(time);
-    for (const auto& [key, value] : fields) {
-        out += ",\""; out.append(key); out += "\":"; out += value;
+
+// One sample as the writer holds it: its time plus typed field values, in the
+// order the add() call listed them. Keys always point at string literals, so a
+// sample can outlive the row it was built from. The chunk encoder turns a run
+// of these into column arrays; nothing formats them as JSON on the write path.
+// A string value is raw JSON (tyre sets), stored and rendered verbatim.
+using V6Value = std::variant<int64_t, double, bool, std::string>;
+struct V6Field {
+    std::string_view key;
+    V6Value value;
+    bool operator==(const V6Field&) const = default;
+};
+struct V6Sample {
+    float time{};
+    std::vector<V6Field> fields;
+};
+V6Value number(double value) { return V6Value(std::in_place_index<1>, value); }
+V6Value integer(int64_t value) { return V6Value(std::in_place_index<0>, value); }
+V6Value boolean(bool value) { return V6Value(std::in_place_index<2>, value); }
+V6Value rawJson(std::string value) { return V6Value(std::in_place_index<3>, std::move(value)); }
+V6Sample sample(float time, std::initializer_list<V6Field> fields) { return {time, std::vector<V6Field>(fields)}; }
+V6Sample sample(float time, std::vector<V6Field> fields) { return {time, std::move(fields)}; }
+V6Sample retime(V6Sample value, float time) { value.time = time; return value; }
+bool isUnavailable(const V6Sample& value) {
+    for (const auto& field : value.fields)
+        if (field.key == "available" && field.value.index() == 2 && !std::get<2>(field.value)) return true;
+    return false;
+}
+// A state type's samples carry one field group each, named by its first key.
+std::string signatureOf(const V6Sample& value) {
+    return value.fields.empty() ? std::string{} : std::string(value.fields.front().key);
+}
+void appendValue(std::string& out, const V6Value& value) {
+    switch (value.index()) {
+        case 0: out += std::to_string(std::get<0>(value)); break;
+        case 1: appendNumber(out, std::get<1>(value)); break;
+        case 2: out += std::get<2>(value) ? "true" : "false"; break;
+        default: out += std::get<3>(value); break;
+    }
+}
+
+// ---- Columnar chunk payload --------------------------------------------------
+// A chunk whose prefix and directory flags carry CHUNK_FLAG_COLUMNAR stores its
+// samples as typed column arrays; one without it is a JSONL chunk from a
+// recording made before the change, and still reads. Layout (little endian):
+//
+//   u32 magic 'V6C1'   u32 rowCount   u16 columnCount   u16 reserved
+//   f32[rowCount]      session_time, byte-planed
+//   columnCount descriptors: u8 nameLength, name, u8 kind, u8 width, u8 dense
+//   columnCount bodies, in descriptor order:
+//     bitmap of (rowCount + 7) / 8 bytes when !dense (bit r = row r has it)
+//     one value per present row: Int as signed `width` bytes, Float32/Float64,
+//     byte-planed; Bool as one byte; Json as u32 length + bytes
+//
+// Byte-planing writes byte 0 of every value, then byte 1, and so on.
+// Neighbouring samples share their high bytes, which gives zstd long runs.
+// Columns are ordered by first appearance and a row renders its fields in
+// column order, which keeps each state sample's first key (its signature) first.
+constexpr uint8_t CHUNK_FLAG_COLUMNAR = 0x01;
+constexpr uint32_t COLUMNAR_MAGIC = 0x31433656u; // V6C1
+constexpr size_t COLUMNAR_HEADER_SIZE = 12;
+enum class ColumnKind : uint8_t { Int = 0, Float32 = 1, Float64 = 2, Bool = 3, Json = 4 };
+
+struct ColumnarChunk {
+    struct Column {
+        std::string name;
+        ColumnKind kind{};
+        std::vector<uint8_t> present;    // one flag per row; empty when every row has it
+        std::vector<int64_t> ints;       // Int and Bool, one slot per row
+        std::vector<double> reals;       // Float32 and Float64, one slot per row
+        std::vector<std::string> texts;  // Json, one slot per row
+        bool has(size_t row) const { return present.empty() || present[row]; }
+    };
+    std::vector<float> time;
+    std::vector<Column> columns;
+};
+
+void putPlanes(std::vector<uint8_t>& out, const std::vector<uint8_t>& packed, size_t width) {
+    const size_t count = width ? packed.size() / width : 0;
+    for (size_t byte = 0; byte < width; ++byte)
+        for (size_t i = 0; i < count; ++i) out.push_back(packed[i * width + byte]);
+}
+bool getPlanes(const uint8_t*& p, const uint8_t* end, size_t count, size_t width,
+               std::vector<uint8_t>& packed) {
+    if (width && count > static_cast<size_t>(end - p) / width) return false;
+    packed.resize(count * width);
+    for (size_t byte = 0; byte < width; ++byte)
+        for (size_t i = 0; i < count; ++i) packed[i * width + byte] = *p++;
+    return true;
+}
+void putLE(std::vector<uint8_t>& out, uint64_t value, size_t width) {
+    for (size_t i = 0; i < width; ++i) out.push_back(static_cast<uint8_t>(value >> (i * 8)));
+}
+uint64_t getLE(const uint8_t* p, size_t width) {
+    uint64_t value{}; for (size_t i = 0; i < width; ++i) value |= uint64_t(p[i]) << (i * 8); return value;
+}
+int64_t signExtend(uint64_t value, size_t width) {
+    if (width >= 8) return static_cast<int64_t>(value);
+    const unsigned shift = static_cast<unsigned>(64 - width * 8);
+    return static_cast<int64_t>(value << shift) >> shift;
+}
+uint8_t intWidth(int64_t low, int64_t high) {
+    if (low >= INT8_MIN && high <= INT8_MAX) return 1;
+    if (low >= INT16_MIN && high <= INT16_MAX) return 2;
+    if (low >= INT32_MIN && high <= INT32_MAX) return 4;
+    return 8;
+}
+
+bool encodeColumnar(const std::vector<V6Sample>& samples, std::vector<uint8_t>& out) {
+    struct Plan {
+        std::string_view name;
+        size_t firstKind{};
+        bool mixed{};
+        std::vector<const V6Value*> values;  // one slot per row, null when absent
+    };
+    const size_t rows = samples.size();
+    if (rows > UINT32_MAX) return false;
+    std::vector<Plan> plans;
+    for (size_t row = 0; row < rows; ++row) {
+        for (const auto& field : samples[row].fields) {
+            auto plan = std::find_if(plans.begin(), plans.end(),
+                [&](const Plan& candidate) { return candidate.name == field.key; });
+            if (plan == plans.end()) {
+                if (field.key.empty() || field.key.size() > UINT8_MAX || plans.size() >= UINT16_MAX) return false;
+                plans.push_back({field.key, field.value.index(), false, std::vector<const V6Value*>(rows)});
+                plan = plans.end() - 1;
+            }
+            if (field.value.index() != plan->firstKind) plan->mixed = true;
+            plan->values[row] = &field.value;
+        }
+    }
+
+    out.clear();
+    put32(out, COLUMNAR_MAGIC); put32(out, static_cast<uint32_t>(rows));
+    put16(out, static_cast<uint16_t>(plans.size())); put16(out, 0);
+    std::vector<uint8_t> packed; packed.reserve(rows * 8);
+    for (const auto& value : samples) {
+        uint32_t bits{}; std::memcpy(&bits, &value.time, sizeof(bits)); putLE(packed, bits, 4);
+    }
+    putPlanes(out, packed, 4);
+
+    struct Layout { ColumnKind kind{}; uint8_t width{}; bool dense{}; };
+    std::vector<Layout> layouts; layouts.reserve(plans.size());
+    for (const auto& plan : plans) {
+        Layout layout;
+        layout.dense = std::all_of(plan.values.begin(), plan.values.end(), [](const V6Value* v) { return v; });
+        if (plan.mixed) {
+            layout.kind = ColumnKind::Json;  // never written today; kept lossless if it ever is
+        } else if (plan.firstKind == 0) {
+            int64_t low = 0, high = 0;
+            for (const auto* value : plan.values) if (value) {
+                low = std::min(low, std::get<0>(*value)); high = std::max(high, std::get<0>(*value));
+            }
+            layout.kind = ColumnKind::Int; layout.width = intWidth(low, high);
+        } else if (plan.firstKind == 1) {
+            // Float32 whenever every value survives the round trip, which is
+            // every field the game sends as a float. Anything else stays exact.
+            const bool narrow = std::all_of(plan.values.begin(), plan.values.end(), [](const V6Value* v) {
+                if (!v) return true;
+                const double value = std::get<1>(*v);
+                if (!std::isfinite(value)) return true;  // inf and NaN survive as floats
+                return std::fabs(value) <= std::numeric_limits<float>::max() &&
+                    static_cast<double>(static_cast<float>(value)) == value;
+            });
+            layout.kind = narrow ? ColumnKind::Float32 : ColumnKind::Float64;
+            layout.width = narrow ? 4 : 8;
+        } else if (plan.firstKind == 2) {
+            layout.kind = ColumnKind::Bool; layout.width = 1;
+        } else {
+            layout.kind = ColumnKind::Json;
+        }
+        out.push_back(static_cast<uint8_t>(plan.name.size()));
+        out.insert(out.end(), plan.name.begin(), plan.name.end());
+        out.push_back(static_cast<uint8_t>(layout.kind)); out.push_back(layout.width);
+        out.push_back(layout.dense ? 1 : 0);
+        layouts.push_back(layout);
+    }
+
+    for (size_t c = 0; c < plans.size(); ++c) {
+        const auto& plan = plans[c]; const auto& layout = layouts[c];
+        if (!layout.dense) {
+            std::vector<uint8_t> bitmap((rows + 7) / 8);
+            for (size_t row = 0; row < rows; ++row)
+                if (plan.values[row]) bitmap[row / 8] |= static_cast<uint8_t>(1u << (row % 8));
+            out.insert(out.end(), bitmap.begin(), bitmap.end());
+        }
+        packed.clear();
+        for (const auto* value : plan.values) {
+            if (!value) continue;
+            switch (layout.kind) {
+                case ColumnKind::Int:
+                    putLE(packed, static_cast<uint64_t>(std::get<0>(*value)), layout.width); break;
+                case ColumnKind::Float32: {
+                    const float narrow = static_cast<float>(std::get<1>(*value));
+                    uint32_t bits{}; std::memcpy(&bits, &narrow, sizeof(bits)); putLE(packed, bits, 4); break;
+                }
+                case ColumnKind::Float64: {
+                    uint64_t bits{}; std::memcpy(&bits, &std::get<1>(*value), sizeof(bits)); putLE(packed, bits, 8); break;
+                }
+                case ColumnKind::Bool: out.push_back(std::get<2>(*value) ? 1 : 0); break;
+                case ColumnKind::Json: {
+                    std::string text; appendValue(text, *value);
+                    if (text.size() > UINT32_MAX) return false;
+                    put32(out, static_cast<uint32_t>(text.size())); out.insert(out.end(), text.begin(), text.end());
+                    break;
+                }
+            }
+        }
+        if (layout.kind == ColumnKind::Int || layout.kind == ColumnKind::Float32 ||
+            layout.kind == ColumnKind::Float64) putPlanes(out, packed, layout.width);
+    }
+    return true;
+}
+
+bool decodeColumnar(std::string_view payload, uint32_t expectedRows, ColumnarChunk& out) {
+    out = {};
+    const auto* p = reinterpret_cast<const uint8_t*>(payload.data());
+    const auto* end = p + payload.size();
+    if (payload.size() < COLUMNAR_HEADER_SIZE || get32(p) != COLUMNAR_MAGIC) return false;
+    const uint32_t rows = get32(p + 4); const uint16_t columnCount = get16(p + 8);
+    if (rows != expectedRows) return false;
+    p += COLUMNAR_HEADER_SIZE;
+    std::vector<uint8_t> packed;
+    if (!getPlanes(p, end, rows, 4, packed)) return false;
+    out.time.resize(rows);
+    for (size_t row = 0; row < rows; ++row) {
+        const uint32_t bits = static_cast<uint32_t>(getLE(packed.data() + row * 4, 4));
+        std::memcpy(&out.time[row], &bits, sizeof(bits));
+    }
+    struct Layout { uint8_t width{}; bool dense{}; };
+    std::vector<Layout> layouts(columnCount);
+    out.columns.resize(columnCount);
+    for (auto& column : out.columns) {
+        if (end - p < 1) return false;
+        const size_t length = *p++;
+        if (!length || static_cast<size_t>(end - p) < length + 3) return false;
+        column.name.assign(reinterpret_cast<const char*>(p), length); p += length;
+        const uint8_t kind = *p++; auto& layout = layouts[&column - out.columns.data()];
+        layout.width = *p++; layout.dense = *p++ != 0;
+        if (kind > static_cast<uint8_t>(ColumnKind::Json)) return false;
+        column.kind = static_cast<ColumnKind>(kind);
+        const bool widthOk =
+            column.kind == ColumnKind::Int ? (layout.width == 1 || layout.width == 2 || layout.width == 4 || layout.width == 8)
+            : column.kind == ColumnKind::Float32 ? layout.width == 4
+            : column.kind == ColumnKind::Float64 ? layout.width == 8
+            : column.kind == ColumnKind::Bool ? layout.width == 1 : true;
+        if (!widthOk) return false;
+    }
+    for (size_t c = 0; c < out.columns.size(); ++c) {
+        auto& column = out.columns[c]; const auto& layout = layouts[c];
+        size_t present = rows;
+        if (!layout.dense) {
+            const size_t bytes = (static_cast<size_t>(rows) + 7) / 8;
+            if (static_cast<size_t>(end - p) < bytes) return false;
+            column.present.resize(rows); present = 0;
+            for (size_t row = 0; row < rows; ++row) {
+                column.present[row] = (p[row / 8] >> (row % 8)) & 1u;
+                present += column.present[row];
+            }
+            p += bytes;
+        }
+        std::vector<size_t> slots; slots.reserve(present);
+        for (size_t row = 0; row < rows; ++row) if (column.has(row)) slots.push_back(row);
+        switch (column.kind) {
+            case ColumnKind::Int: case ColumnKind::Float32: case ColumnKind::Float64: {
+                if (!getPlanes(p, end, present, layout.width, packed)) return false;
+                if (column.kind == ColumnKind::Int) column.ints.resize(rows); else column.reals.resize(rows);
+                for (size_t i = 0; i < present; ++i) {
+                    const uint64_t raw = getLE(packed.data() + i * layout.width, layout.width);
+                    if (column.kind == ColumnKind::Int) {
+                        column.ints[slots[i]] = signExtend(raw, layout.width);
+                    } else if (column.kind == ColumnKind::Float32) {
+                        const uint32_t bits = static_cast<uint32_t>(raw); float value{};
+                        std::memcpy(&value, &bits, sizeof(value)); column.reals[slots[i]] = value;
+                    } else {
+                        double value{}; std::memcpy(&value, &raw, sizeof(value)); column.reals[slots[i]] = value;
+                    }
+                }
+                break;
+            }
+            case ColumnKind::Bool:
+                if (static_cast<size_t>(end - p) < present) return false;
+                column.ints.resize(rows);
+                for (size_t i = 0; i < present; ++i) column.ints[slots[i]] = *p++ != 0;
+                break;
+            case ColumnKind::Json:
+                column.texts.resize(rows);
+                for (size_t i = 0; i < present; ++i) {
+                    if (end - p < 4) return false;
+                    const uint32_t length = get32(p); p += 4;
+                    if (static_cast<size_t>(end - p) < length) return false;
+                    column.texts[slots[i]].assign(reinterpret_cast<const char*>(p), length); p += length;
+                }
+                break;
+        }
+    }
+    return p == end;
+}
+
+// Renders one row exactly as the JSONL writer used to store it, optionally
+// prefixed with driver_idx the way the archive hands rows to its callers.
+void renderRow(std::string& out, const ColumnarChunk& table, size_t row, int driver) {
+    out.push_back('{');
+    if (driver >= 0) { out += "\"driver_idx\":"; out += std::to_string(driver); out.push_back(','); }
+    out += "\"session_time\":"; appendNumber(out, table.time[row]);
+    for (const auto& column : table.columns) {
+        if (!column.has(row)) continue;
+        out += ",\""; out += column.name; out += "\":";
+        switch (column.kind) {
+            case ColumnKind::Int: out += std::to_string(column.ints[row]); break;
+            case ColumnKind::Float32: case ColumnKind::Float64: appendNumber(out, column.reals[row]); break;
+            case ColumnKind::Bool: out += column.ints[row] ? "true" : "false"; break;
+            case ColumnKind::Json: out += column.texts[row]; break;
+        }
     }
     out.push_back('}');
+}
+std::string renderJsonl(const ColumnarChunk& table) {
+    std::string out;
+    for (size_t row = 0; row < table.time.size(); ++row) { renderRow(out, table, row, -1); out.push_back('\n'); }
     return out;
 }
-std::string sample(float time, const std::vector<std::pair<std::string, std::string>>& fields) {
-    std::string out = "{\"session_time\":" + number(time);
-    for (const auto& [key, value] : fields) out += ",\"" + key + "\":" + value;
-    out.push_back('}'); return out;
+
+// A decompressed chunk as the archive caches it: the column table for columnar
+// chunks, or the text of a JSONL chunk from an older recording.
+struct ChunkData {
+    bool columnar{};
+    std::string jsonl;
+    ColumnarChunk table;
+    size_t bytes{};  // resident size, for the cache budget
+};
+size_t residentBytes(const ColumnarChunk& table) {
+    size_t bytes = table.time.size() * sizeof(float);
+    for (const auto& column : table.columns) {
+        bytes += column.name.size() + column.present.size() + column.ints.size() * sizeof(int64_t) +
+                 column.reals.size() * sizeof(double) + column.texts.size() * sizeof(std::string);
+        for (const auto& text : column.texts) bytes += text.size();
+    }
+    return bytes;
 }
-std::string retime(std::string_view json, float time) {
-    const auto at = json.find("\"session_time\":");
-    if (at == json.npos) return std::string(json);
-    const auto start = at + 15;
-    auto end = start;
-    while (end < json.size() && json[end] != ',' && json[end] != '}') ++end;
-    std::string out(json); out.replace(start, end - start, number(time)); return out;
+// Reads a JSONL chunk written before the columnar format into the same column
+// table a columnar chunk decodes to, so column consumers need no second path.
+// Samples are flat objects; a nested value (tyre sets) is kept as Json text.
+bool columnarFromJsonl(std::string_view plain, ColumnarChunk& out) {
+    out = {};
+    struct Token { size_t column; std::string_view text; };
+    std::vector<std::vector<Token>> rows;
+    std::vector<std::string> names;
+    std::vector<bool> fractional, boolean, text;
+    std::unordered_map<std::string_view, size_t> byName;
+    for (size_t start = 0; start < plain.size();) {
+        size_t end = plain.find('\n', start); if (end == std::string_view::npos) end = plain.size();
+        const std::string_view line = plain.substr(start, end - start);
+        start = end + 1;
+        if (line.empty()) continue;
+        if (line.front() != '{' || line.back() != '}') return false;
+        float time = std::numeric_limits<float>::quiet_NaN();
+        std::vector<Token> tokens;
+        size_t i = 1;
+        while (i + 1 < line.size()) {
+            if (line[i] != '"') return false;
+            const size_t keyEnd = line.find('"', i + 1);
+            if (keyEnd == std::string_view::npos || keyEnd + 1 >= line.size() || line[keyEnd + 1] != ':') return false;
+            const std::string_view key = line.substr(i + 1, keyEnd - i - 1);
+            i = keyEnd + 2;
+            const size_t valueStart = i; int depth = 0; bool inString = false;
+            for (; i < line.size() - 1 || depth > 0; ++i) {
+                if (i >= line.size()) return false;
+                const char c = line[i];
+                if (inString) { if (c == '\\') ++i; else if (c == '"') inString = false; continue; }
+                if (c == '"') inString = true;
+                else if (c == '[' || c == '{') ++depth;
+                else if (c == ']' || c == '}') { if (depth == 0) break; --depth; }
+                else if (c == ',' && depth == 0) break;
+            }
+            const std::string_view value = line.substr(valueStart, i - valueStart);
+            if (value.empty()) return false;
+            if (i < line.size() && line[i] == ',') ++i;
+            if (key == "session_time") { time = std::strtof(std::string(value).c_str(), nullptr); continue; }
+            auto [it, inserted] = byName.try_emplace(key, names.size());
+            if (inserted) {
+                names.emplace_back(key); fractional.push_back(false); boolean.push_back(true); text.push_back(false);
+            }
+            const size_t column = it->second;
+            const char c = value.front();
+            const bool isBool = value == "true" || value == "false";
+            const bool isNumber = !isBool && (c == '-' || (c >= '0' && c <= '9'));
+            if (!isBool) boolean[column] = false;
+            if (!isBool && !isNumber) text[column] = true;
+            if (isNumber && value.find_first_of(".eE") != std::string_view::npos) fractional[column] = true;
+            tokens.push_back({column, value});
+        }
+        if (!std::isfinite(time)) return false;
+        out.time.push_back(time);
+        rows.push_back(std::move(tokens));
+    }
+    const size_t count = rows.size();
+    out.columns.resize(names.size());
+    for (size_t c = 0; c < names.size(); ++c) {
+        auto& column = out.columns[c];
+        column.name = names[c];
+        column.kind = text[c] ? ColumnKind::Json : boolean[c] ? ColumnKind::Bool
+            : fractional[c] ? ColumnKind::Float64 : ColumnKind::Int;
+        column.present.assign(count, 0);
+        if (column.kind == ColumnKind::Json) column.texts.resize(count);
+        else if (column.kind == ColumnKind::Float64) column.reals.assign(count, 0.0);
+        else column.ints.assign(count, 0);
+    }
+    for (size_t r = 0; r < count; ++r) {
+        for (const auto& token : rows[r]) {
+            auto& column = out.columns[token.column];
+            column.present[r] = 1;
+            const std::string value(token.text);
+            switch (column.kind) {
+                case ColumnKind::Json: column.texts[r] = value; break;
+                case ColumnKind::Bool: column.ints[r] = value == "true"; break;
+                case ColumnKind::Float64: case ColumnKind::Float32: column.reals[r] = std::strtod(value.c_str(), nullptr); break;
+                case ColumnKind::Int: column.ints[r] = std::strtoll(value.c_str(), nullptr, 10); break;
+            }
+        }
+    }
+    for (auto& column : out.columns)
+        if (std::all_of(column.present.begin(), column.present.end(), [](uint8_t p) { return p != 0; }))
+            column.present.clear();
+    return true;
+}
+
+bool decodeChunk(std::string plain, uint8_t flags, uint32_t rows, ChunkData& out) {
+    out.columnar = (flags & CHUNK_FLAG_COLUMNAR) != 0;
+    if (!out.columnar) { out.jsonl = std::move(plain); out.bytes = out.jsonl.size(); return true; }
+    if (!decodeColumnar(plain, rows, out.table)) return false;
+    out.bytes = residentBytes(out.table);
+    return true;
 }
 }  // namespace  — stateType is declared in TNRD_V6.h, so it needs
    // external linkage and cannot live in the anonymous namespace.
@@ -288,7 +702,7 @@ V6DataType v6TypeFromName(std::string_view name) {
 
 struct TnrdV6Writer::Impl {
     struct Builder {
-        std::string plain;
+        std::vector<V6Sample> samples;
         float first{std::numeric_limits<float>::infinity()};
         float last{-std::numeric_limits<float>::infinity()};
         uint32_t count{};
@@ -312,8 +726,8 @@ struct TnrdV6Writer::Impl {
         V6LapSummary current;
         std::map<V6DataType, Builder> chunks;
         std::vector<PendingLap> pending;
-        std::map<V6DataType, std::map<std::string, std::string>> committedState;
-        std::map<V6DataType, std::map<std::string, std::string>> lastState;
+        std::map<V6DataType, std::map<std::string, V6Sample>> committedState;
+        std::map<V6DataType, std::map<std::string, V6Sample>> lastState;
         std::set<V6DataType> committedUnavailable;
         std::set<V6DataType> unavailable;
         bool currentInvalid{};
@@ -346,6 +760,7 @@ struct TnrdV6Writer::Impl {
     ZSTD_CCtx* compressor{};
     int compressionLevel{DEFAULT_COMPRESSION_LEVEL};
     std::vector<uint8_t> scratch;
+    std::vector<uint8_t> encoded;
     uint64_t chunkWrites{}, plainBytes{}, compressedBytes{}, compressionAllocated{}, checkpoints{};
     size_t lastPlain{}, lastCompressed{}, peakScratch{};
 
@@ -375,9 +790,9 @@ struct TnrdV6Writer::Impl {
         for (const auto& [type, values] : state.lastState)
             for (const auto& [_, value] : values) add(index, type, time, retime(value, time), false);
         for (V6DataType type : state.unavailable)
-            add(index, type, time, sample(time, {{"available", "false"}}), false);
+            add(index, type, time, sample(time, {{"available", boolean(false)}}), false);
     }
-    void add(uint8_t index, V6DataType type, float time, std::string value, bool updateState = true) {
+    void add(uint8_t index, V6DataType type, float time, V6Sample value, bool updateState = true) {
         if (index >= drivers.size() || type == V6DataType::Unknown || !std::isfinite(time)) return;
         // Once a car's race is over its telemetry is stale, but the game keeps
         // reclassifying it, so LapTiming is the one family that still records.
@@ -385,38 +800,29 @@ struct TnrdV6Writer::Impl {
         if ((!player || index != *player) && !drivers[index].known) return;
         auto& state = ensure(index, time);
         if (!state.open) return;
-        const bool missing = value.find("\"available\":false") != std::string::npos;
-        if (missing) state.unavailable.insert(type); else state.unavailable.erase(type);
+        if (isUnavailable(value)) state.unavailable.insert(type); else state.unavailable.erase(type);
         if (updateState && stateType(type)) {
-            const auto payload = [](const std::string& json) {
-                const auto comma = json.find(','); return comma == std::string::npos ? std::string_view{} : std::string_view(json).substr(comma);
-            };
-            const auto comma = value.find(','); const auto colon = value.find(':', comma + 1);
-            const std::string signature = colon == std::string::npos ? value : value.substr(comma + 1, colon - comma - 1);
+            std::string signature = signatureOf(value);
             const auto typeState = state.lastState.find(type);
             if (typeState != state.lastState.end()) {
                 const auto previous = typeState->second.find(signature);
-                if (previous != typeState->second.end() && payload(previous->second) == payload(value)) return;
+                if (previous != typeState->second.end() && previous->second.fields == value.fields) return;
             }
-            state.lastState[type][signature] = value;
+            state.lastState[type][std::move(signature)] = value;
         }
         auto& builder = state.chunks[type];
-        builder.plain += value; builder.plain.push_back('\n');
+        builder.samples.push_back(std::move(value));
         builder.first = std::min(builder.first, time); builder.last = std::max(builder.last, time); ++builder.count;
         state.current.endSessionTime = std::max(state.current.endSessionTime, time);
         liveHeaders[index].availableTypeMask |= v6DataTypeBit(type);
     }
     static Builder splitAt(Builder& source, float boundary) {
-        Builder moved, kept; size_t at = 0;
-        while (at < source.plain.size()) {
-            auto end = source.plain.find('\n', at); if (end == std::string::npos) end = source.plain.size();
-            if (end > at) {
-                const std::string_view line(source.plain.data() + at, end - at); const float time = scanTime(line);
-                auto& target = time >= boundary ? moved : kept;
-                target.plain.append(line); target.plain.push_back('\n');
-                target.first = std::min(target.first, time); target.last = std::max(target.last, time); ++target.count;
-            }
-            at = end + 1;
+        Builder moved, kept;
+        for (auto& value : source.samples) {
+            const float time = value.time;
+            auto& target = time >= boundary ? moved : kept;
+            target.samples.push_back(std::move(value));
+            target.first = std::min(target.first, time); target.last = std::max(target.last, time); ++target.count;
         }
         source = std::move(kept); return moved;
     }
@@ -470,10 +876,11 @@ struct TnrdV6Writer::Impl {
     bool writeChunk(uint8_t driver, uint32_t lapId, V6Phase chunkPhase, V6DataType type,
                     const Builder& builder, V6ChunkInfo& info, std::string* errorOut) {
         if (!builder.count) return true;
-        if (builder.plain.size() > MAX_CHUNK_PLAIN || chunks.size() >= MAX_CHUNKS) {
+        if (!encodeColumnar(builder.samples, encoded) || encoded.size() > MAX_CHUNK_PLAIN ||
+            chunks.size() >= MAX_CHUNKS) {
             fail(errorOut, "V6 chunk exceeds its format limit"); return false;
         }
-        const size_t bound = ZSTD_compressBound(builder.plain.size());
+        const size_t bound = ZSTD_compressBound(encoded.size());
         if (scratch.size() < bound) { scratch.resize(bound); compressionAllocated += scratch.capacity(); }
         if (!compressor) compressor = ZSTD_createCCtx();
         if (!compressor) { fail(errorOut, "could not allocate V6 compression context"); return false; }
@@ -483,24 +890,24 @@ struct TnrdV6Writer::Impl {
             fail(errorOut, "could not configure V6 compression"); return false;
         }
         const size_t size = ZSTD_compress2(compressor, scratch.data(), scratch.size(),
-                                           builder.plain.data(), builder.plain.size());
+                                           encoded.data(), encoded.size());
         if (ZSTD_isError(size)) { fail(errorOut, ZSTD_getErrorName(size)); return false; }
         if (!seekEnd(file)) { fail(errorOut, "could not append V6 chunk"); return false; }
         const uint64_t prefixOffset = tellFile(file);
         std::vector<uint8_t> prefix; put32(prefix, CHUNK_MAGIC); prefix.push_back(driver);
-        prefix.push_back(static_cast<uint8_t>(type)); prefix.push_back(0);
+        prefix.push_back(static_cast<uint8_t>(type)); prefix.push_back(CHUNK_FLAG_COLUMNAR);
         prefix.push_back(static_cast<uint8_t>(chunkPhase)); put32(prefix, lapId);
-        put64(prefix, size); put64(prefix, builder.plain.size()); put32(prefix, builder.count);
+        put64(prefix, size); put64(prefix, encoded.size()); put32(prefix, builder.count);
         if (!writeAll(file, prefix.data(), prefix.size()) || !writeAll(file, scratch.data(), size)) {
             fail(errorOut, "failed while appending V6 chunk"); return false;
         }
-        info = {driver, lapId, static_cast<uint8_t>(type), 0, chunkPhase,
+        info = {driver, lapId, static_cast<uint8_t>(type), CHUNK_FLAG_COLUMNAR, chunkPhase,
                 builder.first, builder.last, prefixOffset + CHUNK_PREFIX_SIZE,
-                size, builder.plain.size(), builder.count,
-                static_cast<uint32_t>(::crc32(0, reinterpret_cast<const Bytef*>(builder.plain.data()),
-                                               static_cast<uInt>(builder.plain.size()))), nextSequence++};
-        ++chunkWrites; plainBytes += builder.plain.size(); compressedBytes += size;
-        lastPlain = builder.plain.size(); lastCompressed = size; peakScratch = std::max(peakScratch, scratch.capacity());
+                size, encoded.size(), builder.count,
+                static_cast<uint32_t>(::crc32(0, encoded.data(), static_cast<uInt>(encoded.size()))),
+                nextSequence++};
+        ++chunkWrites; plainBytes += encoded.size(); compressedBytes += size;
+        lastPlain = encoded.size(); lastCompressed = size; peakScratch = std::max(peakScratch, scratch.capacity());
         return true;
     }
 
@@ -656,19 +1063,10 @@ struct TnrdV6Writer::Impl {
                 for (const auto& [type, builder] : lap->chunks) {
                     if (builder.count) header.availableTypeMask |= v6DataTypeBit(type);
                     if (stateType(type) && builder.count) {
-                        size_t start = 0;
-                        while (start < builder.plain.size()) {
-                            size_t end = builder.plain.find('\n', start); if (end == std::string::npos) end = builder.plain.size();
-                            if (end > start) {
-                                const std::string value = builder.plain.substr(start, end - start);
-                                const auto comma = value.find(','); const auto colon = value.find(':', comma + 1);
-                                const std::string signature = colon == std::string::npos ? value : value.substr(comma + 1, colon - comma - 1);
-                                state.committedState[type][signature] = value;
-                                if (value.find("\"available\":false") != std::string::npos)
-                                    state.committedUnavailable.insert(type);
-                                else state.committedUnavailable.erase(type);
-                            }
-                            start = end + 1;
+                        for (const auto& value : builder.samples) {
+                            state.committedState[type][signatureOf(value)] = value;
+                            if (isUnavailable(value)) state.committedUnavailable.insert(type);
+                            else state.committedUnavailable.erase(type);
                         }
                     }
                 }
@@ -758,7 +1156,7 @@ struct TnrdV6Writer::Impl {
     }
     bool privateAvailable(uint8_t index) const { return player == index || setting(index) == TelemetrySetting::Public; }
     void unavailable(uint8_t index, float time) {
-        const std::string missing = sample(time, {{"available", "false"}});
+        const V6Sample missing = sample(time, {{"available", boolean(false)}});
         for (auto type : {V6DataType::Fuel,V6DataType::ERSStore,V6DataType::ERSHarvest,
                           V6DataType::ERSDeployment,V6DataType::EnginePower,V6DataType::BrakeBias,
                           V6DataType::TyreWear,V6DataType::Damage,V6DataType::TyreState}) {
@@ -781,13 +1179,13 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
 
     auto telemetry = [&](uint8_t index, const auto& car) {
         add(index, V6DataType::Speed, time, sample(time, {{"speed_kph",integer(car.speed_kph)}}));
-        std::vector<std::pair<std::string,std::string>> rpm{{"rpm",integer(car.rpm)}};
+        std::vector<V6Field> rpm{{"rpm",integer(car.rpm)}};
         if constexpr (requires { car.rev_lights_pct.has_value(); }) {
-            if (car.rev_lights_pct) rpm.emplace_back("rev_lights_pct", integer(*car.rev_lights_pct));
-            if (car.rev_lights_bit_value) rpm.emplace_back("rev_lights_bit_value", integer(*car.rev_lights_bit_value));
+            if (car.rev_lights_pct) rpm.push_back({"rev_lights_pct", integer(*car.rev_lights_pct)});
+            if (car.rev_lights_bit_value) rpm.push_back({"rev_lights_bit_value", integer(*car.rev_lights_bit_value)});
         } else {
-            rpm.emplace_back("rev_lights_pct", integer(car.rev_lights_pct));
-            rpm.emplace_back("rev_lights_bit_value", integer(car.rev_lights_bit_value));
+            rpm.push_back({"rev_lights_pct", integer(car.rev_lights_pct)});
+            rpm.push_back({"rev_lights_bit_value", integer(car.rev_lights_bit_value)});
         }
         add(index, V6DataType::RPM, time, sample(time, rpm));
         add(index, V6DataType::Gear, time, sample(time, {{"gear",integer(car.gear)}}));
@@ -900,7 +1298,7 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
                 }
                 state.currentInvalid = car.lap_invalid;
             }
-            std::vector<std::pair<std::string,std::string>> values{
+            std::vector<V6Field> values{
                 {"position",integer(car.position)},{"lap_num",integer(car.lap_num)},
                 {"current_lap_ms",integer(car.current_lap_ms)},{"last_lap_ms",integer(car.last_lap_ms)},
                 {"s1_ms",integer(car.s1_ms)},{"s2_ms",integer(car.s2_ms)},{"gap_ms",integer(car.gap_ms)},
@@ -909,7 +1307,7 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
                 {"num_dt_pens",integer(car.num_dt_pens)},{"num_sg_pens",integer(car.num_sg_pens)},
                 {"sector",integer(car.sector)},{"result_status",integer(car.result_status)},
                 {"driver_status",integer(car.driver_status)}};
-            if (car.lap_distance_m) values.emplace_back("lap_distance_m", number(*car.lap_distance_m));
+            if (car.lap_distance_m) values.push_back({"lap_distance_m", number(*car.lap_distance_m)});
             add(index,V6DataType::LapTiming,time,sample(time,values));
             if (ended) terminate(index,time);
         }
@@ -936,8 +1334,8 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
         DamageRow row; if (glz::read<kPartialRead>(row, json)) return true;
         if (row.player_idx >= 0 && row.player_idx < 24) player = static_cast<uint8_t>(row.player_idx);
         auto damage = [&](uint8_t index, const auto& car, bool full) {
-            std::vector<std::pair<std::string,std::string>> wear, values;
-#define ADD_OPT(target, field) if constexpr (requires { car.field.has_value(); }) { if (car.field) target.emplace_back(#field, number(*car.field)); } else if (full) target.emplace_back(#field, number(car.field))
+            std::vector<V6Field> wear, values;
+#define ADD_OPT(target, field) if constexpr (requires { car.field.has_value(); }) { if (car.field) target.push_back({#field, number(*car.field)}); } else if (full) target.push_back({#field, number(car.field)})
             ADD_OPT(wear,tyre_wear_fl); ADD_OPT(wear,tyre_wear_fr); ADD_OPT(wear,tyre_wear_rl); ADD_OPT(wear,tyre_wear_rr);
             ADD_OPT(values,tyre_dmg_fl); ADD_OPT(values,tyre_dmg_fr); ADD_OPT(values,tyre_dmg_rl); ADD_OPT(values,tyre_dmg_rr);
             ADD_OPT(values,brake_dmg_fl); ADD_OPT(values,brake_dmg_fr); ADD_OPT(values,brake_dmg_rl); ADD_OPT(values,brake_dmg_rr);
@@ -957,7 +1355,7 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
         TyreSetsRow row; if (!glz::read<kPartialRead>(row, json) && row.car_idx >= 0 && row.car_idx < 24) {
             const uint8_t index = static_cast<uint8_t>(row.car_idx);
             if (privateAvailable(index)) add(index,V6DataType::TyreState,time,sample(time,
-                {{"sets",jsonOf(row.sets)},{"fitted_idx",integer(row.fitted_idx)}}));
+                {{"sets",rawJson(jsonOf(row.sets))},{"fitted_idx",integer(row.fitted_idx)}}));
         }
     } else if (kind == "participants") {
         ParticipantsRow row; if (glz::read<kPartialRead>(row, json)) return true;
@@ -1071,19 +1469,10 @@ bool TnrdV6Writer::Impl::rewind(float time, std::string* errorOut) {
         if (!state.open || state.current.lapNumber != 0) state.garageHold = false;
         auto consider = [&](const std::map<V6DataType,Builder>& chunks) {
             for (const auto& [type,builder] : chunks) if (stateType(type) && builder.count) {
-                size_t start = 0;
-                while (start < builder.plain.size()) {
-                    size_t end = builder.plain.find('\n', start); if (end == std::string::npos) end = builder.plain.size();
-                    if (end > start) {
-                        const std::string value = builder.plain.substr(start,end-start);
-                        const auto comma = value.find(','); const auto colon = value.find(':', comma + 1);
-                        const std::string signature = colon == std::string::npos ? value : value.substr(comma + 1, colon - comma - 1);
-                        state.lastState[type][signature] = value;
-                        if (value.find("\"available\":false") != std::string::npos)
-                            state.unavailable.insert(type);
-                        else state.unavailable.erase(type);
-                    }
-                    start = end + 1;
+                for (const auto& value : builder.samples) {
+                    state.lastState[type][signatureOf(value)] = value;
+                    if (isUnavailable(value)) state.unavailable.insert(type);
+                    else state.unavailable.erase(type);
                 }
             }
         };
@@ -1178,7 +1567,10 @@ bool TnrdV6Writer::finish(std::string* errorOut) {
 }
 TnrdV6WriterMemoryStats TnrdV6Writer::memoryStats() const {
     TnrdV6WriterMemoryStats out; out.open=isOpen(); if(!impl_) return out;
-    for(const auto& state:impl_->drivers){out.builderCount+=state.chunks.size();for(const auto&[_,b]:state.chunks){out.builderPlainBytes+=b.plain.size();out.builderPlainCapacityBytes+=b.plain.capacity();}out.pendingLapCount+=state.pending.size();for(const auto&lap:state.pending)for(const auto&[_,b]:lap.chunks)out.pendingLapPlainBytes+=b.plain.size();}
+    // Builders hold typed samples, not text, so "plain" bytes are their
+    // resident footprint: sample records plus their field vectors.
+    const auto sampleBytes=[](const Impl::Builder& b,bool capacity){size_t bytes=(capacity?b.samples.capacity():b.samples.size())*sizeof(V6Sample);for(const auto& s:b.samples){bytes+=(capacity?s.fields.capacity():s.fields.size())*sizeof(V6Field);for(const auto& f:s.fields)if(f.value.index()==3)bytes+=std::get<3>(f.value).size();}return bytes;};
+    for(const auto& state:impl_->drivers){out.builderCount+=state.chunks.size();for(const auto&[_,b]:state.chunks){out.builderPlainBytes+=sampleBytes(b,false);out.builderPlainCapacityBytes+=sampleBytes(b,true);}out.pendingLapCount+=state.pending.size();for(const auto&lap:state.pending)for(const auto&[_,b]:lap.chunks)out.pendingLapPlainBytes+=sampleBytes(b,false);}
     out.chunkCount=impl_->chunks.size();out.lapCount=impl_->committedLaps.size();out.eventCount=impl_->committedShared.size();
     out.chunkWrites=impl_->chunkWrites;out.chunkPlainBytesProcessed=impl_->plainBytes;out.chunkCompressedBytesWritten=impl_->compressedBytes;out.compressionBufferBytesAllocated=impl_->compressionAllocated;out.compressionScratchCapacityBytes=impl_->scratch.capacity();out.compressionContextBytes=impl_->compressor?ZSTD_sizeof_CCtx(impl_->compressor):0;out.lastChunkPlainBytes=impl_->lastPlain;out.lastChunkCompressedBytes=impl_->lastCompressed;out.peakCompressionBufferCapacityBytes=impl_->peakScratch;out.checkpointWrites=impl_->checkpoints;out.retainedBytes=out.builderPlainCapacityBytes+out.pendingLapPlainBytes+out.compressionScratchCapacityBytes;return out;
 }
@@ -1188,7 +1580,7 @@ bool writeTnrdV6(const std::string& path,const HeaderRow& header,const std::vect
 
 struct TnrdV6Archive::Impl {
     struct Cached {
-        std::shared_ptr<std::string> plain;
+        std::shared_ptr<const ChunkData> data;
         std::list<size_t>::iterator lru;
     };
 
@@ -1231,6 +1623,37 @@ struct TnrdV6Archive::Impl {
     void clearCache() {
         std::lock_guard lock(cacheMutex);
         cache.clear(); lru.clear(); cacheUsed = 0;
+    }
+    bool load(size_t index, std::shared_ptr<const ChunkData>& out, std::string* errorOut) {
+        if (!file || index >= v6Chunks.size()) { fail(errorOut, "invalid V6 chunk index"); return false; }
+        {
+            std::lock_guard lock(cacheMutex); const auto found = cache.find(index);
+            if (found != cache.end()) {
+                lru.splice(lru.begin(), lru, found->second.lru);
+                out = found->second.data; return true;
+            }
+        }
+        const auto& chunk = v6Chunks[index]; std::vector<uint8_t> compressed(chunk.compressedSize);
+        if (!readAt(file, chunk.offset, compressed.data(), compressed.size())) { fail(errorOut, "could not read V6 chunk"); return false; }
+        std::string plain(chunk.uncompressedSize, '\0');
+        const size_t size = ZSTD_decompress(plain.data(), plain.size(), compressed.data(), compressed.size());
+        auto data = std::make_shared<ChunkData>();
+        if (ZSTD_isError(size) || size != chunk.uncompressedSize ||
+            static_cast<uint32_t>(::crc32(0, reinterpret_cast<const Bytef*>(plain.data()), static_cast<uInt>(plain.size()))) != chunk.checksum ||
+            !decodeChunk(std::move(plain), chunk.flags, chunk.sampleCount, *data)) {
+            fail(errorOut, "invalid V6 chunk payload"); return false;
+        }
+        {
+            std::lock_guard lock(cacheMutex); ++decompressions;
+            if (data->bytes <= cacheLimit) {
+                while (!lru.empty() && cacheUsed + data->bytes > cacheLimit) {
+                    const size_t victim = lru.back(); lru.pop_back();
+                    cacheUsed -= cache[victim].data->bytes; cache.erase(victim);
+                }
+                lru.push_front(index); cache[index] = {data, lru.begin()}; cacheUsed += data->bytes;
+            }
+        }
+        out = std::move(data); return true;
     }
     void rebuildCompatibility() {
         // Match V5's active race branch: formation remains in the archive but
@@ -1296,9 +1719,24 @@ namespace {
 
 std::string withDriver(std::string_view json, uint8_t driver);
 
-bool parseChunkRows(std::string_view plain, const V6ChunkInfo& chunk, float logicalOffset,
+bool parseChunkRows(const ChunkData& data, const V6ChunkInfo& chunk, float logicalOffset,
                     std::vector<V6TimedRow>& out, float from, float to,
                     const IndexedCancelCheck& cancelled = {}) {
+    if (data.columnar) {
+        // The time column is read directly; only rows inside the window are
+        // rendered, so a narrow request over a large chunk formats almost nothing.
+        const auto& table = data.table;
+        for (uint32_t row = 0; row < table.time.size(); ++row) {
+            if (cancelled && (row & 255u) == 0 && cancelled()) return false;
+            const float time = table.time[row] + logicalOffset;
+            if (time < from || time > to) continue;
+            std::string json; json.reserve(64);
+            renderRow(json, table, row, chunk.driverIndex);
+            out.push_back({time, chunk.typeId, chunk.sequence, std::move(json), row});
+        }
+        return true;
+    }
+    const std::string_view plain = data.jsonl;
     size_t start = 0; uint32_t source = 0;
     while (start < plain.size()) {
         if (cancelled && cancelled()) return false;
@@ -1469,6 +1907,7 @@ bool TnrdV6Archive::open(const std::string& path, HeaderRow& headerOut, std::str
             get32(p + 40), get32(p + 44), get64(p + 48)};
         const auto owner = lapOwners.find(chunk.lapId);
         if (chunk.driverIndex >= 24 || chunk.typeId == 0 || chunk.typeId >= static_cast<uint8_t>(V6DataType::Count) ||
+            (chunk.flags & ~CHUNK_FLAG_COLUMNAR) != 0 ||
             chunk.phase > V6Phase::Formation || !lapIds.contains(chunk.lapId) ||
             owner == lapOwners.end() || owner->second.first != chunk.driverIndex || owner->second.second != chunk.phase ||
             !std::isfinite(chunk.firstTime) || !std::isfinite(chunk.lastTime) || chunk.lastTime < chunk.firstTime ||
@@ -1480,6 +1919,7 @@ bool TnrdV6Archive::open(const std::string& path, HeaderRow& headerOut, std::str
         std::array<uint8_t, CHUNK_PREFIX_SIZE> prefix{};
         if (!readAt(impl_->file, chunk.offset - CHUNK_PREFIX_SIZE, prefix.data(), prefix.size()) ||
             get32(prefix.data()) != CHUNK_MAGIC || prefix[4] != chunk.driverIndex || prefix[5] != chunk.typeId ||
+            prefix[6] != chunk.flags ||
             prefix[7] != static_cast<uint8_t>(chunk.phase) || get32(prefix.data() + 8) != chunk.lapId ||
             get64(prefix.data() + 12) != chunk.compressedSize || get64(prefix.data() + 20) != chunk.uncompressedSize ||
             get32(prefix.data() + 28) != chunk.sampleCount) {
@@ -1576,6 +2016,7 @@ bool TnrdV6Archive::recoverByScan(HeaderRow& headerOut, std::string* errorOut) {
             record.uncompressedSize = get64(prefix.data() + 20);
             record.sampleCount = get32(prefix.data() + 28);
             if (record.driverIndex >= 24 || record.typeId == 0 ||
+                (record.flags & ~CHUNK_FLAG_COLUMNAR) != 0 ||
                 record.typeId >= static_cast<uint8_t>(V6DataType::Count) ||
                 record.phase > V6Phase::Formation || record.lapId == 0) break;
         } else {
@@ -1649,7 +2090,16 @@ bool TnrdV6Archive::recoverByScan(HeaderRow& headerOut, std::string* errorOut) {
         }
 
         // A chunk. Its directory entry is the prefix plus the sample time range
-        // and payload checksum, which only the payload carries.
+        // and payload checksum, which only the payload carries. The checksum
+        // covers the bytes as stored; a columnar chunk is then rendered to the
+        // JSONL the time and lap derivation below read. Recovery is a cold path.
+        const uint32_t checksum = static_cast<uint32_t>(::crc32(0,
+            reinterpret_cast<const Bytef*>(plain.data()), static_cast<uInt>(plain.size())));
+        if (record.flags & CHUNK_FLAG_COLUMNAR) {
+            ColumnarChunk table;
+            if (!decodeColumnar(plain, record.sampleCount, table)) break;
+            plain = renderJsonl(table);
+        }
         float first = std::numeric_limits<float>::max();
         float last = std::numeric_limits<float>::lowest();
         for (size_t start = 0; start < plain.size();) {
@@ -1665,9 +2115,7 @@ bool TnrdV6Archive::recoverByScan(HeaderRow& headerOut, std::string* errorOut) {
 
         V6ChunkInfo chunk{record.driverIndex, record.lapId, record.typeId, record.flags,
                           record.phase, first, last, record.payloadOffset,
-                          record.compressedSize, record.uncompressedSize, record.sampleCount,
-                          static_cast<uint32_t>(::crc32(0, reinterpret_cast<const Bytef*>(plain.data()),
-                                                        static_cast<uInt>(plain.size()))),
+                          record.compressedSize, record.uncompressedSize, record.sampleCount, checksum,
                           sequence++};
         impl_->v6Chunks.push_back(chunk);
 
@@ -1800,37 +2248,16 @@ bool TnrdV6Archive::chunkTimeBounds(size_t index, float& firstOut, float& lastOu
     if (index >= impl_->v6Chunks.size()) return false; const auto& chunk = impl_->v6Chunks[index];
     firstOut = chunk.firstTime; lastOut = chunk.lastTime; return true;
 }
-void TnrdV6Archive::prefetchChunk(size_t index) { std::shared_ptr<std::string> ignored; (void)loadChunkPlain(index, ignored, nullptr); }
+void TnrdV6Archive::prefetchChunk(size_t index) { std::shared_ptr<const ChunkData> ignored; (void)impl_->load(index, ignored, nullptr); }
 void TnrdV6Archive::cancelPrefetch() {}
 
+// Returns the chunk as JSONL text whatever its stored encoding. Playback reads
+// columns directly through Impl::load(); this is for export and inspection.
 bool TnrdV6Archive::loadChunkPlain(size_t index, std::shared_ptr<std::string>& out, std::string* errorOut) {
-    if (!isOpen() || index >= impl_->v6Chunks.size()) { fail(errorOut, "invalid V6 chunk index"); return false; }
-    {
-        std::lock_guard lock(impl_->cacheMutex); const auto found = impl_->cache.find(index);
-        if (found != impl_->cache.end()) {
-            impl_->lru.splice(impl_->lru.begin(), impl_->lru, found->second.lru);
-            out = found->second.plain; return true;
-        }
-    }
-    const auto& chunk = impl_->v6Chunks[index]; std::vector<uint8_t> compressed(chunk.compressedSize);
-    if (!readAt(impl_->file, chunk.offset, compressed.data(), compressed.size())) { fail(errorOut, "could not read V6 chunk"); return false; }
-    auto plain = std::make_shared<std::string>(chunk.uncompressedSize, '\0');
-    const size_t size = ZSTD_decompress(plain->data(), plain->size(), compressed.data(), compressed.size());
-    if (ZSTD_isError(size) || size != chunk.uncompressedSize ||
-        static_cast<uint32_t>(::crc32(0, reinterpret_cast<const Bytef*>(plain->data()), static_cast<uInt>(plain->size()))) != chunk.checksum) {
-        fail(errorOut, "invalid V6 chunk payload"); return false;
-    }
-    {
-        std::lock_guard lock(impl_->cacheMutex); ++impl_->decompressions;
-        if (plain->size() <= impl_->cacheLimit) {
-            while (!impl_->lru.empty() && impl_->cacheUsed + plain->size() > impl_->cacheLimit) {
-                const size_t victim = impl_->lru.back(); impl_->lru.pop_back();
-                impl_->cacheUsed -= impl_->cache[victim].plain->size(); impl_->cache.erase(victim);
-            }
-            impl_->lru.push_front(index); impl_->cache[index] = {plain, impl_->lru.begin()}; impl_->cacheUsed += plain->size();
-        }
-    }
-    out = std::move(plain); return true;
+    std::shared_ptr<const ChunkData> data;
+    if (!impl_->load(index, data, errorOut)) return false;
+    out = std::make_shared<std::string>(data->columnar ? renderJsonl(data->table) : data->jsonl);
+    return true;
 }
 
 bool TnrdV6Archive::rowsForChunks(const std::vector<size_t>& indices, std::vector<std::vector<V6TimedRow>>& out,
@@ -1838,7 +2265,7 @@ bool TnrdV6Archive::rowsForChunks(const std::vector<size_t>& indices, std::vecto
     out.clear(); out.reserve(indices.size());
     for (size_t index : indices) {
         if (index >= impl_->v6Chunks.size()) { fail(errorOut, "invalid V6 chunk index"); return false; }
-        std::shared_ptr<std::string> plain; if (!loadChunkPlain(index, plain, errorOut)) return false;
+        std::shared_ptr<const ChunkData> plain; if (!impl_->load(index, plain, errorOut)) return false;
         out.emplace_back(); const auto& chunk = impl_->v6Chunks[index];
         if (!parseChunkRows(*plain, chunk, 0.0f,
                             out.back(), -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity())) return false;
@@ -1853,7 +2280,7 @@ bool TnrdV6Archive::rowsForLapRange(uint32_t lap, float from, float to, V6RowTyp
                                     const IndexedCancelCheck& cancelled) {
     out.clear(); std::vector<size_t> indices; chunkIndicesForLap(lap, mask, indices);
     for (size_t index : indices) {
-        std::shared_ptr<std::string> plain; if (!loadChunkPlain(index, plain, errorOut)) return false;
+        std::shared_ptr<const ChunkData> plain; if (!impl_->load(index, plain, errorOut)) return false;
         const auto& chunk = impl_->v6Chunks[index];
         if (!parseChunkRows(*plain, chunk, 0.0f,
                             out, from, to, cancelled)) return false;
@@ -1877,7 +2304,7 @@ bool TnrdV6Archive::rowsForRange(float from, float to, V6RowTypeMask mask, std::
         // decompress RPM, controls, temperatures, and engine state.
         constexpr float offset = 0.0f;
         if (chunk.lastTime + offset < from || chunk.firstTime + offset > to) continue;
-        std::shared_ptr<std::string> plain; if (!loadChunkPlain(index, plain, errorOut)) return false;
+        std::shared_ptr<const ChunkData> plain; if (!impl_->load(index, plain, errorOut)) return false;
         if (!parseChunkRows(*plain, chunk, offset, out, from, to, cancelled)) return false;
     }
     for (size_t i = 0; i < impl_->shared.size(); ++i) {
@@ -1987,7 +2414,7 @@ bool TnrdV6Archive::readDriverLapTypes(uint8_t driver, uint32_t lapId, const std
     for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
         const auto& chunk = impl_->v6Chunks[i];
         if (chunk.driverIndex != driver || chunk.lapId != lapId || (!wanted.empty() && !wanted.contains(chunk.typeId))) continue;
-        std::shared_ptr<std::string> plain; if (!loadChunkPlain(i, plain, errorOut)) return false;
+        std::shared_ptr<const ChunkData> plain; if (!impl_->load(i, plain, errorOut)) return false;
         if (!parseChunkRows(*plain, chunk, 0.0f, out,
                             -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity())) return false;
     }
@@ -2005,7 +2432,7 @@ bool TnrdV6Archive::readDriverRangeTypes(uint8_t driver, float from, float to, c
             (!wanted.empty() && !wanted.contains(chunk.typeId))) continue;
         constexpr float offset = 0.0f;
         if (chunk.lastTime + offset < from || chunk.firstTime + offset > to) continue;
-        std::shared_ptr<std::string> plain; if (!loadChunkPlain(i, plain, errorOut)) return false;
+        std::shared_ptr<const ChunkData> plain; if (!impl_->load(i, plain, errorOut)) return false;
         if (!parseChunkRows(*plain, chunk, offset, out, from, to, cancelled)) return false;
     }
     std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
@@ -2044,8 +2471,8 @@ bool TnrdV6Archive::readMultiDriverLatest(float at, const std::vector<uint8_t>& 
         for (auto it = end; it != ordered.begin() && visited < STATE_BACKFILL_CHUNK_LIMIT; ++visited) {
             --it;
             std::vector<V6TimedRow> rows;
-            std::shared_ptr<std::string> plain;
-            if (!loadChunkPlain(*it, plain, errorOut)) return false;
+            std::shared_ptr<const ChunkData> plain;
+            if (!impl_->load(*it, plain, errorOut)) return false;
             const auto& chunk = impl_->v6Chunks[*it];
             constexpr float offset = 0.0f;
             if (!parseChunkRows(*plain, chunk, offset, rows,
@@ -2108,6 +2535,205 @@ bool TnrdV6Archive::readMultiDriverLatest(float at, const std::vector<uint8_t>& 
     std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
         return std::tie(a.sessionTime, a.rowType, a.sequence) < std::tie(b.sessionTime, b.rowType, b.sequence);
     }); return true;
+}
+
+// ---- Columnar history payload ------------------------------------------------
+// Little endian, read with a DataView by the Electron renderer
+// (src/renderer/src/lib/columnStore.ts, decodeV6History):
+//
+//   u32 magic 'V6H1'   u32 v4Mask (legacy row families the blocks may feed)
+//   u32 blockCount
+//   per block (one V6 type):
+//     u8 v6Type, u8 reserved, u16 fieldCount, u32 rowCount
+//     f32[rowCount] session_time, ascending
+//     per field: u8 nameLength, name, u8 kind (0 f32, 1 f64, 2 i32, 3 bool u8),
+//                u8 dense, bitmap ((rowCount + 7) / 8 bytes, bit r = row r
+//                has the field) when !dense, then one value per present row
+//
+// Json columns (tyre sets) are omitted: no history consumer reads them.
+namespace {
+constexpr uint32_t V6_HISTORY_MAGIC = 0x31483656u; // V6H1
+
+struct HistoryRow { const ColumnarChunk* table; uint32_t row; float time; };
+
+double columnValue(const ColumnarChunk::Column& column, size_t row) {
+    return column.kind == ColumnKind::Float32 || column.kind == ColumnKind::Float64
+        ? column.reals[row] : static_cast<double>(column.ints[row]);
+}
+
+void putDouble(std::vector<uint8_t>& out, double value) {
+    uint64_t bits{}; std::memcpy(&bits, &value, sizeof(bits)); put64(out, bits);
+}
+
+void writeHistoryBlock(std::vector<uint8_t>& out, uint8_t type, const std::vector<HistoryRow>& rows) {
+    std::vector<const ColumnarChunk*> tables;
+    std::unordered_map<const ColumnarChunk*, size_t> tableId;
+    std::vector<uint32_t> rowTable(rows.size());
+    for (size_t r = 0; r < rows.size(); ++r) {
+        auto [it, inserted] = tableId.try_emplace(rows[r].table, tables.size());
+        if (inserted) tables.push_back(rows[r].table);
+        rowTable[r] = static_cast<uint32_t>(it->second);
+    }
+    std::vector<std::string_view> names;
+    std::unordered_map<std::string_view, size_t> fieldId;
+    for (const auto* table : tables)
+        for (const auto& column : table->columns)
+            if (column.kind != ColumnKind::Json && fieldId.try_emplace(column.name, names.size()).second)
+                names.push_back(column.name);
+    if (names.size() > UINT16_MAX) names.resize(UINT16_MAX);
+    // columnOf[table][field] -> column index in that table, or -1.
+    std::vector<std::vector<int>> columnOf(tables.size(), std::vector<int>(names.size(), -1));
+    for (size_t t = 0; t < tables.size(); ++t)
+        for (size_t c = 0; c < tables[t]->columns.size(); ++c) {
+            const auto found = fieldId.find(tables[t]->columns[c].name);
+            if (found != fieldId.end() && found->second < names.size() &&
+                tables[t]->columns[c].kind != ColumnKind::Json)
+                columnOf[t][found->second] = static_cast<int>(c);
+        }
+
+    out.push_back(type); out.push_back(0);
+    put16(out, static_cast<uint16_t>(names.size())); put32(out, static_cast<uint32_t>(rows.size()));
+    for (const auto& row : rows) putFloat(out, row.time);
+    std::vector<uint8_t> bitmap;
+    std::vector<double> values; values.reserve(rows.size());
+    for (size_t f = 0; f < names.size(); ++f) {
+        bool isBool = true, isInt = true, narrow = true;
+        bitmap.assign((rows.size() + 7) / 8, 0);
+        values.clear();
+        for (size_t r = 0; r < rows.size(); ++r) {
+            const int c = columnOf[rowTable[r]][f];
+            if (c < 0) continue;
+            const auto& column = rows[r].table->columns[static_cast<size_t>(c)];
+            if (!column.has(rows[r].row)) continue;
+            const double value = columnValue(column, rows[r].row);
+            bitmap[r / 8] |= static_cast<uint8_t>(1u << (r % 8));
+            values.push_back(value);
+            if (column.kind != ColumnKind::Bool) isBool = false;
+            if (column.kind != ColumnKind::Int || value < INT32_MIN || value > INT32_MAX) isInt = false;
+            if (std::isfinite(value) && (std::fabs(value) > std::numeric_limits<float>::max() ||
+                static_cast<double>(static_cast<float>(value)) != value)) narrow = false;
+        }
+        const uint8_t kind = isBool && !values.empty() ? 3 : isInt && !values.empty() ? 2 : narrow ? 0 : 1;
+        const bool dense = values.size() == rows.size();
+        out.push_back(static_cast<uint8_t>(names[f].size()));
+        out.insert(out.end(), names[f].begin(), names[f].end());
+        out.push_back(kind); out.push_back(dense ? 1 : 0);
+        if (!dense) out.insert(out.end(), bitmap.begin(), bitmap.end());
+        for (const double value : values) {
+            switch (kind) {
+                case 3: out.push_back(value != 0.0 ? 1 : 0); break;
+                case 2: put32(out, static_cast<uint32_t>(static_cast<int32_t>(value))); break;
+                case 0: putFloat(out, static_cast<float>(value)); break;
+                default: putDouble(out, value); break;
+            }
+        }
+    }
+}
+
+bool rowUnavailable(const ColumnarChunk& table, size_t row) {
+    for (const auto& column : table.columns)
+        if (column.name == "available" && column.has(row) && column.ints[row] == 0) return true;
+    return false;
+}
+// A state sample's field group, named by its first present field.
+std::string_view rowSignature(const ColumnarChunk& table, size_t row) {
+    for (const auto& column : table.columns) if (column.has(row)) return column.name;
+    return {};
+}
+} // namespace
+
+bool TnrdV6Archive::columnarHistory(uint8_t driver, const std::vector<uint8_t>& types, uint32_t v4Mask,
+                                    float from, float to, bool seed, std::vector<uint8_t>& out,
+                                    std::string* errorOut, const IndexedCancelCheck& cancelled) {
+    out.clear();
+    if (!isOpen()) { fail(errorOut, "V6 archive is not open"); return false; }
+    put32(out, V6_HISTORY_MAGIC); put32(out, v4Mask); put32(out, 0);
+    uint32_t blocks = 0;
+    std::set<uint8_t> wanted(types.begin(), types.end());
+    // Decoded chunks referenced by the rows below; legacy JSONL chunks are
+    // converted once per call into owned tables.
+    std::vector<std::shared_ptr<const ChunkData>> held;
+    std::vector<std::unique_ptr<ColumnarChunk>> converted;
+    std::unordered_map<size_t, const ColumnarChunk*> tableOfChunk;
+    const auto tableFor = [&](size_t index, const ColumnarChunk*& table) {
+        if (const auto found = tableOfChunk.find(index); found != tableOfChunk.end()) { table = found->second; return true; }
+        std::shared_ptr<const ChunkData> data;
+        if (!impl_->load(index, data, errorOut)) return false;
+        if (data->columnar) {
+            table = &data->table;
+        } else {
+            auto owned = std::make_unique<ColumnarChunk>();
+            if (!columnarFromJsonl(data->jsonl, *owned)) { fail(errorOut, "invalid V6 JSONL chunk"); return false; }
+            table = owned.get(); converted.push_back(std::move(owned));
+        }
+        held.push_back(std::move(data)); tableOfChunk[index] = table;
+        return true;
+    };
+
+    for (uint8_t type = 1; type < static_cast<uint8_t>(V6DataType::Count); ++type) {
+        if (type == static_cast<uint8_t>(V6DataType::Position)) continue;  // all-car map data, not history
+        if (!wanted.empty() && !wanted.contains(type)) continue;
+        if (!requestedByOldMask(static_cast<V6DataType>(type), v4Mask)) continue;
+        const auto bucket = impl_->raceChunksByDriverType.find(Impl::driverTypeKey(driver, type));
+        if (bucket == impl_->raceChunksByDriverType.end()) continue;
+        const auto& ordered = bucket->second;
+        std::vector<HistoryRow> rows;
+
+        // Boundary seed, mirroring readMultiDriverLatest(): the newest sample at
+        // or before `from`, or for an edge-encoded state type the newest sample
+        // of each field group, walking back until every group is found.
+        if (seed && type <= static_cast<uint8_t>(V6DataType::RideHeight)) {
+            const auto end = std::upper_bound(ordered.begin(), ordered.end(), from,
+                [this](float bound, uint32_t index) {
+                    return bound < impl_->logical(impl_->v6Chunks[index].phase, impl_->v6Chunks[index].firstTime);
+                });
+            const bool state = stateType(static_cast<V6DataType>(type));
+            const auto& groups = stateGroups(static_cast<V6DataType>(type));
+            std::map<std::string_view, HistoryRow> latest;
+            size_t visited = 0;
+            for (auto it = end; it != ordered.begin() && visited < STATE_BACKFILL_CHUNK_LIMIT; ++visited) {
+                --it;
+                if (cancelled && cancelled()) return false;
+                const ColumnarChunk* table = nullptr;
+                if (!tableFor(*it, table)) return false;
+                size_t upto = 0;
+                while (upto < table->time.size() && table->time[upto] <= from) ++upto;
+                if (upto == 0) { if (!state) break; continue; }
+                if (!state) { latest.emplace(std::string_view{}, HistoryRow{table, static_cast<uint32_t>(upto - 1), from}); break; }
+                std::map<std::string_view, HistoryRow> chunkLatest;
+                for (size_t r = 0; r < upto; ++r) {
+                    const HistoryRow row{table, static_cast<uint32_t>(r), from};
+                    if (rowUnavailable(*table, r)) { chunkLatest.clear(); chunkLatest.emplace("available", row); continue; }
+                    chunkLatest.erase("available");
+                    const auto signature = rowSignature(*table, r);
+                    if (!signature.empty()) chunkLatest.insert_or_assign(signature, row);
+                }
+                if (chunkLatest.contains("available")) { if (latest.empty()) latest = std::move(chunkLatest); break; }
+                for (const auto& [key, row] : chunkLatest) latest.try_emplace(key, row);
+                if (groups.empty()) break;
+                if (std::all_of(groups.begin(), groups.end(), [&](std::string_view group) { return latest.contains(group); })) break;
+            }
+            for (const auto& [_, row] : latest) rows.push_back(row);
+        }
+
+        for (const uint32_t index : ordered) {
+            const auto& chunk = impl_->v6Chunks[index];
+            if (chunk.lastTime < from || chunk.firstTime > to) continue;
+            if (cancelled && cancelled()) return false;
+            const ColumnarChunk* table = nullptr;
+            if (!tableFor(index, table)) return false;
+            for (size_t r = 0; r < table->time.size(); ++r) {
+                const float time = table->time[r];
+                if (time >= from && time <= to) rows.push_back({table, static_cast<uint32_t>(r), time});
+            }
+        }
+        if (rows.empty()) continue;
+        std::stable_sort(rows.begin(), rows.end(), [](const HistoryRow& a, const HistoryRow& b) { return a.time < b.time; });
+        writeHistoryBlock(out, type, rows);
+        ++blocks;
+    }
+    for (int i = 0; i < 4; ++i) out[8 + i] = static_cast<uint8_t>(blocks >> (i * 8));
+    return true;
 }
 
 namespace TNRD_V6 {

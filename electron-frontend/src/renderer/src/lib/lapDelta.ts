@@ -1,4 +1,5 @@
 import type { AnalyzeLapData, LapProgressPoint } from '../types'
+import type { ColumnView } from './columnStore'
 
 export interface LapProgressMap {
   points: LapProgressPoint[]
@@ -14,11 +15,12 @@ export interface SectorSplit {
 }
 
 export function buildLapProgressMapFromPoints(
-  lapProgress: readonly LapProgressPoint[],
+  lapProgress: ColumnView<LapProgressPoint>,
   startSessionTime: number,
   endSessionTime = Infinity,
 ): LapProgressMap | null {
   if (lapProgress.length === 0) return null
+  const count = lapProgress.length
   // Race Lap 1 can begin away from the timing-line origin: the starting grid
   // is before the line, and every packet received before the session clock
   // starts may share the same session_time/current_lap_ms of zero. Preserve the
@@ -27,11 +29,13 @@ export function buildLapProgressMapFromPoints(
   // when the first positive-time sample is already hundreds of metres around
   // the circuit.
   let originDistance = Infinity
-  for (const point of lapProgress) {
-    if (point.session_time > endSessionTime) break
-    if (point.session_time < startSessionTime || point.current_lap_ms !== 0 ||
-        !Number.isFinite(point.lap_distance_m) || point.lap_distance_m < 0) continue
-    originDistance = Math.min(originDistance, point.lap_distance_m)
+  for (let i = 0; i < count; i++) {
+    const sessionTime = lapProgress.time(i)
+    if (sessionTime > endSessionTime) break
+    const distance = lapProgress.num('lap_distance_m', i)
+    if (sessionTime < startSessionTime || lapProgress.num('current_lap_ms', i) !== 0 ||
+        !Number.isFinite(distance) || distance < 0) continue
+    originDistance = Math.min(originDistance, distance)
   }
   if (!Number.isFinite(originDistance)) originDistance = 0
   const points: LapProgressPoint[] = [{
@@ -42,7 +46,12 @@ export function buildLapProgressMapFromPoints(
   }]
   let lastTime = startSessionTime
   let lastDistance = originDistance
-  for (const point of lapProgress) {
+  for (let i = 0; i < count; i++) {
+    const point: LapProgressPoint = {
+      session_time: lapProgress.time(i),
+      current_lap_ms: lapProgress.num('current_lap_ms', i),
+      lap_distance_m: lapProgress.num('lap_distance_m', i),
+    }
     if (point.session_time > endSessionTime) break
     if (!Number.isFinite(point.session_time) || !Number.isFinite(point.lap_distance_m) ||
         !Number.isFinite(point.current_lap_ms) || point.session_time < lastTime ||
@@ -108,14 +117,20 @@ function interpolateLapDistanceAtElapsed(progress: LapProgressMap, elapsedMs: nu
 }
 
 export function findSectorSplitsFromProgress(
-  lapProgress: readonly LapProgressPoint[],
+  lapProgress: ColumnView<LapProgressPoint>,
   progress: LapProgressMap | null,
 ): SectorSplit[] {
   if (!progress) return []
   const splits: SectorSplit[] = []
   let enteredFirstSector = false
-  for (const point of lapProgress) {
-    const sector = point.sector
+  for (let i = 0; i < lapProgress.length; i++) {
+    const point = {
+      lap_distance_m: lapProgress.num('lap_distance_m', i),
+      current_lap_ms: lapProgress.num('current_lap_ms', i),
+      s1_ms: lapProgress.num('s1_ms', i),
+      s2_ms: lapProgress.num('s2_ms', i),
+    }
+    const sector = lapProgress.num('sector', i)
     if (!Number.isFinite(sector)) continue
     // Race Lap 1 starts behind the timing line. Until the player crosses it,
     // the game reports the grid samples as sector 2 with a negative distance.

@@ -1,4 +1,8 @@
 import { ALIGNED_MAX_POINTS, AlignedDataBuffer, type AlignedSeriesData } from './engine/core/alignedData'
+import type { ColumnView } from '../columnStore'
+
+/** Reads one value of sample `i` from a column view. */
+export type ColumnAccessor<T extends { session_time: number }> = (rows: ColumnView<T>, i: number) => number
 
 export interface DataPoint {
   x: number
@@ -14,15 +18,15 @@ export interface DataSyncResult {
 
 // Reconciles the telemetry store's republished window with one aligned ring.
 // X is evaluated and stored once per row; all Y channels share that timeline.
-export class TimeChartDataBridge<T> {
+export class TimeChartDataBridge<T extends { session_time: number }> {
   readonly data: AlignedDataBuffer
   readonly series: readonly AlignedSeriesData[]
   private lastX = NaN
   private readonly yScratch: Float64Array
 
   constructor(
-    private readonly getX: (row: T) => number,
-    private readonly getYs: readonly ((row: T) => number)[],
+    private readonly getX: ColumnAccessor<T>,
+    private readonly getYs: readonly ColumnAccessor<T>[],
   ) {
     this.data = new AlignedDataBuffer(getYs.length)
     this.series = this.data.series
@@ -43,22 +47,22 @@ export class TimeChartDataBridge<T> {
     return changed
   }
 
-  sync(rows: readonly T[], end = rows.length, start = 0): DataSyncResult {
+  sync(rows: ColumnView<T>, end = rows.length, start = 0): DataSyncResult {
     const n = Math.max(0, Math.min(end, rows.length))
     const sourceStart = Math.max(0, Math.min(start, n))
     if (sourceStart === n) {
       return { changed: this.clear(), syncedFrom: null }
     }
 
-    const firstX = this.getX(rows[sourceStart])
-    const lastRowX = this.getX(rows[n - 1])
+    const firstX = this.getX(rows, sourceStart)
+    const lastRowX = this.getX(rows, n - 1)
     // A larger visible window republishes older rows at the front. The
     // incremental path can append and trim, but it cannot prepend, so rebuild
     // once when the earliest representable source point moves backwards.
     // Compare against the capped source start to avoid repeatedly rebuilding
     // publications larger than the renderer's hard point limit.
     const retainedStart = Math.max(sourceStart, n - ALIGNED_MAX_POINTS)
-    const retainedFirstX = this.getX(rows[retainedStart])
+    const retainedFirstX = this.getX(rows, retainedStart)
     const needsBackfill = this.data.length > 0 && retainedFirstX < this.data.firstX
     const contiguous = this.data.length > 0 && !Number.isNaN(this.lastX) &&
       lastRowX >= this.lastX && firstX <= this.lastX && !needsBackfill
@@ -72,11 +76,11 @@ export class TimeChartDataBridge<T> {
     let hi = n
     while (lo < hi) {
       const mid = (lo + hi) >> 1
-      if (this.getX(rows[mid]) > this.lastX) hi = mid
+      if (this.getX(rows, mid) > this.lastX) hi = mid
       else lo = mid + 1
     }
     const appendStart = lo
-    for (let i = appendStart; i < n; i++) this.appendRow(rows[i])
+    for (let i = appendStart; i < n; i++) this.appendRow(rows, i)
     if (appendStart < n) this.lastX = lastRowX
 
     // Ring eviction advances the logical head and releases vacated pages. It
@@ -89,20 +93,20 @@ export class TimeChartDataBridge<T> {
     }
   }
 
-  private appendRow(row: T) {
+  private appendRow(rows: ColumnView<T>, i: number) {
     for (let channel = 0; channel < this.getYs.length; channel++) {
-      const value = this.getYs[channel](row)
+      const value = this.getYs[channel](rows, i)
       this.yScratch[channel] = Number.isFinite(value) ? value : NaN
     }
-    this.data.append(this.getX(row), this.yScratch)
+    this.data.append(this.getX(rows, i), this.yScratch)
   }
 
-  private rebuild(rows: readonly T[], sourceStart: number, end: number): number {
+  private rebuild(rows: ColumnView<T>, sourceStart: number, end: number): number {
     this.data.clear()
     // If an input publication exceeds the hard renderer cap, retain its newest
     // samples. Normal 10-minute/60 Hz windows remain within one 65,536 page.
     const start = Math.max(sourceStart, end - ALIGNED_MAX_POINTS)
-    for (let i = start; i < end; i++) this.appendRow(rows[i])
+    for (let i = start; i < end; i++) this.appendRow(rows, i)
     return start
   }
 }

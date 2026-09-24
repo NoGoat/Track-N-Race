@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
+import { alignedFromView, sessionTimeAt, type ColumnView } from '../lib/columnStore'
 import type { AlignedTable, MotionExRow } from '../types'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
@@ -32,8 +33,8 @@ const INITIAL_LOWER_MM = 0
 const LOWER_PADDING_MM = 2
 
 const SERIES: SeriesDef<MotionExRow>[] = [
-  { label: 'Front', color: COLOR_FRONT, getY: d => d.front_aero_height_mm },
-  { label: 'Rear',  color: COLOR_REAR,  getY: d => d.rear_aero_height_mm },
+  { label: 'Front', color: COLOR_FRONT, getY: (rows, i) => rows.num('front_aero_height_mm', i) },
+  { label: 'Rear',  color: COLOR_REAR,  getY: (rows, i) => rows.num('rear_aero_height_mm', i) },
 ]
 
 const MODE_CONFIG: Record<RideHeightChartMode, { title: string; section: GraphSection; order: number }> = {
@@ -84,7 +85,7 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30, mo
     visible: !hiddenSeries[series.label],
   })), [hiddenSeries, themedSeries])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotionEx : s.motionEx)
-  const getTableValues = useCallback((row: MotionExRow) => selectedSeries.map(series => series.getY(row)), [selectedSeries])
+  const getTableValues = useCallback((rows: ColumnView<MotionExRow>, i: number) => selectedSeries.map(series => series.getY(rows, i)), [selectedSeries])
   const emptyTableData = useMemo((): AlignedTable => [
     new Float64Array(0),
     ...selectedSeries.map(() => new Float64Array(0)),
@@ -92,13 +93,7 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30, mo
 
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table' || coordinates.allLapsMode) return emptyTableData
-    const ts = new Float64Array(data.length)
-    const values = selectedSeries.map(() => new Float64Array(data.length))
-    data.forEach((d, i) => {
-      ts[i] = d.session_time
-      selectedSeries.forEach((series, seriesIndex) => { values[seriesIndex][i] = series.getY(d) })
-    })
-    return [ts, ...values]
+    return alignedFromView(data, selectedSeries.map(series => series.getY))
   }, [coordinates.allLapsMode, data, emptyTableData, selectedSeries, view])
 
   const tooltipTimeColor = isDark ? '#7c8098' : '#596168'
@@ -117,9 +112,9 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30, mo
   const cursorSync = useMemo(() => ({
     id: modeConfig.section,
     order: modeConfig.order,
-    formatRow: (row: MotionExRow) => [
+    formatRow: (rows: ColumnView<MotionExRow>, i: number) => [
       `<div style="color:${tooltipTimeColor};margin-top:3px">${modeConfig.title}</div>`,
-      formatValues(selectedSeries.map(series => series.getY(row))),
+      formatValues(selectedSeries.map(series => series.getY(rows, i))),
     ].join(''),
   }), [formatValues, modeConfig, selectedSeries, tooltipTimeColor])
 
@@ -154,7 +149,7 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30, mo
             rows={data}
             allLapsDataMask={HISTORY_ROW.motionEx}
             comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.motionEx : undefined}
-            getX={d => d.session_time}
+            getX={sessionTimeAt}
             series={chartSeries}
             windowSeconds={scopedWindowSeconds}
             yRange={{

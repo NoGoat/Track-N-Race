@@ -3,6 +3,7 @@ import type { AlignedTable, TelemetryRow } from '../types'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
+import { alignedFromView, sessionTimeAt, type ColumnView } from '../lib/columnStore'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
@@ -28,7 +29,7 @@ const SINGLE_Y_TICKS = [0, 0.5, 1]
 const ACCELERATOR_SERIES: SeriesDef<TelemetryRow> = {
   label: 'Accelerator',
   color: COLOR_ACCELERATOR,
-  getY: d => d.throttle,
+  getY: (rows, i) => rows.num('throttle', i),
   lineType: 1,
   stepLocation: 0,
   fill: 'rgba(55,135,45,0.2)',
@@ -37,7 +38,7 @@ const ACCELERATOR_SERIES: SeriesDef<TelemetryRow> = {
 const COMBINED_BRAKE_SERIES: SeriesDef<TelemetryRow> = {
   label: 'Brake',
   color: COLOR_BRAKE,
-  getY: d => -d.brake,
+  getY: (rows, i) => -rows.num('brake', i),
   lineType: 1,
   stepLocation: 0,
   fill: 'rgba(196,22,42,0.2)',
@@ -45,12 +46,12 @@ const COMBINED_BRAKE_SERIES: SeriesDef<TelemetryRow> = {
 }
 const BRAKE_SERIES: SeriesDef<TelemetryRow> = {
   ...COMBINED_BRAKE_SERIES,
-  getY: d => d.brake,
+  getY: (rows, i) => rows.num('brake', i),
 }
 const OVERLAY_ACCELERATOR_SERIES: SeriesDef<TelemetryRow> = {
   label: 'Accelerator',
   color: COLOR_ACCELERATOR,
-  getY: d => d.throttle,
+  getY: (rows, i) => rows.num('throttle', i),
   lineWidth: 2.25,
   lineType: 1,
   stepLocation: 0,
@@ -58,7 +59,7 @@ const OVERLAY_ACCELERATOR_SERIES: SeriesDef<TelemetryRow> = {
 const OVERLAY_BRAKE_SERIES: SeriesDef<TelemetryRow> = {
   label: 'Brake',
   color: COLOR_BRAKE,
-  getY: d => d.brake,
+  getY: (rows, i) => rows.num('brake', i),
   lineWidth: 2.25,
   lineType: 1,
   stepLocation: 0,
@@ -107,21 +108,14 @@ function InputsChartContent({
   }), [baseSeries, colorAccelerator, colorBrake, showAccelerator, showBrake])
   const tableColumns = useMemo(() => tableSeries.map(series => series.column), [tableSeries])
   const getTableValues = useCallback(
-    (row: TelemetryRow) => tableSeries.map(series => series.getValue(row)),
+    (rows: ColumnView<TelemetryRow>, i: number) => tableSeries.map(series => series.getValue(rows, i)),
     [tableSeries],
   )
 
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
-    const columns = [new Float64Array(data.length), ...tableSeries.map(() => new Float64Array(data.length))]
-    data.forEach((row, rowIndex) => {
-      columns[0][rowIndex] = row.session_time
-      tableSeries.forEach((series, seriesIndex) => {
-        columns[seriesIndex + 1][rowIndex] = series.getValue(row)
-      })
-    })
-    return columns
+    return alignedFromView(data, tableSeries.map(series => series.getValue))
   }, [coordinates.allLapsMode, data, tableSeries, view])
 
   const axisColor = isDark ? '#7c8098' : '#596168'
@@ -145,11 +139,11 @@ function InputsChartContent({
   const cursorSync = useMemo(() => ({
     id: SECTION_BY_MODE[mode],
     order: mode === 'brake' ? 30 : 20,
-    formatRow: (row: TelemetryRow) => baseSeries.flatMap(series => {
+    formatRow: (rows: ColumnView<TelemetryRow>, i: number) => baseSeries.flatMap(series => {
       const enabled = series.label === 'Accelerator' ? showAccelerator : showBrake
       if (!enabled || hiddenSeries[series.label]) return []
       const color = series.label === 'Accelerator' ? colorAccelerator : colorBrake
-      return [`<div><span style="color:${color}">${series.label}</span>: ${fmtPercent(series.getY(row))}</div>`]
+      return [`<div><span style="color:${color}">${series.label}</span>: ${fmtPercent(series.getY(rows, i))}</div>`]
     }).join(''),
   }), [baseSeries, colorAccelerator, colorBrake, hiddenSeries, mode, showAccelerator, showBrake])
   return <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
@@ -178,7 +172,7 @@ function InputsChartContent({
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
-          : <TimeChartView<TelemetryRow> key={`${mode}:${coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}`} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
+          : <TimeChartView<TelemetryRow> key={`${mode}:${coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}`} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={sessionTimeAt} series={chartSeries}
             windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: combined ? -1 : 0, max: 1 }} yAxisSize={INPUT_CHART_Y_AXIS_SIZE}
             yTickValues={() => combined ? COMBINED_Y_TICKS : SINGLE_Y_TICKS} yTickFormat={fmtPercent} xTickFormat={fmtTime}
             refLines={[{ y: 0, dashed: false }]} tooltipFormat={tooltipFormat} cursorSync={cursorSync} />}

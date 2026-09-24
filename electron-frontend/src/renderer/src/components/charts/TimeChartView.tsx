@@ -3,7 +3,8 @@ import { useSize } from '../../hooks/useSize'
 import { ChartTooltipPortal, useChartTooltip, TOOLTIP_STYLE } from '../../hooks/useChartTooltip'
 import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
-import { TimeChartDataBridge } from '../../lib/timechart/dataBridge'
+import { TimeChartDataBridge, type ColumnAccessor } from '../../lib/timechart/dataBridge'
+import type { ColumnView } from '../../lib/columnStore'
 import type { AlignedSeriesData } from '../../lib/timechart/engine/core/alignedData'
 import { seriesPointToPixels } from '../../lib/timechart/engine/core/nearestPoint'
 import { AXIS_LABEL_TOP_PADDING, createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
@@ -89,21 +90,15 @@ function nearestIndex(source: XIndexedData | null, targetX: number): number {
   return index
 }
 
-function lowerBoundSessionTime(rows: readonly { session_time: number }[], value: number): number {
-  let lo = 0, hi = rows.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (rows[mid].session_time < value) lo = mid + 1
-    else hi = mid
-  }
-  return lo
+function lowerBoundSessionTime(rows: ColumnView<any>, value: number): number {
+  return rows.lowerBound(value, true)
 }
 
-function nearestRowIndexBySessionTime(rows: readonly { session_time: number }[], value: number): number {
+function nearestRowIndexBySessionTime(rows: ColumnView<any>, value: number): number {
   if (rows.length === 0) return -1
   let index = lowerBoundSessionTime(rows, value)
   if (index === rows.length) index--
-  else if (index > 0 && Math.abs(rows[index - 1].session_time - value) <= Math.abs(rows[index].session_time - value)) index--
+  else if (index > 0 && Math.abs(rows.time(index - 1) - value) <= Math.abs(rows.time(index) - value)) index--
   return index
 }
 
@@ -126,18 +121,18 @@ function valueIsCovered(value: number, first: number, last: number): boolean {
   return value >= min && value <= max
 }
 
-function nearestRowIndexByX<T>(rows: readonly T[], getX: (row: T) => number, value: number): number {
+function nearestRowIndexByX<T extends { session_time: number }>(rows: ColumnView<T>, getX: ColumnAccessor<T>, value: number): number {
   if (rows.length === 0) return -1
   // Distance projection can temporarily leave a non-finite tail while lap
   // progress catches up with newly received telemetry. Match the data bridge's
   // finite-prefix policy so cursor sampling never alternates between a valid
   // endpoint and an unmapped row.
   let finiteEnd = rows.length
-  if (!Number.isFinite(getX(rows[finiteEnd - 1]))) {
+  if (!Number.isFinite(getX(rows, finiteEnd - 1))) {
     let lo = 0, hi = finiteEnd
     while (lo < hi) {
       const mid = (lo + hi) >> 1
-      if (Number.isFinite(getX(rows[mid]))) lo = mid + 1
+      if (Number.isFinite(getX(rows, mid))) lo = mid + 1
       else hi = mid
     }
     finiteEnd = lo
@@ -146,12 +141,12 @@ function nearestRowIndexByX<T>(rows: readonly T[], getX: (row: T) => number, val
   let lo = 0, hi = finiteEnd
   while (lo < hi) {
     const mid = (lo + hi) >> 1
-    if (getX(rows[mid]) < value) lo = mid + 1
+    if (getX(rows, mid) < value) lo = mid + 1
     else hi = mid
   }
   let index = lo
   if (index === finiteEnd) index--
-  else if (index > 0 && Math.abs(getX(rows[index - 1]) - value) <= Math.abs(getX(rows[index]) - value)) index--
+  else if (index > 0 && Math.abs(getX(rows, index - 1) - value) <= Math.abs(getX(rows, index) - value)) index--
   return index
 }
 
@@ -159,10 +154,11 @@ function replaceMissingTooltipValues(html: string): string {
   return html.replace(/\bNaN(?:% [LR])?/g, '—')
 }
 
-export interface SeriesDef<T> {
+export interface SeriesDef<T extends { session_time: number }> {
   label: string
   color: string
-  getY: (row: T) => number
+  /** Value of sample `i`; read from columns, e.g. `(rows, i) => rows.num('gear', i)`. */
+  getY: ColumnAccessor<T>
   /** Toggle a series in place without rebuilding the WebGL chart. */
   visible?: boolean
   lineWidth?: number
@@ -184,10 +180,10 @@ export type YRangeSpec =
 
 export interface TimeChartViewProps<T extends { session_time: number }> {
   isDark: boolean
-  rows: readonly T[]
+  rows: ColumnView<T>
   /** Optional completed-lap trace drawn underneath the live rows. */
-  comparisonRows?: readonly T[]
-  getX: (row: T) => number
+  comparisonRows?: ColumnView<T>
+  getX: ColumnAccessor<T>
   series: SeriesDef<T>[]
   windowSeconds: number
   yRange: YRangeSpec
@@ -216,7 +212,7 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
   cursorSync?: {
     id: string
     order: number
-    formatRow: (row: T) => string
+    formatRow: (rows: ColumnView<T>, i: number) => string
   }
 }
 
@@ -230,7 +226,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
 
   const look = axisLook ?? {}
   const coordinates = useChartCoordinates()
-  const effectiveGetX = coordinates.distanceMode ? coordinates.getX : getX
+  const effectiveGetX: ColumnAccessor<T> = coordinates.distanceMode
+    ? (source, i) => coordinates.getX(source.time(i))
+    : getX
   const effectiveWindow = coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds
   const effectiveXTickFormat = coordinates.distanceMode || coordinates.allLapsMode ? coordinates.formatX : xTickFormat
   const font = look.font ?? DEFAULT_FONT
@@ -333,8 +331,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const historyStartIndex = coordinates.stintLapsMode
     ? lowerBoundSessionTime(rows, coordinates.historyStartTime)
     : 0
-  const latestT = rows.length > historyStartIndex ? effectiveGetX(rows[rows.length - 1]) : null
-  const firstT = rows.length > historyStartIndex ? effectiveGetX(rows[historyStartIndex]) : null
+  const latestT = rows.length > historyStartIndex ? effectiveGetX(rows, rows.length - 1) : null
+  const firstT = rows.length > historyStartIndex ? effectiveGetX(rows, historyStartIndex) : null
   const { attach, detach, wake, acceptDataRange } = useTimeChartScroll(
     !coordinates.distanceMode, latestT, firstT, effectiveWindow, dataDirtyRef,
     // All Laps deliberately runs the complete model/plugin pipeline on every
@@ -369,8 +367,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         ? TimeChart.LineType.NativeLine
         : requested
     }
-    const bridge = new TimeChartDataBridge<T>(row => getXRef.current(row), defs.map((s) => s.getY))
-    const comparisonBridge = new TimeChartDataBridge<T>(row => coordinates.getComparisonX(row), defs.map((s) => s.getY))
+    const bridge = new TimeChartDataBridge<T>((source, i) => getXRef.current(source, i), defs.map((s) => s.getY))
+    const comparisonBridge = new TimeChartDataBridge<T>((source, i) => coordinates.getComparisonX(source.time(i)), defs.map((s) => s.getY))
     const plugins: Record<string, unknown> = {
       lineChart: corePlugins.lineChart,
       crosshair: corePlugins.crosshair,
@@ -451,13 +449,12 @@ export default function TimeChartView<T extends { session_time: number }>(props:
           get axisKind() { return axisKindRef.current },
           resolveAxisX: axisX => {
             const currentRows = rowsRef.current
-            const index = nearestRowIndexByX(currentRows, row => getXRef.current(row), axisX)
+            const index = nearestRowIndexByX(currentRows, getXRef.current, axisX)
             if (index < 0) return null
-            const row = currentRows[index]
-            const sampledAxisX = getXRef.current(row)
+            const sampledAxisX = getXRef.current(currentRows, index)
             if (!Number.isFinite(sampledAxisX)) return null
             return {
-              sessionTime: row.session_time,
+              sessionTime: currentRows.time(index),
               sampledAxisX,
             }
           },
@@ -476,15 +473,15 @@ export default function TimeChartView<T extends { session_time: number }>(props:
               ? sourceAxisX
               : syncAxisKind === 'time'
                 ? sessionTime
-                : getXRef.current(currentRows[index])
+                : getXRef.current(currentRows, index)
             const xRange = chart.options.xRange
             const visibleRangeCovered = !xRange || xRange === 'auto'
               || valueIsCovered(cursorAxisX, Number(xRange.min), Number(xRange.max))
             const axisDataCovered = axisXIsCovered(bridgeRef.current, cursorAxisX)
             const sessionDataCovered = valueIsCovered(
               sessionTime,
-              currentRows[0].session_time,
-              currentRows[currentRows.length - 1].session_time,
+              currentRows.time(0),
+              currentRows.time(currentRows.length - 1),
             )
             // A shared distance/time axis can extend beyond the newest live
             // sample. Keep the cursor at the hovered X and use the source's
@@ -498,7 +495,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
               && cursorAxisX > bridge.xAt(bridge.length - 1) + AXIS_COVERAGE_EPSILON
             const mixedAxisEndpointFallback = sourceAxisKind !== syncAxisKind
               && visibleRangeCovered
-              && sessionTime > currentRows[currentRows.length - 1].session_time + AXIS_COVERAGE_EPSILON
+              && sessionTime > currentRows.time(currentRows.length - 1) + AXIS_COVERAGE_EPSILON
             // Mixed axes synchronize through the authoritative row timestamp.
             // The WebGL bridge can trail those rows by one cooperative task;
             // using it as the content gate made peer tooltip sections flicker
@@ -600,13 +597,12 @@ export default function TimeChartView<T extends { session_time: number }>(props:
             const comparisonIndex = axisXIsCovered(comparisonBridge, cursorAxisX)
               ? nearestIndex(comparisonBridge, cursorAxisX)
               : -1
-            const comparisonRow = comparisonIndex >= 0
-              ? comparisonRowsRef.current?.[comparisonIndex]
-              : undefined
+            const comparisonSource = comparisonRowsRef.current
+            const comparisonRow = comparisonSource && comparisonIndex >= 0 && comparisonIndex < comparisonSource.length
             return {
-              current: cursorSyncConfigRef.current?.formatRow(currentRows[index]) ?? '',
+              current: cursorSyncConfigRef.current?.formatRow(currentRows, index) ?? '',
               comparison: comparisonRow
-                ? cursorSyncConfigRef.current?.formatRow(comparisonRow) ?? ''
+                ? cursorSyncConfigRef.current?.formatRow(comparisonSource, comparisonIndex) ?? ''
                 : undefined,
               comparisonLabel: comparisonRow ? comparisonLabelRef.current ?? undefined : undefined,
               comparisonKey: comparisonRow ? comparisonKeyRef.current || undefined : undefined,
@@ -754,7 +750,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     let lo = 0, hi = comparisonRows.length
     while (lo < hi) {
       const mid = (lo + hi) >> 1
-      if (Number.isFinite(coordinates.getComparisonX(comparisonRows[mid]))) lo = mid + 1
+      if (Number.isFinite(coordinates.getComparisonX(comparisonRows.time(mid)))) lo = mid + 1
       else hi = mid
     }
     syncEnd = lo
@@ -786,10 +782,10 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         revision: coordinates.lapRevision,
         mode: coordinates.mode,
         rows: rows.length,
-        firstSessionTime: rows[0]?.session_time ?? null,
-        lastSessionTime: rows[rows.length - 1]?.session_time ?? null,
-        firstX: rows.length ? effectiveGetX(rows[0]) : null,
-        lastX: rows.length ? effectiveGetX(rows[rows.length - 1]) : null,
+        firstSessionTime: rows.length ? rows.time(0) : null,
+        lastSessionTime: rows.length ? rows.time(rows.length - 1) : null,
+        firstX: rows.length ? effectiveGetX(rows, 0) : null,
+        lastX: rows.length ? effectiveGetX(rows, rows.length - 1) : null,
         bufferRowsBeforeClear: bridge.length,
       })
       bridge.clear()
@@ -802,7 +798,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       let lo = 0, hi = rows.length
       while (lo < hi) {
         const mid = (lo + hi) >> 1
-        if (Number.isFinite(effectiveGetX(rows[mid]))) lo = mid + 1
+        if (Number.isFinite(effectiveGetX(rows, mid))) lo = mid + 1
         else hi = mid
       }
       syncEnd = lo
@@ -825,7 +821,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       })
     }
     if (changed) {
-      if (syncEnd > syncStart) acceptDataRange(effectiveGetX(rows[syncEnd - 1]), effectiveGetX(rows[syncStart]))
+      if (syncEnd > syncStart) acceptDataRange(effectiveGetX(rows, syncEnd - 1), effectiveGetX(rows, syncStart))
       dataDirtyRef.current = true
       wake()
     }
@@ -852,20 +848,18 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         // Scan exactly the newly synchronized chunk (or the complete buffer
         // after a backfill rebuild) instead of rescanning the whole race.
         for (let rowIndex = syncedFrom; rowIndex < syncEnd; rowIndex++) {
-          const row = rows[rowIndex]
           for (let i = 0; i < seriesDefs.current.length; i++) {
             if (!visibilityRef.current[i]) continue
-            const v = seriesDefs.current[i].getY(row)
+            const v = seriesDefs.current[i].getY(rows, rowIndex)
             if (v < a.min) a.min = v
             if (v > a.max) a.max = v
           }
         }
       } else if (syncEnd > 0) {
-        const last = rows[syncEnd - 1]
         for (let i = 0; i < seriesDefs.current.length; i++) {
           if (!visibilityRef.current[i]) continue
           const s = seriesDefs.current[i]
-          const v = s.getY(last)
+          const v = s.getY(rows, syncEnd - 1)
           if (v < a.min) a.min = v
           if (v > a.max) a.max = v
         }
@@ -911,10 +905,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       let minVal = Infinity
       let maxVal = -Infinity
       for (let rowIndex = syncedFrom; rowIndex < syncEnd; rowIndex++) {
-        const row = rows[rowIndex]
         for (let seriesIndex = 0; seriesIndex < seriesDefs.current.length; seriesIndex++) {
           if (!visibilityRef.current[seriesIndex]) continue
-          const value = seriesDefs.current[seriesIndex].getY(row)
+          const value = seriesDefs.current[seriesIndex].getY(rows, rowIndex)
           if (value < minVal) minVal = value
           if (value > maxVal) maxVal = value
         }

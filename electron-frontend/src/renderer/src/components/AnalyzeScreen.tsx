@@ -21,7 +21,8 @@ import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { buildLapProgressMap, findSectorSplits, type LapProgressMap } from '../lib/lapDelta'
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../lib/playbackCursor'
-import { coalescePlaybackRows, useTelemetryStore } from '../stores/telemetryStore'
+import { useTelemetryStore } from '../stores/telemetryStore'
+import { emptyView, viewOfRows } from '../lib/columnStore'
 import type { AnalysisDriverLapCatalog, AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
 import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
@@ -588,12 +589,12 @@ function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
     lapNum: payload.lapNum,
     startSessionTime: payload.startSessionTime,
     endSessionTime: payload.endSessionTime,
-    telemetry: coalescePlaybackRows(payload.telemetry ?? []),
-    motion: coalescePlaybackRows(payload.motionHistory ?? []),
-    motionEx: coalescePlaybackRows(payload.motionExHistory ?? []),
-    statusHistory: coalescePlaybackRows(payload.statusHistory ?? []),
-    damageHistory: coalescePlaybackRows(payload.damageHistory ?? []),
-    lapProgress: payload.lapProgress ?? [],
+    telemetry: viewOfRows('telemetry', payload.telemetry ?? []),
+    motion: viewOfRows('motion', payload.motionHistory ?? []),
+    motionEx: viewOfRows('motion_ex', payload.motionExHistory ?? []),
+    statusHistory: viewOfRows('status', payload.statusHistory ?? []),
+    damageHistory: viewOfRows('damage', payload.damageHistory ?? []),
+    lapProgress: viewOfRows('lap', payload.lapProgress ?? [], false),
     playerPositions: payload.playerPositions ?? [],
     rowTypeMask: Number.isFinite(payload.rowTypeMask) ? payload.rowTypeMask >>> 0 : 0xFFFFFFFF,
   }
@@ -726,17 +727,17 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   const playbackActive = useTelemetryStore(s => s.speedRpmBlocks !== null)
   const cachedMask = playbackCurrentLap?.rowTypeMask ?? 0
   const telemetry = useTelemetryStore(s =>
-    fixedMode || (cachedMask & DATA_ROW.telemetry) !== 0 ? EMPTY_ROWS : s.analyzeLapTelemetry)
+    fixedMode || (cachedMask & DATA_ROW.telemetry) !== 0 ? EMPTY_ANALYZE_LAP.telemetry : s.analyzeLapTelemetry)
   const motion = useTelemetryStore(s =>
-    fixedMode || (cachedMask & DATA_ROW.motion) !== 0 ? EMPTY_ROWS : s.analyzeLapMotion)
+    fixedMode || (cachedMask & DATA_ROW.motion) !== 0 ? EMPTY_ANALYZE_LAP.motion : s.analyzeLapMotion)
   const motionEx = useTelemetryStore(s =>
-    fixedMode || (cachedMask & DATA_ROW.motionEx) !== 0 ? EMPTY_ROWS : s.analyzeLapMotionEx)
+    fixedMode || (cachedMask & DATA_ROW.motionEx) !== 0 ? EMPTY_ANALYZE_LAP.motionEx : s.analyzeLapMotionEx)
   const statusHistory = useTelemetryStore(s =>
-    fixedMode || (cachedMask & DATA_ROW.status) !== 0 ? EMPTY_ROWS : s.analyzeLapStatusHistory)
+    fixedMode || (cachedMask & DATA_ROW.status) !== 0 ? EMPTY_ANALYZE_LAP.statusHistory : s.analyzeLapStatusHistory)
   const damageHistory = useTelemetryStore(s =>
-    fixedMode || (cachedMask & DATA_ROW.damage) !== 0 ? EMPTY_ROWS : s.analyzeLapDamageHistory)
+    fixedMode || (cachedMask & DATA_ROW.damage) !== 0 ? EMPTY_ANALYZE_LAP.damageHistory : s.analyzeLapDamageHistory)
   const lapProgress = useTelemetryStore(s =>
-    fixedMode || (cachedMask & DATA_ROW.lap) !== 0 ? EMPTY_ROWS : s.analyzeLapProgress)
+    fixedMode || (cachedMask & DATA_ROW.lap) !== 0 ? EMPTY_ANALYZE_LAP.lapProgress : s.analyzeLapProgress)
   const startSessionTime = useTelemetryStore(s =>
     fixedMode || playbackCurrentLap !== null ? 0 : s.analyzeLapStartTime)
   const liveRevision = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapRevision)
@@ -756,7 +757,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
     const currentDamage = playbackCurrentLap && (cachedMask & DATA_ROW.damage) ? playbackCurrentLap.damageHistory : damageHistory
     const currentProgress = playbackCurrentLap && (cachedMask & DATA_ROW.lap) ? playbackCurrentLap.lapProgress : lapProgress
     const ends = [currentTelemetry, currentMotion, currentMotionEx, currentStatus, currentDamage]
-      .flatMap(rows => rows.length ? [rows[rows.length - 1].session_time] : [])
+      .flatMap(rows => rows.length ? [rows.time(rows.length - 1)] : [])
     return {
       lapNum: currentLapNum ?? 0,
       startSessionTime: playbackCurrentLap?.startSessionTime ?? startSessionTime,
@@ -813,11 +814,11 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   </div>
 })
 
-const EMPTY_ROWS: never[] = []
 const EMPTY_ANALYZE_LAP: AnalyzeLapData = {
   lapNum: 0, startSessionTime: 0, endSessionTime: 0,
-  telemetry: [], motion: [], motionEx: [], statusHistory: [], damageHistory: [],
-  lapProgress: [], playerPositions: [],
+  telemetry: emptyView('telemetry'), motion: emptyView('motion'), motionEx: emptyView('motion_ex'),
+  statusHistory: emptyView('status'), damageHistory: emptyView('damage'),
+  lapProgress: emptyView('lap'), playerPositions: [],
   rowTypeMask: 0,
 }
 

@@ -15,6 +15,7 @@ import { playbackDebug } from '../../lib/playbackDebug'
 import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
 import { HISTORY_ROW } from '../../lib/historyDependencies'
+import { emptyView, type ColumnView } from '../../lib/columnStore'
 
 // Specialized WebGL leaf: incrementally joins dense telemetry with sparse ERS
 // status rows and owns buffers, axes, scrolling, comparison data, and drawing.
@@ -25,10 +26,10 @@ export type SpeedRpmSeriesVisibility = Record<SpeedRpmSeriesId, boolean>
 
 interface Props {
   isDark: boolean
-  telemetry: readonly TelemetryRow[]
-  statuses: readonly StatusRow[]
-  comparisonTelemetry?: readonly TelemetryRow[]
-  comparisonStatuses?: readonly StatusRow[]
+  telemetry: ColumnView<TelemetryRow>
+  statuses: ColumnView<StatusRow>
+  comparisonTelemetry?: ColumnView<TelemetryRow>
+  comparisonStatuses?: ColumnView<StatusRow>
   colors: SpeedRpmSeriesColors
   visibleSeries: SpeedRpmSeriesVisibility
   windowSeconds: number
@@ -36,6 +37,7 @@ interface Props {
   tooltipFormat: (x: number, values: number[], comparisonValues?: number[]) => string
 }
 
+const EMPTY_STATUSES = emptyView<StatusRow>('status')
 const SPEED_MAX = 380
 const RPM_MAX = 16000
 const ERS_MAX = 100
@@ -82,18 +84,20 @@ function valueIsCovered(value: number, first: number, last: number): boolean {
     && value <= Math.max(first, last) + AXIS_COVERAGE_EPSILON
 }
 
+// `getX` maps a session time to the chart axis (identity or lap distance).
 function nearestTelemetryIndexByX(
-  rows: readonly TelemetryRow[],
-  getX: (row: TelemetryRow) => number,
+  rows: ColumnView<TelemetryRow>,
+  getX: (sessionTime: number) => number,
   value: number,
 ): number {
   if (rows.length === 0) return -1
+  const xAt = (i: number) => getX(rows.time(i))
   let finiteEnd = rows.length
-  if (!Number.isFinite(getX(rows[finiteEnd - 1]))) {
+  if (!Number.isFinite(xAt(finiteEnd - 1))) {
     let lo = 0, hi = finiteEnd
     while (lo < hi) {
       const mid = (lo + hi) >> 1
-      if (Number.isFinite(getX(rows[mid]))) lo = mid + 1
+      if (Number.isFinite(xAt(mid))) lo = mid + 1
       else hi = mid
     }
     finiteEnd = lo
@@ -102,45 +106,34 @@ function nearestTelemetryIndexByX(
   let lo = 0, hi = finiteEnd
   while (lo < hi) {
     const mid = (lo + hi) >> 1
-    if (getX(rows[mid]) < value) lo = mid + 1
+    if (xAt(mid) < value) lo = mid + 1
     else hi = mid
   }
   let index = lo
   if (index === finiteEnd) index--
-  else if (index > 0 && Math.abs(getX(rows[index - 1]) - value) <= Math.abs(getX(rows[index]) - value)) index--
+  else if (index > 0 && Math.abs(xAt(index - 1) - value) <= Math.abs(xAt(index) - value)) index--
   return index
 }
 
-function nearestTelemetryIndexBySessionTime(rows: readonly TelemetryRow[], value: number): number {
+function nearestTelemetryIndexBySessionTime(rows: ColumnView<TelemetryRow>, value: number): number {
   if (rows.length === 0) return -1
   let index = lowerBoundTimeInclusive(rows, value)
   if (index === rows.length) index--
-  else if (index > 0 && Math.abs(rows[index - 1].session_time - value) <= Math.abs(rows[index].session_time - value)) index--
+  else if (index > 0 && Math.abs(rows.time(index - 1) - value) <= Math.abs(rows.time(index) - value)) index--
   return index
 }
 
-function statusAtTime(rows: readonly StatusRow[], sessionTime: number): StatusRow | undefined {
+/** ERS % of the newest status row at or before `sessionTime`; NaN if none. */
+function ersAtTime(rows: ColumnView<StatusRow>, sessionTime: number): number {
   const index = lowerBoundTime(rows, sessionTime) - 1
-  return index >= 0 ? rows[index] : undefined
+  return index >= 0 ? rows.num('ers_pct', index) : NaN
 }
 
-function lowerBoundTime(rows: readonly { session_time: number }[], value: number): number {
-  let lo = 0, hi = rows.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (rows[mid].session_time <= value) lo = mid + 1
-    else hi = mid
-  }
-  return lo
+function lowerBoundTime(rows: ColumnView<any>, value: number): number {
+  return rows.lowerBound(value, false)
 }
-function lowerBoundTimeInclusive(rows: readonly { session_time: number }[], value: number): number {
-  let lo = 0, hi = rows.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (rows[mid].session_time < value) lo = mid + 1
-    else hi = mid
-  }
-  return lo
+function lowerBoundTimeInclusive(rows: ColumnView<any>, value: number): number {
+  return rows.lowerBound(value, true)
 }
 
 interface SyncCursor {
@@ -151,15 +144,15 @@ interface SyncCursor {
 
 function syncTelemetry(
   buffer: AlignedDataBuffer,
-  telemetry: readonly TelemetryRow[],
-  statuses: readonly StatusRow[],
+  telemetry: ColumnView<TelemetryRow>,
+  statuses: ColumnView<StatusRow>,
   values: Float64Array,
-  getX: (row: TelemetryRow) => number,
+  getX: (sessionTime: number) => number,
   cursor: SyncCursor,
   rebuild: boolean,
   startSessionTime = -Infinity,
 ): boolean {
-  const statusFirstSessionTime = statuses[0]?.session_time ?? Infinity
+  const statusFirstSessionTime = statuses.length ? statuses.time(0) : Infinity
   // Telemetry and status history can be restored by separate selective V4
   // backfills. If telemetry wins that race, the existing points are initially
   // aligned against no status rows. Revisit them when an older status prefix
@@ -186,8 +179,8 @@ function syncTelemetry(
   }
 
   const needsRebuild = !rebuild && buffer.length > 0 && (
-    getX(telemetry[telemetry.length - 1]) < buffer.lastX ||
-    getX(telemetry[sourceStart]) < buffer.firstX
+    getX(telemetry.time(telemetry.length - 1)) < buffer.lastX ||
+    getX(telemetry.time(sourceStart)) < buffer.firstX
   )
   if (needsRebuild) {
     buffer.clear()
@@ -195,21 +188,21 @@ function syncTelemetry(
   }
 
   const appendStart = Math.max(sourceStart, lowerBoundTime(telemetry, cursor.lastSessionTime))
-  let statusIndex = lowerBoundTime(statuses, telemetry[appendStart]?.session_time ?? 0) - 1
+  let statusIndex = lowerBoundTime(statuses, appendStart < telemetry.length ? telemetry.time(appendStart) : 0) - 1
   for (let i = appendStart; i < telemetry.length; i++) {
-    const row = telemetry[i]
-    while (statusIndex + 1 < statuses.length && statuses[statusIndex + 1].session_time <= row.session_time) statusIndex++
-    values[0] = row.speed_kph / SPEED_MAX
-    values[1] = row.rpm / RPM_MAX
-    values[2] = statusIndex >= 0 ? statuses[statusIndex].ers_pct / ERS_MAX : NaN
-    const x = getX(row)
+    const sessionTime = telemetry.time(i)
+    while (statusIndex + 1 < statuses.length && statuses.time(statusIndex + 1) <= sessionTime) statusIndex++
+    values[0] = telemetry.num('speed_kph', i) / SPEED_MAX
+    values[1] = telemetry.num('rpm', i) / RPM_MAX
+    values[2] = statusIndex >= 0 ? statuses.num('ers_pct', statusIndex) / ERS_MAX : NaN
+    const x = getX(sessionTime)
     if (!Number.isFinite(x)) break
     if (buffer.length && x === buffer.lastX) buffer.replaceLast(values)
     else if (!buffer.length || x > buffer.lastX) buffer.append(x, values)
-    cursor.lastSessionTime = row.session_time
+    cursor.lastSessionTime = sessionTime
   }
 
-  const trim = buffer.lowerBoundX(getX(telemetry[sourceStart]))
+  const trim = buffer.lowerBoundX(getX(telemetry.time(sourceStart)))
   if (trim > 0) buffer.evictFront(trim)
   return rebuild || needsRebuild || appendStart < telemetry.length || trim > 0
 }
@@ -282,8 +275,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   const historyStartIndex = coordinates.stintLapsMode
     ? lowerBoundTimeInclusive(telemetry, coordinates.historyStartTime)
     : 0
-  const latestT = telemetry.length > historyStartIndex ? coordinates.getX(telemetry[telemetry.length - 1]) : null
-  const firstT = telemetry.length > historyStartIndex ? coordinates.getX(telemetry[historyStartIndex]) : null
+  const latestT = telemetry.length > historyStartIndex ? coordinates.getX(telemetry.time(telemetry.length - 1)) : null
+  const firstT = telemetry.length > historyStartIndex ? coordinates.getX(telemetry.time(historyStartIndex)) : null
   const { attach, detach, wake, acceptDataRange } = useTimeChartScroll(!coordinates.distanceMode, latestT, firstT, coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds, dirtyRef, { fastFrames: !coordinates.allLapsMode, fullFps: 60, accumulateFromStart: coordinates.allLapsMode })
 
   useEffect(() => {
@@ -342,13 +335,13 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       if (syncHorizontalCrosshairRef.current) syncHorizontalCrosshairRef.current.style.visibility = 'hidden'
       hideSyncPoints()
     }
-    const formatCursorRow = (row: TelemetryRow, rowStatus: StatusRow | undefined) => {
+    const formatCursorRow = (rows: ColumnView<TelemetryRow>, i: number, ers: number) => {
       const currentColors = colorsRef.current
       const visibility = visibleSeriesRef.current
       const parts = ['<div style="color:var(--text-secondary);margin-top:3px">Speed + RPM + ERS</div>']
-      if (visibility.speed) parts.push(`<div><span style="color:${currentColors.speed}">Speed</span>: ${Math.round(row.speed_kph)} kph</div>`)
-      if (visibility.rpm) parts.push(`<div><span style="color:${currentColors.rpm}">RPM</span>: ${Math.round(row.rpm).toLocaleString()}</div>`)
-      if (visibility.ers) parts.push(`<div><span style="color:${currentColors.ers}">ERS</span>: ${Math.round(rowStatus?.ers_pct ?? 0)}%</div>`)
+      if (visibility.speed) parts.push(`<div><span style="color:${currentColors.speed}">Speed</span>: ${Math.round(rows.num('speed_kph', i))} kph</div>`)
+      if (visibility.rpm) parts.push(`<div><span style="color:${currentColors.rpm}">RPM</span>: ${Math.round(rows.num('rpm', i)).toLocaleString()}</div>`)
+      if (visibility.ers) parts.push(`<div><span style="color:${currentColors.ers}">ERS</span>: ${Math.round(ers === ers ? ers : 0)}%</div>`)
       return parts.join('')
     }
     const syncManager = cursorSyncContextRef.current
@@ -360,10 +353,9 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         const rows = telemetryRef.current
         const index = nearestTelemetryIndexByX(rows, getXRef.current, axisX)
         if (index < 0) return null
-        const row = rows[index]
-        const sampledAxisX = getXRef.current(row)
+        const sampledAxisX = getXRef.current(rows.time(index))
         if (!Number.isFinite(sampledAxisX)) return null
-        return { sessionTime: row.session_time, sampledAxisX }
+        return { sessionTime: rows.time(index), sampledAxisX }
       },
       formatAxisX: axisX => axisCfgRef.current?.current.xTickFormat(axisX) ?? String(axisX),
       syncToSessionTime: (sessionTime, sourceAxisX, plotYRatio, sourceAxisKind, source, secondaryVerticalCrosshair) => {
@@ -374,20 +366,19 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
           clearSyncedCursor()
           return { current: '' }
         }
-        const row = rows[index]
         const cursorAxisX = sourceAxisKind === syncAxisKind
           ? sourceAxisX
           : syncAxisKind === 'time'
             ? sessionTime
-            : getXRef.current(row)
+            : getXRef.current(rows.time(index))
         const xRange = chart.options.xRange
         const visibleRangeCovered = !xRange || xRange === 'auto'
           || valueIsCovered(cursorAxisX, Number(xRange.min), Number(xRange.max))
         const axisDataCovered = axisXIsCovered(buffer.series[0], cursorAxisX)
         const sessionDataCovered = valueIsCovered(
           sessionTime,
-          rows[0].session_time,
-          rows[rows.length - 1].session_time,
+          rows.time(0),
+          rows.time(rows.length - 1),
         )
         const forwardEndpointFallback = sourceAxisKind === syncAxisKind
           && visibleRangeCovered
@@ -395,7 +386,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
           && cursorAxisX > buffer.lastX + AXIS_COVERAGE_EPSILON
         const mixedAxisEndpointFallback = sourceAxisKind !== syncAxisKind
           && visibleRangeCovered
-          && sessionTime > rows[rows.length - 1].session_time + AXIS_COVERAGE_EPSILON
+          && sessionTime > rows.time(rows.length - 1) + AXIS_COVERAGE_EPSILON
         const peerDataCovered = sourceAxisKind === syncAxisKind
           ? axisDataCovered || forwardEndpointFallback
           : sessionDataCovered || mixedAxisEndpointFallback
@@ -487,13 +478,13 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         const comparisonIndex = comparisonRows && axisXIsCovered(comparisonData, cursorAxisX)
           ? nearestTelemetryIndexByX(comparisonRows, getComparisonXRef.current, cursorAxisX)
           : -1
-        const comparisonRow = comparisonRows && comparisonIndex >= 0
-          ? comparisonRows[comparisonIndex]
-          : undefined
+        const comparisonRow = comparisonRows !== undefined && comparisonIndex >= 0
+        const comparisonStatuses = comparisonStatusesRef.current
         return {
-          current: formatCursorRow(row, statusAtTime(statusesRef.current, row.session_time)),
+          current: formatCursorRow(rows, index, ersAtTime(statusesRef.current, rows.time(index))),
           comparison: comparisonRow
-            ? formatCursorRow(comparisonRow, statusAtTime(comparisonStatusesRef.current ?? [], comparisonRow.session_time))
+            ? formatCursorRow(comparisonRows, comparisonIndex,
+                comparisonStatuses ? ersAtTime(comparisonStatuses, comparisonRows.time(comparisonIndex)) : NaN)
             : undefined,
           comparisonLabel: comparisonRow ? comparisonLabelRef.current ?? undefined : undefined,
           comparisonKey: comparisonRow ? comparisonKeyRef.current || undefined : undefined,
@@ -642,7 +633,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     }
     comparisonLapRef.current = comparisonLap
     const changed = syncTelemetry(
-      buffer, comparisonTelemetry, comparisonStatuses ?? [], scratchRef.current,
+      buffer, comparisonTelemetry, comparisonStatuses ?? EMPTY_STATUSES, scratchRef.current,
       coordinates.getComparisonX, comparisonSyncRef.current, rebuild,
     )
     if (changed) chart.model.requestRedraw()
@@ -676,10 +667,10 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         revision: coordinates.lapRevision,
         mode: coordinates.mode,
         telemetryRows: telemetry.length,
-        telemetryFirstTime: telemetry[0]?.session_time ?? null,
-        telemetryLastTime: telemetry[telemetry.length - 1]?.session_time ?? null,
-        firstX: telemetry.length ? coordinates.getX(telemetry[0]) : null,
-        lastX: telemetry.length ? coordinates.getX(telemetry[telemetry.length - 1]) : null,
+        telemetryFirstTime: telemetry.length ? telemetry.time(0) : null,
+        telemetryLastTime: telemetry.length ? telemetry.time(telemetry.length - 1) : null,
+        firstX: telemetry.length ? coordinates.getX(telemetry.time(0)) : null,
+        lastX: telemetry.length ? coordinates.getX(telemetry.time(telemetry.length - 1)) : null,
         statusRows: statuses.length,
         bufferRowsBeforeClear: buffer.length,
         cursorSessionTime: syncRef.current.lastSessionTime,
@@ -692,8 +683,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       coordinates.stintLapsMode ? coordinates.historyStartTime : -Infinity,
     )) return
     if (telemetry.length > historyStartIndex) acceptDataRange(
-      coordinates.getX(telemetry[telemetry.length - 1]),
-      coordinates.getX(telemetry[historyStartIndex]),
+      coordinates.getX(telemetry.time(telemetry.length - 1)),
+      coordinates.getX(telemetry.time(historyStartIndex)),
     )
     if (rebuild) {
       playbackDebug('speed-chart-lap-revision-synced', {

@@ -196,6 +196,18 @@ public:
     bool readMultiDriverLatest(float, const std::vector<uint8_t>&,
                                const std::vector<uint8_t>&,
                                std::vector<V6TimedRow>&, std::string*);
+    // One driver's race-phase samples in [from, to] as typed column blocks,
+    // one block per V6 type, with no JSON anywhere on the path. `types` empty
+    // means every type; `v4Mask` keeps only types feeding those legacy row
+    // families. With `seed`, each type first carries its last value(s) at or
+    // before `from`, stamped at `from`, so a range that starts between samples
+    // still knows the current state. The layout is documented at
+    // V6_HISTORY_MAGIC in TNRD_V6.cpp and decoded by the Electron renderer's
+    // lib/columnStore.ts. Safe to call concurrently with another archive
+    // instance; not with a second call on this one.
+    bool columnarHistory(uint8_t driver, const std::vector<uint8_t>& types, uint32_t v4Mask,
+                         float from, float to, bool seed, std::vector<uint8_t>& out,
+                         std::string* errorOut, const IndexedCancelCheck& cancelled = {});
     // True when this recording was opened by rebuilding its index from the
     // chunk stream, because the writer was interrupted before writing one.
     // Callers should surface this: the final lap of each driver may be absent.

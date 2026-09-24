@@ -4,6 +4,7 @@ import type { AlignedTable, TelemetryRow, DamageRow } from '../types'
 import type { GraphSection, TyreYAxisGroupState } from '../lib/graphSections'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type ChartColors, type AxisLook, type YRangeSpec } from './charts/TimeChartView'
+import { alignedFromView, sessionTimeAt, type ColumnView } from '../lib/columnStore'
 import { niceTicks } from '../lib/timechart/ticks'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
@@ -151,8 +152,8 @@ interface ChartProps<T extends { session_time: number }> {
   source: 'telemetry' | 'damage'
   title: string
   unit: string
-  rows: readonly T[]
-  comparisonRows?: readonly T[]
+  rows: ColumnView<T>
+  comparisonRows?: ColumnView<T>
   series: SeriesDef<T>[]
   isDark: boolean
   view?: 'chart' | 'table'
@@ -173,9 +174,9 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const rows = useTelemetryStore(s => (source === 'telemetry'
     ? coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry
-    : coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory)) as unknown as readonly T[]
+    : coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory)) as unknown as ColumnView<T>
   const comparisonRows = coordinates.comparisonMode
-    ? (source === 'telemetry' ? coordinates.lapData?.telemetry : coordinates.lapData?.damageHistory) as readonly T[] | undefined
+    ? (source === 'telemetry' ? coordinates.lapData?.telemetry : coordinates.lapData?.damageHistory) as ColumnView<T> | undefined
     : undefined
   const axisColor = isDark ? '#7c8098' : '#596168'
   const { controlsRef, titleRef } = useTyreTitleWidth()
@@ -199,20 +200,14 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
   // AlignedData only for the table view.
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
-    const ts = new Float64Array(rows.length)
-    const cols = series.map(() => new Float64Array(rows.length))
-    rows.forEach((d, i) => {
-      ts[i] = d.session_time
-      series.forEach((s, k) => { cols[k][i] = s.getY(d) })
-    })
-    return [ts, ...cols]
+    return alignedFromView(rows, series.map(s => s.getY))
   }, [coordinates.allLapsMode, rows, series, view])
 
   const tableCols = useMemo((): GraphTableColumn[] =>
     series.map((s) => ({ header: s.label, color: s.color, format: (v: number) => `${v.toFixed(1)}${unit}` })),
     [series, unit],
   )
-  const getTableValues = useCallback((row: T) => series.map(item => item.getY(row)), [series])
+  const getTableValues = useCallback((source: ColumnView<T>, i: number) => series.map(item => item.getY(source, i)), [series])
 
   const formatValues = useCallback((values: number[]) => {
     let html = ''
@@ -231,9 +226,9 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
   const cursorSync = useMemo(() => ({
     id: section,
     order: TYRE_CURSOR_ORDER[section] ?? 100,
-    formatRow: (row: T) => [
+    formatRow: (source: ColumnView<T>, i: number) => [
       `<div style="color:${axisColor};margin-top:3px">${title}</div>`,
-      formatValues(series.map(item => item.getY(row))),
+      formatValues(series.map(item => item.getY(source, i))),
     ].join(''),
   }), [axisColor, formatValues, section, series, title])
 
@@ -275,7 +270,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
             rows={rows}
             allLapsDataMask={source === 'damage' ? HISTORY_ROW.damage : HISTORY_ROW.telemetry}
             comparisonRows={comparisonRows}
-            getX={(d) => d.session_time}
+            getX={sessionTimeAt}
             series={chartSeries}
             windowSeconds={scopedWindowSeconds}
             yRange={yRange}
@@ -309,8 +304,8 @@ function ScopedTyreLineChart<T extends { session_time: number }>(props: ChartPro
 type TyreGraphViews = { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
 
 interface Props {
-  telemetry: TelemetryRow[]
-  damageHistory: DamageRow[]
+  telemetry: ColumnView<TelemetryRow>
+  damageHistory: ColumnView<DamageRow>
   tyreWearMode: 'wear' | 'life'
   visibleGraphs: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean }
   isDark: boolean
@@ -327,23 +322,24 @@ interface Props {
 export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews, windowSeconds = 30, fastScroll, yAxis, sectionGroup }: Props) {
   const c = cornerColors(isDark)
 
-  const tempSeries = useCallback((corner: (row: TelemetryRow) => { fl: number; fr: number; rl: number; rr: number }): SeriesDef<TelemetryRow>[] => [
-    { label: 'FL', color: c.fl, getY: (d) => corner(d).fl, lineWidth: 2 },
-    { label: 'FR', color: c.fr, getY: (d) => corner(d).fr, lineWidth: 2 },
-    { label: 'RL', color: c.rl, getY: (d) => corner(d).rl, lineWidth: 2 },
-    { label: 'RR', color: c.rr, getY: (d) => corner(d).rr, lineWidth: 2 },
+  // One series per corner, reading the `${prefix}_${corner}` column.
+  const tempSeries = useCallback((prefix: string): SeriesDef<TelemetryRow>[] => [
+    { label: 'FL', color: c.fl, getY: (rows, i) => rows.num(`${prefix}_fl`, i), lineWidth: 2 },
+    { label: 'FR', color: c.fr, getY: (rows, i) => rows.num(`${prefix}_fr`, i), lineWidth: 2 },
+    { label: 'RL', color: c.rl, getY: (rows, i) => rows.num(`${prefix}_rl`, i), lineWidth: 2 },
+    { label: 'RR', color: c.rr, getY: (rows, i) => rows.num(`${prefix}_rr`, i), lineWidth: 2 },
   ], [c.fl, c.fr, c.rl, c.rr])
 
-  const surfaceSeries = useMemo(() => tempSeries((d) => ({ fl: d.tyre_temp_surface_fl, fr: d.tyre_temp_surface_fr, rl: d.tyre_temp_surface_rl, rr: d.tyre_temp_surface_rr })), [tempSeries])
-  const innerSeries = useMemo(() => tempSeries((d) => ({ fl: d.tyre_temp_inner_fl, fr: d.tyre_temp_inner_fr, rl: d.tyre_temp_inner_rl, rr: d.tyre_temp_inner_rr })), [tempSeries])
-  const brakeSeries = useMemo(() => tempSeries((d) => ({ fl: d.brake_temp_fl, fr: d.brake_temp_fr, rl: d.brake_temp_rl, rr: d.brake_temp_rr })), [tempSeries])
+  const surfaceSeries = useMemo(() => tempSeries('tyre_temp_surface'), [tempSeries])
+  const innerSeries = useMemo(() => tempSeries('tyre_temp_inner'), [tempSeries])
+  const brakeSeries = useMemo(() => tempSeries('brake_temp'), [tempSeries])
 
   const life = tyreWearMode === 'life'
   const wearSeries = useMemo((): SeriesDef<DamageRow>[] => [
-    { label: 'FL', color: c.fl, getY: (d) => life ? 100 - d.tyre_wear_fl : d.tyre_wear_fl, lineWidth: 2 },
-    { label: 'FR', color: c.fr, getY: (d) => life ? 100 - d.tyre_wear_fr : d.tyre_wear_fr, lineWidth: 2 },
-    { label: 'RL', color: c.rl, getY: (d) => life ? 100 - d.tyre_wear_rl : d.tyre_wear_rl, lineWidth: 2 },
-    { label: 'RR', color: c.rr, getY: (d) => life ? 100 - d.tyre_wear_rr : d.tyre_wear_rr, lineWidth: 2 },
+    { label: 'FL', color: c.fl, getY: (rows, i) => life ? 100 - rows.num('tyre_wear_fl', i) : rows.num('tyre_wear_fl', i), lineWidth: 2 },
+    { label: 'FR', color: c.fr, getY: (rows, i) => life ? 100 - rows.num('tyre_wear_fr', i) : rows.num('tyre_wear_fr', i), lineWidth: 2 },
+    { label: 'RL', color: c.rl, getY: (rows, i) => life ? 100 - rows.num('tyre_wear_rl', i) : rows.num('tyre_wear_rl', i), lineWidth: 2 },
+    { label: 'RR', color: c.rr, getY: (rows, i) => life ? 100 - rows.num('tyre_wear_rr', i) : rows.num('tyre_wear_rr', i), lineWidth: 2 },
   ], [c.fl, c.fr, c.rl, c.rr, life])
 
   const wearTitle = life ? 'Tyre Life' : 'Tyre Wear'

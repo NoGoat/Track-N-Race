@@ -23,7 +23,7 @@
 
 namespace tnrp {
 
-namespace detail { class LiveHistoryStore; }
+namespace detail { class LiveHistoryStore; class TnrdV6Archive; }
 
 // Orchestrates the whole telemetry pipeline and is the only class consumers
 // (the bridge, later the native app) construct directly. It wires:
@@ -265,6 +265,36 @@ private:
     std::condition_variable requirementsCv_;
     std::thread       playThread_;
     std::atomic<bool> playRun_{false};
+
+    // Columnar V6 history (Config::columnarV6History). A second read-only
+    // handle on the loaded recording, so seek and All Laps extraction run
+    // without mutex_ and never contend with the playback thread's archive
+    // cursor or file handle. historyMutex_ serializes use of that handle and
+    // is never taken while mutex_ is held in the other order.
+    std::mutex historyMutex_;
+    std::unique_ptr<detail::TnrdV6Archive> historyArchive_; // guarded by historyMutex_
+    std::atomic<bool> historyArchiveReady_{false};
+    // Bumped when the timeline a history read was taken against stops being
+    // valid (driver switch, load, close). Reads compare it to their snapshot.
+    std::atomic<uint64_t> historyEpoch_{0};
+    struct V6HistoryRead {
+        uint8_t driver = 0;
+        std::vector<uint8_t> types;
+        uint32_t mask = 0;
+        float from = 0.0f;
+        float to = 0.0f;
+        bool seed = false;
+        uint64_t epoch = 0;
+    };
+    // mutex_ held. True when this read should take the columnar path.
+    bool prepareV6HistoryReadLocked(float from, float to, uint32_t mask, V6HistoryRead& out) const;
+    // mutex_ NOT held. Null when cancelled or superseded; an empty buffer when
+    // the read failed, so the caller still answers the request. An
+    // authoritative seek ignores the epoch: the renderer is blocked on its
+    // flush, and a driver change is always followed by a newer seek anyway.
+    std::shared_ptr<std::vector<uint8_t>> runV6HistoryRead(const V6HistoryRead& read,
+                                                           const std::function<bool()>& cancelled,
+                                                           bool respectEpoch);
 
     // Binary-playback sparse-row cache (guarded by mutex_): the last seen raw
     // line per panel type. Damage is cached for initial/seek restoration but is

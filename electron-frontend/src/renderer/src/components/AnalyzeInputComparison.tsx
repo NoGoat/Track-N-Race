@@ -2,6 +2,7 @@ import { memo, useEffect, useId, useMemo, useRef, useState, type PointerEvent, t
 import { GripVertical } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import type { AnalyzeLapData, StatusRow, TelemetryRow } from '../types'
+import type { ColumnView } from '../lib/columnStore'
 
 interface Props {
   current: AnalyzeLapData | null
@@ -18,7 +19,11 @@ interface Position { x: number; y: number }
 interface ComparisonSample {
   telemetry: TelemetryRow | null
   status: StatusRow | null
+  // Which rows these are; an unchanged source keeps the same sample object.
+  source: readonly [unknown, number, unknown, number] | null
 }
+
+const EMPTY_SAMPLE: ComparisonSample = { telemetry: null, status: null, source: null }
 
 function clampPosition(value: number): number {
   return Math.max(0, Math.min(1, value))
@@ -38,28 +43,28 @@ function readPosition(value: unknown): Position {
   return { x: 0, y: 0 }
 }
 
-function rowAt<T extends { session_time: number }>(rows: readonly T[], target: number): T | null {
-  if (rows.length === 0) return null
-  let lo = 0
-  let hi = rows.length
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1
-    if (rows[mid].session_time <= target) lo = mid + 1
-    else hi = mid
-  }
-  return rows[Math.max(0, lo - 1)]
+function rowIndexAt(rows: ColumnView<any>, target: number): number {
+  if (rows.length === 0) return -1
+  return Math.max(0, rows.lowerBound(target, false) - 1)
 }
 
 // Hold each source's latest sample at the map cursor, including discrete gear
 // and ERS updates. Clamp each lap independently, as the map does its marker.
-function sampleAt(lap: AnalyzeLapData | null, elapsed: number): ComparisonSample {
-  if (!lap) return { telemetry: null, status: null }
+// Rows are materialised only when the sampled row actually changes.
+function sampleAt(lap: AnalyzeLapData | null, elapsed: number, previous?: ComparisonSample): ComparisonSample {
+  if (!lap) return EMPTY_SAMPLE
   const target = lap.startSessionTime + Math.max(0, Math.min(
     Math.max(0, lap.endSessionTime - lap.startSessionTime), elapsed,
   ))
+  const telemetryIndex = rowIndexAt(lap.telemetry, target)
+  const statusIndex = rowIndexAt(lap.statusHistory, target)
+  const source = previous?.source
+  if (source && source[0] === lap.telemetry && source[1] === telemetryIndex &&
+      source[2] === lap.statusHistory && source[3] === statusIndex) return previous
   return {
-    telemetry: rowAt(lap.telemetry, target),
-    status: rowAt(lap.statusHistory, target),
+    telemetry: telemetryIndex >= 0 ? lap.telemetry.row(telemetryIndex) : null,
+    status: statusIndex >= 0 ? lap.statusHistory.row(statusIndex) : null,
+    source: [lap.telemetry, telemetryIndex, lap.statusHistory, statusIndex],
   }
 }
 
@@ -182,13 +187,11 @@ export default memo(function AnalyzeInputComparison({
     if (collapsed) return
     const update = () => {
       const elapsed = elapsedSource()
-      const primary = sampleAt(current, elapsed)
-      const reference = sampleAt(comparison, elapsed)
-      setSamples(previous => previous[0].telemetry === primary.telemetry &&
-        previous[0].status === primary.status &&
-        previous[1].telemetry === reference.telemetry &&
-        previous[1].status === reference.status
-        ? previous : [primary, reference])
+      setSamples(previous => {
+        const primary = sampleAt(current, elapsed, previous[0])
+        const reference = sampleAt(comparison, elapsed, previous[1])
+        return previous[0] === primary && previous[1] === reference ? previous : [primary, reference]
+      })
     }
     update()
     // Keep updates local to this small overlay; the map renders independently.

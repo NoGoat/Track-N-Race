@@ -165,6 +165,27 @@ private:
     float windowSeconds_;
 };
 
+// A V6 driver change rebuilds the lap catalog and sector metadata from the new
+// driver's lap data, which takes long enough to stall the Electron main thread.
+// Resolves once the engine has switched; the host orders its follow-up seek
+// behind that promise.
+class PlayerSetDriverWorker : public Napi::AsyncWorker {
+public:
+    PlayerSetDriverWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                          int driverIndex, bool useRecordedRows)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)), driverIndex_(driverIndex),
+          useRecordedRows_(useRecordedRows), deferred_(Napi::Promise::Deferred::New(env)) {}
+    void Execute() override { engine_->playerSetDriver(driverIndex_, useRecordedRows_); }
+    void OnOK() override { deferred_.Resolve(Env().Undefined()); }
+    void OnError(const Napi::Error& e) override { deferred_.Reject(e.Value()); }
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    int driverIndex_;
+    bool useRecordedRows_;
+    Napi::Promise::Deferred deferred_;
+};
+
 class PlayerHistoryWorker : public Napi::AsyncWorker {
 public:
     PlayerHistoryWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
@@ -445,6 +466,9 @@ public:
         }
         if (configObj.Has("sparseV6Playback") && configObj.Get("sparseV6Playback").IsBoolean()) {
             config.sparseV6Playback = configObj.Get("sparseV6Playback").As<Napi::Boolean>().Value();
+        }
+        if (configObj.Has("columnarV6History") && configObj.Get("columnarV6History").IsBoolean()) {
+            config.columnarV6History = configObj.Get("columnarV6History").As<Napi::Boolean>().Value();
         }
         if (configObj.Has("strategyMinimumStops") && configObj.Get("strategyMinimumStops").IsNumber()) {
             config.strategyMinimumStops = configObj.Get("strategyMinimumStops").As<Napi::Number>().Int32Value();
@@ -1518,12 +1542,18 @@ private:
     }
 
     Napi::Value PlayerSetDriver(const Napi::CallbackInfo& info) {
-        if (info.Length() >= 1 && info[0].IsNumber()) {
-            const bool useRecordedRows = info.Length() >= 2 && info[1].IsBoolean() &&
-                info[1].As<Napi::Boolean>().Value();
-            engine->playerSetDriver(info[0].As<Napi::Number>().Int32Value(), useRecordedRows);
+        if (!engine || info.Length() < 1 || !info[0].IsNumber()) {
+            auto deferred = Napi::Promise::Deferred::New(info.Env());
+            deferred.Resolve(info.Env().Undefined());
+            return deferred.Promise();
         }
-        return info.Env().Undefined();
+        const bool useRecordedRows = info.Length() >= 2 && info[1].IsBoolean() &&
+            info[1].As<Napi::Boolean>().Value();
+        auto* worker = new PlayerSetDriverWorker(info.Env(), engine,
+            info[0].As<Napi::Number>().Int32Value(), useRecordedRows);
+        auto promise = worker->GetPromise();
+        worker->Queue();
+        return promise;
     }
 
     Napi::Value LiveGetFastestLap(const Napi::CallbackInfo& info) {

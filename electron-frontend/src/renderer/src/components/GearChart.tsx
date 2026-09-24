@@ -3,6 +3,7 @@ import type { AlignedTable, TelemetryRow } from '../types'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
+import { alignedFromView, sessionTimeAt, type ColumnView } from '../lib/columnStore'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
@@ -14,7 +15,7 @@ const COLOR_GEAR = '#5794F2'
 const SERIES: SeriesDef<TelemetryRow>[] = [{
   label: 'Gear',
   color: COLOR_GEAR,
-  getY: d => d.gear,
+  getY: (rows, i) => rows.num('gear', i),
   lineWidth: 2,
   lineType: 1,
   stepLocation: 1,
@@ -41,12 +42,10 @@ function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props)
   })), [colorGear, hiddenSeries])
   const tableColumns = useMemo(() => TABLE_COLS.map(column => ({ ...column, color: colorGear })), [colorGear])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
-  const getTableValues = useCallback((row: TelemetryRow) => [row.gear], [])
+  const getTableValues = useCallback((rows: ColumnView<TelemetryRow>, i: number) => [rows.num('gear', i)], [])
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
-    const ts = new Float64Array(data.length), gear = new Float64Array(data.length)
-    data.forEach((d, i) => { ts[i] = d.session_time; gear[i] = d.gear })
-    return [ts, gear]
+    return alignedFromView(data, SERIES.map(series => series.getY))
   }, [coordinates.allLapsMode, data, view])
   const axisColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
@@ -60,9 +59,9 @@ function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props)
   const cursorSync = useMemo(() => ({
     id: 'inputGear',
     order: 10,
-    formatRow: (row: TelemetryRow) => hiddenSeries.Gear
+    formatRow: (rows: ColumnView<TelemetryRow>, i: number) => hiddenSeries.Gear
       ? ''
-      : `<div><span style="color:${colorGear}">Gear</span>: ${Math.round(row.gear)}</div>`,
+      : `<div><span style="color:${colorGear}">Gear</span>: ${Math.round(rows.num('gear', i))}</div>`,
   }), [colorGear, hiddenSeries.Gear])
 
   return <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
@@ -84,7 +83,7 @@ function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props)
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
-          : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
+          : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={sessionTimeAt} series={chartSeries}
               windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={INPUT_CHART_Y_AXIS_SIZE}
               yTickValues={() => GEAR_TICKS} yTickFormat={v => String(v)} xTickFormat={fmtTime}
               refLines={[2, 4, 6].map(y => ({ y, dashed: true }))} tooltipFormat={tooltipFormat} cursorSync={cursorSync} />}

@@ -5,6 +5,7 @@ import { BUTTON_CLASS } from '../lib/buttonStyles'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { subscribeAllLapsData } from '../stores/telemetryStore'
 import { HISTORY_ROW } from '../lib/historyDependencies'
+import type { ColumnView } from '../lib/columnStore'
 
 // Raw-values table shown in place of a telemetry graph (the Chart→Table view mode
 // ported from qt_frontend's GraphTable). One leading time column + one column
@@ -25,16 +26,6 @@ const ROW_H = 26
 const OVERSCAN = 6
 const FULL_LAP_REFRESH_MS = 200
 
-function lowerBoundSessionTime(rows: readonly { session_time: number }[], value: number): number {
-  let lo = 0, hi = rows.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (rows[mid].session_time < value) lo = mid + 1
-    else hi = mid
-  }
-  return lo
-}
-
 function fmtTime(s: number): string {
   const m   = Math.floor(s / 60)
   const sec = Math.floor(s % 60)
@@ -45,11 +36,11 @@ function fmtTime(s: number): string {
 export default function GraphTable<T extends { session_time: number }>({ columns, data, liveRows, getLiveValues, allLapsDataMask = HISTORY_ROW.telemetry, edgePadRem = 1, noBorderTop = false }: {
   columns: GraphTableColumn[]
   data: AlignedTable
-  // Full-lap store arrays grow in place to avoid cloning an entire race on
-  // every packet. Read those rows directly and repaint this virtual table at a
-  // bounded UI rate; finite/distance modes continue using `data` unchanged.
-  liveRows?: readonly T[]
-  getLiveValues?: (row: T) => readonly number[]
+  // Full-lap store views grow in place to avoid copying an entire race on
+  // every packet. Read those columns directly and repaint this virtual table
+  // at a bounded UI rate; finite/distance modes continue using `data`.
+  liveRows?: ColumnView<T>
+  getLiveValues?: (rows: ColumnView<T>, i: number) => readonly number[]
   allLapsDataMask?: number
   // How far (in rem) the table should break out of its container's padding on the
   // left/right/bottom so it sits flush against the panel edge/border instead of
@@ -97,7 +88,7 @@ export default function GraphTable<T extends { session_time: number }>({ columns
   const xs = (data[0] as Float64Array | undefined) ?? new Float64Array()
   const useLiveRows = coordinates.allLapsMode && liveRows !== undefined && getLiveValues !== undefined
   const liveStart = useLiveRows && coordinates.stintLapsMode
-    ? lowerBoundSessionTime(liveRows, coordinates.historyStartTime)
+    ? liveRows.lowerBound(coordinates.historyStartTime, true)
     : 0
   const liveN = useLiveRows ? liveRows.length - liveStart : xs.length
   // While scrolled away from the bottom, freeze the rendered row count at the
@@ -155,16 +146,16 @@ export default function GraphTable<T extends { session_time: number }>({ columns
   const rows: React.ReactNode[] = []
   for (let k = 0; k < count; k++) {
     const i = first + k
-    const liveRow = useLiveRows ? liveRows[liveStart + i] : undefined
-    const rowTime = liveRow?.session_time ?? xs[i]
-    const liveValues = liveRow && getLiveValues ? getLiveValues(liveRow) : undefined
+    const liveIndex = useLiveRows && liveStart + i < liveRows.length ? liveStart + i : -1
+    const rowTime = liveIndex >= 0 ? liveRows!.time(liveIndex) : xs[i]
+    const liveValues = liveIndex >= 0 && getLiveValues ? getLiveValues(liveRows!, liveIndex) : undefined
     rows.push(
       <div
         key={i}
         style={{ position: 'absolute', top: i * ROW_H, height: ROW_H, left: 0, right: 0, gridTemplateColumns: gridCols }}
         className={`grid items-center hover:bg-[var(--bg-hover)] ${i < n - 1 ? 'border-b border-[var(--border)]' : ''}`}
       >
-        <span className="px-3 text-[13px] tabular-nums text-[var(--text-secondary)]">{coordinates.distanceMode ? coordinates.formatX(coordinates.getX({ session_time: rowTime })) : fmtTime(rowTime)}</span>
+        <span className="px-3 text-[13px] tabular-nums text-[var(--text-secondary)]">{coordinates.distanceMode ? coordinates.formatX(coordinates.getX(rowTime)) : fmtTime(rowTime)}</span>
         {columns.map((c, ci) => (
           <span key={ci} className="px-3 text-[13px] font-medium tabular-nums truncate" style={{ color: c.color }}>
             {c.format(liveValues?.[ci] ?? (data[ci + 1] as Float64Array)[i])}

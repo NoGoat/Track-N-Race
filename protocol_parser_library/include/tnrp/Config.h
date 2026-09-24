@@ -65,6 +65,13 @@ struct Config {
     // legacy aggregate projection unless they opt in explicitly.
     bool        sparseV6Playback = false;
 
+    // Electron decodes TNRD V6 seek/history payloads as typed column blocks
+    // (TnrdV6Archive::columnarHistory) carried in the seek flush's binary
+    // buffer, and they are read on a second archive handle without holding the
+    // engine mutex. Requires binaryPlayback and sparseV6Playback. Other hosts
+    // keep the JSON history path.
+    bool        columnarV6History = false;
+
     // When true, the live UDP path emits the hot 60 Hz rows as JSON via
     // Sink::onRow() and skips the packed binary Sink::onBinary() channel. Off by
     // default: the Electron/node addon clients want the binary fast-path across

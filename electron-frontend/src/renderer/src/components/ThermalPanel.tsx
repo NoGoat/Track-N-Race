@@ -1,6 +1,7 @@
 import { memo, useCallback, useMemo } from 'react'
 import type { AlignedTable, TelemetryRow, DamageRow } from '../types'
 import TyreTrendCharts from './TyreTrendCharts'
+import type { ColumnView } from '../lib/columnStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import { useColorFn } from '../lib/cards'
 import type { TyreYAxisGroupState } from '../lib/graphSections'
@@ -14,8 +15,8 @@ export type TyreCardViews = { fl?: 'chart' | 'table'; fr?: 'chart' | 'table'; rl
 interface Props {
   latest: TelemetryRow | null
   damage: DamageRow | null
-  telemetry: TelemetryRow[]
-  damageHistory: DamageRow[]
+  telemetry: ColumnView<TelemetryRow>
+  damageHistory: ColumnView<DamageRow>
   view: 'cards' | 'graphs'
   tyreWearMode: 'wear' | 'life'
   thermalGraphs: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean }
@@ -90,13 +91,13 @@ export const WheelCard = memo(function WheelCard({
 }: {
   pos: string; corner: Corner; surface: number; inner: number; brake: number
   wear: number | null; blisters: number | null; noData?: boolean; compact?: boolean; level?: number; isDark?: boolean
-  view?: 'chart' | 'table'; history?: AlignedTable; telemetry?: readonly TelemetryRow[]
+  view?: 'chart' | 'table'; history?: AlignedTable; telemetry?: ColumnView<TelemetryRow>
 }) {
   const ramp = useColorFn(null, null, isDark)
-  const getTableValues = useCallback((row: TelemetryRow) => [
-    row[`tyre_temp_surface_${corner}`],
-    row[`tyre_temp_inner_${corner}`],
-    row[`brake_temp_${corner}`],
+  const getTableValues = useCallback((rows: ColumnView<TelemetryRow>, i: number) => [
+    rows.num(`tyre_temp_surface_${corner}`, i),
+    rows.num(`tyre_temp_inner_${corner}`, i),
+    rows.num(`brake_temp_${corner}`, i),
   ], [corner])
 
   const tableCols = useMemo((): GraphTableColumn[] => [
@@ -208,7 +209,7 @@ const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> = 
 
 const CORNERS = ['fl', 'fr', 'rl', 'rr'] as const
 
-function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, boolean>, skip: boolean): Record<Corner, AlignedTable> {
+function useCornerHistories(telemetry: ColumnView<TelemetryRow>, enabled: Record<Corner, boolean>, skip: boolean): Record<Corner, AlignedTable> {
   return useMemo(() => {
     if (skip) return EMPTY_CORNER_HISTORIES
     const requested = CORNERS.filter(corner => enabled[corner])
@@ -217,15 +218,15 @@ function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, b
     const ts = new Float64Array(n)
     const histories = { ...EMPTY_CORNER_HISTORIES }
     for (const corner of requested) histories[corner] = [ts, new Float64Array(n), new Float64Array(n), new Float64Array(n)]
-    telemetry.forEach((d, i) => {
-      ts[i] = d.session_time
+    for (let i = 0; i < n; i++) {
+      ts[i] = telemetry.time(i)
       for (const corner of requested) {
         const history = histories[corner]
-        ;(history[1] as Float64Array)[i] = d[`tyre_temp_surface_${corner}`]
-        ;(history[2] as Float64Array)[i] = d[`tyre_temp_inner_${corner}`]
-        ;(history[3] as Float64Array)[i] = d[`brake_temp_${corner}`]
+        ;(history[1] as Float64Array)[i] = telemetry.num(`tyre_temp_surface_${corner}`, i)
+        ;(history[2] as Float64Array)[i] = telemetry.num(`tyre_temp_inner_${corner}`, i)
+        ;(history[3] as Float64Array)[i] = telemetry.num(`brake_temp_${corner}`, i)
       }
-    })
+    }
     return histories
   }, [telemetry, enabled, skip])
 }

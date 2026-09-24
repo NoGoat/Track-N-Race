@@ -12,6 +12,7 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 import { themeSeriesColor } from '../lib/themeColors'
 import { HISTORY_ROW } from '../lib/historyDependencies'
+import type { ColumnView } from '../lib/columnStore'
 
 // Dashboard shell: selects store data and owns the panel, table, legend, and
 // tooltip presentation. WebGL lifecycle and data projection stay in the leaf.
@@ -61,14 +62,9 @@ function SpeedRpmChartContent(props: Props) {
   ], [colorErs, colorRpm, colorSpeed])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
   const statusHistory = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory)
-  const getTableValues = useCallback((row: TelemetryRow) => {
-    let lo = 0, hi = statusHistory.length
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1
-      if (statusHistory[mid].session_time <= row.session_time) lo = mid + 1
-      else hi = mid
-    }
-    return [row.speed_kph, row.rpm, lo > 0 ? statusHistory[lo - 1].ers_pct : NaN]
+  const getTableValues = useCallback((rows: ColumnView<TelemetryRow>, i: number) => {
+    const status = statusHistory.lowerBound(rows.time(i), false) - 1
+    return [rows.num('speed_kph', i), rows.num('rpm', i), status >= 0 ? statusHistory.num('ers_pct', status) : NaN]
   }, [statusHistory])
   const tooltipFormat = useCallback((x: number, current: number[], comparison?: number[]) => {
     const formatValues = (source: number[]) => {
@@ -92,13 +88,14 @@ function SpeedRpmChartContent(props: Props) {
     const rpm = new Float64Array(data.length)
     const ers = new Float64Array(data.length)
     let si = -1
-    data.forEach((row, i) => {
-      while (si + 1 < statusHistory.length && statusHistory[si + 1].session_time <= row.session_time) si++
-      ts[i] = row.session_time
-      speed[i] = row.speed_kph
-      rpm[i] = row.rpm
-      ers[i] = si >= 0 ? statusHistory[si].ers_pct : NaN
-    })
+    for (let i = 0; i < data.length; i++) {
+      const t = data.time(i)
+      while (si + 1 < statusHistory.length && statusHistory.time(si + 1) <= t) si++
+      ts[i] = t
+      speed[i] = data.num('speed_kph', i)
+      rpm[i] = data.num('rpm', i)
+      ers[i] = si >= 0 ? statusHistory.num('ers_pct', si) : NaN
+    }
     return [ts, speed, rpm, ers]
   }, [coordinates, data, statusHistory, view])
 
