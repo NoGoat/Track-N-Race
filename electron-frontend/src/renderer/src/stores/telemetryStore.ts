@@ -366,6 +366,9 @@ function scheduleFastestRecovery(): void {
 }
 let fastestLapSet = false
 const sessionHistoryBest = new Map<number, number>()
+// Live Tyre Sets packets cycle through every car (one car per packet), so
+// only the player's latest set is published to the Tyres page.
+const liveTyreSetsByCar = new Map<number, TyreSetsMsg>()
 let isPlaybackFlag = false
 let fuelMaxReceived = -Infinity
 
@@ -881,6 +884,7 @@ function resetSession(): void {
   fastestLapTime = Infinity; fastestLapSet = false
   cancelFastestRecovery()
   sessionHistoryBest.clear()
+  liveTyreSetsByCar.clear()
   raceEventsArr = []
   speedRpmBlocksVal = null; playbackFastestLapNum = 0
   playbackEvents = []; playbackLapTimes = {}; liveLapTimes = {}
@@ -1389,7 +1393,16 @@ function handleMsg(msg: GatewayMsg): void {
       onLap((isPlaybackFlag && previous ? { ...previous, ...msg } : msg) as unknown as LapRow)
       break
     }
-    case 'timing':       set(state => ({ timing: mergeCarPatches(state.timing, msg as TimingMsg) as TimingMsg })); break
+    case 'timing': {
+      set(state => ({ timing: mergeCarPatches(state.timing, msg as TimingMsg) as TimingMsg }))
+      // The player's Tyre Sets packet may have arrived before the player index.
+      const { timing, tyreSets } = useTelemetryStore.getState()
+      if (!isPlaybackFlag && timing) {
+        const playerSets = liveTyreSetsByCar.get(timing.player_idx)
+        if (playerSets && playerSets !== tyreSets) set({ tyreSets: playerSets })
+      }
+      break
+    }
     case 'participants': {
       const incoming = msg as ParticipantsMsg
       const previous = useTelemetryStore.getState().participants
@@ -1426,7 +1439,17 @@ function handleMsg(msg: GatewayMsg): void {
       if (useTelemetryStore.getState().fastestLapCarIdx !== minIdx) set({ fastestLapCarIdx: minIdx })
       break
     }
-    case 'tyre_sets':    set({ tyreSets: msg }); break
+    case 'tyre_sets': {
+      // Playback already projects only the selected driver's sets, and older
+      // rows without car_idx were filtered to the player natively.
+      if (isPlaybackFlag || msg.car_idx == null) {
+        set({ tyreSets: msg })
+        break
+      }
+      liveTyreSetsByCar.set(msg.car_idx, msg)
+      if (msg.car_idx === useTelemetryStore.getState().timing?.player_idx) set({ tyreSets: msg })
+      break
+    }
     // The seek gate drops Strategy rows until the seek installs, and the engine
     // withholds tick snapshots until its rebuild commits, so the first one
     // after a seek is the rebuilt result.

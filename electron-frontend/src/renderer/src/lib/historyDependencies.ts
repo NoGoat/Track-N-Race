@@ -1,5 +1,5 @@
 import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, Tab, TyresLayout } from '../app/appConfig'
-import { ANALYZE_METRIC_BY_ID, type AnalyzeSeriesConfig } from './analyzeMetrics'
+import { ANALYZE_METRIC_BY_ID, analyzeSeriesMemberIds, type AnalyzeSeriesConfig } from './analyzeMetrics'
 import type { GraphSection } from './graphSections'
 
 // Logical recording row families. These bits are shared with TnrdReader's V4
@@ -265,8 +265,10 @@ export function dataMaskForAnalyze(
     (view === 'split' ? DATA_CONSUMERS.analyzeMap.history : 0)
   for (const item of series) {
     if (!item.visible || item.metricId === 'delta') continue
-    const source = ANALYZE_METRIC_BY_ID.get(item.metricId)?.source
-    if (source) mask |= DATA_ROW[source]
+    for (const id of analyzeSeriesMemberIds(item)) {
+      const source = ANALYZE_METRIC_BY_ID.get(id)?.source
+      if (source) mask |= DATA_ROW[source]
+    }
   }
   return mask >>> 0
 }

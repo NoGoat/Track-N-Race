@@ -1,10 +1,11 @@
+import { analyzeSeriesHasLines } from '../../lib/analyzeMetrics'
 import AnalyzeTimeChart, { type AnalyzeTimeChartProps } from './AnalyzeTimeChart'
 
 type Props = AnalyzeTimeChartProps
 
 export default function AnalyzeStackedTimeCharts(props: Props) {
   const hasVisibleMetric = props.selected.some(item =>
-    item.visible && (item.metricId !== 'delta' || (props.distanceMode && props.comparisonSelected)),
+    item.visible && analyzeSeriesHasLines(item) && (item.metricId !== 'delta' || (props.distanceMode && props.comparisonSelected)),
   )
 
   return <div className="absolute inset-0 overflow-hidden">

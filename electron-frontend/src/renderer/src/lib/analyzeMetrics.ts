@@ -25,6 +25,10 @@ export interface AnalyzeSeriesConfig {
   negativeColor?: string
   visible: boolean
   showYAxis: boolean
+  /** Combined tyre cards only: the corner keys (fl/fr/rl/rr) drawn on the card. */
+  corners?: string[]
+  /** Combined tyre cards only: custom line colour per corner key. */
+  cornerColors?: Partial<Record<string, string>>
 }
 
 export interface AnalyzeConfig {
@@ -94,8 +98,115 @@ const tyreMetrics: AnalyzeMetricDefinition[] = corners.flatMap(corner => [
   metric({ id: `life-${corner.key}`, group: 'Tyres', label: `Tyre Life ${corner.label}`, source: 'damage', defaultColor: corner.color, scaleKey: 'percent', min: 0, max: 100, unit: '%', getValue: (r: DamageRow) => 100 - (r as any)[`tyre_wear_${corner.key}`], format: withUnit('%', 1), axisFormat: withUnit('%') }),
 ])
 
-export const ANALYZE_METRICS = [...base, ...tyreMetrics]
+// The baseline across all four corners: the mean of whichever corners report.
+function averageWear(row: DamageRow): number {
+  let sum = 0
+  let count = 0
+  for (const corner of corners) {
+    const value = (row as any)[`tyre_wear_${corner.key}`]
+    if (Number.isFinite(value)) { sum += value; count++ }
+  }
+  return count ? sum / count : NaN
+}
+
+const averageMetrics: AnalyzeMetricDefinition[] = [
+  metric({ id: 'wear-avg', group: 'Tyres', label: 'Average Tyre Wear', source: 'damage', defaultColor: '#FF780A', scaleKey: 'percent', min: 0, max: 100, unit: '%', getValue: averageWear, format: withUnit('%', 1), axisFormat: withUnit('%') }),
+  metric({ id: 'life-avg', group: 'Tyres', label: 'Average Tyre Life', source: 'damage', defaultColor: '#73BF69', scaleKey: 'percent', min: 0, max: 100, unit: '%', getValue: (r: DamageRow) => 100 - averageWear(r), format: withUnit('%', 1), axisFormat: withUnit('%') }),
+]
+
+export const ANALYZE_METRICS = [...base, ...tyreMetrics, ...averageMetrics]
 export const ANALYZE_METRIC_BY_ID = new Map(ANALYZE_METRICS.map(def => [def.id, def]))
+export const ANALYZE_METRIC_CATEGORIES = ['Driving', 'Motion', 'Power', 'Tyres'] as const
+export const ANALYZE_TYRE_CORNERS = corners.map(corner => ({ key: corner.key, label: corner.label }))
+// Per-corner metric ids are `${idPrefix}-${corner.key}`. `shortLabel` names a
+// combined card, whose four colour swatches leave little room for text.
+export const ANALYZE_TYRE_ROWS = [
+  { idPrefix: 'surface', label: 'Surface Temp', shortLabel: 'Surface', combinedColor: '#FF9830' },
+  { idPrefix: 'inner', label: 'Inner Temp', shortLabel: 'Inner', combinedColor: '#B877DB' },
+  { idPrefix: 'brake-temp', label: 'Brake Temp', shortLabel: 'Brake', combinedColor: '#F2495C' },
+  { idPrefix: 'wear', label: 'Tyre Wear', shortLabel: 'T.Wear', combinedColor: '#8AB8FF' },
+  { idPrefix: 'life', label: 'Tyre Life', shortLabel: 'T.Life', combinedColor: '#73BF69' },
+] as const
+
+// A combined series is one sidebar card (and one stacked panel) that plots the
+// chosen corners of a tyre metric on a shared scale, in the corner colours. It
+// drives the corners' own chart series, so it and those corners are mutually
+// exclusive in a config: charting a row "combined" moves its corners onto it.
+export interface AnalyzeCombinedMetric {
+  id: AnalyzeMetricId
+  label: string
+  unit: string
+  idPrefix: string
+  /** The card's own colour: its title in the sidebar and its chart axis. */
+  defaultColor: string
+  memberIds: readonly AnalyzeMetricId[]
+}
+
+export const ANALYZE_COMBINED_METRICS: AnalyzeCombinedMetric[] = ANALYZE_TYRE_ROWS.map(row => ({
+  id: `${row.idPrefix}-all`,
+  label: `${row.label} · Combined`,
+  unit: ANALYZE_METRIC_BY_ID.get(`${row.idPrefix}-${corners[0].key}`)!.unit,
+  idPrefix: row.idPrefix,
+  defaultColor: row.combinedColor,
+  memberIds: corners.map(corner => `${row.idPrefix}-${corner.key}`),
+}))
+export const ANALYZE_COMBINED_BY_ID = new Map(ANALYZE_COMBINED_METRICS.map(def => [def.id, def]))
+
+const CORNER_KEYS: readonly string[] = corners.map(corner => corner.key)
+
+/** Valid corner keys in FL, FR, RL, RR order; a missing list means all four. */
+export function sanitizeCorners(value: unknown): string[] {
+  if (!Array.isArray(value)) return [...CORNER_KEYS]
+  return CORNER_KEYS.filter(key => value.includes(key))
+}
+
+/** The metric definitions a series config draws: itself, its chosen corners, or none (delta). */
+export function analyzeSeriesMemberIds(item: Pick<AnalyzeSeriesConfig, 'metricId' | 'corners'>): readonly AnalyzeMetricId[] {
+  const combined = ANALYZE_COMBINED_BY_ID.get(item.metricId)
+  if (combined) return (item.corners ?? CORNER_KEYS).map(key => `${combined.idPrefix}-${key}`)
+  return ANALYZE_METRIC_BY_ID.has(item.metricId) ? [item.metricId] : []
+}
+
+/** Custom corner colours with anything that is not a known key and a hex colour dropped. */
+export function sanitizeCornerColors(value: unknown): Partial<Record<string, string>> | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const entries = CORNER_KEYS.flatMap(key => {
+    const color = (value as Record<string, unknown>)[key]
+    return typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color) ? [[key, color] as const] : []
+  })
+  return entries.length ? Object.fromEntries(entries) : undefined
+}
+
+/** The corner key a combined card's member metric id stands for. */
+export function analyzeCornerKeyOf(combinedId: AnalyzeMetricId, memberId: AnalyzeMetricId): string | undefined {
+  const combined = ANALYZE_COMBINED_BY_ID.get(combinedId)
+  return combined && memberId.startsWith(`${combined.idPrefix}-`) ? memberId.slice(combined.idPrefix.length + 1) : undefined
+}
+
+/** The colour a series draws one of its member lines in. */
+export function analyzeSeriesLineColor(item: Pick<AnalyzeSeriesConfig, 'metricId' | 'color' | 'cornerColors'>, memberId: AnalyzeMetricId): string {
+  const key = analyzeCornerKeyOf(item.metricId, memberId)
+  if (key === undefined) return item.color
+  return item.cornerColors?.[key] ?? ANALYZE_METRIC_BY_ID.get(memberId)?.defaultColor ?? item.color
+}
+
+/** Whether a series has anything to plot; a combined card can have no corners picked yet. */
+export function analyzeSeriesHasLines(item: Pick<AnalyzeSeriesConfig, 'metricId' | 'corners'>): boolean {
+  return item.metricId === 'delta' || analyzeSeriesMemberIds(item).length > 0
+}
+
+/** The definition whose scale and formatting a series' axis uses. */
+export function analyzeSeriesScaleDef(metricId: AnalyzeMetricId): AnalyzeMetricDefinition | undefined {
+  return ANALYZE_METRIC_BY_ID.get(ANALYZE_COMBINED_BY_ID.get(metricId)?.memberIds[0] ?? metricId)
+}
+
+/** Series ids that cannot be charted alongside `metricId`. */
+export function analyzeSeriesConflicts(metricId: AnalyzeMetricId): readonly AnalyzeMetricId[] {
+  const combined = ANALYZE_COMBINED_BY_ID.get(metricId)
+  if (combined) return combined.memberIds
+  const owner = ANALYZE_COMBINED_METRICS.find(def => def.memberIds.includes(metricId))
+  return owner ? [owner.id] : []
+}
 
 export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
   version: 9,
@@ -143,11 +254,19 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
         showYAxis: typeof item.showYAxis === 'boolean' ? item.showYAxis : defaultShowYAxis,
       }]
     }
+    const combined = item && ANALYZE_COMBINED_BY_ID.get(item.metricId)
     const def = item && ANALYZE_METRIC_BY_ID.get(item.metricId)
-    if (!def || seen.has(def.id)) return []
-    seen.add(def.id)
-    const color = /^#[0-9a-f]{6}$/i.test(item.color ?? '') ? item.color : def.defaultColor
-    return [{ metricId: def.id, color, visible: item.visible !== false, showYAxis: typeof item.showYAxis === 'boolean' ? item.showYAxis : defaultShowYAxis }]
+    const id = combined?.id ?? def?.id
+    if (!id || seen.has(id) || analyzeSeriesConflicts(id).some(other => seen.has(other))) return []
+    seen.add(id)
+    // Combined cards used to store a placeholder grey before they had a colour.
+    const color = /^#[0-9a-f]{6}$/i.test(item.color ?? '') && !(combined && item.color.toLowerCase() === '#7c8098')
+      ? item.color
+      : (combined ?? def)!.defaultColor
+    const showYAxis = typeof item.showYAxis === 'boolean' ? item.showYAxis : defaultShowYAxis
+    return [combined
+      ? { metricId: id, color, visible: item.visible !== false, showYAxis, corners: sanitizeCorners(item.corners), cornerColors: sanitizeCornerColors(item.cornerColors) }
+      : { metricId: id, color, visible: item.visible !== false, showYAxis }]
   }) : []
   if (!seen.has('delta')) series.push({
     metricId: 'delta', color: DEFAULT_DELTA_POSITIVE_COLOR,

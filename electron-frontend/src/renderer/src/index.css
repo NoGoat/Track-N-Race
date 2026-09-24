@@ -786,6 +786,16 @@ body {
   color: white;
 }
 
+/* Metric picker tiles are analyze toggles with a resting outline, so an
+   unselected tile still reads as a target. */
+.analyze-metric-tile {
+  border-color: var(--border);
+}
+
+.analyze-metric-tile.analyze-toggle-button--active {
+  border-color: var(--border-focus);
+}
+
 .analysis-view-surface {
   opacity: 0;
   pointer-events: none;

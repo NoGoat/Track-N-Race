@@ -1,6 +1,9 @@
 import { useEffect, useRef, type MutableRefObject } from 'react'
 import { ChartTooltipPortal, useChartTooltip } from '../../hooks/useChartTooltip'
-import { ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, type AnalyzeSeriesConfig, type AnalyzeSource } from '../../lib/analyzeMetrics'
+import {
+  ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, analyzeSeriesHasLines, analyzeSeriesLineColor, analyzeSeriesMemberIds, analyzeSeriesScaleDef,
+  type AnalyzeSeriesConfig, type AnalyzeSource,
+} from '../../lib/analyzeMetrics'
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { createCursorLinesPlugin, type CursorLine, type CursorLinesConfig, type CursorLinesHandle } from '../../lib/timechart/cursorLines'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
@@ -437,6 +440,7 @@ export default function AnalyzeTimeChart({
   const stackedPanelConfigsRef = useRef(new Map<string, AnalyzeSeriesConfig>())
   const stackedLayoutReadyRef = useRef(false)
   const stackedLayoutSignatureRef = useRef('')
+  const stackedMembershipRef = useRef('')
   const combinedSeriesAnimationRef = useRef(0)
   const combinedSeriesVisibilityReadyRef = useRef(false)
   const combinedSeriesDesiredVisibilityRef = useRef(new Map<any, boolean>())
@@ -723,7 +727,8 @@ export default function AnalyzeTimeChart({
       let hoveredMetricId: string | null = null
       if (stackedMode) {
         const panels = selectedRef.current.filter(item =>
-          item.visible && (item.metricId !== 'delta' || (distanceModeRef.current && comparisonSelectedRef.current)),
+          item.visible && analyzeSeriesHasLines(item) &&
+          (item.metricId !== 'delta' || (distanceModeRef.current && comparisonSelectedRef.current)),
         )
         const contentHeight = chart.clientHeight - chart.options.paddingTop - chart.options.paddingBottom
         const panelIndex = Math.floor(contentY / contentHeight * panels.length)
@@ -735,15 +740,18 @@ export default function AnalyzeTimeChart({
         for (const item of selectedRef.current) {
           if (!item.visible) continue
           if (hoveredMetricId && !syncedTooltipRef.current && item.metricId !== hoveredMetricId) continue
-          const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
-          const option = seriesRef.current?.[role].get(item.metricId)
-          if (!def || !option) continue
-          const index = nearestIndex(option.data, x)
-          const normalized = index >= 0 ? option.data.yAt(index) : NaN
-          const value = def.min + normalized * (def.max - def.min)
-          const display = Number.isFinite(value) ? def.format(value) : '—'
-          const color = role === 'comparison' ? blendColor(item.color, isDarkRef.current) : item.color
-          roleRows.push(`<div><span style="color:${color}">${def.label}</span>: ${display}</div>`)
+          for (const id of analyzeSeriesMemberIds(item)) {
+            const def = ANALYZE_METRIC_BY_ID.get(id)
+            const option = seriesRef.current?.[role].get(id)
+            if (!def || !option) continue
+            const index = nearestIndex(option.data, x)
+            const normalized = index >= 0 ? option.data.yAt(index) : NaN
+            const value = def.min + normalized * (def.max - def.min)
+            const display = Number.isFinite(value) ? def.format(value) : '—'
+            const seriesColor = analyzeSeriesLineColor(item, id)
+            const color = role === 'comparison' ? blendColor(seriesColor, isDarkRef.current) : seriesColor
+            roleRows.push(`<div><span style="color:${color}">${def.label}</span>: ${display}</div>`)
+          }
         }
         if (roleRows.length > 0) {
           rows.push(`<div style="color:var(--text-secondary);font-size:10px;margin:${rows.length > 1 ? '5px' : '0'} 0 2px">${heading}</div>`, ...roleRows)
@@ -803,22 +811,22 @@ export default function AnalyzeTimeChart({
     const records = seriesRef.current
     const axisHolder = axisCfgRef.current
     if (!chart || !records || !axisHolder) return
-    const selectedDefs = selected.flatMap(item => {
-      const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
-      return def ? [{ item, def }] : []
-    })
-    const visibleDefs = selectedDefs.filter(({ item }) => item.visible)
-    const visibleIds = new Set(visibleDefs.map(({ def }) => def.id))
+    // Metric definition id → the series card that draws it.
+    const ownerById = new Map<string, AnalyzeSeriesConfig>()
+    for (const item of selected) {
+      for (const id of analyzeSeriesMemberIds(item)) ownerById.set(id, item)
+    }
     const deltaItem = selected.find(item => item.metricId === 'delta')
     const showDelta = !!deltaItem && deltaItem.visible !== false && distanceMode && comparisonSelected
     const deltaSeries = deltaSeriesRef.current
     const desiredVisibility = new Map<any, boolean>()
     for (const def of scopedMetricsRef.current) {
-      const item = selectedDefs.find(candidate => candidate.def.id === def.id)?.item
-      const visible = visibleIds.has(def.id)
+      const item = ownerById.get(def.id)
+      const visible = !!item?.visible
       const currentOption = records.current.get(def.id)
       const comparisonOption = records.comparison.get(def.id)
-      const color = themeSeriesColor(item?.color ?? def.defaultColor, isDark)
+      // Combined cards draw each corner in its own colour.
+      const color = themeSeriesColor(item ? analyzeSeriesLineColor(item, def.id) : def.defaultColor, isDark)
       if (currentOption) { desiredVisibility.set(currentOption, visible); currentOption.color = color }
       if (comparisonOption) { desiredVisibility.set(comparisonOption, visible && !!comparison); comparisonOption.color = blendColor(color, isDark) }
     }
@@ -883,7 +891,7 @@ export default function AnalyzeTimeChart({
     // WebGL paints later series over earlier ones, so reverse the sidebar order:
     // the first row in the sidebar is drawn last and remains visually on top.
     const panelItems = selected.filter(item =>
-      item.visible && (item.metricId !== 'delta' || showDelta),
+      item.visible && analyzeSeriesHasLines(item) && (item.metricId !== 'delta' || showDelta),
     )
     const splitValues = sectorBoundaries
       ? resolvedSectorSplits(current, comparison).map(split => distanceMode ? split.distance : split.elapsedSeconds)
@@ -919,12 +927,14 @@ export default function AnalyzeTimeChart({
       stackedExitingMetricIdsRef.current.clear()
       stackedLayoutReadyRef.current = false
       stackedLayoutSignatureRef.current = ''
+      stackedMembershipRef.current = ''
     }
     const viewportAnimation = new Map<any, StackedTransition>()
     const panelViewportAnimation = new Map<string, StackedTransition>()
     let animateStackedLayout = false
     let layoutChanged = false
     let stackedLayoutSignature = ''
+    let stackedMembership = ''
     let exitingItems: AnalyzeSeriesConfig[] = []
     if (stackedMode) {
       const selectedById = new Map(selected.map(item => [item.metricId, item]))
@@ -933,11 +943,15 @@ export default function AnalyzeTimeChart({
         bottom: (index + 1) / panelItems.length,
         gapAfter: index < panelItems.length - 1 ? STACKED_PANEL_GAP : 0,
       }]))
-      const representativeFor = (metricId: string) => metricId === 'delta'
+      const representativeFor = (item: AnalyzeSeriesConfig) => item.metricId === 'delta'
         ? deltaSeries?.positive
-        : records.current.get(metricId)
+        : records.current.get(analyzeSeriesMemberIds(item)[0])
       stackedLayoutSignature = panelItems.map(item => item.metricId).join('|')
-      layoutChanged = stackedLayoutSignatureRef.current !== stackedLayoutSignature
+      // A combined card gaining or losing a corner keeps the panel list but
+      // still has to place that corner's line, so it counts as a layout change.
+      stackedMembership = panelItems.map(item => analyzeSeriesMemberIds(item).join(',')).join('|')
+      layoutChanged = stackedLayoutSignatureRef.current !== stackedLayoutSignature ||
+        stackedMembershipRef.current !== stackedMembership
       const previousPanelIds = stackedLayoutSignatureRef.current
         ? stackedLayoutSignatureRef.current.split('|')
         : []
@@ -965,17 +979,17 @@ export default function AnalyzeTimeChart({
       ].filter(([id]) => selectedById.has(id) || stackedExitingMetricIdsRef.current.has(id)))
       panelItems.forEach((item, index) => {
         const viewport = targetViewportById.get(item.metricId)!
-        const representative = representativeFor(item.metricId)
+        const representative = representativeFor(item)
         const prior = representative?.viewport
         let entryBoundary: number | null = null
         if (!prior) {
           for (let sibling = index - 1; sibling >= 0; sibling--) {
-            const siblingViewport = representativeFor(panelItems[sibling].metricId)?.viewport
+            const siblingViewport = representativeFor(panelItems[sibling])?.viewport
             if (siblingViewport) { entryBoundary = siblingViewport.bottom; break }
           }
           if (entryBoundary === null) {
             for (let sibling = index + 1; sibling < panelItems.length; sibling++) {
-              const siblingViewport = representativeFor(panelItems[sibling].metricId)?.viewport
+              const siblingViewport = representativeFor(panelItems[sibling])?.viewport
               if (siblingViewport) { entryBoundary = siblingViewport.top; break }
             }
           }
@@ -1012,13 +1026,13 @@ export default function AnalyzeTimeChart({
           }
           return
         }
-        const currentOption = records.current.get(item.metricId)
-        const comparisonOption = records.comparison.get(item.metricId)
-        applyViewport(currentOption)
-        applyViewport(comparisonOption)
+        for (const id of analyzeSeriesMemberIds(item)) {
+          applyViewport(records.current.get(id))
+          applyViewport(records.comparison.get(id))
+        }
       })
       for (const item of exitingItems) {
-        const representative = representativeFor(item.metricId)
+        const representative = representativeFor(item)
         const prior = representative?.viewport
         if (!prior) continue
         const from: StackedViewport = {
@@ -1064,27 +1078,33 @@ export default function AnalyzeTimeChart({
           applyExitViewport(deltaSeries?.positive)
           applyExitViewport(deltaSeries?.negative)
         } else {
-          applyExitViewport(records.current.get(item.metricId))
-          applyExitViewport(records.comparison.get(item.metricId))
+          for (const id of analyzeSeriesMemberIds(item)) {
+            applyExitViewport(records.current.get(id))
+            applyExitViewport(records.comparison.get(id))
+          }
         }
       }
     }
     const drawOrder = [...selected].reverse().flatMap(item => {
       if (!item.visible) return []
       if (item.metricId === 'delta') return showDelta && deltaSeries ? [deltaSeries.positive, deltaSeries.negative] : []
-      const currentOption = records.current.get(item.metricId)
-      const comparisonOption = records.comparison.get(item.metricId)
-      return comparisonOption && comparison ? [comparisonOption, currentOption].filter(Boolean) : [currentOption].filter(Boolean)
+      return analyzeSeriesMemberIds(item).flatMap(id => {
+        const currentOption = records.current.get(id)
+        const comparisonOption = records.comparison.get(id)
+        return comparisonOption && comparison ? [comparisonOption, currentOption].filter(Boolean) : [currentOption].filter(Boolean)
+      })
     })
     for (const item of [...exitingItems].reverse()) {
       if (item.metricId === 'delta') {
         if (deltaSeries) drawOrder.push(deltaSeries.positive, deltaSeries.negative)
         continue
       }
-      const currentOption = records.current.get(item.metricId)
-      const comparisonOption = records.comparison.get(item.metricId)
-      if (comparisonOption && comparison) drawOrder.push(comparisonOption)
-      if (currentOption) drawOrder.push(currentOption)
+      for (const id of analyzeSeriesMemberIds(item)) {
+        const currentOption = records.current.get(id)
+        const comparisonOption = records.comparison.get(id)
+        if (comparisonOption && comparison) drawOrder.push(comparisonOption)
+        if (currentOption) drawOrder.push(currentOption)
+      }
     }
     const visibleOptions = new Set(drawOrder)
     const hidden = chart.options.series.filter(option => {
@@ -1100,7 +1120,7 @@ export default function AnalyzeTimeChart({
       const renderedPanelItems = [...panelItems, ...exitingItems]
         .filter(item => panelViewportAnimation.has(item.metricId))
       const axisPanels = renderedPanelItems.map((item): StackedAxisPanel => {
-        const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
+        const def = analyzeSeriesScaleDef(item.metricId)
         const isDelta = item.metricId === 'delta'
         const transition = panelViewportAnimation.get(item.metricId)!
         // During an existing animation, `from` is the series' current
@@ -1149,6 +1169,7 @@ export default function AnalyzeTimeChart({
       chart.model.resize(chart.clientWidth, chart.clientHeight)
       stackedLayoutReadyRef.current = true
       stackedLayoutSignatureRef.current = stackedLayoutSignature
+      stackedMembershipRef.current = stackedMembership
       if (animateStackedLayout && viewportAnimation.size > 0) {
         const startedAt = performance.now()
         const duration = ANALYSIS_MOTION_DURATION
@@ -1178,7 +1199,7 @@ export default function AnalyzeTimeChart({
             for (const item of exitingItems) {
               const options = item.metricId === 'delta'
                 ? [deltaSeries?.positive, deltaSeries?.negative]
-                : [records.current.get(item.metricId), records.comparison.get(item.metricId)]
+                : analyzeSeriesMemberIds(item).flatMap(id => [records.current.get(id), records.comparison.get(id)])
               for (const option of options) {
                 if (!option) continue
                 option.visible = false
@@ -1211,7 +1232,7 @@ export default function AnalyzeTimeChart({
         if (showDelta) axes.push({ kind: 'delta', item })
         continue
       }
-      const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
+      const def = analyzeSeriesScaleDef(item.metricId)
       if (!def || seenScales.has(def.scaleKey)) continue
       seenScales.add(def.scaleKey)
       axes.push({ kind: 'metric', item, def })
@@ -1222,13 +1243,16 @@ export default function AnalyzeTimeChart({
     const left = axisCount > 0 ? Math.max(44, 12 + leftCount * 54) : 12
     const right = axisCount > 0 ? Math.max(12, 12 + rightCount * 54) : 12
     const first = axes[0]
+    const axisColorFor = (entry: (typeof axes)[number]) => entry.kind === 'delta'
+      ? themedDeltaPositive
+      : themeSeriesColor(entry.item.color, isDark)
     const extraYAxes = axes.slice(1).map((entry, index) => {
       const axisIndex = index + 1
       const side = axisIndex % 2 === 1 ? 'right' as const : 'left' as const
       const slot = Math.floor(axisIndex / 2)
       return {
         side, offset: 4 + slot * 54,
-        color: entry.kind === 'delta' ? themedDeltaPositive : themeSeriesColor(entry.item.color, isDark),
+        color: axisColorFor(entry),
         colorForValue: entry.kind === 'delta'
           ? (normalized: number) => normalized < 0.5 ? themedDeltaNegative : normalized > 0.5 ? themedDeltaPositive : axis
           : undefined,
@@ -1240,7 +1264,7 @@ export default function AnalyzeTimeChart({
     })
     axisHolder.current = {
       axisColor: axis,
-      yAxisColor: first?.kind === 'delta' ? themedDeltaPositive : themeSeriesColor(first?.item.color ?? axis, isDark),
+      yAxisColor: first ? axisColorFor(first) : themeSeriesColor(axis, isDark),
       gridColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
       borderColor: isDark ? '#1e2136' : '#afb1ae',
       font: '10px "Cascadia Code", ui-monospace, monospace',

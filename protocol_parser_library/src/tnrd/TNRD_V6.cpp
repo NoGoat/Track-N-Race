@@ -317,6 +317,10 @@ struct TnrdV6Writer::Impl {
         std::set<V6DataType> committedUnavailable;
         std::set<V6DataType> unavailable;
         bool currentInvalid{};
+        // In the garage, or on the out-lap that follows it. The game keeps the
+        // lap number through both, so these stretches are held in a lap-0
+        // interval until the car starts a timed lap.
+        bool garageHold{};
     };
     struct PendingRestriction { uint8_t driver{}; V6RestrictionChange change; };
     struct PendingTyreHistory { uint8_t driver{}; V6Phase phase{}; float time{}; std::vector<V6TyreStintSummary> stints; };
@@ -860,13 +864,37 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
             // laps are closed and its lap number no longer advances, so only
             // the standings sample below still applies to it.
             if (!state.terminal) {
-                const uint32_t lapNumber = car.lap_num > 0 ? static_cast<uint32_t>(car.lap_num) : 0;
+                // Qualifying and practice keep the lap number through a return
+                // to the garage and the out-lap after it, so a lap interval
+                // bounded only by lap_num swallows minutes of garage time.
+                // Hold those stretches in lap 0, the between-attempts interval
+                // of TNRD_V6_DESIGN.md §3, and start the numbered lap when the
+                // car begins a timed lap. The abandoned in-lap joins the hold:
+                // keeping its number would give the next attempt a duplicate.
+                const bool wasHeld = state.garageHold;
+                if (car.driver_status == 0) {
+                    if (!state.garageHold && state.current.lapNumber != 0) state.current.lapNumber = 0;
+                    state.garageHold = true;
+                } else if (car.driver_status != 3) {
+                    state.garageHold = false;
+                }
+                const uint32_t gameLap = car.lap_num > 0 ? static_cast<uint32_t>(car.lap_num) : 0;
+                const uint32_t lapNumber = state.garageHold ? 0 : gameLap;
                 if (state.current.lapNumber != lapNumber || state.current.phase != phase) {
-                    const uint32_t s1 = car.s1_ms > 0 ? static_cast<uint32_t>(car.s1_ms) : 0;
-                    const uint32_t s2 = car.s2_ms > 0 ? static_cast<uint32_t>(car.s2_ms) : 0;
-                    const uint32_t total = car.last_lap_ms > 0 ? static_cast<uint32_t>(car.last_lap_ms) : 0;
+                    // Only a numbered lap owns the game's last-lap times; a
+                    // lap-0 interval is never a completed lap.
+                    const bool numbered = state.current.lapNumber != 0;
+                    const uint32_t s1 = numbered && car.s1_ms > 0 ? static_cast<uint32_t>(car.s1_ms) : 0;
+                    const uint32_t s2 = numbered && car.s2_ms > 0 ? static_cast<uint32_t>(car.s2_ms) : 0;
+                    const uint32_t total = numbered && car.last_lap_ms > 0 ? static_cast<uint32_t>(car.last_lap_ms) : 0;
                     const uint32_t s3 = total > s1 + s2 ? total - s1 - s2 : 0;
-                    boundary(index, lapNumber, time, total, s1, s2, s3,
+                    // Other cars' timing arrives about twice a second, so the
+                    // timed lap began current_lap_ms before this sample.
+                    const float at = wasHeld && !state.garageHold && car.current_lap_ms > 0
+                        ? std::max(state.current.startSessionTime,
+                                   time - static_cast<float>(car.current_lap_ms) / 1000.0f)
+                        : time;
+                    boundary(index, lapNumber, at, total, s1, s2, s3,
                              lapNumber > state.current.lapNumber && total > 0,
                              !state.currentInvalid);
                 }
@@ -1038,6 +1066,9 @@ bool TnrdV6Writer::Impl::rewind(float time, std::string* errorOut) {
         }
         state.lastState = state.committedState;
         state.unavailable = state.committedUnavailable;
+        // The next timing sample re-establishes a hold; only a lap-0 interval
+        // can still be inside one after the rewind.
+        if (!state.open || state.current.lapNumber != 0) state.garageHold = false;
         auto consider = [&](const std::map<V6DataType,Builder>& chunks) {
             for (const auto& [type,builder] : chunks) if (stateType(type) && builder.count) {
                 size_t start = 0;
@@ -1513,6 +1544,12 @@ bool TnrdV6Archive::recoverByScan(HeaderRow& headerOut, std::string* errorOut) {
         uint32_t nextLapTimeMs{}, nextS1Ms{}, nextS2Ms{};
         uint32_t firstLapNumber{};
         bool lastInvalid{};
+        // Any in-garage sample marks the writer's lap-0 hold interval: entering
+        // the garage renumbers the open lap to 0, so a numbered lap has none.
+        bool sawGarage{};
+        // The writer records only active (2) or ended cars, so any other final
+        // result status means the car's race ended during this lap.
+        bool endedAtTail{};
     };
     std::map<uint32_t, LapAccum> laps;
     std::map<uint8_t, std::vector<uint32_t>> driverLapOrder;
@@ -1663,6 +1700,9 @@ bool TnrdV6Archive::recoverByScan(HeaderRow& headerOut, std::string* errorOut) {
             accum.nextS1Ms = static_cast<uint32_t>(std::max(0.0, fieldOr(head, "s1_ms", 0.0)));
             accum.nextS2Ms = static_cast<uint32_t>(std::max(0.0, fieldOr(head, "s2_ms", 0.0)));
             accum.lastInvalid = fieldOr(tail.empty() ? head : tail, "lap_invalid", 0.0) != 0.0;
+            accum.endedAtTail = fieldOr(tail.empty() ? head : tail, "result_status", 2.0) != 2.0;
+            if (plain.find("\"driver_status\":0,") != std::string::npos ||
+                plain.find("\"driver_status\":0}") != std::string::npos) accum.sawGarage = true;
         }
     }
 
@@ -1677,11 +1717,22 @@ bool TnrdV6Archive::recoverByScan(HeaderRow& headerOut, std::string* errorOut) {
     // in the writer; the two must stay in step.
     for (const auto& entry : driverLapOrder) {
         const auto& order = entry.second;
+        // terminate() closes the lap in which a car's race ended and opens a
+        // lap-0 classification lap, so every lap after an ended one is that.
+        std::vector<bool> classification(order.size());
+        for (size_t i = 1; i < order.size(); ++i) {
+            const auto& previous = laps[order[i - 1]];
+            classification[i] = previous.haveTiming && previous.endedAtTail;
+        }
         for (size_t i = 0; i < order.size(); ++i) {
             auto& accum = laps[order[i]];
-            accum.summary.lapNumber = accum.firstLapNumber;
+            // A garage hold or classification lap keeps the game's lap number
+            // in its samples, but the writer stored it as lap 0, which never
+            // owns a lap time; nor does the lap that terminate() closed.
+            const bool lapZero = accum.sawGarage || classification[i];
+            accum.summary.lapNumber = lapZero ? 0 : accum.firstLapNumber;
             accum.summary.isValid = !accum.lastInvalid;
-            if (i + 1 < order.size()) {
+            if (!lapZero && i + 1 < order.size() && !classification[i + 1]) {
                 const auto& next = laps[order[i + 1]];
                 if (next.haveTiming) {
                     const uint32_t total = next.nextLapTimeMs;

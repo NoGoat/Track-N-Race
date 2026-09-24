@@ -5,7 +5,8 @@ import Select from '../lib/AnimatedSelect'
 import { AlertTriangle, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Eye, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
-  ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG,
+  ANALYZE_COMBINED_BY_ID, ANALYZE_METRIC_BY_ID, ANALYZE_TYRE_CORNERS, ANALYZE_TYRE_ROWS, DEFAULT_ANALYZE_CONFIG,
+  analyzeCornerKeyOf, analyzeSeriesConflicts, analyzeSeriesLineColor, sanitizeCornerColors, sanitizeCorners,
   DEFAULT_COMPARE_LABEL, DEFAULT_CURRENT_LABEL, DEFAULT_LAP_A_LABEL, DEFAULT_LAP_B_LABEL,
   DEFAULT_DELTA_NEGATIVE_COLOR, DEFAULT_DELTA_POSITIVE_COLOR, sanitizeAnalyzeConfig,
   type AnalyzeConfig, type AnalyzeSeriesConfig,
@@ -25,6 +26,7 @@ import type { AnalysisDriverLapCatalog, AnalyzeDeltaData, AnalyzeDeltaSample, An
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
 import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
 import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
+import AnalyzeMetricPicker from './AnalyzeMetricPicker'
 import SyncedTooltipIcon from '../app/components/SyncedTooltipIcon'
 import ColorPicker from './ColorPicker'
 
@@ -61,7 +63,6 @@ export interface AnalysisDriverSelection {
 }
 
 export type LapBlock = AnalysisDriverLapCatalog['blocks'][number]
-interface SelectOption { value: string; label: string }
 interface LapOption {
   value: number
   label: string
@@ -416,20 +417,6 @@ function formatComparisonLapOption(option: ComparisonLapOption) {
   </span>
 }
 
-// Its options, handler and styles are all stable; only the screen around it
-// re-renders, so keep this select out of that path.
-const AddMetricSelect = memo(function AddMetricSelect({ onChange, options, styles }: {
-  onChange: (option: SingleValue<SelectOption>) => void
-  options: GroupBase<SelectOption>[]
-  styles: ReturnType<typeof buildSelectStyles>
-}) {
-  return <Select<SelectOption, false>
-    inputId="analyze-add-metric" aria-label="Add a Metric" value={null} options={options}
-    onChange={onChange} placeholder="Add a Metric" styles={styles}
-    components={selectComponents} isSearchable menuPortalTarget={document.body}
-  />
-})
-
 // Rebuilding this map inline makes react-select remount its internals on every
 // render of the panels around it.
 const displayOnlySelectComponents = { DropdownIndicator: () => null, ClearIndicator: () => null }
@@ -631,14 +618,48 @@ function parseAnalyzeDeltaData(payload: any): AnalyzeDeltaData | null {
   }
 }
 
-const SeriesColorPicker = memo(function SeriesColorPicker({ color, label, metricId, onColorChange }: {
+const SeriesColorPicker = memo(function SeriesColorPicker({ color, label, metricId, onColorChange, asLabel = false }: {
   color: string
   label: string
   metricId: string
   onColorChange: (metricId: string, color: string) => void
+  /** Render the card title, in its colour, as the picker trigger. */
+  asLabel?: boolean
 }) {
   const handleChange = useCallback((next: string) => onColorChange(metricId, next), [metricId, onColorChange])
-  return <ColorPicker label={label} color={color} onChange={handleChange} />
+  if (!asLabel) return <ColorPicker label={label} color={color} onChange={handleChange} />
+  return <ColorPicker
+    label={label} color={color} onChange={handleChange}
+    triggerClassName="block max-w-full truncate text-left text-[10px] font-semibold cursor-pointer"
+    triggerStyle={{ backgroundColor: 'transparent', color }}
+  >{label}</ColorPicker>
+})
+
+// A combined tyre card's swatches, laid out like Delta's: one standard colour
+// picker per corner in FL FR RL RR order. Corners not on the card stay in
+// place but are disabled.
+const CornerColorPicker = memo(function CornerColorPicker({ item, label, onColorChange }: {
+  item: AnalyzeSeriesConfig
+  label: string
+  onColorChange: (metricId: string, cornerKey: string, color: string) => void
+}) {
+  const combined = ANALYZE_COMBINED_BY_ID.get(item.metricId)
+  if (!combined) return null
+  return <div className="flex gap-1 shrink-0">
+    {combined.memberIds.map(memberId => {
+      const key = analyzeCornerKeyOf(item.metricId, memberId)!
+      const picked = item.corners?.includes(key) ?? false
+      const corner = ANALYZE_TYRE_CORNERS.find(entry => entry.key === key)?.label ?? key
+      return <span key={memberId} title={corner} className={`flex ${picked ? '' : 'grayscale opacity-30'}`}>
+        <ColorPicker
+          label={`${label} ${corner}`}
+          color={analyzeSeriesLineColor(item, memberId)}
+          onChange={color => onColorChange(item.metricId, key, color)}
+          disabled={!picked}
+        />
+      </span>
+    })}
+  </div>
 })
 
 const DeltaColorPicker = memo(function DeltaColorPicker({
@@ -870,11 +891,6 @@ export default function AnalyzeScreen({
   const seriesLayoutReadyRef = useRef(false)
   const sidebarRef = useRef<HTMLElement>(null)
   const previousCollapsedRef = useRef(config.collapsed)
-  const selectStyles = useMemo(() => buildSelectStyles(isDark, {
-    solidBg: true,
-    controlHeight: 32,
-    labelStyleGroupHeadings: true,
-  }), [isDark])
   const lapSelectStyles = useMemo(() => buildSelectStyles(isDark, {
     solidBg: true,
     controlHeight: 32,
@@ -979,11 +995,7 @@ export default function AnalyzeScreen({
   }, [config.view, playbackFilename, setAnalysisView])
 
 
-  const selectedIds = useMemo(() => new Set(config.series.map(item => item.metricId)), [config.series])
-  const metricOptions = useMemo(() => ['Driving', 'Motion', 'Power', 'Tyres'].map(group => ({
-    label: group,
-    options: ANALYZE_METRICS.filter(metric => metric.group === group && !selectedIds.has(metric.id)).map(metric => ({ value: metric.id, label: metric.label })),
-  })).filter(group => group.options.length), [selectedIds])
+  const selectedMetricIds = useMemo(() => new Set(config.series.map(item => item.metricId)), [config.series])
 
   const makeLapOption = useCallback((block: LapBlock, fastest: number | null, lapTimes: Record<number, number>): LapOption => {
     const status = lastTyreStatus(block)
@@ -1187,6 +1199,11 @@ export default function AnalyzeScreen({
     onCompareLapChange(option?.lapNum ?? null), [onCompareLapChange])
   const handleSeriesColorChange = useCallback((metricId: string, color: string) =>
     updateSeries(config.series.map(entry => entry.metricId === metricId ? { ...entry, color } : entry)),
+  [config.series, updateSeries])
+  const handleCornerColorChange = useCallback((metricId: string, cornerKey: string, color: string) =>
+    updateSeries(config.series.map(entry => entry.metricId === metricId
+      ? { ...entry, cornerColors: { ...entry.cornerColors, [cornerKey]: color } }
+      : entry)),
   [config.series, updateSeries])
   const handleDeltaPositiveChange = useCallback((color: string) =>
     updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, color } : entry)),
@@ -1490,12 +1507,79 @@ export default function AnalyzeScreen({
     }
   }, [analysisLapCache, compareDriver, dataMask, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapADriver, lapBDriver, selectedCompareLapNum])
 
-  const addMetric = useCallback((option: SingleValue<SelectOption>) => {
-    if (!option) return
-    const def = ANALYZE_METRIC_BY_ID.get(option.value)
-    if (!def || config.series.some(item => item.metricId === def.id)) return
-    updateSeries([...config.series, { metricId: def.id, color: def.defaultColor, visible: true, showYAxis: true }])
+  const setMetricsSelected = useCallback((metricIds: string[], selected: boolean) => {
+    if (!selected) {
+      const removed = new Set(metricIds.filter(id => id !== 'delta'))
+      if (config.series.some(item => removed.has(item.metricId))) updateSeries(config.series.filter(item => !removed.has(item.metricId)))
+      return
+    }
+    const charted = new Set(config.series.map(item => item.metricId))
+    const displaced = new Set<string>()
+    const added = metricIds.flatMap(id => {
+      const combined = ANALYZE_COMBINED_BY_ID.get(id)
+      const def = ANALYZE_METRIC_BY_ID.get(id)
+      if ((!combined && !def) || charted.has(id)) return []
+      charted.add(id)
+      // A combined card and its own corners draw the same chart series.
+      for (const conflict of analyzeSeriesConflicts(id)) displaced.add(conflict)
+      return [combined
+        ? { metricId: id, color: combined.defaultColor, visible: true, showYAxis: true, corners: sanitizeCorners(undefined) }
+        : { metricId: id, color: def!.defaultColor, visible: true, showYAxis: true }]
+    })
+    if (added.length) updateSeries([...config.series.filter(item => !displaced.has(item.metricId)), ...added])
   }, [config.series, updateSeries])
+
+  // With a row combined, its corners are picked on the combined card;
+  // otherwise each corner is its own card.
+  const toggleTyreCorner = useCallback((idPrefix: string, cornerKey: string) => {
+    const combined = config.series.find(item => item.metricId === `${idPrefix}-all`)
+    if (!combined) {
+      const id = `${idPrefix}-${cornerKey}`
+      setMetricsSelected([id], !config.series.some(item => item.metricId === id))
+      return
+    }
+    const corners = combined.corners ?? []
+    const next = corners.includes(cornerKey)
+      ? corners.filter(key => key !== cornerKey)
+      : sanitizeCorners([...corners, cornerKey])
+    updateSeries(config.series.map(item => item === combined ? { ...item, corners: next } : item))
+  }, [config.series, setMetricsSelected, updateSeries])
+
+  // Combining merges the row's charted corners into one card where the first
+  // of them sat; separating splits the card back into a card per corner.
+  const toggleTyreCombined = useCallback((idPrefix: string) => {
+    const combinedId = `${idPrefix}-all`
+    const combined = config.series.find(item => item.metricId === combinedId)
+    if (combined) {
+      const split = (combined.corners ?? []).flatMap(key => {
+        const def = ANALYZE_METRIC_BY_ID.get(`${idPrefix}-${key}`)
+        return def ? [{ metricId: def.id, color: analyzeSeriesLineColor(combined, def.id), visible: combined.visible, showYAxis: combined.showYAxis }] : []
+      })
+      updateSeries(config.series.flatMap(item => item === combined ? split : [item]))
+      return
+    }
+    const memberIds = new Set(ANALYZE_COMBINED_BY_ID.get(combinedId)?.memberIds ?? [])
+    const members = config.series.filter(item => memberIds.has(item.metricId))
+    const merged: AnalyzeSeriesConfig = {
+      metricId: combinedId,
+      color: ANALYZE_COMBINED_BY_ID.get(combinedId)!.defaultColor,
+      visible: members.length === 0 || members.some(item => item.visible),
+      showYAxis: members.length === 0 || members.some(item => item.showYAxis),
+      corners: sanitizeCorners(members.map(item => item.metricId.slice(idPrefix.length + 1))),
+      cornerColors: sanitizeCornerColors(Object.fromEntries(members.flatMap(item => {
+        const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
+        return def && item.color !== def.defaultColor ? [[item.metricId.slice(idPrefix.length + 1), item.color]] : []
+      }))),
+    }
+    const insertAt = config.series.findIndex(item => memberIds.has(item.metricId))
+    const rest = config.series.filter(item => !memberIds.has(item.metricId))
+    rest.splice(insertAt < 0 ? rest.length : insertAt, 0, merged)
+    updateSeries(rest)
+  }, [config.series, updateSeries])
+
+  const tyreCornersByCombined = useMemo(() => new Map(config.series.flatMap(item =>
+    ANALYZE_COMBINED_BY_ID.has(item.metricId) ? [[item.metricId, item.corners ?? []] as const] : [],
+  )), [config.series])
 
   const moveMetric = useCallback((metricId: string, delta: number) => {
     const from = config.series.findIndex(item => item.metricId === metricId)
@@ -1533,10 +1617,14 @@ export default function AnalyzeScreen({
       >
           <div className={`w-[315px] h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
             <div className="h-11 px-3 flex items-center gap-3 border-b border-[var(--border)] shrink-0">
-              <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)] shrink-0">Analysis</div>
-              <div className="flex-1 min-w-0">
-                <AddMetricSelect options={metricOptions} onChange={addMetric} styles={selectStyles} />
-              </div>
+              <div className="flex-1 text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)]">Analysis</div>
+              <AnalyzeMetricPicker
+                selectedIds={selectedMetricIds}
+                combinedCorners={tyreCornersByCombined}
+                onSetSelected={setMetricsSelected}
+                onToggleTyreCorner={toggleTyreCorner}
+                onToggleTyreCombined={toggleTyreCombined}
+              />
             </div>
 
             <div className="p-3 border-b border-[var(--border)] space-y-3 shrink-0">
@@ -1668,7 +1756,9 @@ export default function AnalyzeScreen({
               </button>
             </div>
 
-            <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
+            {/* The 6px scrollbar gutter is always reserved and taken out of the
+                right padding, so cards keep their width when the list scrolls. */}
+            <div className="flex-1 min-h-0 overflow-y-auto p-2 pr-[2px] [scrollbar-gutter:stable] space-y-1">
               {config.series.length === 0 && <div className="p-4 text-center text-[10px] text-[var(--text-secondary)]">No metrics selected</div>}
               {config.series.map((item, index) => {
                 if (item.metricId === 'delta') return (
@@ -1702,8 +1792,14 @@ export default function AnalyzeScreen({
                     </div>}
                   </div>
                 )
+                const combined = ANALYZE_COMBINED_BY_ID.get(item.metricId)
                 const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
-                if (!def) return null
+                if (!def && !combined) return null
+                const label = combined
+                  ? ANALYZE_TYRE_ROWS.find(row => row.idPrefix === combined.idPrefix)?.shortLabel ?? combined.label
+                  : def!.label
+                const unit = combined?.unit ?? def!.unit
+                const pickedCorners = combined ? ANALYZE_TYRE_CORNERS.filter(corner => item.corners?.includes(corner.key)) : []
                 return (
                   <div
                     ref={node => { if (node) seriesRowRefs.current.set(item.metricId, node); else seriesRowRefs.current.delete(item.metricId) }}
@@ -1712,32 +1808,54 @@ export default function AnalyzeScreen({
                     className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded border border-transparent hover:border-[var(--border)] hover:bg-[var(--bg-hover)] ${draggedMetric === item.metricId ? 'opacity-40' : ''}`}
                   >
                     <GripVertical size={13} className="text-[var(--text-secondary)] cursor-grab shrink-0" />
-                    <SeriesColorPicker
-                      label={def.label}
-                      color={item.color}
-                      metricId={item.metricId}
-                      onColorChange={handleSeriesColorChange}
-                    />
+                    {combined
+                      ? <CornerColorPicker item={item} label={label} onColorChange={handleCornerColorChange} />
+                      : <SeriesColorPicker
+                          label={label}
+                          color={item.color}
+                          metricId={item.metricId}
+                          onColorChange={handleSeriesColorChange}
+                        />}
                     <div className="flex-1 min-w-0">
-                      <div className="text-[10px] text-[var(--text-primary)] truncate">{def.label}</div>
-                      <div className="text-[8px] uppercase tracking-wider text-[var(--text-secondary)]">{def.group}{def.unit ? ` · ${def.unit}` : ''}</div>
+                      {combined
+                        // The combined card's own colour names its chart axis;
+                        // its title shows it and opens its picker.
+                        ? <SeriesColorPicker
+                            label={label}
+                            color={item.color}
+                            metricId={item.metricId}
+                            onColorChange={handleSeriesColorChange}
+                            asLabel
+                          />
+                        : <div className="text-[10px] text-[var(--text-primary)] truncate">{label}</div>}
+                      <div className="text-[8px] uppercase tracking-wider text-[var(--text-secondary)] truncate">{combined
+                        ? pickedCorners.length === ANALYZE_TYRE_CORNERS.length
+                          ? 'All'
+                          : pickedCorners.map(corner => corner.label).join(' ') || 'None'
+                        : `${def!.group}${unit ? ` · ${unit}` : ''}`}</div>
                     </div>
                     <div className="flex items-center shrink-0">
                       <button disabled={index === 0} title="Move up" onClick={() => moveMetric(item.metricId, -1)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-20"><ChevronLeft size={12} className="rotate-90" /></button>
                       <button disabled={index === config.series.length - 1} title="Move down" onClick={() => moveMetric(item.metricId, 1)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-20"><ChevronRight size={12} className="rotate-90" /></button>
                       <button
-                        title={item.showYAxis ? 'Hide Y-axis' : 'Show Y-axis'} aria-label={item.showYAxis ? `Hide ${def.label} Y-axis` : `Show ${def.label} Y-axis`}
+                        title={item.showYAxis ? 'Hide Y-axis' : 'Show Y-axis'} aria-label={item.showYAxis ? `Hide ${label} Y-axis` : `Show ${label} Y-axis`}
                         onClick={() => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, showYAxis: !entry.showYAxis } : entry))}
                         className={`p-1 hover:text-[var(--text-primary)] ${item.showYAxis ? 'text-[var(--text-secondary)]' : 'text-[var(--text-inactive)]'}`}
                       ><Axis3d size={11} /></button>
                       <button
-                        title={item.visible ? 'Hide series' : 'Show series'} aria-label={item.visible ? `Hide ${def.label}` : `Show ${def.label}`}
+                        title={item.visible ? 'Hide series' : 'Show series'} aria-label={item.visible ? `Hide ${label}` : `Show ${label}`}
                         onClick={() => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, visible: !entry.visible } : entry))}
                         className={`p-1 hover:text-[var(--text-primary)] ${item.visible ? 'text-[var(--text-secondary)]' : 'text-[var(--text-inactive)]'}`}
                       >
                         <Eye size={11} />
                       </button>
-                      <button title="Reset color" onClick={() => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, color: def.defaultColor } : entry))} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><RotateCcw size={11} /></button>
+                      <button
+                        title={combined ? 'Reset colors' : 'Reset color'}
+                        onClick={() => updateSeries(config.series.map(entry => entry.metricId !== item.metricId
+                          ? entry
+                          : combined ? { ...entry, color: combined.defaultColor, cornerColors: undefined } : { ...entry, color: def!.defaultColor }))}
+                        className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                      ><RotateCcw size={11} /></button>
                       <button title="Remove metric" onClick={() => void removeMetric(item.metricId)} className="p-1 text-[var(--text-secondary)] hover:text-[#d44252]"><Trash2 size={11} /></button>
                     </div>
                   </div>

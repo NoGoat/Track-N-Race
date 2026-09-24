@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
 import { ArrowDownUp } from 'lucide-react'
@@ -7,7 +7,7 @@ import { ArrowDownUp } from 'lucide-react'
 // preserves identical positioning, theme integration, keyboard dismissal, and
 // hex-only behavior everywhere colors are edited.
 export default memo(function ColorPicker({
-  label, color, onChange, triggerClassName, triggerStyle, disabled = false,
+  label, color, onChange, triggerClassName, triggerStyle, disabled = false, children,
 }: {
   label: string
   color: string
@@ -15,6 +15,8 @@ export default memo(function ColorPicker({
   triggerClassName?: string
   triggerStyle?: CSSProperties
   disabled?: boolean
+  /** Content for a trigger that is not a plain swatch, such as a text label. */
+  children?: ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState({ left: 8, top: 8 })
@@ -98,7 +100,7 @@ export default memo(function ColorPicker({
       onClick={() => setOpen(value => !value)}
       className={triggerClassName ?? 'w-5 h-5 rounded border border-[var(--border)] cursor-pointer shrink-0 shadow-inner'}
       style={{ backgroundColor: color, ...triggerStyle }}
-    />
+    >{children}</button>
     {open && !disabled && createPortal(
       <div ref={pickerRef} role="dialog" aria-label={`${label} color picker`} className="fixed z-[10000]" style={position}>
         <Chrome

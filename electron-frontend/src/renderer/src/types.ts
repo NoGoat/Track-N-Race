@@ -270,6 +270,7 @@ export interface TyreSetsMsg {
   type: 'tyre_sets'
   ts: string
   session_time: number
+  car_idx?: number
   sets: TyreSetEntry[]
   fitted_idx: number
 }

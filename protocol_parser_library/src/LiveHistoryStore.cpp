@@ -668,7 +668,9 @@ LiveHistoryMemoryStats LiveHistoryStore::memoryStats() const {
 
 std::string LiveHistoryStore::latestJson(uint8_t type,
                                          float throughSessionTime) const {
-    if (type >= 16) return {};
+    // Packed families hold binary records, not JSON lines. Splitting their
+    // decompressed bytes on '\n' would return a fragment of raw doubles.
+    if (type >= 16 || isPacked(type)) return {};
     std::lock_guard<std::mutex> lock(impl_->stateMutex);
     for (auto it = impl_->laps.rbegin(); it != impl_->laps.rend(); ++it) {
         std::lock_guard<std::mutex> lapLock(it->second->mutex);
