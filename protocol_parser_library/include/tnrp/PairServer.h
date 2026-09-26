@@ -36,6 +36,10 @@ public:
     using LapDeltaCallback = std::function<std::string(int currentLap,
                                                        int comparisonLap,
                                                        bool sectorDelta)>;
+    // One recorded lap of the selected driver, reduced to the "family.field"
+    // channels a phone's Analysis page draws. Empty when nothing is playing.
+    using LapDataCallback = std::function<std::string(int lapNum,
+                                                      const std::vector<std::string>& channels)>;
     using DiagnosticCallback = std::function<void(const std::string& message)>;
 
     PairServer();
@@ -46,6 +50,7 @@ public:
     void configure(PairServerConfig config, StateCallback stateCallback,
                    RequirementsCallback requirementsCallback,
                    LapDeltaCallback lapDeltaCallback,
+                   LapDataCallback lapDataCallback,
                    DiagnosticCallback diagnosticCallback = {});
 
     bool start(std::string* error = nullptr);

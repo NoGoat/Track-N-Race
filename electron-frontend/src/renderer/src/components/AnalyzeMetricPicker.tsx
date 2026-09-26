@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Search } from 'lucide-react'
 import {
@@ -6,10 +6,9 @@ import {
 } from '../lib/analyzeMetrics'
 import { SELECT_MENU_ANIMATION_MS } from '../lib/selectStyles'
 
-type Category = (typeof ANALYZE_METRIC_CATEGORIES)[number]
 type Phase = 'closed' | 'open' | 'closing'
 
-const PANEL_WIDTH = 336
+const PANEL_WIDTH = 266
 const CORNER_METRIC_IDS = new Set(ANALYZE_TYRE_ROWS.flatMap(row => ANALYZE_TYRE_CORNERS.map(corner => `${row.idPrefix}-${corner.key}`)))
 const CORNER_TERMS = ANALYZE_TYRE_CORNERS.map(corner => corner.label).join(' ')
 
@@ -25,18 +24,20 @@ function reduceAnimations(): boolean {
   return document.documentElement.dataset.reduceAnimations === 'true'
 }
 
-// Categories stack top to bottom as three-per-row grids of toggle tiles. Each
-// per-corner tyre metric is a row of the same tiles: FL / FR / RL / RR pick
-// corners, and ALL switches the row between a card per corner and one
-// combined card holding the picked corners.
+// Each category is a divider-separated block of wrapping toggle chips. Per-corner
+// tyre metrics form a small matrix: FL / FR / RL / RR pick corners, ALL picks
+// or clears all four, and COM (combined) switches the row between a card per
+// corner and one combined card holding the picked corners.
 export default memo(function AnalyzeMetricPicker({
-  selectedIds, combinedCorners, onSetSelected, onToggleTyreCorner, onToggleTyreCombined,
+  selectedIds, combinedCorners, onSetSelected, onToggleTyreCorner, onToggleTyreAllCorners, onToggleTyreCombined,
 }: {
   selectedIds: ReadonlySet<string>
   /** Combined card id → its picked corner keys, for rows that are combined. */
   combinedCorners: ReadonlyMap<string, readonly string[]>
   onSetSelected: (metricIds: string[], selected: boolean) => void
   onToggleTyreCorner: (idPrefix: string, cornerKey: string) => void
+  /** Picks all four corners of a row, or clears them when all are picked. */
+  onToggleTyreAllCorners: (idPrefix: string) => void
   onToggleTyreCombined: (idPrefix: string) => void
 }) {
   const [phase, setPhase] = useState<Phase>('closed')
@@ -59,7 +60,7 @@ export default memo(function AnalyzeMetricPicker({
   ])), [normalizedQuery])
 
   const tyreRows = useMemo(() => ANALYZE_TYRE_ROWS.filter(row =>
-    matches(normalizedQuery, `tyres tires ${row.label} all ${CORNER_TERMS}`),
+    matches(normalizedQuery, `tyres tires ${row.label} all com combined ${CORNER_TERMS}`),
   ), [normalizedQuery])
 
   const sections = ANALYZE_METRIC_CATEGORIES.filter(entry =>
@@ -135,10 +136,7 @@ export default memo(function AnalyzeMetricPicker({
     if (next) onSetSelected([next], true)
   }
 
-  const heading = (entry: Category) =>
-    <div className="px-0.5 text-[9px] uppercase tracking-[0.1em] text-[var(--text-secondary)]">{entry}</div>
-
-  const tile = (id: string, label: string) => {
+  const chip = (id: string, label: string) => {
     const on = selectedIds.has(id)
     return <button
       key={id}
@@ -146,39 +144,63 @@ export default memo(function AnalyzeMetricPicker({
       aria-pressed={on}
       title={`${on ? 'Remove' : 'Add'} ${label}`}
       onClick={() => toggle(id)}
-      className={`analyze-toggle-button analyze-metric-tile min-h-8 px-2 py-1 rounded flex items-center justify-center text-center text-[10px] leading-tight break-words focus-visible:outline-none ${on ? 'analyze-toggle-button--active' : ''}`}
+      className={`h-6 px-2 rounded border text-[10px] whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-info)] ${
+        on
+          ? 'border-[var(--border-focus)] bg-[var(--border-focus)] text-white'
+          : 'border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--border-focus)] hover:text-[var(--text-primary)]'
+      }`}
     >{label}</button>
   }
 
-  const tyreSegment = (key: string, label: string, title: string, on: boolean, onClick: () => void) =>
+  const tyreCell = (key: string, title: string, on: boolean, onClick: () => void) =>
     <button
       key={key}
       type="button"
       aria-pressed={on}
       title={title}
       onClick={onClick}
-      className={`analyze-toggle-button analyze-metric-tile h-8 rounded text-[9px] tracking-wider focus-visible:outline-none ${on ? 'analyze-toggle-button--active' : ''}`}
-    >{label}</button>
+      className={`w-[22px] h-5 rounded border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-info)] ${
+        on
+          ? 'border-[var(--border-focus)] bg-[var(--border-focus)]'
+          : 'border-[var(--border)] hover:border-[var(--border-focus)] hover:bg-[var(--bg-hover)]'
+      }`}
+    />
 
-  const tyreMatrix = () => tyreRows.length > 0 && <div className="grid grid-cols-[1fr_repeat(5,36px)] gap-1 items-center">
-    {tyreRows.flatMap(row => {
-      const corners = combinedCorners.get(`${row.idPrefix}-all`)
+  const columnLabel = (label: string) =>
+    <span key={label} className="w-[22px] text-center text-[8px] tracking-wider text-[var(--text-secondary)]">{label}</span>
+
+  const tyreMatrix = () => tyreRows.length > 0 && <div className="grid grid-cols-[auto_repeat(6,22px)] gap-x-1 gap-y-1 items-center justify-start">
+    <span />
+    {columnLabel('COM')}
+    {ANALYZE_TYRE_CORNERS.map(corner => columnLabel(corner.label))}
+    {columnLabel('ALL')}
+    {tyreRows.flatMap(tyreRow => {
+      const corners = combinedCorners.get(`${tyreRow.idPrefix}-all`)
       const combined = corners !== undefined
+      const picked = ANALYZE_TYRE_CORNERS.map(corner =>
+        combined ? corners.includes(corner.key) : selectedIds.has(`${tyreRow.idPrefix}-${corner.key}`))
+      const allPicked = picked.every(Boolean)
       return [
-        <span key={`${row.idPrefix}-label`} className="px-0.5 truncate text-[10px] text-[var(--text-primary)]">{row.label}</span>,
-        tyreSegment(
-          `${row.idPrefix}-all`, 'ALL',
-          combined ? `Show ${row.label} corners as separate graphs` : `Show ${row.label} corners together in one graph`,
-          combined, () => onToggleTyreCombined(row.idPrefix),
+        <span
+          key={`${tyreRow.idPrefix}-label`}
+          className={`pr-2 text-[10px] whitespace-nowrap ${picked.some(Boolean) ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}
+        >{tyreRow.label}</span>,
+        tyreCell(
+          `${tyreRow.idPrefix}-all`,
+          combined ? `Show ${tyreRow.label} corners as separate graphs` : `Show ${tyreRow.label} corners together in one graph`,
+          combined, () => onToggleTyreCombined(tyreRow.idPrefix),
         ),
-        ...ANALYZE_TYRE_CORNERS.map(corner => {
-          const on = combined ? corners.includes(corner.key) : selectedIds.has(`${row.idPrefix}-${corner.key}`)
-          return tyreSegment(
-            `${row.idPrefix}-${corner.key}`, corner.label,
-            `${on ? 'Remove' : 'Add'} ${row.label} ${corner.label}`,
-            on, () => onToggleTyreCorner(row.idPrefix, corner.key),
-          )
-        }),
+        ...ANALYZE_TYRE_CORNERS.map((corner, index) => tyreCell(
+          `${tyreRow.idPrefix}-${corner.key}`,
+          `${picked[index] ? 'Remove' : 'Add'} ${tyreRow.label} ${corner.label}`,
+          picked[index],
+          () => onToggleTyreCorner(tyreRow.idPrefix, corner.key),
+        )),
+        tyreCell(
+          `${tyreRow.idPrefix}-every`,
+          `${allPicked ? 'Remove' : 'Add'} all ${tyreRow.label} corners`,
+          allPicked, () => onToggleTyreAllCorners(tyreRow.idPrefix),
+        ),
       ]
     })}
   </div>
@@ -221,22 +243,32 @@ export default memo(function AnalyzeMetricPicker({
               onKeyDown={event => { if (event.key === 'Enter') addFirstMatch() }}
               placeholder="Filter metrics"
               aria-label="Filter metrics"
-              className="h-8 w-full rounded border border-[var(--border)] bg-[var(--bg-input)] pl-7 pr-2.5 text-[11px] text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-secondary)] placeholder:opacity-80 focus:border-[var(--border-focus)]"
+              className="h-7 w-full rounded border border-[var(--border)] bg-[var(--bg-input)] pl-7 pr-2.5 text-[11px] text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-secondary)] placeholder:opacity-80 focus:border-[var(--border-focus)]"
             />
           </div>
         </div>
 
-        <div className="p-2 space-y-3 overflow-y-auto">
-          {sections.map(entry => <div key={entry} role="group" aria-label={entry} className="space-y-1.5">
-            {heading(entry)}
-            {entry === 'Tyres' && tyreMatrix()}
-            {(tiles.get(entry)?.length ?? 0) > 0 && <div className="grid grid-cols-3 gap-1">
-              {(tiles.get(entry) ?? []).map(metric => tile(metric.id, metric.label))}
-            </div>}
-          </div>)}
+        <div className="pb-1 overflow-y-auto">
+          {/* The tyre matrix and the whole-car tyre averages are separate blocks. */}
+          {sections.flatMap(entry => {
+            const entryTiles = tiles.get(entry) ?? []
+            const blocks: { key: string, label: string, content: ReactNode }[] = []
+            if (entry === 'Tyres' && tyreRows.length > 0) blocks.push({ key: 'Tyres-corners', label: 'Tyres by corner', content: tyreMatrix() })
+            if (entryTiles.length > 0) blocks.push({
+              key: entry,
+              label: entry === 'Tyres' ? 'Tyre averages' : entry,
+              content: <div className="flex flex-wrap gap-1">{entryTiles.map(metric => chip(metric.id, metric.label))}</div>,
+            })
+            return blocks
+          }).map((block, index) => <div
+            key={block.key}
+            role="group"
+            aria-label={block.label}
+            className={`px-3 py-2.5 ${index > 0 ? 'border-t border-[var(--border)]' : ''}`}
+          >{block.content}</div>)}
 
           {sections.length === 0 && (
-            <div className="px-2 py-3 text-center text-[11px] text-[var(--text-secondary)]">No metrics match “{query.trim()}”</div>
+            <div className="px-2 py-4 text-center text-[11px] text-[var(--text-secondary)]">No metrics match “{query.trim()}”</div>
           )}
         </div>
       </div>,

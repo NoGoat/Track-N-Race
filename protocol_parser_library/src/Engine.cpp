@@ -4,6 +4,7 @@
 #include "tnrp/TimeUtils.h"
 #include "tnrp/control_rows.h"
 #include "LiveHistoryStore.h"
+#include "PairLapData.h"
 #include "StrategyRollback.h"
 #include "tnrd/TNRD_V6.h"
 
@@ -210,6 +211,17 @@ Engine::Engine(const Config& config, Sink* sink)
                 std::to_string(current.endSessionTime) +
                 ",\"currentProgress\":" + writeJson(current.points) + "}";
             return response;
+        },
+        [this](int lapNum, const std::vector<std::string>& channels) {
+            // The selected driver's indexed lap, read without moving the
+            // shared playback cursor; the phone only chooses which columns.
+            std::string lapData;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!inPlayback_.load()) return std::string{};
+                lapData = reader_.getLapDataMessage(lapNum, pairLapDataRowMask(channels));
+            }
+            return pairLapDataJson(lapData, channels);
         },
         [this](const std::string& message) {
             if (sink_) sink_->onPairDiagnostic(message);

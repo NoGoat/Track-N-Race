@@ -14,18 +14,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -38,8 +42,14 @@ import com.tracknrace.android.TimingTyreStatus
 import com.tracknrace.android.needsParticipantsRefresh
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
 
 internal const val PARTICIPANTS_RETRY_DELAY_MS = 3_000L
+private const val TIMING_REFRESH_MS = 250L
+
+// The tower's card, split across its header item and last row item.
+private val TopCardShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+private val BottomCardShape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp)
 
 @Composable
 internal fun TimingScreen(
@@ -48,6 +58,27 @@ internal fun TimingScreen(
     oneLine: Boolean,
     onRequestParticipants: () -> Unit,
     active: Boolean = true,
+) {
+    // Timing rows arrive several times a second and nearly every row's gap
+    // changes each time. Show the newest state at most every
+    // TIMING_REFRESH_MS: on a low-end phone a full tower update is 20-30 ms.
+    val latest by rememberUpdatedState(state)
+    val shown by produceState(state) {
+        snapshotFlow { latest }.conflate().collect {
+            value = it
+            delay(TIMING_REFRESH_MS)
+        }
+    }
+    TimingTower(shown, labels, oneLine, onRequestParticipants, active)
+}
+
+@Composable
+private fun TimingTower(
+    state: TimingTowerState,
+    labels: Map<String, String>,
+    oneLine: Boolean,
+    onRequestParticipants: () -> Unit,
+    active: Boolean,
 ) {
     val cars = state.cars
         .filter { it.position > 0 && it.resultStatus >= 1 }
@@ -71,14 +102,12 @@ internal fun TimingScreen(
                 vertical = 12.dp,
             ),
         ) {
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.large,
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                    ),
-                ) {
+            // One lazy item per car, keyed by car: a timing update recomposes,
+            // relays out and redraws only the rows whose values changed, not
+            // the whole tower as one card.
+            item(key = "header") {
+                val shape = if (cars.isEmpty()) MaterialTheme.shapes.large else TopCardShape
+                Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, shape)) {
                     TimingHeader(cars.size)
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     if (cars.isEmpty()) {
@@ -89,30 +118,33 @@ internal fun TimingScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodyMedium,
                         )
+                    } else if (wide && !oneLine) {
+                        TimingTableHeader()
+                    }
+                }
+            }
+            itemsIndexed(cars, key = { _, car -> car.index }) { index, car ->
+                val shape = if (index == cars.lastIndex) BottomCardShape else RectangleShape
+                Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, shape)) {
+                    if (index > 0 || (wide && !oneLine)) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
+                    if (oneLine) {
+                        TimingOneLineRow(
+                            car = car,
+                            driver = state.drivers[car.index],
+                            tyre = state.tyreStatuses[car.index],
+                            labels = labels,
+                        )
                     } else {
-                        if (wide && !oneLine) TimingTableHeader()
-                        cars.forEachIndexed { index, car ->
-                            if (index > 0 || (wide && !oneLine)) {
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            }
-                            if (oneLine) {
-                                TimingOneLineRow(
-                                    car = car,
-                                    driver = state.drivers[car.index],
-                                    tyre = state.tyreStatuses[car.index],
-                                    labels = labels,
-                                )
-                            } else {
-                                TimingRow(
-                                    car = car,
-                                    driver = state.drivers[car.index],
-                                    tyre = state.tyreStatuses[car.index],
-                                    labels = labels,
-                                    isPlayer = car.index == state.playerIndex,
-                                    wide = wide,
-                                )
-                            }
-                        }
+                        TimingRow(
+                            car = car,
+                            driver = state.drivers[car.index],
+                            tyre = state.tyreStatuses[car.index],
+                            labels = labels,
+                            isPlayer = car.index == state.playerIndex,
+                            wide = wide,
+                        )
                     }
                 }
             }

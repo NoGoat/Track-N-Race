@@ -59,9 +59,8 @@ implement them.
   race dashboard requests no backfill and receives only a current snapshot plus
   its necessary live rows.
 - Pairing must not affect recording completeness, desktop rendering, or
-  playback timing. Samples are not deliberately throttled or superseded; a
-  phone that exceeds the bounded backlog is disconnected rather than blocking
-  the engine.
+  playback timing. A phone that falls behind receives the newest value of each
+  row instead of a backlog (section 10.5); it never blocks the engine.
 
 ## 3. Current architecture
 
@@ -748,18 +747,89 @@ fields listed for a type on `available: false`; only the projection was missing.
 Regaining access needs no special handling: the next ordinary sample repopulates
 the values.
 
+### 10.4.3 Analysis lap requests
+
+The Android Analysis page (Graph, Split and Map, as on the desktop) does not use
+stream backfill. It asks for one recorded lap at a time, and only while the
+desktop is playing a recording:
+
+```json
+{"type":"request_lap_data","requestId":1099511627777,"lapNum":12,
+ "channels":["telemetry.speed_kph","telemetry.rpm","status.ers_pct"]}
+```
+
+`channels` names `family.field` pairs (`telemetry`, `status`, `damage`,
+`motion`, `motion_ex`; at most 64). The desktop reads that lap of its selected
+driver from the indexed recording (`TnrdReader::getLapDataMessage`), which does
+not move the shared playback cursor, and reduces it to columns
+(`src/PairLapData.cpp`): V6 patches are merged forward, an
+`{"available":false}` clears the fields its type carried, and several rows at
+one timestamp collapse to the last. Lap progress and the player's positions are
+always included for the distance axis and the map. Times are seconds from the
+lap start; missing values are `null`.
+
+```json
+{"type":"lap_data","requestId":1099511627777,"lapNum":12,"data":{
+  "lapNum":12,"startSessionTime":812.345,"endSessionTime":903.210,
+  "progress":{"t":[],"distance":[],"elapsedMs":[],"sector":[],"s1Ms":[],"s2Ms":[]},
+  "positions":{"t":[],"x":[],"z":[]},
+  "families":{"telemetry":{"t":[],"fields":{"speed_kph":[],"rpm":[]}}}}}
+```
+
+The reply is its own text frame, not a `rows` batch, so the phone streams it
+into arrays without building a JSON tree; `data` is `null` when nothing is
+playing or the lap is unknown. A full playback_lap_data row is several MB and
+would overrun the 8 MB per-client queue; the column form is a few hundred KB.
+The `welcome` frame advertises `lap-data`.
+
+The page's delta curve reuses `request_lap_delta`, now honouring its
+`sectorDelta` flag. Analysis numbers its requests from `1 << 40` so the phone
+routes those replies to the page instead of the dashboard's lap delta.
+
 ### 10.5 Delivery and backpressure
 
-Each phone receives engine batches in order through its WebSocket. Hot frames
-are neither delayed to a presentation cadence nor replaced with a latest value.
-If the socket's pending bytes exceed 8 MiB, the service closes that peer with a
-slow-client error instead of allowing unbounded memory or silently discarding
-individual samples. Lifecycle, warning, and race-event messages remain ordered
-on the same connection.
+Every Android page is a latest-state display, so the desktop delivers the newest
+state a phone can take rather than every sample. Each phone has a reader thread
+and a writer thread on a blocking socket with no send or receive timeout;
+`shutdown()` wakes both when the phone is dropped.
 
-A five-second ping and fifteen-second liveness timeout are suitable starting
-values. Measure them on real race Wi-Fi before freezing them as protocol
-constants.
+The writer drains a per-phone outbox of ordered units:
+
+- **Frames** go out exactly as queued: the handshake, `welcome`, `subscribed`,
+  errors, replies (`lap_delta`, `request_latest`), the subscription snapshot,
+  race events, and control rows other than `playback_state`.
+- **Batches** hold latest-state rows and binary records. While a batch is the
+  newest unit, a row with the same state key replaces the queued one and moves
+  to the end. The key is (row type, V6 field group, car): a V6 patch carries one
+  complete field group for one car, and a complete row has field group 0. Binary
+  keeps the newest record of each type. `playback_state` is keyed on its own.
+  The writer sends a batch as one `rows` frame plus one binary frame.
+
+Queuing a frame closes the batch before it, so state is never reordered across a
+`timeline_reset`, a driver change, or a session change. A phone that keeps up
+receives every row as it is published. A phone that pauses (app start-up, GC,
+rotation) receives only the newest value of each key when it resumes, instead
+of a backlog or a disconnect.
+
+`session`, `timing`, and `all_status` are sent at most every 250 ms per key. The
+game sends them at 2 Hz, but V6 playback projects them at sample rate, which for
+`timing` is 22 patches per sample. A row that arrives early is held and sent
+when due, or before the next frame.
+
+The engine reads the union of every consumer's V6 fields. Each phone receives
+only the field groups in its own `v6Types`. `playback_lap_blocks` is cut down to
+the lap boundaries, lap times, fastest lap, delta availability, track length,
+and driver index; the full row carries the desktop's Analyze catalogue for every
+driver, which reaches hundreds of KB in a race.
+
+The subscription snapshot is built from the same keys: the desktop caches the
+newest row of each V6 field group and car, not only the newest row of each type,
+so a phone that connects mid-playback receives rarely sent groups such as the
+fitted tyre.
+
+A phone is dropped when a single `send()` stays blocked for 15 s, when its
+outbox exceeds 8 MiB (frames only accumulate there, since batches are bounded by
+their keys), or on any socket error.
 
 ## 11. Live behavior
 

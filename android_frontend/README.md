@@ -17,9 +17,16 @@ asks the desktop for exactly that union of row families and V6 fields. Playback
 of a V6 recording arrives as field patches, which the store merges, and the app
 follows whichever driver the desktop has selected; the app bar shows their name.
 
+The Analysis page mirrors the desktop's Analysis screen: Graph, Split and Map
+views of the lap under the desktop's playback cursor (or a fixed Lap A / Lap B
+comparison) against a chosen lap, configured from a bottom sheet. Each lap is
+fetched once with `request_lap_data`, carrying only the channels the page
+draws, and drawn on a Compose `Canvas` without decimation.
+
 Material 3 provides the UI components and dynamic Material You color is used
 on Android 12 and later, with light/dark fallback schemes on older devices.
-Landscape mode keeps the existing immersive steering-wheel presentation.
+The dashboard is one Material 3 card layout that landscape rearranges into three
+columns with the app bars hidden until tapped.
 
 Recording is disabled by default. Sessions are staged in the app's external
 Documents directory under `Track N Race/`; users may select another directory

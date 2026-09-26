@@ -37,11 +37,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
@@ -51,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.google.zxing.client.android.Intents
 import com.journeyapps.barcodescanner.ScanContract
+import com.tracknrace.android.pages.AnalysisScreen
 import com.tracknrace.android.pages.DashboardScreen
 import com.tracknrace.android.pages.LicensesScreen
 import com.tracknrace.android.pages.PARTICIPANTS_RETRY_DELAY_MS
@@ -60,14 +62,17 @@ import com.tracknrace.android.pages.TimingScreen
 import com.tracknrace.android.pages.TyresScreen
 import kotlinx.coroutines.delay
 
-private enum class AppScreen(val telemetryPage: PairedTelemetryPage) {
+private enum class AppScreen(val telemetryPage: PairedTelemetryPage, val isPrimary: Boolean = true) {
     DASHBOARD(PairedTelemetryPage.DASHBOARD),
     TIMING(PairedTelemetryPage.TIMING),
     TYRES(PairedTelemetryPage.TYRES),
-    SETTINGS(PairedTelemetryPage.NONE),
-    PAIRING(PairedTelemetryPage.NONE),
-    LICENSES(PairedTelemetryPage.NONE),
+    ANALYSIS(PairedTelemetryPage.ANALYSIS),
+    SETTINGS(PairedTelemetryPage.NONE, isPrimary = false),
+    PAIRING(PairedTelemetryPage.NONE, isPrimary = false),
+    LICENSES(PairedTelemetryPage.NONE, isPrimary = false),
 }
+
+private val DashboardBlack = Color(0xff000000)
 
 // Matched to the roster retry: both recover a control row the desktop already
 // caches, so asking more often would not make it arrive sooner.
@@ -125,7 +130,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
         }
     }
 
-    val isPrimary = screen == AppScreen.DASHBOARD || screen == AppScreen.TIMING || screen == AppScreen.TYRES
+    val isPrimary = screen.isPrimary
     val paired = store.settings.source == PairedTelemetryClient.SOURCE_PAIRED
 
     // derivedStateOf keeps this root from recomposing on every timing row: it
@@ -148,11 +153,11 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     val rosterMissing by remember(store) {
         derivedStateOf { store.timing.needsParticipantsRefresh() }
     }
-    // The Timing page retries a missing roster itself. Dashboard and Tyres share
-    // the same subscription bit now, so give them the same retry.
+    // The Timing page retries a missing roster itself. Dashboard, Tyres and
+    // Analysis share the same subscription bit now, so give them the same retry.
     LaunchedEffect(paired, rosterMissing, screen) {
         if (!paired || !rosterMissing ||
-            (screen != AppScreen.DASHBOARD && screen != AppScreen.TYRES)
+            (screen != AppScreen.DASHBOARD && screen != AppScreen.TYRES && screen != AppScreen.ANALYSIS)
         ) return@LaunchedEffect
         while (true) {
             delay(PARTICIPANTS_RETRY_DELAY_MS)
@@ -186,7 +191,9 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
-        containerColor = MaterialTheme.colorScheme.background,
+        // The dashboard is black glass; painting that here instead of over
+        // the theme background saves a full-screen fill every frame.
+        containerColor = if (screen == AppScreen.DASHBOARD) DashboardBlack else MaterialTheme.colorScheme.background,
     ) { padding ->
         val revealChromeModifier = if (landscape) {
             Modifier.pointerInput(Unit) {
@@ -251,6 +258,11 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                         )
                         AppScreen.TYRES -> TyresScreen(
                             rememberCurrentWhileActive(destinationActive) { store.cold },
+                        )
+                        AppScreen.ANALYSIS -> AnalysisScreen(
+                            store = store,
+                            analysis = telemetry.analysis,
+                            active = destinationActive,
                         )
                         AppScreen.SETTINGS -> SettingsScreen(
                             settings = rememberCurrentWhileActive(destinationActive) { store.settings },
@@ -356,12 +368,13 @@ private fun AppTopBar(
     onSettings: () -> Unit,
     onBack: () -> Unit,
 ) {
-    val primary = screen == AppScreen.DASHBOARD || screen == AppScreen.TIMING || screen == AppScreen.TYRES
+    val primary = screen.isPrimary
     var overflowOpen by remember { mutableStateOf(false) }
     val title = when (screen) {
         AppScreen.DASHBOARD -> "Dashboard"
         AppScreen.TIMING -> "Timing"
         AppScreen.TYRES -> "Tyres"
+        AppScreen.ANALYSIS -> "Analysis"
         AppScreen.SETTINGS -> "Settings"
         AppScreen.PAIRING -> "Pair desktop"
         AppScreen.LICENSES -> "Open-source licences"
@@ -439,6 +452,7 @@ private fun AppNavigationBar(selected: AppScreen, onSelected: (AppScreen) -> Uni
         Triple(AppScreen.DASHBOARD, "Dashboard", R.drawable.ic_overview),
         Triple(AppScreen.TIMING, "Timing", R.drawable.ic_standings),
         Triple(AppScreen.TYRES, "Tyres", R.drawable.ic_tyres),
+        Triple(AppScreen.ANALYSIS, "Analysis", R.drawable.ic_analysis),
     )
     NavigationBar(
         containerColor = MaterialTheme.colorScheme.surfaceContainer,

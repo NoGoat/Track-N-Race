@@ -209,6 +209,17 @@ foreach ($serial in $ResolvedDeviceSerials) {
         continue
     }
 
+    if ($BuildType -eq 'Release') {
+        # A sideloaded APK runs interpreted and JIT-compiled until Android's
+        # idle-and-charging dexopt job compiles it, which can be a day later.
+        # On a low-end phone that is a 20-30% slower UI; compile it now.
+        Write-Host "Compiling Track N Race ahead of time on $serial..." -ForegroundColor Cyan
+        & $Adb @AdbArgs shell cmd package compile -m speed -f com.tracknrace.android | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Ahead-of-time compilation failed on $serial; the app will still run, but slower until Android compiles it."
+        }
+    }
+
     & $Adb @AdbArgs shell am force-stop com.tracknrace.android | Out-Null
     & $Adb @AdbArgs shell am start -n com.tracknrace.android/.MainActivity
     if ($LASTEXITCODE -ne 0) {

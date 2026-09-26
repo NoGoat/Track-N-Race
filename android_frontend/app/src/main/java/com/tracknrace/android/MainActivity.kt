@@ -26,6 +26,10 @@ class MainActivity : ComponentActivity() {
                 TrackNRaceApp(telemetry)
             }
         }
+        // The theme's window background covers the launch until Compose draws.
+        // After that the Scaffold paints every pixel, and a second full-screen
+        // fill under it is a whole frame of overdraw on a fill-rate-bound GPU.
+        window.decorView.post { window.setBackgroundDrawable(null) }
     }
 
     override fun onStart() {

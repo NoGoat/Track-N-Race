@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,31 +17,35 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.TextAutoSize
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -48,15 +53,60 @@ import com.tracknrace.android.DashboardColdState
 import com.tracknrace.android.DashboardLapComparisonState
 import com.tracknrace.android.HotTelemetry
 import com.tracknrace.android.TelemetryStore
+import com.tracknrace.android.TimingTowerState
 import kotlin.math.abs
-import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
-private val DashboardBackground = Color(0xff07090c)
-private val DashboardCard = Color(0xff10151b)
-private val DashboardDivider = Color(0xff26313b)
-private val DashboardPrimary = Color.White
-private val DashboardSecondary = Color(0xff8f9aa6)
-private val DashboardFastest = Color(0xffb877db)
+// ── Design ──────────────────────────────────────────────────────────────────
+// A steering-wheel display, not an app page. It deliberately ignores the
+// Material theme: black glass, white numerals, and colour only where it means
+// something (gaining, losing, too hot, running short). No cards, no labels on
+// anything whose meaning is obvious from where it sits.
+//
+// Only what a driver acts on during a lap is on screen:
+//
+//   shift lights
+//   position · lap · fitted tyre          (an alert replaces this line)
+//   delta to the fastest lap, gear, speed
+//   ERS charge
+//   interval to the cars ahead and behind (races only)
+//   tyre surface temperatures, fuel margin, last lap
+//
+// Everything else — sectors, pedals, wear, ERS mode — is on the
+// Timing and Tyres pages or left out. A completed lap, a new best, an invalid
+// lap, a brake-bias change and a fuel shortfall show as a 3 s alert instead.
+//
+// Each hot field is read inside the smallest composable that shows it, so a
+// 60 Hz telemetry tick recomposes that leaf and never the layout.
+
+/** Race, Race 2 and Race 3 in F1 24, F1 25 and the 2026 Season Pack. */
+private val RaceSessionTypes = setOf(15, 16, 17)
+
+/** Interval under which a neighbour is within attack range. */
+private const val CloseIntervalMs = 1_000
+
+private const val AlertDurationMs = 3_000L
+
+private const val StatusSettleMs = 2_000L
+
+private val Background = Color(0xff000000)
+private val Primary = Color(0xffffffff)
+private val Secondary = Color(0xff7d8590)
+private val Faint = Color(0xff1b1f24)
+private val Gain = Color(0xff2ee67a)
+private val Loss = Color(0xffff3b4e)
+private val Best = Color(0xffb36bff)
+private val Warn = Color(0xffffb020)
+private val Info = Color(0xff3d9bff)
+
+// The app's own face (TrackNRaceTheme): system sans-serif, tabular figures so
+// changing digits do not shift the numbers around them.
+private val NumeralStyle = TextStyle(
+    fontFamily = FontFamily.SansSerif,
+    fontWeight = FontWeight.Bold,
+    fontFeatureSettings = "tnum",
+    lineHeight = TextUnit.Unspecified,
+)
 
 @Composable
 internal fun DashboardScreen(
@@ -64,34 +114,89 @@ internal fun DashboardScreen(
     active: Boolean = true,
 ) {
     val frame = rememberDashboardFrameState(store, active)
-    val configuration = LocalConfiguration.current
-    val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val wideLandscape = landscape && configuration.screenWidthDp >= 600
-    Surface(color = DashboardBackground, modifier = Modifier.fillMaxSize()) {
-        Column(
-            Modifier.fillMaxSize().padding(
-                start = 16.dp,
-                top = if (landscape) 8.dp else 16.dp,
-                end = 16.dp,
-                bottom = 16.dp,
-            ),
+    val alert = rememberDashboardAlert(frame)
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val race by remember(store) {
+        derivedStateOf { store.cold.sessionType in RaceSessionTypes }
+    }
+    // The Scaffold behind this page paints it black (TrackNRaceApp).
+    Box(Modifier.fillMaxSize()) {
+        if (landscape) {
+            LandscapeDashboard(store, frame, alert, race)
+        } else {
+            PortraitDashboard(store, frame, alert, race)
+        }
+    }
+}
+
+@Composable
+private fun PortraitDashboard(
+    store: TelemetryStore,
+    frame: DashboardFrameState,
+    alert: State<DashboardAlert?>,
+    race: Boolean,
+) {
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        ShiftLights(frame, Modifier.fillMaxWidth().height(12.dp).graphicsLayer())
+        Spacer(Modifier.height(10.dp))
+        StatusLine(frame, alert, Modifier.fillMaxWidth().height(34.dp).graphicsLayer())
+        GearCluster(frame, Modifier.fillMaxWidth().weight(2.6f))
+        Ers(frame, Modifier.fillMaxWidth().weight(1.1f).graphicsLayer())
+        if (race) Gaps(store, Modifier.fillMaxWidth().weight(0.9f).graphicsLayer())
+        Spacer(Modifier.height(12.dp))
+        Row(
+            Modifier.fillMaxWidth().weight(1.35f),
+            horizontalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            if (landscape) {
-                Box(Modifier.fillMaxWidth().height(30.dp).padding(bottom = 8.dp)) {
-                    RpmLights(frame, Modifier.fillMaxSize())
-                }
-                HorizontalDashboardDivider()
-                LandscapeDashboard(
-                    frame,
-                    wideLandscape,
-                    Modifier.weight(1f),
-                )
-            } else {
-                PortraitDashboard(frame, Modifier.fillMaxWidth().weight(1f))
+            Tyres(frame, Modifier.weight(1f).fillMaxHeight())
+            FuelAndLastLap(frame, Modifier.weight(1f).fillMaxHeight().graphicsLayer())
+        }
+    }
+}
+
+@Composable
+private fun LandscapeDashboard(
+    store: TelemetryStore,
+    frame: DashboardFrameState,
+    alert: State<DashboardAlert?>,
+    race: Boolean,
+) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 12.dp)) {
+        ShiftLights(frame, Modifier.fillMaxWidth().height(12.dp).graphicsLayer())
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+                Ers(frame, Modifier.fillMaxWidth().weight(1.4f).graphicsLayer())
+                if (race) Gaps(store, Modifier.fillMaxWidth().weight(1f).graphicsLayer())
+            }
+            Column(
+                Modifier.weight(1.1f).fillMaxHeight(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                StatusLine(frame, alert, Modifier.fillMaxWidth().height(34.dp).graphicsLayer())
+                GearCluster(frame, Modifier.fillMaxWidth().weight(1f))
+            }
+            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Tyres(frame, Modifier.fillMaxWidth().weight(1.3f))
+                FuelAndLastLap(frame, Modifier.fillMaxWidth().weight(1f).graphicsLayer())
             }
         }
     }
 }
+
+/**
+ * The gear digit is too large for the glyph atlas, so without a texture of its
+ * own it is filled as a path on every frame. It changes rarely, so render it
+ * into a cached texture. Not worth it for blocks that change several times a
+ * second: each change re-renders the texture in an extra render pass, and an
+ * A/B run on a Galaxy M12 showed no gain from caching the other blocks.
+ */
+private fun Modifier.cachedLayer(): Modifier = graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+
+// ── Frame sampling ──────────────────────────────────────────────────────────
 
 /**
  * Stable holder whose fields are independent Compose states. The dashboard
@@ -102,36 +207,48 @@ internal fun DashboardScreen(
 private class DashboardFrameState(initialHot: HotTelemetry) {
     var speedKph by mutableIntStateOf(initialHot.speedKph)
         private set
-    var rpm by mutableIntStateOf(initialHot.rpm)
-        private set
     var gear by mutableIntStateOf(initialHot.gear)
-        private set
-    var throttle by mutableFloatStateOf(initialHot.throttle)
-        private set
-    var brake by mutableFloatStateOf(initialHot.brake)
         private set
     var revLightsBitValue by mutableStateOf(initialHot.revLightsBitValue)
         private set
-    var tyreSurfaceFl by mutableIntStateOf(initialHot.tyreSurfaceFl)
+    var tyreFl by mutableIntStateOf(initialHot.tyreSurfaceFl)
         private set
-    var tyreSurfaceFr by mutableIntStateOf(initialHot.tyreSurfaceFr)
+    var tyreFr by mutableIntStateOf(initialHot.tyreSurfaceFr)
         private set
-    var tyreSurfaceRl by mutableIntStateOf(initialHot.tyreSurfaceRl)
+    var tyreRl by mutableIntStateOf(initialHot.tyreSurfaceRl)
         private set
-    var tyreSurfaceRr by mutableIntStateOf(initialHot.tyreSurfaceRr)
-        private set
-    var tyreInnerFl by mutableIntStateOf(initialHot.tyreInnerFl)
-        private set
-    var tyreInnerFr by mutableIntStateOf(initialHot.tyreInnerFr)
-        private set
-    var tyreInnerRl by mutableIntStateOf(initialHot.tyreInnerRl)
-        private set
-    var tyreInnerRr by mutableIntStateOf(initialHot.tyreInnerRr)
+    var tyreRr by mutableIntStateOf(initialHot.tyreSurfaceRr)
         private set
 
     var cold by mutableStateOf(DashboardColdState())
         private set
     var lapComparison by mutableStateOf(DashboardLapComparisonState())
+        private set
+
+    // Cold rows arrive several times a second, mostly carrying the running lap
+    // time. Each readout reads only its own fields, which change far less often,
+    // so an unrelated cold update recomposes nothing on screen.
+    var position by mutableIntStateOf(0)
+        private set
+    var lapText by mutableStateOf("L–")
+        private set
+    var tyreAgeText by mutableStateOf("–")
+        private set
+    var tyreCompound by mutableIntStateOf(0)
+        private set
+    var statusAvailable by mutableStateOf(false)
+        private set
+    var ersPercent by mutableIntStateOf(0)
+        private set
+    var fuelLaps by mutableDoubleStateOf(0.0)
+        private set
+    var lastLapMs by mutableIntStateOf(0)
+        private set
+    var fastestLapMs by mutableIntStateOf(0)
+        private set
+
+    /** Delta to the fastest lap, rounded to the displayed millisecond. */
+    var lapDeltaSeconds by mutableStateOf<Double?>(null)
         private set
 
     private var lastHot = initialHot
@@ -145,28 +262,33 @@ private class DashboardFrameState(initialHot: HotTelemetry) {
     ) {
         if (hot !== lastHot) {
             speedKph = hot.speedKph
-            rpm = hot.rpm
             gear = hot.gear
-            throttle = hot.throttle
-            brake = hot.brake
             revLightsBitValue = hot.revLightsBitValue
-            tyreSurfaceFl = hot.tyreSurfaceFl
-            tyreSurfaceFr = hot.tyreSurfaceFr
-            tyreSurfaceRl = hot.tyreSurfaceRl
-            tyreSurfaceRr = hot.tyreSurfaceRr
-            tyreInnerFl = hot.tyreInnerFl
-            tyreInnerFr = hot.tyreInnerFr
-            tyreInnerRl = hot.tyreInnerRl
-            tyreInnerRr = hot.tyreInnerRr
+            tyreFl = hot.tyreSurfaceFl
+            tyreFr = hot.tyreSurfaceFr
+            tyreRl = hot.tyreSurfaceRl
+            tyreRr = hot.tyreSurfaceRr
             lastHot = hot
         }
         if (latestCold !== lastCold) {
             cold = latestCold
             lastCold = latestCold
+            position = latestCold.position
+            lapText = lapLabel(latestCold)
+            tyreAgeText = tyreAgeLabel(latestCold)
+            tyreCompound = latestCold.tyreCompound
+            statusAvailable = latestCold.statusAvailable
+            ersPercent = latestCold.ersPercent
+            fuelLaps = latestCold.fuelLaps
+            lastLapMs = latestCold.lastLapMs
         }
         if (latestLapComparison !== lastLapComparison) {
             lapComparison = latestLapComparison
             lastLapComparison = latestLapComparison
+            fastestLapMs = latestLapComparison.fastestLapMs
+            lapDeltaSeconds = latestLapComparison.lapDeltaSeconds
+                ?.takeIf { it.isFinite() }
+                ?.let { kotlin.math.round(it * 1000) / 1000 }
         }
     }
 }
@@ -190,1016 +312,187 @@ private fun rememberDashboardFrameState(store: TelemetryStore, active: Boolean):
     return displayed
 }
 
-@Composable
-private fun RpmLights(frame: DashboardFrameState, modifier: Modifier = Modifier) {
-    val bitValue = frame.revLightsBitValue
-    val off = Color(0xff2a3540)
-    val green = Color(0xff32d583)
-    val red = Color(0xffff4d5e)
-    val blue = Color(0xff43a5ff)
-    Row(
-        modifier.semantics { contentDescription = "RPM shift lights" },
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        repeat(15) { index ->
-            val lit = bitValue != null && bitValue and (1 shl index) != 0
-            val active = when {
-                index < 5 -> green
-                index < 10 -> red
-                else -> blue
-            }
-            Box(
-                Modifier.size(14.dp).background(
-                    color = if (lit) active else off,
-                    shape = CircleShape,
-                ),
-            )
-        }
-    }
-}
+// ── Alerts ──────────────────────────────────────────────────────────────────
 
-@Composable
-private fun LandscapeDashboard(
-    frame: DashboardFrameState,
-    unframed: Boolean,
-    modifier: Modifier,
-) {
-    Row(modifier.fillMaxWidth()) {
-        Column(
-            Modifier.weight(1f).fillMaxHeight()
-                .background(if (unframed) Color.Transparent else DashboardCard),
-        ) {
-            LandscapeLapCell(frame, Modifier.weight(0.54f))
-            HorizontalDashboardDivider()
-            FastestLapComparisonCell(
-                frame.lapComparison,
-                Modifier.weight(0.96f).fillMaxWidth(),
-            )
-            HorizontalDashboardDivider()
-            SideTyreBlock(
-                frame = frame,
-                leftSide = true,
-                showDividers = true,
-                modifier = Modifier.weight(0.86f),
-            )
-        }
-        VerticalDashboardDivider()
-        CenterReadout(
-            frame,
-            Modifier.weight(1.95f).fillMaxHeight()
-                .background(if (unframed) Color.Transparent else DashboardCard),
-        )
-        VerticalDashboardDivider()
-        Column(
-            Modifier.weight(1f).fillMaxHeight()
-                .background(if (unframed) Color.Transparent else DashboardCard),
-        ) {
-            LandscapeFuelCell(frame, Modifier.weight(0.54f))
-            HorizontalDashboardDivider()
-            EmptyDashboardCell(Modifier.weight(0.96f))
-            HorizontalDashboardDivider()
-            SideTyreBlock(
-                frame = frame,
-                leftSide = false,
-                showDividers = true,
-                modifier = Modifier.weight(0.86f),
-            )
-        }
-    }
-}
-
-@Composable
-private fun LandscapeLapCell(frame: DashboardFrameState, modifier: Modifier = Modifier) {
-    ValueCell(lapLabel(frame.cold), DashboardPrimary, modifier)
-}
-
-@Composable
-private fun LandscapeFuelCell(frame: DashboardFrameState, modifier: Modifier = Modifier) {
-    FuelCell(frame.cold, modifier)
-}
-
-// ── Portrait ────────────────────────────────────────────────────────────────
-// Portrait is read at a glance from a phone stand beside the wheel, so it is
-// built as an instrument cluster rather than as a page of data.
-//
-// Two decisions carry the whole layout:
-//
-//  1. There is exactly one container. The hero holds the gear and the speed;
-//     everything else sits flush on the backdrop and is grouped by space.
-//     Giving each readout its own card — as this page used to — flattens the
-//     hierarchy, because a container is the strongest signal on a dark screen
-//     and nine of them all say "look here" at once.
-//
-//  2. The deltas are bars, not numbers. A signed millisecond figure has to be
-//     read; a bar that grows left for green and right for red is recognised in
-//     peripheral vision, which is all the attention a driver has to spare. The
-//     numbers stay alongside for when there is time to read them.
-//
-// This is the Material 3 Expressive reading of the same two ideas: emphasis by
-// shape and size contrast, grouping by space, colour used to mean something
-// rather than to decorate. The expressive component set — MaterialShapes, the
-// wavy indicators, the *Emphasized type styles — is absent or internal in
-// material3 1.4.0, so the emphasis here is built from those primitives.
-//
-// Nothing animates. Both the delta and the tyre temperatures are republished
-// at sample rate, so a spring on either would only add lag over a value that
-// has already moved on.
-//
-// Each hot field is read inside the smallest composable that shows it, so a
-// 60 Hz telemetry tick recomposes that leaf and never a zone or the column.
-
-private val PortraitHeroSurface = Color(0xff161f2a)
-private val PortraitBarTrack = Color(0xff141c25)
-private val PortraitLightOff = Color(0xff111821)
-private val PortraitCenterTick = Color(0xff4c5967)
-private val PortraitPlaceholder = Color(0xff39434f)
-private val PortraitTileSurface = Color(0xff10161e)
-private val PortraitGreen = Color(0xff35d07f)
-private val PortraitRed = Color(0xffff5566)
-private val PortraitAmber = Color(0xffffb02e)
-private val PortraitBlue = Color(0xff4c9fff)
-
-private val HeroShape = RoundedCornerShape(40.dp)
-private val TileShape = RoundedCornerShape(18.dp)
-private val BarShape = RoundedCornerShape(50)
-private val SegmentShape = RoundedCornerShape(3.dp)
-
-/** Full-scale deflection of the lap delta bar, in seconds. */
-private const val LapDeltaRangeSeconds = 1.5
-
-@Composable
-private fun PortraitDashboard(
-    frame: DashboardFrameState,
-    modifier: Modifier,
-) {
-    // Every zone is weighted, so the five of them always divide exactly the
-    // height that exists. Mixing one weighted zone with intrinsic siblings
-    // looks tidier but starves the weighted one the moment the siblings
-    // outgrow the viewport, and here that zone is the hero.
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        PortraitRevBand(frame, Modifier.fillMaxWidth().height(10.dp))
-        PortraitHero(frame, Modifier.fillMaxWidth().weight(2.25f))
-        PortraitDeltaBlock(frame, Modifier.fillMaxWidth().weight(0.85f))
-        PortraitInputs(frame, Modifier.fillMaxWidth().weight(0.95f))
-        PortraitDataRail(frame, Modifier.fillMaxWidth().weight(1.5f))
-        PortraitTyreGrid(frame, Modifier.fillMaxWidth().weight(2f))
-    }
-}
-
-// ── Rev band ────────────────────────────────────────────────────────────────
+@Immutable
+private data class DashboardAlert(val id: Long, val text: String, val color: Color)
 
 /**
- * The shift lights, spanning the full width above the hero rather than sitting
- * inside it as a detail. Unlit segments are pitched barely above the backdrop:
- * fifteen visible slots would be the loudest thing on the screen at the exact
- * moment the lights mean nothing.
+ * Watches the sampled cold state for the changes worth interrupting for and
+ * holds the newest one for [AlertDurationMs]. Collected through snapshotFlow,
+ * so a cold update recomposes nothing unless it raises an alert.
  */
 @Composable
-private fun PortraitRevBand(frame: DashboardFrameState, modifier: Modifier) {
+private fun rememberDashboardAlert(frame: DashboardFrameState): State<DashboardAlert?> {
+    val alert = remember(frame) { mutableStateOf<DashboardAlert?>(null) }
+    LaunchedEffect(frame) {
+        var previousCold: DashboardColdState? = null
+        var previousBest = 0
+        var nextId = 0L
+        // A connect or driver switch fills the status fields one patch at a
+        // time; none of those first values is a change the driver made.
+        var statusSince = 0L
+        snapshotFlow { frame.cold to frame.lapComparison.fastestLapMs }.collect { (cold, best) ->
+            val now = System.currentTimeMillis()
+            if (!cold.statusAvailable) statusSince = 0L
+            else if (statusSince == 0L) statusSince = now
+            val statusSettled = statusSince > 0L && now - statusSince > StatusSettleMs
+            val raised = previousCold?.let {
+                alertFor(it, cold, previousBest, best, statusSettled)
+            }
+            previousCold = cold
+            previousBest = best
+            if (raised != null) alert.value = DashboardAlert(++nextId, raised.first, raised.second)
+        }
+    }
+    val current = alert.value
+    LaunchedEffect(current?.id) {
+        if (current == null) return@LaunchedEffect
+        delay(AlertDurationMs)
+        alert.value = null
+    }
+    return alert
+}
+
+private fun alertFor(
+    previous: DashboardColdState,
+    cold: DashboardColdState,
+    previousBestMs: Int,
+    bestMs: Int,
+    statusSettled: Boolean,
+): Pair<String, Color>? {
+    val statusSteady = statusSettled && previous.statusAvailable
+    return when {
+        cold.lapNumber > 0 && previous.lapNumber == cold.lapNumber &&
+            !previous.lapInvalid && cold.lapInvalid -> "LAP INVALID" to Loss
+        previousBestMs > 0 && bestMs in 1 until previousBestMs ->
+            "BEST LAP  ${formatTime(bestMs)}" to Best
+        cold.lapNumber > previous.lapNumber && previous.lapNumber > 0 && cold.lastLapMs > 0 ->
+            "LAP  ${formatTime(cold.lastLapMs)}" to Primary
+        statusSteady && previous.brakeBias != cold.brakeBias ->
+            "BRAKE BIAS  ${cold.brakeBias}%" to Info
+        statusSteady && previous.fuelLaps >= 0.0 && cold.fuelLaps < 0.0 ->
+            "FUEL SHORT" to Loss
+        else -> null
+    }
+}
+
+// ── Shift lights ────────────────────────────────────────────────────────────
+
+@Composable
+private fun ShiftLights(frame: DashboardFrameState, modifier: Modifier) {
     val bitValue = frame.revLightsBitValue
     Row(
-        modifier.semantics { contentDescription = "RPM shift lights" },
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        modifier.semantics { contentDescription = "Shift lights" },
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         repeat(15) { index ->
             val lit = bitValue != null && bitValue and (1 shl index) != 0
             val tone = when {
-                index < 5 -> PortraitGreen
-                index < 10 -> PortraitRed
-                else -> PortraitBlue
+                index < 5 -> Gain
+                index < 10 -> Loss
+                else -> Info
             }
             Box(
                 Modifier.weight(1f).fillMaxHeight()
-                    .background(if (lit) tone else PortraitLightOff, SegmentShape),
+                    .background(if (lit) tone else Faint, RoundedCornerShape(2.dp)),
             )
         }
     }
 }
 
-// ── Hero ────────────────────────────────────────────────────────────────────
+// ── Status line ─────────────────────────────────────────────────────────────
 
-/**
- * The only container on the page, and so the only thing that reads as "look
- * here first". It holds the two values a driver takes from a dashboard mid
- * corner — gear and speed — plus the race context that frames them, kept
- * deliberately small so it cannot compete.
- */
+/** Position, lap and fitted tyre; an alert takes the whole line while shown. */
 @Composable
-private fun PortraitHero(frame: DashboardFrameState, modifier: Modifier) {
-    Surface(color = PortraitHeroSurface, shape = HeroShape, modifier = modifier) {
-        Column(
-            Modifier.fillMaxSize().padding(horizontal = 22.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            PortraitContextStrip(frame)
-            Row(
-                Modifier.fillMaxWidth().weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(34.dp, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                PortraitGear(frame, Modifier.fillMaxHeight())
-                Column(horizontalAlignment = Alignment.Start) {
-                    PortraitSpeed(frame)
-                    PortraitRpm(frame)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PortraitContextStrip(frame: DashboardFrameState) {
-    val cold = frame.cold
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-        PortraitInline(
-            "POS",
-            if (cold.position > 0) "P${cold.position}" else "—",
-            PortraitBlue,
-            Modifier.weight(0.85f),
-        )
-        PortraitInline("LAP", lapLabel(cold), DashboardPrimary, Modifier.weight(1f))
-        PortraitInline("TYRE", tyreLabel(cold), tyreTone(cold.tyreCompound), Modifier.weight(1.25f))
-    }
-}
-
-/**
- * The single largest glyph on the page. It auto-sizes into whatever height the
- * hero was given rather than to a fixed point size, so a short phone shrinks
- * the gear instead of clipping its descender.
- */
-@Composable
-private fun PortraitGear(frame: DashboardFrameState, modifier: Modifier) {
-    Text(
-        gearLabel(frame.gear),
-        modifier = modifier,
-        color = DashboardPrimary,
-        autoSize = TextAutoSize.StepBased(44.sp, 128.sp, 2.sp),
-        fontFamily = FontFamily.Monospace,
-        fontWeight = FontWeight.Black,
-        maxLines = 1,
-    )
-}
-
-@Composable
-private fun PortraitSpeed(frame: DashboardFrameState) {
-    Row(verticalAlignment = Alignment.Bottom) {
-        Text(
-            frame.speedKph.toString(),
-            color = DashboardPrimary,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = 48.sp,
-            lineHeight = 48.sp,
-            maxLines = 1,
-        )
-        Text(
-            " KM/H",
-            color = DashboardSecondary,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.sp,
-            maxLines = 1,
-            modifier = Modifier.padding(bottom = 8.dp),
-        )
-    }
-}
-
-@Composable
-private fun PortraitRpm(frame: DashboardFrameState) {
-    Text(
-        "${frame.rpm} RPM",
-        color = DashboardSecondary,
-        fontFamily = FontFamily.Monospace,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 12.sp,
-        maxLines = 1,
-    )
-}
-
-// ── Delta ───────────────────────────────────────────────────────────────────
-
-/**
- * Lap delta over the fastest lap, then the three sectors that make it up. All
- * four use the same centre-out encoding, so the sector strip reads as a
- * breakdown of the bar above it rather than as three more numbers.
- */
-@Composable
-private fun PortraitDeltaBlock(frame: DashboardFrameState, modifier: Modifier) {
-    val comparison = frame.lapComparison
-    Column(modifier, verticalArrangement = Arrangement.SpaceEvenly) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            PortraitLabel("DELTA", Modifier.width(48.dp))
-            PortraitCenterOutBar(
-                comparison.lapDeltaSeconds,
-                LapDeltaRangeSeconds,
-                Modifier.weight(1f).height(10.dp),
-            )
-            PortraitValue(
-                formatDelta(comparison.lapDeltaSeconds),
-                deltaColor(comparison.lapDeltaSeconds),
-                maxFontSize = 20.sp,
-                minFontSize = 13.sp,
-                modifier = Modifier.width(96.dp).padding(start = 12.dp),
-                weight = FontWeight.Black,
-                textAlign = TextAlign.End,
-            )
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PortraitSectorCell("S1", comparison.sector1DeltaSeconds, Modifier.weight(1f))
-            PortraitSectorCell("S2", comparison.sector2DeltaSeconds, Modifier.weight(1f))
-            PortraitSectorCell("S3", comparison.sector3DeltaSeconds, Modifier.weight(1f))
-        }
-    }
-}
-
-@Composable
-private fun PortraitSectorCell(label: String, delta: Double?, modifier: Modifier) {
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        PortraitLabel(label)
-        PortraitValue(
-            formatDelta(delta),
-            deltaColor(delta),
-            maxFontSize = 13.sp,
-            minFontSize = 8.sp,
-            modifier = Modifier.padding(start = 7.dp),
-        )
-    }
-}
-
-/**
- * A bar that grows out from a fixed centre: left and green when the driver is
- * up on the reference, right and red when down, clamped at [rangeSeconds].
- * The centre tick stays visible at zero so the bar still reads as an
- * instrument when there is no delta yet.
- */
-@Composable
-private fun PortraitCenterOutBar(delta: Double?, rangeSeconds: Double, modifier: Modifier) {
-    val signed = when {
-        delta == null || !delta.isFinite() -> 0f
-        else -> (delta / rangeSeconds).coerceIn(-1.0, 1.0).toFloat()
-    }
-    Row(modifier.clip(BarShape).background(PortraitBarTrack)) {
-        Row(
-            Modifier.weight(1f).fillMaxHeight(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            if (signed < 0f) {
-                Box(
-                    Modifier.fillMaxHeight().fillMaxWidth(-signed)
-                        .background(PortraitGreen, BarShape),
-                )
-            }
-        }
-        Box(Modifier.width(2.dp).fillMaxHeight().background(PortraitCenterTick))
-        Row(Modifier.weight(1f).fillMaxHeight()) {
-            if (signed > 0f) {
-                Box(
-                    Modifier.fillMaxHeight().fillMaxWidth(signed)
-                        .background(PortraitRed, BarShape),
-                )
-            }
-        }
-    }
-}
-
-// ── Inputs ──────────────────────────────────────────────────────────────────
-
-@Composable
-private fun PortraitInputs(frame: DashboardFrameState, modifier: Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.SpaceEvenly) {
-        PortraitThrottleBar(frame)
-        PortraitBrakeBar(frame)
-        PortraitErsBar(frame)
-    }
-}
-
-@Composable
-private fun PortraitThrottleBar(frame: DashboardFrameState) {
-    val value = frame.throttle
-    PortraitInputRow("THR", value, PortraitGreen, formatPercent(value), DashboardSecondary)
-}
-
-@Composable
-private fun PortraitBrakeBar(frame: DashboardFrameState) {
-    val value = frame.brake
-    PortraitInputRow("BRK", value, PortraitRed, formatPercent(value), DashboardSecondary)
-}
-
-@Composable
-private fun PortraitErsBar(frame: DashboardFrameState) {
-    val cold = frame.cold
-    PortraitInputRow(
-        label = "ERS",
-        value = cold.ersPercent / 100f,
-        color = if (cold.ersPercent < 20) PortraitAmber else PortraitGreen,
-        trailingText = ersModeLabel(cold),
-        trailingColor = ersModeColor(cold.ersMode),
-    )
-}
-
-/**
- * Both side columns are fixed width, so the three bars start and end at the
- * same x whatever their labels and values read.
- */
-@Composable
-private fun PortraitInputRow(
-    label: String,
-    value: Float,
-    color: Color,
-    trailingText: String,
-    trailingColor: Color,
-) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        PortraitLabel(label, Modifier.width(36.dp))
-        Box(
-            Modifier.weight(1f).height(14.dp).clip(BarShape).background(PortraitBarTrack),
-        ) {
-            Box(
-                Modifier.fillMaxHeight().fillMaxWidth(value.coerceIn(0f, 1f))
-                    .background(color, BarShape),
-            )
-        }
-        PortraitValue(
-            trailingText,
-            trailingColor,
-            maxFontSize = 13.sp,
-            minFontSize = 8.sp,
-            modifier = Modifier.width(68.dp).padding(start = 10.dp),
-            textAlign = TextAlign.End,
-        )
-    }
-}
-
-// ── Data rail ───────────────────────────────────────────────────────────────
-
-/**
- * The numbers a driver reads on a straight rather than in a corner: two flush
- * rows on a shared four-column grid, so the values line up down the page
- * without a container drawn around any of them.
- */
-@Composable
-private fun PortraitDataRail(frame: DashboardFrameState, modifier: Modifier) {
-    Column(modifier) {
-        PortraitTimingRow(frame, Modifier.fillMaxWidth().weight(1f))
-        PortraitCarRow(frame, Modifier.fillMaxWidth().weight(1f))
-    }
-}
-
-@Composable
-private fun PortraitTimingRow(frame: DashboardFrameState, modifier: Modifier) {
-    val cold = frame.cold
-    val comparison = frame.lapComparison
-    Row(
-        modifier,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        PortraitStat(
-            label = if (cold.lapInvalid) "LAP · INVALID" else "LAP",
-            value = formatTime(cold.currentLapMs),
-            valueColor = if (cold.lapInvalid) PortraitRed else DashboardPrimary,
-            modifier = Modifier.weight(1f),
-            labelColor = if (cold.lapInvalid) PortraitRed else DashboardSecondary,
-        )
-        PortraitStat("LAST", formatTime(cold.lastLapMs), DashboardPrimary, Modifier.weight(1f))
-        PortraitStat(
-            "BEST",
-            formatTime(comparison.fastestLapMs),
-            if (comparison.fastestLapMs > 0) DashboardFastest else DashboardSecondary,
-            Modifier.weight(1f),
-        )
-    }
-}
-
-@Composable
-private fun PortraitCarRow(frame: DashboardFrameState, modifier: Modifier) {
-    val cold = frame.cold
-    Row(
-        modifier,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        PortraitStat(
-            "FUEL",
-            if (cold.statusAvailable) "%.1f KG".format(cold.fuelKg) else "—",
-            DashboardPrimary,
-            Modifier.weight(1f),
-        )
-        PortraitStat(
-            "MARGIN",
-            if (cold.statusAvailable) "%+.1f L".format(cold.fuelLaps) else "—",
-            if (cold.statusAvailable) fuelMarginColor(cold.fuelLaps) else DashboardSecondary,
-            Modifier.weight(1f),
-        )
-        PortraitStat(
-            "BIAS",
-            if (cold.statusAvailable) "${cold.brakeBias}%" else "—",
-            DashboardPrimary,
-            Modifier.weight(1f),
-        )
-    }
-}
-
-// ── Tyres ───────────────────────────────────────────────────────────────────
-
-private enum class TyreCorner(val label: String) {
-    FrontLeft("FL"), FrontRight("FR"), RearLeft("RL"), RearRight("RR")
-}
-
-/**
- * The four corners laid out as they sit on the car, so a hot or worn corner is
- * found by its position rather than by reading a label. This is the one place
- * containers earn their keep: the tile boundary is what makes "this corner"
- * legible, and their tint turns the block into a heat map that resolves before
- * any of the numbers in it do.
- */
-@Composable
-private fun PortraitTyreGrid(frame: DashboardFrameState, modifier: Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
-            Modifier.fillMaxWidth().weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            PortraitTyreTile(frame, TyreCorner.FrontLeft, Modifier.weight(1f).fillMaxHeight())
-            PortraitTyreTile(frame, TyreCorner.FrontRight, Modifier.weight(1f).fillMaxHeight())
-        }
-        Row(
-            Modifier.fillMaxWidth().weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            PortraitTyreTile(frame, TyreCorner.RearLeft, Modifier.weight(1f).fillMaxHeight())
-            PortraitTyreTile(frame, TyreCorner.RearRight, Modifier.weight(1f).fillMaxHeight())
-        }
-    }
-}
-
-@Composable
-private fun PortraitTyreTile(
+private fun StatusLine(
     frame: DashboardFrameState,
-    corner: TyreCorner,
+    alert: State<DashboardAlert?>,
     modifier: Modifier,
 ) {
-    val surfaceTemperature = when (corner) {
-        TyreCorner.FrontLeft -> frame.tyreSurfaceFl
-        TyreCorner.FrontRight -> frame.tyreSurfaceFr
-        TyreCorner.RearLeft -> frame.tyreSurfaceRl
-        TyreCorner.RearRight -> frame.tyreSurfaceRr
-    }
-    val innerTemperature = when (corner) {
-        TyreCorner.FrontLeft -> frame.tyreInnerFl
-        TyreCorner.FrontRight -> frame.tyreInnerFr
-        TyreCorner.RearLeft -> frame.tyreInnerRl
-        TyreCorner.RearRight -> frame.tyreInnerRr
-    }
-    val cold = frame.cold
-    val wear = when (corner) {
-        TyreCorner.FrontLeft -> cold.tyreWearFl
-        TyreCorner.FrontRight -> cold.tyreWearFr
-        TyreCorner.RearLeft -> cold.tyreWearRl
-        TyreCorner.RearRight -> cold.tyreWearRr
-    }
-    val temperatureTone = tyreTemperatureColor(surfaceTemperature)
-    Surface(color = PortraitTileSurface, shape = TileShape, modifier = modifier) {
-        Column(
-            Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 7.dp),
-            verticalArrangement = Arrangement.SpaceEvenly,
+    val shown = alert.value
+    if (shown != null) {
+        Box(
+            modifier.clip(RoundedCornerShape(6.dp)).background(shown.color.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center,
         ) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                PortraitLabel(corner.label, Modifier.weight(1f))
-                Text(
-                    if (cold.tyreWearAvailable) formatWear(wear) else "—",
-                    color = if (cold.tyreWearAvailable) {
-                        tyreWearColor(wear)
-                    } else {
-                        PortraitPlaceholder
-                    },
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                )
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                PortraitValue(
-                    formatTemperature(surfaceTemperature),
-                    temperatureTone,
-                    maxFontSize = 24.sp,
-                    minFontSize = 14.sp,
-                )
-                Text(
-                    " ${formatTemperature(innerTemperature)}",
-                    color = tyreTemperatureColor(innerTemperature),
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    modifier = Modifier.padding(bottom = 3.dp),
-                )
-            }
+            Text(
+                shown.text,
+                style = NumeralStyle,
+                fontSize = 20.sp,
+                letterSpacing = 1.5.sp,
+                color = shown.color,
+                maxLines = 1,
+            )
         }
+        return
     }
-}
-
-// ── Shared portrait primitives ──────────────────────────────────────────────
-
-/** A label and value on one line, for rows too short to stack them. */
-@Composable
-private fun PortraitInline(
-    label: String,
-    value: String,
-    valueColor: Color,
-    modifier: Modifier = Modifier,
-) {
+    val position = frame.position
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        PortraitLabel(label)
-        PortraitValue(
-            value,
-            valueColor,
-            maxFontSize = 14.sp,
-            minFontSize = 9.sp,
-            modifier = Modifier.weight(1f).padding(start = 7.dp),
+        Text(
+            if (position > 0) "P$position" else "P–",
+            style = NumeralStyle,
+            fontSize = 26.sp,
+            color = if (position > 0) Primary else Secondary,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
         )
-    }
-}
-
-/** A flush label-over-value pair. The page's only unit of tabular data. */
-@Composable
-private fun PortraitStat(
-    label: String,
-    value: String,
-    valueColor: Color,
-    modifier: Modifier = Modifier,
-    labelColor: Color = DashboardSecondary,
-) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        PortraitLabel(label, color = labelColor)
-        PortraitValue(
-            value,
-            valueColor,
-            maxFontSize = 15.sp,
-            minFontSize = 10.sp,
-            modifier = Modifier.fillMaxWidth(),
+        Text(
+            frame.lapText,
+            style = NumeralStyle,
+            fontSize = 20.sp,
+            color = Secondary,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
         )
-    }
-}
-
-@Composable
-private fun PortraitLabel(
-    text: String,
-    modifier: Modifier = Modifier,
-    color: Color = DashboardSecondary,
-) {
-    Text(
-        text,
-        modifier = modifier,
-        color = color,
-        fontSize = 9.sp,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 1.sp,
-        maxLines = 1,
-    )
-}
-
-/**
- * A monospace readout that shrinks to its container instead of clipping. Every
- * portrait value whose width depends on live data goes through this: at a
- * fixed size a signed delta or a lap time silently truncated to nothing in the
- * narrow cells this layout uses.
- *
- * An absent value is rendered small and dim rather than auto-sized. The
- * formatters return an em dash for "no data", which is the narrowest string
- * any of them produce, so auto-sizing drove it to the maximum and a dashboard
- * with no telemetry attached came up as a column of thick white bars.
- */
-@Composable
-private fun PortraitValue(
-    text: String,
-    color: Color,
-    maxFontSize: TextUnit,
-    minFontSize: TextUnit,
-    modifier: Modifier = Modifier,
-    weight: FontWeight = FontWeight.Bold,
-    textAlign: TextAlign? = null,
-) {
-    val absent = isAbsentValue(text)
-    Text(
-        text,
-        modifier = modifier,
-        color = if (absent) PortraitPlaceholder else color,
-        fontSize = if (absent) minFontSize else TextUnit.Unspecified,
-        autoSize = if (absent) null else TextAutoSize.StepBased(minFontSize, maxFontSize, 1.sp),
-        fontFamily = FontFamily.Monospace,
-        fontWeight = if (absent) FontWeight.Normal else weight,
-        textAlign = textAlign,
-        maxLines = 1,
-    )
-}
-
-/**
- * True for the strings the formatters use to stand in for missing telemetry —
- * an em dash on its own, or the "—.---" a null delta formats to.
- */
-private fun isAbsentValue(text: String): Boolean =
-    text.isBlank() || text.all { it == '—' || it == '-' || it == '.' || it == ' ' }
-
-private fun formatPercent(value: Float): String =
-    "${(value.coerceIn(0f, 1f) * 100f).roundToInt()}%"
-
-
-@Composable
-private fun CenterReadout(frame: DashboardFrameState, modifier: Modifier = Modifier) {
-    val cold = frame.cold
-    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val gearSize = if (landscape) 100.sp else 72.sp
-    val speedSize = if (landscape) 26.sp else 22.sp
-    val rpmSize = if (landscape) 14.sp else 12.sp
-    Column(
-        modifier.fillMaxSize().padding(if (landscape) 12.dp else 10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Row(Modifier.fillMaxWidth()) {
-            HeaderMetric(
-                if (cold.position > 0) "P${cold.position}" else "—",
-                Color(0xff43a5ff),
-                Modifier.weight(1f),
-                Alignment.Start,
-            )
-            HeaderMetric(
-                formatTime(cold.lastLapMs),
-                DashboardPrimary,
-                Modifier.weight(1.2f),
-                Alignment.CenterHorizontally,
-            )
-            HeaderMetric(
-                tyreLabel(cold),
-                tyreTone(cold.tyreCompound),
-                Modifier.weight(1f),
-                Alignment.End,
-            )
-        }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                "${frame.speedKph} KM/H",
-                color = DashboardPrimary,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = speedSize,
-                lineHeight = speedSize,
-            )
-            Text(
-                gearLabel(frame.gear),
-                color = DashboardPrimary,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Black,
-                fontSize = gearSize,
-                lineHeight = gearSize,
-            )
-            Text(
-                "${frame.rpm} RPM",
-                color = DashboardSecondary,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = rpmSize,
-            )
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                InputMeter(frame.throttle, Color(0xff32d583), Modifier.weight(1f))
-                Column(
-                    Modifier.padding(horizontal = 10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        ersModeLabel(cold),
-                        color = ersModeColor(cold.ersMode),
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                    )
-                }
-                InputMeter(frame.brake, Color(0xffff4d5e), Modifier.weight(1f))
+        Row(
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val compound = compoundColor(frame.tyreCompound)
+            if (frame.statusAvailable && compound != null) {
+                Box(Modifier.size(12.dp).background(compound, CircleShape))
+                Spacer(Modifier.width(8.dp))
             }
-            ErsMeter(cold.ersPercent)
-        }
-    }
-}
-
-@Composable
-private fun HeaderMetric(
-    value: String,
-    color: Color,
-    modifier: Modifier,
-    alignment: Alignment.Horizontal,
-) {
-    Column(modifier, horizontalAlignment = alignment, verticalArrangement = Arrangement.Center) {
-        Text(value, color = color, fontFamily = FontFamily.Monospace, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-    }
-}
-
-@Composable
-private fun InputMeter(value: Float, color: Color, modifier: Modifier = Modifier) {
-    LinearProgressIndicator(
-        progress = { value.coerceIn(0f, 1f) },
-        modifier = modifier.height(12.dp).clip(MaterialTheme.shapes.extraLarge),
-        color = color,
-        trackColor = DashboardDivider,
-        strokeCap = StrokeCap.Round,
-    )
-}
-
-@Composable
-private fun ErsMeter(ersPercent: Int) {
-    LinearProgressIndicator(
-        progress = { (ersPercent / 100f).coerceIn(0f, 1f) },
-        modifier = Modifier.fillMaxWidth().height(12.dp).clip(MaterialTheme.shapes.extraLarge),
-        color = if (ersPercent < 20) Color(0xfff5b942) else Color(0xff32d583),
-        trackColor = DashboardDivider,
-        strokeCap = StrokeCap.Round,
-    )
-}
-
-@Composable
-private fun ValueCell(value: String, valueColor: Color, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
-        Text(
-            value,
-            color = valueColor,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 19.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-        )
-    }
-}
-
-@Composable
-private fun FuelCell(cold: DashboardColdState, modifier: Modifier = Modifier) {
-    Column(
-        modifier.fillMaxSize().padding(10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text(
-            if (cold.statusAvailable) "%.1f KG".format(cold.fuelKg) else "—",
-            color = DashboardPrimary,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 19.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-        )
-        if (cold.statusAvailable) {
             Text(
-                "%+.1f LAPS".format(cold.fuelLaps),
-                color = fuelMarginColor(cold.fuelLaps),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
+                frame.tyreAgeText,
+                style = NumeralStyle,
+                fontSize = 20.sp,
+                color = Secondary,
                 maxLines = 1,
             )
         }
     }
 }
 
-@Composable
-private fun EmptyDashboardCell(modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxSize())
-}
+// ── Gear cluster ────────────────────────────────────────────────────────────
 
+/**
+ * Delta, gear and speed stacked on the centre line: the gear fills whatever
+ * height is left, and the smaller numbers either side of it need no labels.
+ */
 @Composable
-private fun FastestLapComparisonCell(
-    comparison: DashboardLapComparisonState,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().weight(1f)) {
-            ComparisonMetric(
-                label = "FASTEST LAP",
-                value = formatTime(comparison.fastestLapMs),
-                valueColor = if (comparison.fastestLapMs > 0) {
-                    DashboardFastest
-                } else {
-                    DashboardSecondary
-                },
-                modifier = Modifier.weight(1.25f),
-            )
-            VerticalDashboardDivider()
-            ComparisonMetric(
-                label = "DELTA",
-                value = formatDelta(comparison.lapDeltaSeconds),
-                valueColor = deltaColor(comparison.lapDeltaSeconds),
-                modifier = Modifier.weight(1f),
-            )
-        }
-        HorizontalDashboardDivider()
-        Row(Modifier.fillMaxWidth().weight(1f)) {
-            ComparisonMetric(
-                "S1",
-                formatDelta(comparison.sector1DeltaSeconds),
-                deltaColor(comparison.sector1DeltaSeconds),
-                Modifier.weight(1f),
-            )
-            VerticalDashboardDivider()
-            ComparisonMetric(
-                "S2",
-                formatDelta(comparison.sector2DeltaSeconds),
-                deltaColor(comparison.sector2DeltaSeconds),
-                Modifier.weight(1f),
-            )
-            VerticalDashboardDivider()
-            ComparisonMetric(
-                "S3",
-                formatDelta(comparison.sector3DeltaSeconds),
-                deltaColor(comparison.sector3DeltaSeconds),
-                Modifier.weight(1f),
-            )
-        }
+private fun GearCluster(frame: DashboardFrameState, modifier: Modifier) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Spacer(Modifier.height(16.dp))
+        Delta(frame, Modifier.graphicsLayer())
+        Gear(frame, Modifier.fillMaxWidth().weight(1f).cachedLayer())
+        Speed(frame, Modifier.graphicsLayer())
     }
 }
 
+/** The largest glyph, sized to whatever height the layout leaves it. */
 @Composable
-private fun ComparisonMetric(
-    label: String,
-    value: String,
-    valueColor: Color,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 3.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
+private fun Gear(frame: DashboardFrameState, modifier: Modifier) {
+    Box(modifier, contentAlignment = Alignment.Center) {
         Text(
-            label,
-            color = DashboardSecondary,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-        )
-        Text(
-            value,
-            color = valueColor,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-        )
-    }
-}
-
-@Composable
-private fun SideTyreBlock(
-    frame: DashboardFrameState,
-    leftSide: Boolean,
-    showDividers: Boolean = true,
-    modifier: Modifier = Modifier,
-) {
-    val cold = frame.cold
-    Column(modifier) {
-        if (leftSide) {
-            TyreDataRow(frame.tyreSurfaceFl, frame.tyreInnerFl, cold.tyreWearFl, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
-            if (showDividers) HorizontalDashboardDivider()
-            TyreDataRow(frame.tyreSurfaceRl, frame.tyreInnerRl, cold.tyreWearRl, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
-        } else {
-            TyreDataRow(frame.tyreSurfaceFr, frame.tyreInnerFr, cold.tyreWearFr, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
-            if (showDividers) HorizontalDashboardDivider()
-            TyreDataRow(frame.tyreSurfaceRr, frame.tyreInnerRr, cold.tyreWearRr, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
-        }
-    }
-}
-
-@Composable
-private fun TyreDataRow(
-    surfaceTemperature: Int,
-    innerTemperature: Int,
-    wear: Float,
-    wearAvailable: Boolean,
-    showDividers: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    Row(modifier.fillMaxWidth()) {
-        TyreStatCell(formatTemperature(surfaceTemperature), tyreTemperatureColor(surfaceTemperature), Modifier.weight(1f))
-        if (showDividers) VerticalDashboardDivider()
-        TyreStatCell(formatTemperature(innerTemperature), tyreTemperatureColor(innerTemperature), Modifier.weight(1f))
-        if (showDividers) VerticalDashboardDivider()
-        TyreStatCell(
-            if (wearAvailable) formatWear(wear) else "—",
-            if (wearAvailable) tyreWearColor(wear) else DashboardSecondary,
-            Modifier.weight(1f),
-        )
-    }
-}
-
-@Composable
-private fun TyreStatCell(value: String, color: Color, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxHeight().padding(horizontal = 3.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
-        Text(
-            value,
-            color = color,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
+            gearLabel(frame.gear),
+            style = NumeralStyle,
+            fontWeight = FontWeight.Black,
+            color = Primary,
+            autoSize = TextAutoSize.StepBased(48.sp, 200.sp, 4.sp),
             textAlign = TextAlign.Center,
             maxLines = 1,
         )
@@ -1207,23 +500,348 @@ private fun TyreStatCell(value: String, color: Color, modifier: Modifier = Modif
 }
 
 @Composable
-private fun VerticalDashboardDivider() {
-    Box(Modifier.fillMaxHeight().width(1.dp).background(DashboardDivider))
+private fun Speed(frame: DashboardFrameState, modifier: Modifier = Modifier) {
+    Row(modifier, verticalAlignment = Alignment.Bottom) {
+        Text(
+            frame.speedKph.toString(),
+            style = NumeralStyle,
+            fontSize = 34.sp,
+            color = Primary,
+            maxLines = 1,
+        )
+        Text(
+            " km/h",
+            style = NumeralStyle,
+            fontSize = 14.sp,
+            color = Secondary,
+            modifier = Modifier.padding(bottom = 5.dp),
+            maxLines = 1,
+        )
+    }
+}
+
+/** Time against the fastest lap at this point of the track. */
+@Composable
+private fun Delta(frame: DashboardFrameState, modifier: Modifier = Modifier) {
+    val delta = frame.lapDeltaSeconds
+    val known = delta != null
+    Text(
+        if (known) formatDelta(delta) else "–",
+        modifier = modifier,
+        style = NumeralStyle,
+        fontSize = 26.sp,
+        color = if (known) deltaColor(delta) else Secondary,
+        maxLines = 1,
+    )
+}
+
+// ── ERS ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Battery charge: the one resource a driver manages every straight. The bar
+ * turns amber under 20%, when a deployment will soon run dry.
+ */
+@Composable
+private fun Ers(frame: DashboardFrameState, modifier: Modifier) {
+    val available = frame.statusAvailable
+    val ersPercent = frame.ersPercent
+    val tone = if (ersPercent < 20) Warn else Info
+    Column(
+        modifier,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            SmallLabel("ERS", Modifier.weight(1f).padding(bottom = 8.dp))
+            Text(
+                if (available) "$ersPercent%" else "–",
+                style = NumeralStyle,
+                fontSize = 48.sp,
+                color = if (available) tone else Secondary,
+                maxLines = 1,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Box(Modifier.fillMaxWidth().height(10.dp).clip(CircleShape).background(Faint)) {
+            if (available) {
+                Box(
+                    Modifier.fillMaxHeight()
+                        .fillMaxWidth((ersPercent / 100f).coerceIn(0f, 1f))
+                        .background(tone),
+                )
+            }
+        }
+    }
+}
+
+// ── Race gaps ───────────────────────────────────────────────────────────────
+
+@Immutable
+private data class RaceGaps(
+    val aheadName: String?,
+    val aheadMs: Int?,
+    val behindName: String?,
+    val behindMs: Int?,
+    val leading: Boolean,
+    val last: Boolean,
+)
+
+/**
+ * Intervals to the cars directly ahead and behind, each under the neighbour's
+ * name. Within attack range the interval turns green (ahead) or red (behind).
+ */
+@Composable
+private fun Gaps(store: TelemetryStore, modifier: Modifier) {
+    val gaps by remember(store) {
+        derivedStateOf { raceGaps(store.timing, store.selectedDriverIndex) }
+    }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        GapReadout(
+            name = if (gaps.leading) "LEADING" else gaps.aheadName,
+            interval = if (gaps.leading) null else gaps.aheadMs,
+            blank = gaps.leading,
+            sign = "−",
+            closeColor = Gain,
+            alignment = Alignment.Start,
+            modifier = Modifier.weight(1f),
+        )
+        GapReadout(
+            name = if (gaps.last) "LAST" else gaps.behindName,
+            interval = if (gaps.last) null else gaps.behindMs,
+            blank = gaps.last,
+            sign = "+",
+            closeColor = Loss,
+            alignment = Alignment.End,
+            modifier = Modifier.weight(1f),
+        )
+    }
 }
 
 @Composable
-private fun HorizontalDashboardDivider() {
-    Box(Modifier.fillMaxWidth().height(1.dp).background(DashboardDivider))
+private fun GapReadout(
+    name: String?,
+    interval: Int?,
+    sign: String,
+    closeColor: Color,
+    alignment: Alignment.Horizontal,
+    modifier: Modifier,
+    blank: Boolean = false,
+) {
+    val close = interval != null && interval in 1 until CloseIntervalMs
+    Column(modifier, horizontalAlignment = alignment) {
+        Text(
+            name?.uppercase() ?: "–",
+            style = NumeralStyle,
+            fontSize = 14.sp,
+            letterSpacing = 1.sp,
+            color = Secondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            if (blank) "" else formatInterval(interval, sign),
+            style = NumeralStyle,
+            fontSize = 30.sp,
+            color = when {
+                interval == null -> Faint
+                close -> closeColor
+                else -> Primary
+            },
+            maxLines = 1,
+        )
+    }
 }
 
+private fun raceGaps(timing: TimingTowerState, driverIndex: Int): RaceGaps {
+    val cars = timing.cars
+    val me = cars.firstOrNull { it.index == driverIndex && it.position > 0 }
+        ?: return RaceGaps(null, null, null, null, leading = false, last = false)
+    val ahead = cars.firstOrNull { it.position == me.position - 1 }
+    val behind = cars.firstOrNull { it.position == me.position + 1 }
+    fun name(index: Int?) = index?.let { timing.drivers[it]?.name }
+    // The timing row carries each car's gap to the leader, which is zero for
+    // the leader and for anyone whose gap is not known yet.
+    fun gapKnown(position: Int, gapMs: Int) = position == 1 || gapMs > 0
+    val meKnown = gapKnown(me.position, me.gapMs)
+    val aheadMs = if (ahead != null && meKnown && gapKnown(ahead.position, ahead.gapMs)) {
+        (me.gapMs - ahead.gapMs).takeIf { it > 0 }
+    } else {
+        null
+    }
+    val behindMs = if (behind != null && meKnown && gapKnown(behind.position, behind.gapMs)) {
+        (behind.gapMs - me.gapMs).takeIf { it > 0 }
+    } else {
+        null
+    }
+    return RaceGaps(
+        aheadName = name(ahead?.index),
+        aheadMs = aheadMs,
+        behindName = name(behind?.index),
+        behindMs = behindMs,
+        leading = me.position == 1,
+        last = behind == null,
+    )
+}
+
+// ── Tyres ───────────────────────────────────────────────────────────────────
+
+/**
+ * Surface temperature of each corner, laid out as the corners sit on the car.
+ * The block's colour is the reading: blue cold, green in the window, amber
+ * and red over it.
+ */
+@Composable
+private fun Tyres(frame: DashboardFrameState, modifier: Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TyreFl(frame, Modifier.weight(1f).fillMaxHeight().graphicsLayer())
+            TyreFr(frame, Modifier.weight(1f).fillMaxHeight().graphicsLayer())
+        }
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TyreRl(frame, Modifier.weight(1f).fillMaxHeight().graphicsLayer())
+            TyreRr(frame, Modifier.weight(1f).fillMaxHeight().graphicsLayer())
+        }
+    }
+}
+
+@Composable
+private fun TyreFl(frame: DashboardFrameState, modifier: Modifier) = TyreBlock(frame.tyreFl, modifier)
+
+@Composable
+private fun TyreFr(frame: DashboardFrameState, modifier: Modifier) = TyreBlock(frame.tyreFr, modifier)
+
+@Composable
+private fun TyreRl(frame: DashboardFrameState, modifier: Modifier) = TyreBlock(frame.tyreRl, modifier)
+
+@Composable
+private fun TyreRr(frame: DashboardFrameState, modifier: Modifier) = TyreBlock(frame.tyreRr, modifier)
+
+@Composable
+private fun TyreBlock(temperature: Int, modifier: Modifier) {
+    val known = temperature > 0
+    val tone = tyreTemperatureColor(temperature)
+    Box(
+        modifier.clip(RoundedCornerShape(8.dp))
+            .background(if (known) tone.copy(alpha = 0.22f) else Faint),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            if (known) "$temperature°" else "–",
+            style = NumeralStyle,
+            fontSize = 24.sp,
+            color = if (known) tone else Secondary,
+            maxLines = 1,
+        )
+    }
+}
+
+// ── Fuel and last lap ───────────────────────────────────────────────────────
+
+@Composable
+private fun FuelAndLastLap(frame: DashboardFrameState, modifier: Modifier) {
+    val available = frame.statusAvailable
+    val fuelLaps = frame.fuelLaps
+    val lastLapMs = frame.lastLapMs
+    val best = frame.fastestLapMs
+    Column(modifier, verticalArrangement = Arrangement.SpaceEvenly) {
+        Column {
+            SmallLabel("FUEL")
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    if (available) "%+.1f".format(fuelLaps) else "–",
+                    style = NumeralStyle,
+                    fontSize = 30.sp,
+                    color = if (available) fuelMarginColor(fuelLaps) else Secondary,
+                    maxLines = 1,
+                )
+                if (available) {
+                    Text(
+                        " laps",
+                        style = NumeralStyle,
+                        fontSize = 14.sp,
+                        color = Secondary,
+                        modifier = Modifier.padding(bottom = 5.dp),
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        Column {
+            SmallLabel("LAST LAP")
+            Text(
+                formatTime(lastLapMs),
+                style = NumeralStyle,
+                fontSize = 30.sp,
+                // Purple when the last lap is the fastest one, as on timing screens.
+                color = when {
+                    lastLapMs <= 0 -> Secondary
+                    best > 0 && lastLapMs == best -> Best
+                    else -> Primary
+                },
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SmallLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        modifier = modifier,
+        style = NumeralStyle,
+        fontSize = 14.sp,
+        letterSpacing = 1.5.sp,
+        color = Secondary,
+        maxLines = 1,
+    )
+}
+
+// ── Colour ──────────────────────────────────────────────────────────────────
+
+private fun deltaColor(seconds: Double?): Color = when {
+    seconds == null || !seconds.isFinite() || abs(seconds) < 0.0005 -> Primary
+    seconds > 0 -> Loss
+    else -> Gain
+}
+
+private fun tyreTemperatureColor(value: Int): Color = when {
+    value <= 0 -> Secondary
+    value < 80 -> Info
+    value <= 105 -> Gain
+    value <= 120 -> Warn
+    else -> Loss
+}
+
+private fun fuelMarginColor(fuelLaps: Double): Color = when {
+    fuelLaps > 1.0 -> Primary
+    fuelLaps >= 0.0 -> Warn
+    else -> Loss
+}
+
+private fun compoundColor(compound: Int): Color? = when (compound) {
+    16 -> Loss
+    17 -> Color(0xffffd23f)
+    18 -> Primary
+    7 -> Gain
+    8 -> Info
+    else -> null
+}
+
+// ── Formatting ──────────────────────────────────────────────────────────────
+
 private fun lapLabel(cold: DashboardColdState): String = when {
-    cold.lapNumber <= 0 -> "—"
-    cold.totalLaps > 0 -> "${cold.lapNumber} / ${cold.totalLaps}"
-    else -> cold.lapNumber.toString()
+    cold.lapNumber <= 0 -> "L–"
+    cold.totalLaps > 0 -> "L${cold.lapNumber}/${cold.totalLaps}"
+    else -> "L${cold.lapNumber}"
+}
+
+private fun tyreAgeLabel(cold: DashboardColdState): String = when {
+    !cold.statusAvailable || compoundColor(cold.tyreCompound) == null -> "–"
+    else -> "${cold.tyreAgeLaps}L"
 }
 
 private fun formatTime(milliseconds: Int): String {
-    if (milliseconds <= 0) return "—"
+    if (milliseconds <= 0) return "–"
     val minutes = milliseconds / 60_000
     val seconds = milliseconds / 1_000 % 60
     val millis = milliseconds % 1_000
@@ -1231,84 +849,23 @@ private fun formatTime(milliseconds: Int): String {
 }
 
 private fun formatDelta(seconds: Double?): String {
-    if (seconds == null || !seconds.isFinite()) return "—.---"
+    if (seconds == null || !seconds.isFinite()) return "–"
     val normalized = if (abs(seconds) < 0.0005) 0.0 else seconds
     return if (normalized > 0) "+%.3f".format(normalized) else "%.3f".format(normalized)
 }
 
-private fun deltaColor(seconds: Double?): Color = when {
-    seconds == null || !seconds.isFinite() -> DashboardSecondary
-    abs(seconds) < 0.0005 -> DashboardSecondary
-    seconds > 0 -> Color(0xffc4162a)
-    seconds < 0 -> Color(0xff37872d)
-    else -> DashboardPrimary
-}
-
-private fun formatTemperature(value: Int): String = if (value > 0) "$value°" else "—"
-
-private fun formatWear(value: Float): String = "${value.coerceIn(0f, 100f).roundToInt()}%"
-
-private fun tyreTemperatureColor(value: Int): Color = when {
-    value <= 0 -> DashboardSecondary
-    value < 60 -> Color(0xff5794f2)
-    value < 80 -> Color(0xffd4ad04)
-    value <= 110 -> Color(0xff37872d)
-    value <= 130 -> Color(0xffc47d0e)
-    else -> Color(0xffc4162a)
-}
-
-private fun tyreWearColor(value: Float): Color = when {
-    value < 20f -> Color(0xff73bf69)
-    value < 40f -> Color(0xffa8d436)
-    value < 60f -> Color(0xfffade2a)
-    value < 80f -> Color(0xffff9830)
-    else -> Color(0xffc4162a)
-}
-
-private fun fuelMarginColor(fuelLaps: Double): Color = when {
-    fuelLaps > 1.0 -> Color(0xff37872d)
-    fuelLaps >= 0.0 -> Color(0xffd4ad04)
-    else -> Color(0xffc4162a)
-}
-
-private fun ersModeLabel(cold: DashboardColdState): String =
-    if (!cold.statusAvailable) "—" else cold.labels["ers.mode.${cold.ersMode}"] ?: when (cold.ersMode) {
-        1 -> "AUTO"
-        2 -> "HOTLAP"
-        3 -> if (cold.protocolYear == 2026) "BOOST" else "OVERTAKE"
-        else -> "NONE"
+private fun formatInterval(milliseconds: Int?, sign: String): String {
+    if (milliseconds == null || milliseconds <= 0) return "–"
+    val seconds = milliseconds / 1_000.0
+    return if (seconds < 60) {
+        "$sign%.1f".format(seconds)
+    } else {
+        "$sign%d:%04.1f".format((seconds / 60).toInt(), seconds % 60)
     }
-
-private fun ersModeColor(mode: Int): Color = when (mode) {
-    1 -> Color(0xff43a5ff)
-    2 -> Color(0xfff5b942)
-    3 -> Color(0xff32d583)
-    else -> DashboardSecondary
 }
 
 private fun gearLabel(gear: Int): String = when {
     gear < 0 -> "R"
     gear == 0 -> "N"
     else -> gear.toString()
-}
-
-private fun tyreLabel(cold: DashboardColdState): String {
-    if (!cold.statusAvailable) return "—"
-    val compound = when (cold.tyreCompound) {
-        16 -> "SOFT"
-        17 -> "MED"
-        18 -> "HARD"
-        7 -> "INTER"
-        8 -> "WET"
-        else -> return "—"
-    }
-    return if (cold.tyreAgeLaps > 0) "$compound ${cold.tyreAgeLaps}L" else compound
-}
-
-private fun tyreTone(compound: Int): Color = when (compound) {
-    16 -> Color(0xffff4d5e)
-    17 -> Color(0xfff5b942)
-    7 -> Color(0xff32d583)
-    8 -> Color(0xff43a5ff)
-    else -> Color(0xffd8dee6)
 }

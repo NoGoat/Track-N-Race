@@ -16,6 +16,9 @@ import kotlin.math.roundToInt
 private const val MAX_LIVE_LAP_PROGRESS_SAMPLES = 20_000
 private const val MAX_PLAYBACK_DELTA_CURVES = 8
 
+/** Analysis numbers its desktop requests from here, apart from the dashboard's. */
+internal const val ANALYSIS_REQUEST_BASE = 1L shl 40
+
 // Car indices are 0..21 on the wire (24-slot arrays); anything above is the
 // game's 255 "no such car" marker, e.g. a spectator's player index.
 private const val MAX_CARS = 24
@@ -181,7 +184,6 @@ internal class TelemetryStore {
     private var playbackFastestLap = 0
     private var playbackDeltaAvailable = false
     private var playbackLaps: List<PlaybackLapMeta> = emptyList()
-    private var playbackSelectedLap = 0
     private var playbackCursorSessionTime = Double.NaN
     private var playbackCursorSample: LiveLapSample? = null
     private var playbackRequestId = 0L
@@ -189,6 +191,20 @@ internal class TelemetryStore {
     private val playbackDeltaCache = mutableMapOf<Pair<Int, Int>, LapDeltaCurve>()
     private val playbackDeltaUnavailable = mutableSetOf<Pair<Int, Int>>()
     private var lapDeltaRequester: ((PlaybackLapDeltaRequest) -> Boolean)? = null
+    // Analysis issues its own lap-delta requests, numbered from
+    // ANALYSIS_REQUEST_BASE; their replies go to it rather than the dashboard.
+    @Volatile private var analysisDeltaSink: ((Long, JSONObject?) -> Unit)? = null
+
+    /** The laps of the recording the desktop is playing, for Analysis. */
+    var playbackCatalog by mutableStateOf(PlaybackCatalog())
+        private set
+
+    /** The lap under the desktop's playback cursor, 0 between laps. */
+    var playbackSelectedLap by mutableIntStateOf(0)
+        private set
+
+    // Written on the main thread, read by Analysis in its draw phase.
+    @Volatile private var playbackCursorPublished = Double.NaN
 
     var cold by mutableStateOf(DashboardColdState())
         private set
@@ -260,6 +276,9 @@ internal class TelemetryStore {
     fun latestHot(): HotTelemetry = hot.get()
     fun latestMapPositions(): MapPositions = mapPositions.get()
     fun latestLapComparison(): DashboardLapComparisonState = lapComparison.get()
+
+    /** The desktop's playback cursor as a session time, NaN when unknown. */
+    fun latestPlaybackCursorTime(): Double = playbackCursorPublished
     fun totalHotRows(): Long = hotRows.get()
 
     fun acceptBinary(bytes: ByteArray) {
@@ -390,6 +409,7 @@ internal class TelemetryStore {
                         fastestLap,
                         deltaAvailable,
                         playbackTrackLengthM,
+                        playbackDriver ?: -1,
                     )
                 }
             }
@@ -397,6 +417,10 @@ internal class TelemetryStore {
             "lap_delta" -> {
                 val requestId = row.optLong("requestId")
                 val data = row.optJSONObject("data")
+                if (requestId >= ANALYSIS_REQUEST_BASE) {
+                    analysisDeltaSink?.invoke(requestId, data)
+                    return
+                }
                 val currentLap = data?.optInt("currentLapNum") ?: 0
                 val comparisonLap = data?.optInt("comparisonLapNum") ?: 0
                 val curve = data?.let(::readLapDeltaCurve)
@@ -814,6 +838,11 @@ internal class TelemetryStore {
         lapDeltaRequester = requester
     }
 
+    /** Receives replies to lap-delta requests numbered from [ANALYSIS_REQUEST_BASE]. */
+    fun setAnalysisDeltaSink(sink: ((Long, JSONObject?) -> Unit)?) {
+        analysisDeltaSink = sink
+    }
+
     fun resetLapComparison() = post { resetAllLapComparison() }
 
     fun notifyPairingSucceeded() = post { pairingSuccessId++ }
@@ -853,19 +882,27 @@ internal class TelemetryStore {
         playbackDeltaAvailable = false
         playbackLaps = emptyList()
         playbackSelectedLap = 0
-        playbackCursorSessionTime = Double.NaN
+        setPlaybackCursor(Double.NaN)
         playbackCursorSample = null
         activePlaybackRequest = null
         playbackDeltaCache.clear()
         playbackDeltaUnavailable.clear()
         trackLengthM = 0.0
+        if (playbackCatalog.active) {
+            playbackCatalog = PlaybackCatalog(generation = playbackCatalog.generation + 1)
+        }
+    }
+
+    private fun setPlaybackCursor(sessionTime: Double) {
+        playbackCursorSessionTime = sessionTime
+        playbackCursorPublished = sessionTime
     }
 
     private fun resetPlaybackCursorComparison() {
         previousLiveLap = null
         activePlaybackRequest = null
         playbackSelectedLap = 0
-        playbackCursorSessionTime = Double.NaN
+        setPlaybackCursor(Double.NaN)
         playbackCursorSample = null
         if (playbackActive) {
             val fastestTime = playbackLaps.firstOrNull {
@@ -963,7 +1000,9 @@ internal class TelemetryStore {
         fastestLap: Int,
         deltaAvailable: Boolean,
         playbackTrackLengthM: Double,
+        playbackDriver: Int,
     ) {
+        val previousCatalog = playbackCatalog
         resetAllLapComparison()
         playbackActive = true
         playbackLaps = laps
@@ -974,11 +1013,31 @@ internal class TelemetryStore {
             it.lapNumber == fastestLap
         }?.lapTimeMs ?: 0
         publishLapComparison(DashboardLapComparisonState(fastestLapMs = fastestTime))
+
+        // Every subscription snapshot repeats this row. Only a different
+        // recording or driver is a new catalogue, so Analysis keeps its laps
+        // across page changes.
+        val catalog = PlaybackCatalog(
+            generation = previousCatalog.generation,
+            active = true,
+            driverIndex = playbackDriver,
+            laps = laps.map {
+                PlaybackLapInfo(it.lapNumber, it.lapTimeMs, it.startSessionTime, it.endSessionTime)
+            },
+            fastestLap = fastestLap,
+            deltaAvailable = deltaAvailable,
+            trackLengthM = trackLengthM,
+        )
+        playbackCatalog = if (catalog == previousCatalog) {
+            previousCatalog
+        } else {
+            catalog.copy(generation = maxOf(previousCatalog.generation, playbackCatalog.generation) + 1)
+        }
     }
 
     private fun updatePlaybackReference(sample: LiveLapSample) {
         if (!playbackActive || sample.lapNumber <= 0 || !sample.lapDistanceM.isFinite()) return
-        if (sample.sessionTime.isFinite()) playbackCursorSessionTime = sample.sessionTime
+        if (sample.sessionTime.isFinite()) setPlaybackCursor(sample.sessionTime)
         playbackSelectedLap = sample.lapNumber
         playbackCursorSample = sample
         publishPlaybackAtCursor(
@@ -988,7 +1047,7 @@ internal class TelemetryStore {
 
     private fun updatePlaybackCursor(sessionTime: Double) {
         if (!playbackActive || !sessionTime.isFinite()) return
-        playbackCursorSessionTime = sessionTime
+        setPlaybackCursor(sessionTime)
         val current = playbackLaps.asSequence()
             .filter {
                 it.startSessionTime.isFinite() && it.endSessionTime.isFinite() &&

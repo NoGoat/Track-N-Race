@@ -1,0 +1,7 @@
+# App-specific Baseline Profile rules, merged by AGP with the ones the Compose
+# libraries ship. Every class and method of the app is hot: the dashboard and
+# analysis pages run their code every frame, and on a low-end phone running it
+# interpreted until the idle-time dexopt job compiles it costs 20-30% of the
+# frame budget. build-and-run.ps1 additionally compiles release installs.
+HSPLcom/tracknrace/android/**->**(**)**
+Lcom/tracknrace/android/**;

@@ -1546,6 +1546,20 @@ export default function AnalyzeScreen({
     updateSeries(config.series.map(item => item === combined ? { ...item, corners: next } : item))
   }, [config.series, setMetricsSelected, updateSeries])
 
+  // Picks every corner of a row, or clears them all when all four are picked,
+  // on the combined card or as separate cards alike.
+  const toggleTyreAllCorners = useCallback((idPrefix: string) => {
+    const combined = config.series.find(item => item.metricId === `${idPrefix}-all`)
+    if (combined) {
+      const all = sanitizeCorners(combined.corners ?? []).length === ANALYZE_TYRE_CORNERS.length
+      updateSeries(config.series.map(item => item === combined ? { ...item, corners: all ? [] : sanitizeCorners(undefined) } : item))
+      return
+    }
+    const ids = ANALYZE_TYRE_CORNERS.map(corner => `${idPrefix}-${corner.key}`)
+    const charted = new Set(config.series.map(item => item.metricId))
+    setMetricsSelected(ids, !ids.every(id => charted.has(id)))
+  }, [config.series, setMetricsSelected, updateSeries])
+
   // Combining merges the row's charted corners into one card where the first
   // of them sat; separating splits the card back into a card per corner.
   const toggleTyreCombined = useCallback((idPrefix: string) => {
@@ -1624,6 +1638,7 @@ export default function AnalyzeScreen({
                 combinedCorners={tyreCornersByCombined}
                 onSetSelected={setMetricsSelected}
                 onToggleTyreCorner={toggleTyreCorner}
+                onToggleTyreAllCorners={toggleTyreAllCorners}
                 onToggleTyreCombined={toggleTyreCombined}
               />
             </div>

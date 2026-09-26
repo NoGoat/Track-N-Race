@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.provider.DocumentsContract
 import com.journeyapps.barcodescanner.ScanOptions
 import java.util.concurrent.Executors
@@ -26,6 +27,12 @@ internal class TelemetryController(
     private val directTelemetry = NativeTelemetry(this)
     private val pairedTelemetry = PairedTelemetryClient(context, this)
     private val discovery = NativePairDiscovery(this)
+    internal val analysis = AnalysisController(
+        context,
+        store,
+        pairedTelemetry::requestLapData,
+        pairedTelemetry::requestLapDelta,
+    )
 
     @Volatile private var sourceRequested = false
     @Volatile private var sourceGeneration = 0
@@ -33,9 +40,11 @@ internal class TelemetryController(
     @Volatile private var discoveryRequested = false
     @Volatile private var qrScannerActive = false
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var lowLatencyLock: WifiManager.WifiLock? = null
 
     init {
         store.setLapDeltaRequester(pairedTelemetry::requestLapDelta)
+        store.setAnalysisDeltaSink(analysis::onDeltaReply)
         publishSettings()
     }
 
@@ -44,6 +53,7 @@ internal class TelemetryController(
         // this app. Keep the current source and discovery browser alive across
         // that handoff instead of racing the activity-result pairing attempt.
         if (qrScannerActive) return
+        holdLowLatencyWifi(true)
         sourceRequested = true
         restartConfiguredSource()
         if (discoveryRequested) startDiscoveryInternal()
@@ -51,18 +61,21 @@ internal class TelemetryController(
 
     fun onHostStop() {
         if (qrScannerActive) return
+        holdLowLatencyWifi(false)
         stopDiscoveryInternal()
         suspendSourcesAsync()
     }
 
     fun destroy() {
         store.setLapDeltaRequester(null)
+        store.setAnalysisDeltaSink(null)
         sourceRequested = false
         sourceGeneration++
         pairingPending = false
         discoveryRequested = false
         qrScannerActive = false
         stopDiscoveryInternal()
+        holdLowLatencyWifi(false)
         directTelemetry.stop()
         pairedTelemetry.close()
         sourceExecutor.shutdownNow()
@@ -187,6 +200,35 @@ internal class TelemetryController(
         }
     }
 
+    /**
+     * Keeps the Wi-Fi radio out of power save while the app is on screen. In
+     * power save the radio dozes between access point beacons and the router
+     * holds incoming packets until it wakes: on a Galaxy M12 that stalls the
+     * telemetry stream (and every screen with it) for up to 250 ms about once
+     * a second. The low-latency lock only applies while the app is in the
+     * foreground with the screen on, and is released when it stops.
+     */
+    private fun holdLowLatencyWifi(hold: Boolean) {
+        if (!hold) {
+            lowLatencyLock?.let { if (it.isHeld) it.release() }
+            return
+        }
+        val lock = lowLatencyLock ?: run {
+            val wifi = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return
+            @Suppress("DEPRECATION")
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifi.createWifiLock(mode, "track-n-race-telemetry").apply {
+                setReferenceCounted(false)
+                lowLatencyLock = this
+            }
+        }
+        if (!lock.isHeld) lock.acquire()
+    }
+
     fun stopDiscovery() {
         discoveryRequested = false
         stopDiscoveryInternal()
@@ -277,6 +319,8 @@ internal class TelemetryController(
     override fun onRow(json: String) = store.acceptColdRow(json)
 
     override fun onBinary(bytes: ByteArray) = store.acceptBinary(bytes)
+
+    override fun onLapData(json: String) = analysis.onLapData(json)
 
     override fun onState(state: String, detail: String?) {
         if (pairingPending && (state == "error" || state == "disconnected")) {

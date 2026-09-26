@@ -23,11 +23,7 @@ internal object V6Data {
     const val SPEED = 1
     const val RPM = 2
     const val GEAR = 3
-    const val THROTTLE = 4
-    const val BRAKE = 5
     const val TYRE_SURFACE_TEMP = 8
-    const val TYRE_INNER_TEMP = 9
-    const val TYRE_WEAR = 12
     const val TYRE_STATE = 13
     const val FUEL = 15
     const val ERS_STORE = 16
@@ -51,22 +47,16 @@ internal enum class DataConsumer(
     /** Session type, lap count and track. */
     SESSION_INFO(DataRow.SESSION),
 
-    /** Speed, gear, RPM and the throttle/brake bars. */
+    /** Speed, gear and the RPM behind the shift lights. */
     DRIVING_INPUTS(
         DataRow.TELEMETRY,
-        listOf(V6Data.SPEED, V6Data.RPM, V6Data.GEAR, V6Data.THROTTLE, V6Data.BRAKE),
+        listOf(V6Data.SPEED, V6Data.RPM, V6Data.GEAR),
     ),
 
-    /** The four-corner surface and inner tyre temperatures. */
-    TYRE_TEMPERATURES(
-        DataRow.TELEMETRY,
-        listOf(V6Data.TYRE_SURFACE_TEMP, V6Data.TYRE_INNER_TEMP),
-    ),
+    /** The four-corner surface temperatures. */
+    TYRE_TEMPERATURES(DataRow.TELEMETRY, listOf(V6Data.TYRE_SURFACE_TEMP)),
 
-    /** Per-corner tyre wear next to the temperatures. */
-    TYRE_WEAR(DataRow.DAMAGE, listOf(V6Data.TYRE_WEAR)),
-
-    /** ERS, fuel and brake bias. */
+    /** ERS level and mode, fuel margin and brake bias. */
     POWER_UNIT(
         DataRow.STATUS,
         listOf(V6Data.ERS_STORE, V6Data.FUEL, V6Data.BRAKE_BIAS),

@@ -2,6 +2,7 @@ package com.tracknrace.android
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Trace
 import android.provider.Settings
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -31,10 +32,11 @@ internal enum class PairedTelemetryPage(
             DataConsumer.SESSION_INFO,
             DataConsumer.DRIVING_INPUTS,
             DataConsumer.TYRE_TEMPERATURES,
-            DataConsumer.TYRE_WEAR,
             DataConsumer.POWER_UNIT,
             DataConsumer.FITTED_TYRE,
             DataConsumer.LAP_PROGRESS,
+            // Race intervals to the cars ahead and behind.
+            DataConsumer.TIMING_TOWER,
         ),
     ),
     TIMING(
@@ -51,6 +53,16 @@ internal enum class PairedTelemetryPage(
             DataConsumer.DRIVER_ROSTER,
             DataConsumer.SESSION_INFO,
             DataConsumer.TYRE_SETS,
+        ),
+    ),
+    // Lap samples are requested one lap at a time (request_lap_data), so the
+    // stream only needs the track and the roster; the playback cursor and lap
+    // catalogue are control rows every phone receives.
+    ANALYSIS(
+        "analysis",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.SESSION_INFO,
         ),
     ),
     NONE("none", emptyList());
@@ -74,6 +86,9 @@ internal class PairedTelemetryClient(
         fun onState(state: String, detail: String?)
 
         fun onPaired() = Unit
+
+        /** A `lap_data` reply, still as text: it is parsed straight into columns. */
+        fun onLapData(json: String) = Unit
     }
 
     data class Endpoint(
@@ -97,6 +112,7 @@ internal class PairedTelemetryClient(
         // 2: subscribe carries v6Types, and playback rows are field patches.
         private const val PAIR_PROTOCOL_VERSION = 2
         private const val BINARY_ROWS_VERSION = 2
+        private const val LAP_DATA_PREFIX = "{\"type\":\"lap_data\""
 
         private fun preferences(context: Context): SharedPreferences =
             RecordingStorage.preferences(context)
@@ -131,6 +147,7 @@ internal class PairedTelemetryClient(
     private var subscribedSocket: WebSocket? = null
     private var activePage = PairedTelemetryPage.DASHBOARD
     private var lapDeltaSupported = false
+    private var lapDataSupported = false
     private var driverRestrictionSupported = false
 
     fun setPage(page: PairedTelemetryPage) {
@@ -178,7 +195,25 @@ internal class PairedTelemetryClient(
                 .put("requestId", request.requestId)
                 .put("currentLap", request.currentLap)
                 .put("comparisonLap", request.comparisonLap)
-                .put("sectorDelta", true)
+                .put("sectorDelta", request.sectorDelta)
+                .toString(),
+        )
+    }
+
+    /**
+     * Asks for one lap of the desktop's selected driver, reduced to the
+     * "family.field" channels given. False when the desktop cannot answer.
+     */
+    fun requestLapData(requestId: Long, lapNumber: Int, channels: Collection<String>): Boolean {
+        val active = synchronized(subscriptionLock) {
+            subscribedSocket?.takeIf { lapDataSupported }
+        } ?: return false
+        return active.send(
+            JSONObject()
+                .put("type", "request_lap_data")
+                .put("requestId", requestId)
+                .put("lapNum", lapNumber)
+                .put("channels", JSONArray(channels.toList()))
                 .toString(),
         )
     }
@@ -231,12 +266,26 @@ internal class PairedTelemetryClient(
                 }
             }
 
+            // Trace sections mark when each frame arrives, so a system trace
+            // shows gaps in the desktop's stream against the phone's frames.
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (socket === webSocket) handleText(webSocket, endpoint, text)
+                if (socket !== webSocket) return
+                Trace.beginSection("pair text")
+                try {
+                    handleText(webSocket, endpoint, text)
+                } finally {
+                    Trace.endSection()
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                if (socket === webSocket) listener.onBinary(bytes.toByteArray())
+                if (socket !== webSocket) return
+                Trace.beginSection("pair binary")
+                try {
+                    listener.onBinary(bytes.toByteArray())
+                } finally {
+                    Trace.endSection()
+                }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -256,6 +305,12 @@ internal class PairedTelemetryClient(
     }
 
     private fun handleText(webSocket: WebSocket, endpoint: Endpoint, text: String) {
+        // A lap is hundreds of KB; hand it over unparsed rather than building
+        // a JSONObject tree only to walk it once.
+        if (text.startsWith(LAP_DATA_PREFIX)) {
+            listener.onLapData(text)
+            return
+        }
         try {
             val message = JSONObject(text)
             when (message.optString("type")) {
@@ -327,6 +382,7 @@ internal class PairedTelemetryClient(
                 }
             }
             lapDeltaSupported = "lap-delta" in advertised
+            lapDataSupported = "lap-data" in advertised
             driverRestrictionSupported = "driver-restriction" in advertised
             sendSubscription(webSocket, activePage)
         }
@@ -353,6 +409,7 @@ internal class PairedTelemetryClient(
             if (subscribedSocket === webSocket) {
                 subscribedSocket = null
                 lapDeltaSupported = false
+                lapDataSupported = false
                 driverRestrictionSupported = false
             }
         }
@@ -377,6 +434,7 @@ internal class PairedTelemetryClient(
         synchronized(subscriptionLock) {
             subscribedSocket = null
             lapDeltaSupported = false
+            lapDataSupported = false
             driverRestrictionSupported = false
         }
         active?.close(1000, "Android page closed")

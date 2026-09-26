@@ -110,6 +110,7 @@ add_library(tnrp STATIC
     src/TnrdReader.cpp
     src/UdpListener.cpp
     src/PairDiscovery.cpp
+    src/PairLapData.cpp
     src/PairServer.cpp
     src/Engine.cpp
     src/XlsxExport.cpp

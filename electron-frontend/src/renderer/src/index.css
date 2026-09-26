@@ -786,16 +786,6 @@ body {
   color: white;
 }
 
-/* Metric picker tiles are analyze toggles with a resting outline, so an
-   unselected tile still reads as a target. */
-.analyze-metric-tile {
-  border-color: var(--border);
-}
-
-.analyze-metric-tile.analyze-toggle-button--active {
-  border-color: var(--border-focus);
-}
-
 .analysis-view-surface {
   opacity: 0;
   pointer-events: none;
@@ -898,11 +888,14 @@ html[data-page-transition='true'] .session-map-transition {
   view-transition-name: app-page;
 }
 
-/* Compositor-driven delay: a seek that installs within 100ms unmounts the
-   overlay before it becomes visible, with no JS timer to schedule or cancel. */
+/* Compositor-driven delay: a seek that installs within 300ms unmounts the
+   overlay before it becomes visible, with no JS timer to schedule or cancel.
+   Pointer input passes through during the delay; the animation switches it on
+   as the fade starts and the forwards fill keeps it on. */
 .seek-loading-overlay {
   opacity: 0;
-  animation: seekLoadingFadeIn 150ms ease-out 100ms forwards;
+  pointer-events: none;
+  animation: seekLoadingFadeIn 150ms ease-out 300ms forwards;
 }
 
 .seek-loading-bar {
@@ -933,7 +926,8 @@ html[data-page-transition='true'] .session-map-transition {
 }
 
 @keyframes seekLoadingFadeIn {
-  to { opacity: 1; }
+  from { pointer-events: auto; }
+  to { opacity: 1; pointer-events: auto; }
 }
 
 @keyframes seekLoadingScan {

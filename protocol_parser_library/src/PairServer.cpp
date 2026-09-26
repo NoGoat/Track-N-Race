@@ -7,12 +7,14 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cerrno>
 #include <cctype>
 #include <cstring>
 #include <deque>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -35,6 +37,7 @@ static constexpr PairSocket kInvalidPairSocket = INVALID_SOCKET;
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -96,6 +99,33 @@ struct PairIncomingMessage {
     int currentLap{};
     int comparisonLap{};
     bool sectorDelta{};
+    // request_lap_data: one lap of the selected driver, as "family.field".
+    int lapNum{};
+    std::vector<std::string> channels{};
+};
+
+// The part of playback_lap_blocks a phone reads. The full row also carries the
+// desktop Analyze catalogue for every driver (hundreds of KB for a race), which
+// a phone would have to download and parse before anything else could arrive.
+struct PairLapBlock {
+    int   lapNum{};
+    float startSessionTime{};
+    float endSessionTime{};
+};
+
+struct PairLapTime {
+    int lapNum{};
+    int lapTimeMs{};
+};
+
+struct PairLapBlocksRow {
+    std::string               type{"playback_lap_blocks"};
+    std::vector<PairLapBlock> blocks;
+    std::vector<PairLapTime>  laps;
+    int                       fastestLapNum{};
+    bool                      deltaAvailable{};
+    int                       trackLengthM{};
+    int                       playbackDriverIndex{-1};
 };
 
 struct PairRowsFrame {
@@ -131,7 +161,7 @@ struct PairWelcomeFrame {
     std::optional<int> formula;
     std::vector<std::string> capabilities{
         "subscribe", "latest-state", "playback-state", "lap-delta",
-        "v6-requirements", "driver-restriction"
+        "v6-requirements", "driver-restriction", "lap-data"
     };
 };
 
@@ -159,12 +189,24 @@ constexpr int kBinaryRowsVersion = 2;
 constexpr int64_t kPairWindowMs = 2 * 60 * 1000;
 constexpr size_t kMaxFrameBytes = 1024 * 1024;
 constexpr size_t kMaxBufferedBytes = 8 * 1024 * 1024;
+// Multi-car and session state that the game itself sends at 2 Hz. V6 playback
+// projects it at sample rate (22 timing patches per sample); a phone gets each
+// car's newest value at most this often.
+constexpr int64_t kThrottledRowIntervalMs = 250;
+// A send blocked this long means the phone stopped reading altogether. Shorter
+// pauses (app start-up, a GC, a rotation) are absorbed by the outbox.
+constexpr int64_t kSendStallMs = 15'000;
+// How long a closing reader waits for its writer after shutdown() before it
+// closes the socket to abort a send that shutdown() did not interrupt.
+constexpr int64_t kWriterExitGraceMs = 2'000;
+constexpr uint8_t kPlaybackStateKeyType = 0xff;
 constexpr uint32_t kAndroidPageMask =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
     (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13);
 constexpr uint32_t kParticipantsMask = 1u << 8;
 // The reader ignores ids it does not know; this only bounds a phone's list.
 constexpr size_t kMaxV6TypesPerClient = 32;
+constexpr size_t kMaxLapDataChannels = 64;
 constexpr int kMaxV6TypeId = 63;
 
 std::vector<uint8_t> sanitizeV6Types(const std::vector<int>& requested) {
@@ -205,15 +247,6 @@ void shutdownPairSocket(PairSocket socket) {
 #endif
 }
 
-bool socketTimedOut() {
-#ifdef _WIN32
-    const int error = WSAGetLastError();
-    return error == WSAETIMEDOUT || error == WSAEWOULDBLOCK;
-#else
-    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
-#endif
-}
-
 int pairSocketError() {
 #ifdef _WIN32
     return WSAGetLastError();
@@ -230,20 +263,20 @@ std::string pairSocketErrorText(int error) {
 #endif
 }
 
-void setSocketTimeouts(PairSocket socket) {
-#ifdef _WIN32
-    DWORD timeout = 50;
-    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
-               reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-    timeout = 250;
-    setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO,
-               reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-#else
-    timeval receive{0, 50000};
-    timeval send{0, 250000};
-    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &receive, sizeof(receive));
-    setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &send, sizeof(send));
-#endif
+// Client sockets are blocking with no timeouts: the reader blocks in recv() and
+// the writer in send(), and shutdown() wakes both. A send timeout is not usable
+// for flow control, because a phone that pauses reading for a moment (start-up,
+// GC, rotation) would be disconnected, and on Windows a timed-out socket is left
+// in an indeterminate state.
+void configureClientSocket(PairSocket socket) {
+    const int enabled = 1;
+    setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
+               reinterpret_cast<const char*>(&enabled), sizeof(enabled));
+    setsockopt(socket, SOL_SOCKET, SO_KEEPALIVE,
+               reinterpret_cast<const char*>(&enabled), sizeof(enabled));
+    const int sendBuffer = 1024 * 1024;
+    setsockopt(socket, SOL_SOCKET, SO_SNDBUF,
+               reinterpret_cast<const char*>(&sendBuffer), sizeof(sendBuffer));
 }
 
 void setNonBlocking(PairSocket socket) {
@@ -503,6 +536,56 @@ bool allowedControlRow(std::string_view json) {
         json.starts_with("{\"type\":\"playback_close\"");
 }
 
+// The integer after the first occurrence of key, e.g. "\"_v6_type\":".
+std::optional<int> intFieldAfter(std::string_view json, std::string_view key) {
+    const size_t at = json.find(key);
+    if (at == std::string_view::npos) return std::nullopt;
+    size_t index = at + key.size();
+    const bool negative = index < json.size() && json[index] == '-';
+    if (negative) ++index;
+    if (index >= json.size() || !std::isdigit(static_cast<unsigned char>(json[index])))
+        return std::nullopt;
+    int value = 0;
+    while (index < json.size() && std::isdigit(static_cast<unsigned char>(json[index])))
+        value = value * 10 + (json[index++] - '0');
+    return negative ? -value : value;
+}
+
+// V6DataType of a single-field-group playback patch, or 0 for a complete row.
+int v6TypeOf(std::string_view json) {
+    return intFieldAfter(json, "\"_v6_type\":").value_or(0);
+}
+
+// Latest-state rows: a newer row with the same key fully supersedes an older
+// one that has not been sent yet. V6 patches carry one complete field group for
+// one car, so the key is (row type, field group, car). Returns nullopt for rows
+// that must be delivered as sent: events, control rows, multi-car patches.
+std::optional<uint64_t> stateKeyOf(uint8_t type, int v6Type, std::string_view json) {
+    if (type == 0) {
+        if (!json.starts_with("{\"type\":\"playback_state\"")) return std::nullopt;
+        type = kPlaybackStateKeyType;
+    } else if (type == 6) {
+        return std::nullopt;  // race_event: every event matters
+    }
+    int car = -1;
+    if (type == 10) {
+        car = intFieldAfter(json, "\"car_idx\":").value_or(-1);
+    } else if (v6Type > 0 && (type == 7 || type == 9)) {
+        static constexpr std::string_view CAR = "{\"idx\":";
+        const size_t first = json.find(CAR);
+        if (first == std::string_view::npos) return std::nullopt;
+        if (json.find(CAR, first + CAR.size()) != std::string_view::npos) return std::nullopt;
+        car = intFieldAfter(json.substr(first), CAR).value_or(-1);
+    }
+    return (static_cast<uint64_t>(type) << 32) |
+        (static_cast<uint64_t>(static_cast<uint16_t>(v6Type)) << 16) |
+        static_cast<uint16_t>(car);
+}
+
+bool throttledRowType(uint8_t type) {
+    return type == 5 || type == 7 || type == 9;
+}
+
 std::string localAddress() {
     char host[256]{};
     if (gethostname(host, sizeof(host) - 1) != 0) return "127.0.0.1";
@@ -532,6 +615,12 @@ std::string writeJson(const T& value) {
     return json;
 }
 
+std::string phoneLapBlocks(const std::string& json) {
+    PairLapBlocksRow row;
+    if (glz::read<kPartialRead>(row, std::string_view(json))) return json;
+    return writeJson(row);
+}
+
 std::string writePublicState(const PairPublicState& value) {
     std::string json;
     (void)glz::write<glz::opts{.skip_null_members = false}>(value, json);
@@ -541,13 +630,44 @@ std::string writePublicState(const PairPublicState& value) {
 } // namespace
 
 struct PairServer::Impl {
+    // Latest-state rows and binary records waiting to be sent together. While
+    // it is the newest unit in the outbox, a row with the same state key
+    // replaces the queued one and moves to the end, so the batch holds each
+    // key's newest value in the order the values were last updated.
+    struct Batch {
+        std::vector<std::pair<uint64_t, std::string>> rows;
+        std::array<std::vector<uint8_t>, 16> binary;
+        bool hasBinary{};
+        size_t bytes{};
+    };
+
+    // One unit of output, delivered in order: a frame exactly as queued, or a
+    // batch. A frame closes the batch before it, so state is never reordered
+    // across a control row such as timeline_reset.
+    struct OutboxUnit {
+        std::vector<uint8_t> frame;
+        std::unique_ptr<Batch> batch;
+    };
+
     struct Client {
         PairSocket socket{kInvalidPairSocket};
         std::atomic<bool> running{true};
         std::thread thread;
+        std::thread writer;
+        std::atomic<bool> writerDone{false};
+        // nowMs() when the writer entered send(), 0 while it is not sending.
+        std::atomic<int64_t> sendingSinceMs{0};
+
         std::mutex outgoingMutex;
-        std::deque<std::vector<uint8_t>> outgoing;
+        std::condition_variable outgoingReady;
+        std::deque<OutboxUnit> outgoing;
         size_t pendingBytes{};
+        // Throttled rows that arrived before their key's interval elapsed.
+        std::map<uint64_t, std::string> held;
+        std::map<uint64_t, int64_t> lastReleasedMs;
+        uint64_t supersededRows{};
+        uint64_t heldRows{};
+
         std::vector<uint8_t> incoming;
         bool upgraded{};
         bool authenticated{};
@@ -566,6 +686,7 @@ struct PairServer::Impl {
     StateCallback stateCallback;
     RequirementsCallback requirementsCallback;
     LapDeltaCallback lapDeltaCallback;
+    LapDataCallback lapDataCallback;
     DiagnosticCallback diagnosticCallback;
     mutable std::mutex mutex;
     PairSocket listener{kInvalidPairSocket};
@@ -585,6 +706,10 @@ struct PairServer::Impl {
     // after a reconnect or a dropped frame.
     std::string latestDriverRestriction;
     std::array<std::string, 16> latestRows;
+    // V6 playback sends one field group per row, so the newest row of a type
+    // says nothing about the other groups. Each group (and car) is cached
+    // under its state key so a new phone's snapshot carries all of them.
+    std::map<uint64_t, std::string> latestPatches;
     std::array<std::vector<uint8_t>, 16> latestBinary;
     uint64_t participantsRevision{};
     std::optional<uint64_t> sessionUid;
@@ -690,37 +815,166 @@ struct PairServer::Impl {
             callback(requirements.streamMask, requirements.v6Types, refreshSnapshot);
     }
 
-    bool enqueue(const std::shared_ptr<Client>& client, std::vector<uint8_t> frame) {
+    // Wakes the client's reader and writer so both threads exit. Safe to call
+    // from any thread that does not hold client->outgoingMutex.
+    void retire(const std::shared_ptr<Client>& client) {
+        client->running.store(false);
+        {
+            std::lock_guard lock(mutex);
+            shutdownPairSocket(client->socket);
+        }
+        wakeWriter(client);
+    }
+
+    static void wakeWriter(const std::shared_ptr<Client>& client) {
+        { std::lock_guard lock(client->outgoingMutex); }
+        client->outgoingReady.notify_all();
+    }
+
+    static Batch& openBatchLocked(Client& client) {
+        if (client.outgoing.empty() || !client.outgoing.back().batch) {
+            OutboxUnit unit;
+            unit.batch = std::make_unique<Batch>();
+            client.outgoing.push_back(std::move(unit));
+        }
+        return *client.outgoing.back().batch;
+    }
+
+    static void putRowLocked(Client& client, uint64_t key, std::string row) {
+        Batch& batch = openBatchLocked(client);
+        auto existing = std::find_if(batch.rows.begin(), batch.rows.end(),
+            [&](const auto& entry) { return entry.first == key; });
+        if (existing != batch.rows.end()) {
+            batch.bytes -= existing->second.size();
+            client.pendingBytes -= existing->second.size();
+            batch.rows.erase(existing);
+            ++client.supersededRows;
+        }
+        batch.bytes += row.size();
+        client.pendingBytes += row.size();
+        batch.rows.emplace_back(key, std::move(row));
+    }
+
+    // Moves held rows into the open batch: all of them before a frame, else
+    // those whose interval has elapsed. Returns the next held row's due time.
+    static std::optional<int64_t> releaseHeldLocked(Client& client, int64_t now, bool all) {
+        std::optional<int64_t> nextDue;
+        for (auto iterator = client.held.begin(); iterator != client.held.end();) {
+            const int64_t due = client.lastReleasedMs[iterator->first] + kThrottledRowIntervalMs;
+            if (all || due <= now) {
+                client.lastReleasedMs[iterator->first] = now;
+                putRowLocked(client, iterator->first, std::move(iterator->second));
+                iterator = client.held.erase(iterator);
+            } else {
+                nextDue = nextDue ? std::min(*nextDue, due) : due;
+                ++iterator;
+            }
+        }
+        return nextDue;
+    }
+
+    bool checkOverflow(const std::shared_ptr<Client>& client, size_t pendingBytes,
+                       size_t queuedUnits, size_t frameBytes) {
+        if (pendingBytes <= kMaxBufferedBytes) return true;
+        diagnostic("client_queue_overflow", client,
+            "frame_bytes=" + std::to_string(frameBytes) +
+            " pending_bytes=" + std::to_string(pendingBytes) +
+            " queued_units=" + std::to_string(queuedUnits) +
+            " limit_bytes=" + std::to_string(kMaxBufferedBytes));
+        retire(client);
+        return false;
+    }
+
+    // Queues a frame for in-order delivery.
+    bool enqueueFrame(const std::shared_ptr<Client>& client, std::vector<uint8_t> frame) {
         if (!client->running.load()) return false;
-        bool overflow = false;
-        size_t pendingBytes = 0;
-        size_t queuedFrames = 0;
         const size_t frameBytes = frame.size();
+        size_t pendingBytes = 0;
+        size_t queuedUnits = 0;
         {
             std::lock_guard lock(client->outgoingMutex);
-            if (client->pendingBytes + frame.size() > kMaxBufferedBytes) {
-                overflow = true;
+            // Rows held back by the throttle predate this frame.
+            releaseHeldLocked(*client, nowMs(), true);
+            client->pendingBytes += frame.size();
+            OutboxUnit unit;
+            unit.frame = std::move(frame);
+            client->outgoing.push_back(std::move(unit));
+            pendingBytes = client->pendingBytes;
+            queuedUnits = client->outgoing.size();
+        }
+        client->outgoingReady.notify_one();
+        return checkOverflow(client, pendingBytes, queuedUnits, frameBytes);
+    }
+
+    // Queues a latest-state row under its key, superseding an unsent older
+    // value. A throttled row waits until its key's interval has elapsed.
+    bool enqueueState(const std::shared_ptr<Client>& client, uint64_t key,
+                      const std::string& row, bool throttled, bool completeRow) {
+        if (!client->running.load()) return false;
+        size_t pendingBytes = 0;
+        size_t queuedUnits = 0;
+        {
+            std::lock_guard lock(client->outgoingMutex);
+            const int64_t now = nowMs();
+            if (throttled && completeRow) {
+                // A complete row replaces every patch of its type, so patches
+                // still held back are older than it and must not follow it.
+                const uint64_t type = key >> 32;
+                for (auto iterator = client->held.begin(); iterator != client->held.end();) {
+                    if ((iterator->first >> 32) == type && iterator->first != key)
+                        iterator = client->held.erase(iterator);
+                    else
+                        ++iterator;
+                }
+            }
+            const auto released = client->lastReleasedMs.find(key);
+            const bool early = released != client->lastReleasedMs.end() &&
+                now - released->second < kThrottledRowIntervalMs;
+            if (throttled && (client->held.contains(key) || early)) {
+                auto& slot = client->held[key];
+                if (!slot.empty()) ++client->supersededRows;
+                slot = row;
+                ++client->heldRows;
             } else {
-                client->pendingBytes += frame.size();
-                client->outgoing.push_back(std::move(frame));
+                if (throttled) client->lastReleasedMs[key] = now;
+                putRowLocked(*client, key, row);
             }
             pendingBytes = client->pendingBytes;
-            queuedFrames = client->outgoing.size();
+            queuedUnits = client->outgoing.size();
         }
-        if (overflow) {
-            diagnostic("client_queue_overflow", client,
-                "frame_bytes=" + std::to_string(frameBytes) +
-                " pending_bytes=" + std::to_string(pendingBytes) +
-                " queued_frames=" + std::to_string(queuedFrames) +
-                " limit_bytes=" + std::to_string(kMaxBufferedBytes));
-            client->running.store(false);
-            return false;
+        client->outgoingReady.notify_one();
+        return checkOverflow(client, pendingBytes, queuedUnits, row.size());
+    }
+
+    // Queues binary records, keeping the newest record of each type.
+    bool enqueueBinary(const std::shared_ptr<Client>& client,
+                       const uint8_t* data, size_t length) {
+        if (!client->running.load()) return false;
+        size_t pendingBytes = 0;
+        size_t queuedUnits = 0;
+        {
+            std::lock_guard lock(client->outgoingMutex);
+            Batch& batch = openBatchLocked(*client);
+            (void)bin::forEachPackedRecord(data, length,
+                [&](uint8_t type, const uint8_t* record, size_t recordLength) {
+                    if (type >= batch.binary.size()) return;
+                    auto& slot = batch.binary[type];
+                    batch.bytes -= slot.size();
+                    client->pendingBytes -= slot.size();
+                    slot.assign(record, record + recordLength);
+                    batch.bytes += slot.size();
+                    client->pendingBytes += slot.size();
+                    batch.hasBinary = true;
+                });
+            pendingBytes = client->pendingBytes;
+            queuedUnits = client->outgoing.size();
         }
-        return true;
+        client->outgoingReady.notify_one();
+        return checkOverflow(client, pendingBytes, queuedUnits, length);
     }
 
     void sendText(const std::shared_ptr<Client>& client, const std::string& json) {
-        enqueue(client, webSocketFrame(0x1, json));
+        enqueueFrame(client, webSocketFrame(0x1, json));
     }
 
     void sendRows(const std::shared_ptr<Client>& client,
@@ -760,13 +1014,22 @@ struct PairServer::Impl {
                 rows.push_back(latestRows[type]);
                 if (type == 8) client->participantsRevision = participantsRevision;
             }
+            for (const auto& [key, row] : latestPatches) {
+                const uint64_t type = key >> 32;
+                const auto v6Type = static_cast<uint8_t>((key >> 16) & 0xffff);
+                if (type >= 32 || (client->streamMask & (1u << type)) == 0) continue;
+                if (!client->v6Types.empty() &&
+                    !std::binary_search(client->v6Types.begin(), client->v6Types.end(), v6Type))
+                    continue;
+                rows.push_back(row);
+            }
             for (size_t type = 1; type < latestBinary.size(); ++type) {
                 if ((client->streamMask & (1u << type)) == 0) continue;
                 binary.insert(binary.end(), latestBinary[type].begin(), latestBinary[type].end());
             }
         }
         sendRows(client, rows);
-        if (!binary.empty()) enqueue(client, webSocketFrame(0x2, binary.data(), binary.size()));
+        if (!binary.empty()) enqueueFrame(client, webSocketFrame(0x2, binary.data(), binary.size()));
     }
 
     void authenticate(const std::shared_ptr<Client>& client,
@@ -928,6 +1191,21 @@ struct PairServer::Impl {
                 std::to_string(message.requestId) + ",\"data\":" +
                 (data.empty() ? "null" : data) + "}";
             sendRows(client, {response});
+        } else if (message.type == "request_lap_data") {
+            LapDataCallback callback;
+            {
+                std::lock_guard lock(mutex);
+                callback = lapDataCallback;
+            }
+            std::string data;
+            if (callback && message.lapNum > 0 && message.channels.size() <= kMaxLapDataChannels)
+                data = callback(message.lapNum, message.channels);
+            // Its own frame rather than a rows batch: a lap is hundreds of KB,
+            // and the phone parses it straight into columns off the UI thread.
+            sendText(client, "{\"type\":\"lap_data\",\"requestId\":" +
+                std::to_string(message.requestId) + ",\"lapNum\":" +
+                std::to_string(message.lapNum) + ",\"data\":" +
+                (data.empty() ? "null" : data) + "}");
         } else if (message.type == "ping") {
             sendText(client, writeJson(PairPongFrame{"pong", nowMs()}));
         } else {
@@ -955,7 +1233,7 @@ struct PairServer::Impl {
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
             "Sec-WebSocket-Accept: " + webSocketAccept(key) + "\r\n\r\n";
-        enqueue(client, std::vector<uint8_t>(response.begin(), response.end()));
+        enqueueFrame(client, std::vector<uint8_t>(response.begin(), response.end()));
         client->incoming.erase(client->incoming.begin(),
             client->incoming.begin() + static_cast<std::ptrdiff_t>(end + 4));
         client->upgraded = true;
@@ -1020,7 +1298,7 @@ struct PairServer::Impl {
                     " reason=" + logSafe(closeReason));
                 return false;
             } else if (opcode == 0x9) {
-                enqueue(client, webSocketFrame(0xA, payload.data(), payload.size()));
+                enqueueFrame(client, webSocketFrame(0xA, payload.data(), payload.size()));
             } else if (opcode != 0xA) {
                 diagnostic("frame_rejected", client,
                     "reason=unsupported_opcode opcode=" + std::to_string(opcode));
@@ -1038,50 +1316,98 @@ struct PairServer::Impl {
         return true;
     }
 
+    // Takes the next outbox unit as one or two ready-to-send frames, waiting
+    // for output or for a held row to fall due. False once the client retires.
+    bool nextOutgoing(const std::shared_ptr<Client>& client,
+                      std::vector<uint8_t>& text, std::vector<uint8_t>& binary) {
+        std::unique_lock lock(client->outgoingMutex);
+        while (true) {
+            if (!client->running.load()) return false;
+            const auto nextDue = releaseHeldLocked(*client, nowMs(), false);
+            if (!client->outgoing.empty()) break;
+            if (nextDue) {
+                client->outgoingReady.wait_for(lock,
+                    std::chrono::milliseconds(std::max<int64_t>(1, *nextDue - nowMs())));
+            } else {
+                client->outgoingReady.wait(lock);
+            }
+        }
+        OutboxUnit unit = std::move(client->outgoing.front());
+        client->outgoing.pop_front();
+        if (!unit.batch) {
+            client->pendingBytes -= unit.frame.size();
+            text = std::move(unit.frame);
+            return true;
+        }
+        Batch& batch = *unit.batch;
+        client->pendingBytes -= batch.bytes;
+        lock.unlock();
+        if (!batch.rows.empty()) {
+            PairRowsFrame frame;
+            frame.rows.reserve(batch.rows.size());
+            for (auto& entry : batch.rows) frame.rows.push_back(std::move(entry.second));
+            text = webSocketFrame(0x1, writeJson(frame));
+        }
+        if (batch.hasBinary) {
+            std::vector<uint8_t> records;
+            for (const auto& record : batch.binary)
+                records.insert(records.end(), record.begin(), record.end());
+            binary = webSocketFrame(0x2, records.data(), records.size());
+        }
+        return true;
+    }
+
+    bool transmit(const std::shared_ptr<Client>& client, PairSocket socket,
+                  const std::vector<uint8_t>& frame) {
+        if (frame.empty()) return true;
+        size_t bytesSent = 0;
+        int socketError = 0;
+        client->sendingSinceMs.store(nowMs());
+        const bool sent = sendAll(socket, frame.data(), frame.size(),
+                                  &bytesSent, &socketError);
+        client->sendingSinceMs.store(0);
+        client->sentBytes += bytesSent;
+        if (sent) return true;
+        if (client->running.load()) {
+            diagnostic("socket_send_failed", client,
+                "frame_bytes=" + std::to_string(frame.size()) +
+                " partial_bytes=" + std::to_string(bytesSent) +
+                " " + pairSocketErrorText(socketError));
+        }
+        retire(client);
+        return false;
+    }
+
+    // The socket is passed in because the reader may clear client->socket while
+    // this thread is still blocked in send().
+    void writerLoop(const std::shared_ptr<Client>& client, PairSocket socket) {
+        std::vector<uint8_t> text;
+        std::vector<uint8_t> binary;
+        while (nextOutgoing(client, text, binary)) {
+            if (!transmit(client, socket, text) || !transmit(client, socket, binary)) break;
+            text.clear();
+            binary.clear();
+        }
+        client->writerDone.store(true);
+    }
+
+    // The client's reader. It owns the writer thread and the socket's close.
     void clientLoop(const std::shared_ptr<Client>& client) {
-        setSocketTimeouts(client->socket);
+        client->writer = std::thread(
+            [this, client, socket = client->socket] { writerLoop(client, socket); });
         std::array<uint8_t, 16 * 1024> buffer{};
         while (running.load() && client->running.load()) {
-            // Drain a bounded group before polling inbound control frames. One
-            // frame per receive timeout would cap the writer at 20 fps and
-            // manufacture backpressure on an otherwise healthy LAN client.
-            for (size_t sentFrames = 0; sentFrames < 128; ++sentFrames) {
-                std::vector<uint8_t> outgoing;
-                {
-                    std::lock_guard lock(client->outgoingMutex);
-                    if (client->outgoing.empty()) break;
-                    outgoing = std::move(client->outgoing.front());
-                    client->outgoing.pop_front();
-                    client->pendingBytes -= outgoing.size();
-                }
-                size_t bytesSent = 0;
-                int socketError = 0;
-                if (!sendAll(client->socket, outgoing.data(), outgoing.size(),
-                             &bytesSent, &socketError)) {
-                    client->sentBytes += bytesSent;
-                    diagnostic("socket_send_failed", client,
-                        "frame_bytes=" + std::to_string(outgoing.size()) +
-                        " partial_bytes=" + std::to_string(bytesSent) +
-                        " " + pairSocketErrorText(socketError));
-                    client->running.store(false);
-                    break;
-                }
-                client->sentBytes += bytesSent;
-            }
-            if (!client->running.load()) break;
-
             const int received = recv(client->socket,
                 reinterpret_cast<char*>(buffer.data()),
                 static_cast<int>(buffer.size()), 0);
             if (received == 0) {
-                diagnostic("socket_receive_eof", client,
+                if (client->running.load()) diagnostic("socket_receive_eof", client,
                     "meaning=peer_closed_tcp_connection");
                 break;
             }
             if (received < 0) {
-                if (socketTimedOut()) continue;
                 const int error = pairSocketError();
-                diagnostic("socket_receive_failed", client,
+                if (client->running.load()) diagnostic("socket_receive_failed", client,
                     pairSocketErrorText(error));
                 break;
             }
@@ -1093,25 +1419,63 @@ struct PairServer::Impl {
             }
             if (client->upgraded && !processFrames(client)) break;
         }
-        client->running.store(false);
+        retire(client);
+        // shutdown() normally ends a blocked send at once. If it did not, close
+        // the socket, which aborts any blocking call still using it.
+        const int64_t deadline = nowMs() + kWriterExitGraceMs;
+        while (!client->writerDone.load() && nowMs() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         PairSocket socket = kInvalidPairSocket;
         {
             std::lock_guard lock(mutex);
             socket = client->socket;
             client->socket = kInvalidPairSocket;
         }
-        shutdownPairSocket(socket);
+        if (!client->writerDone.load()) {
+            diagnostic("writer_forced_close", client);
+            closePairSocket(socket);
+            socket = kInvalidPairSocket;
+        }
+        if (client->writer.joinable()) client->writer.join();
         closePairSocket(socket);
+        uint64_t superseded = 0;
+        uint64_t heldRows = 0;
+        {
+            std::lock_guard lock(client->outgoingMutex);
+            superseded = client->supersededRows;
+            heldRows = client->heldRows;
+        }
         diagnostic("client_loop_ended", client,
             "server_running=" + std::to_string(running.load() ? 1 : 0) +
-            " client_running=" + std::to_string(client->running.load() ? 1 : 0) +
             " upgraded=" + std::to_string(client->upgraded ? 1 : 0) +
             " authenticated=" + std::to_string(client->authenticated ? 1 : 0) +
             " lifetime_ms=" + std::to_string(nowMs() - client->acceptedAtMs) +
             " received_bytes=" + std::to_string(client->receivedBytes) +
-            " sent_bytes=" + std::to_string(client->sentBytes));
+            " sent_bytes=" + std::to_string(client->sentBytes) +
+            " superseded_rows=" + std::to_string(superseded) +
+            " throttled_rows=" + std::to_string(heldRows));
         notifyRequirements();
         notifyState();
+    }
+
+    // A send that has not completed in kSendStallMs means the phone stopped
+    // reading; drop it rather than let its outbox sit at the overflow limit.
+    void retireStalledClients() {
+        std::vector<std::pair<std::shared_ptr<Client>, int64_t>> stalled;
+        const int64_t now = nowMs();
+        {
+            std::lock_guard lock(mutex);
+            for (const auto& client : clients) {
+                const int64_t since = client->sendingSinceMs.load();
+                if (client->running.load() && since > 0 && now - since > kSendStallMs)
+                    stalled.emplace_back(client, now - since);
+            }
+        }
+        for (const auto& [client, blockedMs] : stalled) {
+            diagnostic("client_send_stalled", client,
+                "blocked_ms=" + std::to_string(blockedMs));
+            retire(client);
+        }
     }
 
     void reapClients() {
@@ -1144,6 +1508,7 @@ struct PairServer::Impl {
                 reinterpret_cast<sockaddr*>(&address), &addressSize);
             if (socket != kInvalidPairSocket) {
                 setBlocking(socket);
+                configureClientSocket(socket);
                 auto client = std::make_shared<Client>();
                 client->socket = socket;
                 client->connectionId = ++nextConnectionId;
@@ -1166,6 +1531,7 @@ struct PairServer::Impl {
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
+            retireStalledClients();
             reapClients();
         }
         reapClients();
@@ -1296,6 +1662,7 @@ struct PairServer::Impl {
                 shutdownPairSocket(client->socket);
             }
         }
+        for (const auto& client : current) Impl::wakeWriter(client);
         for (const auto& client : current)
             if (client->thread.joinable()) client->thread.join();
 #ifdef _WIN32
@@ -1316,6 +1683,7 @@ PairServer::~PairServer() = default;
 void PairServer::configure(PairServerConfig config, StateCallback stateCallback,
                            RequirementsCallback requirementsCallback,
                            LapDeltaCallback lapDeltaCallback,
+                           LapDataCallback lapDataCallback,
                            DiagnosticCallback diagnosticCallback) {
     bool startEnabled = config.enabled;
     {
@@ -1324,6 +1692,7 @@ void PairServer::configure(PairServerConfig config, StateCallback stateCallback,
         impl_->stateCallback = std::move(stateCallback);
         impl_->requirementsCallback = std::move(requirementsCallback);
         impl_->lapDeltaCallback = std::move(lapDeltaCallback);
+        impl_->lapDataCallback = std::move(lapDataCallback);
         impl_->diagnosticCallback = std::move(diagnosticCallback);
         PairPersistedState persisted;
         if (!impl_->config.persistedStateJson.empty() &&
@@ -1386,6 +1755,7 @@ void PairServer::closePairingWindow() {
 }
 
 void PairServer::removeDevice(const std::string& id) {
+    std::vector<std::shared_ptr<Impl::Client>> revoked;
     {
         std::lock_guard lock(impl_->mutex);
         impl_->devices.erase(std::remove_if(impl_->devices.begin(), impl_->devices.end(),
@@ -1396,9 +1766,11 @@ void PairServer::removeDevice(const std::string& id) {
                     "device_id=" + logSafe(id));
                 client->running.store(false);
                 shutdownPairSocket(client->socket);
+                revoked.push_back(client);
             }
         }
     }
+    for (const auto& client : revoked) Impl::wakeWriter(client);
     impl_->notifyRequirements();
     impl_->notifyState();
 }
@@ -1441,14 +1813,19 @@ void PairServer::noteSession(uint64_t sessionUid) {
         impl_->sendRows(client, {"{\"type\":\"participants_reset\"}"});
 }
 
-void PairServer::publishRow(const std::string& json) {
+void PairServer::publishRow(const std::string& source) {
+    const std::string json = source.starts_with("{\"type\":\"playback_lap_blocks\"")
+        ? phoneLapBlocks(source) : source;
     const uint8_t type = rowTypeOf(json);
+    const int v6Type = v6TypeOf(json);
+    const std::optional<uint64_t> stateKey = stateKeyOf(type, v6Type, json);
     std::vector<std::shared_ptr<Impl::Client>> recipients;
     bool participantsChanged = false;
     {
         std::lock_guard lock(impl_->mutex);
         if (json.starts_with("{\"type\":\"timeline_reset\"")) {
             impl_->latestRows = {};
+            impl_->latestPatches.clear();
             impl_->latestBinary = {};
             ++impl_->participantsRevision;
         }
@@ -1468,11 +1845,26 @@ void PairServer::publishRow(const std::string& json) {
                 ++impl_->participantsRevision;
                 participantsChanged = true;
             }
-            impl_->latestRows[type] = json;
+            if (v6Type > 0 && stateKey && type != 8) {
+                impl_->latestPatches[*stateKey] = json;
+            } else {
+                impl_->latestRows[type] = json;
+                // A complete row supersedes every cached patch of its type.
+                if (v6Type == 0) {
+                    const uint64_t first = static_cast<uint64_t>(type) << 32;
+                    impl_->latestPatches.erase(impl_->latestPatches.lower_bound(first),
+                        impl_->latestPatches.lower_bound(first + (1ull << 32)));
+                }
+            }
         }
         if (!impl_->running.load()) return;
         for (const auto& client : impl_->clients) {
             if (!client->running.load() || !client->authenticated) continue;
+            // The engine reads the union of every consumer's V6 fields; a phone
+            // gets only the field groups it asked for.
+            if (v6Type > 0 && !client->v6Types.empty() &&
+                !std::binary_search(client->v6Types.begin(), client->v6Types.end(),
+                                    static_cast<uint8_t>(v6Type))) continue;
             if (type == 8) {
                 if (!participantsChanged || (client->streamMask & (1u << 8)) == 0 ||
                     client->participantsRevision == impl_->participantsRevision) continue;
@@ -1484,6 +1876,12 @@ void PairServer::publishRow(const std::string& json) {
             }
             recipients.push_back(client);
         }
+    }
+    if (stateKey) {
+        const bool throttled = throttledRowType(type);
+        for (const auto& client : recipients)
+            impl_->enqueueState(client, *stateKey, json, throttled, v6Type == 0);
+        return;
     }
     const std::string frame = writeJson(PairRowsFrame{"rows", {json}});
     for (const auto& client : recipients) impl_->sendText(client, frame);
@@ -1509,7 +1907,7 @@ void PairServer::publishBinary(const uint8_t* data, size_t length) {
         }
     }
     for (auto& [client, payload] : payloads)
-        impl_->enqueue(client, webSocketFrame(0x2, payload.data(), payload.size()));
+        impl_->enqueueBinary(client, payload.data(), payload.size());
 }
 
 void PairServer::publishSeekSnapshot(const uint8_t* data, size_t length,

@@ -150,6 +150,30 @@ internal data class PlaybackLapDeltaRequest(
     val requestId: Long,
     val currentLap: Int,
     val comparisonLap: Int,
+    val sectorDelta: Boolean = true,
+)
+
+/** One lap of the recording the desktop is playing, for the selected driver. */
+internal data class PlaybackLapInfo(
+    val lapNumber: Int,
+    val lapTimeMs: Int,
+    val startSessionTime: Double,
+    val endSessionTime: Double,
+)
+
+/**
+ * The desktop's playback lap catalogue. [generation] changes only when the
+ * recording or its selected driver changes, so cached lap data stays valid
+ * across the repeated catalogue row in every subscription snapshot.
+ */
+internal data class PlaybackCatalog(
+    val generation: Long = 0,
+    val active: Boolean = false,
+    val driverIndex: Int = -1,
+    val laps: List<PlaybackLapInfo> = emptyList(),
+    val fastestLap: Int = 0,
+    val deltaAvailable: Boolean = false,
+    val trackLengthM: Double = 0.0,
 )
 
 internal data class TimingCarEntry(

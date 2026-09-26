@@ -2,8 +2,8 @@ import { memo } from 'react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 
 // Mounted for the whole pending seek, but the CSS keeps it transparent for the
-// first 100ms, so seeks that install quickly unmount before it is ever seen.
-// It captures pointer input so the stale charts underneath cannot be hovered or
+// first 300ms, so seeks that install quickly unmount before it is ever seen.
+// Once visible it captures pointer input so the stale charts underneath cannot be hovered or
 // clicked; the playback bar sits outside <main> and stays usable.
 export default memo(function SeekLoadingOverlay() {
   const seekPending = useTelemetryStore(s => s.seekPending)
