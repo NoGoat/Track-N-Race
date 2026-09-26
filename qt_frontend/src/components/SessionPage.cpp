@@ -25,6 +25,7 @@
 #include <QVariant>
 
 #include <algorithm>
+#include <vector>
 #include <utility>
 
 namespace {
@@ -160,15 +161,15 @@ QString eventCodeLabel(const std::string& code) {
 }
 
 QColor eventCodeColor(const std::string& code) {
-    if (code == "FTLP")                                      return QColor("#BF5FFF");
-    if (code == "RCWN")                                      return QColor("#FFD700");
-    if (code == "SCAR")                                      return QColor("#ffd700");
+    if (code == "FTLP")                                      return tnr::themed("#BF5FFF", "#7C3BA6");
+    if (code == "RCWN")                                      return tnr::themed("#FFD700", "#765900");
+    if (code == "SCAR")                                      return tnr::themed("#ffd700", "#765900");
     if (code == "RDFL")                                      return QColor("#e10600");
-    if (code == "DRSE" || code == "LGOT")                   return QColor("#37872D");
-    if (code == "DRSD")                                     return QColor("#6e7177");
-    if (code == "SSTA" || code == "SEND")                   return QColor("#5794F2");
-    if (code == "RTMT" || code == "CHQF" ||
-        code == "DTSV" || code == "SGSV")                   return QColor("#a0a8b8");
+    if (code == "DRSE" || code == "LGOT")                   return tnr::themed("#37872D", "#137333");
+    if (code == "DRSD")                                     return tnr::themed("#6e7177", "#565B70");
+    if (code == "SSTA" || code == "SEND")                   return tnr::themed("#5794F2", "#0B57D0");
+    if (code == "RTMT" || code == "CHQF" || code == "OVTK" ||
+        code == "DTSV" || code == "SGSV")                   return tnr::themed("#a0a8b8", "#565B70");
     return QColor();
 }
 
@@ -280,9 +281,9 @@ SessionPage::SessionPage(QWidget* parent)
     // them once avoids four QSettings lookups on every positions frame.
     trackMap_->setLabelMode(static_cast<TrackMapWidget::LabelMode>(
         settings_.value("ui/trackMapLabelMode", 0).toInt()));
-    trackMap_->setSectorColors(settings_.value("ui/trackMapSectorColors", true).toBool());
+    trackMap_->setSectorColors(settings_.value("ui/trackMapSectorColors", false).toBool());
     trackMap_->setMapOpacity(settings_.value("ui/trackMapOpacity", 100).toInt() / 100.0);
-    trackMap_->setIdleTimeout(settings_.value("ui/trackMapIdleTimeout", 0).toInt());
+    trackMap_->setIdleTimeout(settings_.value("ui/trackMapIdleTimeout", 10).toInt());
     trackMap_->setReduceAnimations(settings_.value("ui/reduceAnimations", false).toBool());
 
     // Weather strip pinned to bottom
@@ -553,9 +554,10 @@ void SessionPage::buildSessionCards() {
     QHBoxLayout* sh = qobject_cast<QHBoxLayout*>(spStatsRow_->layout());
     clearLayout(sh);
     spCardValue_.clear();
+    spCardUnit_.clear();
     for (int i = 0; i < SessionLayout::StatCardCount; ++i) sp_statCardFrames_[i] = nullptr;
     for (int i = 0; i < SessionLayout::StatCardCount - 1; ++i) sp_statCardDivs_[i] = nullptr;
-    spStatsRow_->setFixedHeight(cardsCompact_ ? 34 : cardsSpacious_ ? 82 : 58);
+    spStatsRow_->setFixedHeight(cardsCompact_ ? 34 : cardsSpacious_ ? 100 : 68);
     // Compact cards carry their own 12px left margin, so the row's extra left inset
     // would over-indent the first card ("TOTAL LAPS") relative to the rest — drop it
     // in compact mode; the full two-line layout keeps its original inset.
@@ -566,8 +568,26 @@ void SessionPage::buildSessionCards() {
     // come from the shared library spec at build; conditional ones (temps) are
     // applied per-update in updateSession. `out` is kept as a convenience alias
     // for this page's bespoke per-card value formatting.
+    // Electron's session cards: a unit (Pit Speed's km/h) sits under the value
+    // in Normal and inline otherwise; Spacious adds a descriptive sub-line.
+    static const QHash<QString, QString> kSubText = {
+        { "totalLaps", "Total distance" }, { "remaining", "Laps to flag" },
+        { "pitSpeed", "Pitlane limit" },   { "pitWindow", "Optimal window" },
+        { "rejoin", "Projected pos" },     { "trackTemp", "Tarmac surface" },
+        { "airTemp", "Ambient air" },      { "trackLen", "Lap distance" },
+        { "timeOfDay", "Circuit local" },
+    };
     auto makeStatCard = [&](const QString& key, const QString& cap, QLabel*& out,
                             const QString& colorSpec = "") -> QWidget* {
+        const QString unit = key == QLatin1String("pitSpeed") ? QStringLiteral("km/h") : QString();
+        QLabel* unitLbl = nullptr;
+        if (!unit.isEmpty()) {
+            unitLbl = new QLabel(unit);
+            QFont uf; uf.setPointSize(cardsSpacious_ ? 9 : 7); unitLbl->setFont(uf);
+            unitLbl->setForegroundRole(QPalette::PlaceholderText);
+            unitLbl->hide();   // shown once there is a value
+            spCardUnit_[key] = unitLbl;
+        }
         QWidget* card = new QWidget;
         QLabel* capLbl = new QLabel(cap);
         QFont capf; capf.setPointSize(compact ? 8 : cardsSpacious_ ? 10 : 7); capLbl->setFont(capf);
@@ -580,18 +600,36 @@ void SessionPage::buildSessionCards() {
         }
         spCardValue_[key] = out;
         if (compact) {
-            // Two-value card: label left, value pinned right.
+            // Two-value card: label left, value (+ unit) pinned right.
             QHBoxLayout* cl = new QHBoxLayout(card);
             cl->setContentsMargins(8, 3, 8, 3);
             cl->setSpacing(4);
             cl->addWidget(capLbl);
             cl->addStretch();
             cl->addWidget(out);
+            if (unitLbl) cl->addWidget(unitLbl, 0, Qt::AlignBottom);
         } else {
             QVBoxLayout* v = new QVBoxLayout(card);
             v->setContentsMargins(12, 6, 12, 6);
             v->setSpacing(2);
-            v->addWidget(capLbl); v->addWidget(out);
+            v->addWidget(capLbl);
+            if (cardsSpacious_) {
+                QHBoxLayout* valueRow = new QHBoxLayout;
+                valueRow->setContentsMargins(0, 0, 0, 0);
+                valueRow->setSpacing(4);
+                valueRow->addWidget(out);
+                if (unitLbl) valueRow->addWidget(unitLbl, 0, Qt::AlignBottom);
+                valueRow->addStretch();
+                v->addLayout(valueRow);
+                QLabel* sub = new QLabel(kSubText.value(key));
+                QFont sf; sf.setPointSize(8); sub->setFont(sf);
+                sub->setForegroundRole(QPalette::PlaceholderText);
+                v->addWidget(sub);
+            } else {
+                v->addWidget(out);
+                if (unitLbl) v->addWidget(unitLbl);
+            }
+            v->addStretch();
         }
         return card;
     };
@@ -724,7 +762,6 @@ void SessionPage::buildWeatherStrip() {
         QFont frf; frf.setPointSize(compact && !compact2 && !compact3 ? 9 : 8);
         if (compact3) frf.setBold(true);
         sp_fcRain[i]->setFont(frf);
-        sp_fcRain[i]->setStyleSheet("color:#5794F2;");
 
         if (compact2) {
             // Single row: time (left) · weather in icon colour (centre) · rain % (right).
@@ -922,12 +959,13 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
     if (sp_circuitName)
         setLabelText(sp_circuitName, resolvedMapName("circuit_name", mapCircuitName));
 
-    setLabelText(sp_timeLeft, QString("%1:%2")
-        .arg(timeLeft / 60, 2, 10, QChar('0'))
-        .arg(timeLeft % 60, 2, 10, QChar('0')));
+    // Electron: M:SS, "0:00" once the clock runs out.
+    setLabelText(sp_timeLeft, timeLeft <= 0 ? QStringLiteral("0:00")
+        : QString("%1:%2").arg(timeLeft / 60).arg(timeLeft % 60, 2, 10, QChar('0')));
 
     setLabelText(sp_statTotalLaps, totalLaps > 0 ? QString::number(totalLaps) : "—");
-    setLabelText(sp_statPitSpeed, pitSpeed > 0 ? QString::number(pitSpeed) + " km/h" : "—");
+    setLabelText(sp_statPitSpeed, QString::number(pitSpeed));
+    if (QLabel* unit = spCardUnit_.value("pitSpeed")) unit->show();
 
     if (idealLap > 0 && latestLap > 0)
         setLabelText(sp_statPitWin, QString("L%1–%2").arg(idealLap).arg(latestLap));
@@ -961,17 +999,25 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
     applyWeatherIcon(sp_weatherNowIcon, weather, weatherCompactLevel_ == 3 ? 18 : weatherCompactLevel_ == 1 ? 26 : 40);
 
     {
-        const auto& fc = session->weather_forecast_samples;
-        int count = std::min((int)fc.size(), 5);
+        // Electron drops the time_offset == 0 sample (that is "Now") and shows
+        // the next five.
+        std::vector<const tnrp::WeatherSample*> fc;
+        for (const auto& sample : session->weather_forecast_samples)
+            if (sample.time_offset > 0 && fc.size() < 5) fc.push_back(&sample);
+        const int count = (int)fc.size();
         for (int i = 0; i < 5; ++i) {
             if (i < count) {
-                const int fw = fc[i].weather;
-                setLabelText(sp_fcTime[i], QString("+%1m").arg(fc[i].time_offset));
+                const auto& sample = *fc[i];
+                const int fw = sample.weather;
+                setLabelText(sp_fcTime[i], QString("+%1m").arg(sample.time_offset));
                 setLabelText(sp_fcWeather[i], weatherLabel(fw));
                 if (weatherCompactLevel_ == 2) setLabelStyle(sp_fcWeather[i], "color:" + weatherColor(fw).name() + ";");
                 applyWeatherIcon(sp_fcIcon[i], fw, weatherCompactLevel_ == 3 ? 18 : weatherCompactLevel_ == 1 ? 26 : 40);
-                int rain = fc[i].rain_percentage;
-                setLabelText(sp_fcRain[i], rain > 0 ? QString("%1%").arg(rain) : "");
+                const int rain = sample.rain_percentage;
+                setLabelText(sp_fcRain[i], QString("%1%").arg(rain));
+                setLabelStyle(sp_fcRain[i], rain > 50 ? QStringLiteral("color:#5794F2;")
+                                          : rain > 20 ? QStringLiteral("color:#73BF69;")
+                                          : QStringLiteral("color:palette(placeholder-text);"));
             } else {
                 setLabelText(sp_fcTime[i], "");
                 setLabelText(sp_fcWeather[i], "");
@@ -1003,7 +1049,7 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
             if (car.idx == timing->player_idx) {
                 int lap = car.lap_num;
                 setLabelText(sp_statRemain, (totalLaps > 0 && lap > 0)
-                    ? QString::number(totalLaps - lap + 1) : "—");
+                    ? QString::number(std::max(totalLaps - lap + 1, 0)) : "—");
                 break;
             }
         }
@@ -1023,17 +1069,18 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
     if (avail <= 0) avail = sp_eventsList->width() - 4;
     if (avail <= 0) avail = 240;
 
-    auto get3LetterCode = [&](int carIdx) -> QString {
-        if (carIdx < 0 || !participants) return "—";
-        for (const tnrp::Driver& d : participants->drivers) {
-            if (d.idx == carIdx) {
-                QString qn = QString::fromStdString(d.name);
-                QStringList parts = qn.split(' ');
-                QString last = parts.size() > 1 ? parts.last() : qn;
-                return last.left(3).toUpper();
+    // Electron's event names: the driver's surname in capitals, else "Car N".
+    auto driverSurname = [&](int carIdx) -> QString {
+        if (participants) {
+            for (const tnrp::Driver& d : participants->drivers) {
+                if (d.idx == carIdx) {
+                    const QStringList parts = QString::fromStdString(d.name).trimmed()
+                        .split(' ', Qt::SkipEmptyParts);
+                    if (!parts.isEmpty()) return parts.last().toUpper();
+                }
             }
         }
-        return "—";
+        return QString("Car %1").arg(qMax(0, carIdx));
     };
 
     // Initial population is newest-first. Later calls create only the newly
@@ -1066,29 +1113,30 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
                 .arg(lapMs / 60000)
                 .arg((lapMs % 60000) / 1000, 2, 10, QChar('0'))
                 .arg(lapMs % 1000, 3, 10, QChar('0'));
-            QString nameCode = get3LetterCode(ev.car_idx.value_or(-1));
-            text = nameCode + " - " + lapTimeStr;
-            colorOverride = QColor("#BF5FFF"); // Purple
+            text = driverSurname(ev.car_idx.value_or(0)) + "  " + lapTimeStr;
+            colorOverride = eventCodeColor(code);
         } else if (code == "PENA") {
             int pt = ev.penalty_type.value_or(-1);
             const QString ptLabel = enumLabel(QStringLiteral("penalty"), pt);
             if (ptLabel.isEmpty()) continue;
 
-            QString nameCode = get3LetterCode(ev.car_idx.value_or(-1));
-            QString inf = enumLabel(QStringLiteral("infringe"), ev.infringement_type.value_or(-1));
+            const QString name = driverSurname(ev.car_idx.value_or(0));
+            const QString inf = enumLabel(QStringLiteral("infringe"), ev.infringement_type.value_or(-1));
+            const QString infSuffix = inf.isEmpty() ? QString() : QString::fromUtf8(" — ") + inf;
 
+            // Electron: warnings yellow, drive-through / stop-go amber, the rest red.
             if (pt == 5) {
                 eventType = ptLabel;
-                text = nameCode + " - " + (inf.isEmpty() ? ptLabel : inf);
-                colorOverride = QColor("#ffd700"); // Yellow
+                text = name + infSuffix;
+                colorOverride = tnr::themed("#ffd700", "#765900");
             } else {
                 eventType = "Penalty";
                 QString penText = ptLabel;
                 int timeS = ev.penalty_time_s.value_or(0);
                 if ((pt == 1 || pt == 4) && timeS > 0) penText += QString(" %1s").arg(timeS);
-                text = nameCode + " - " + penText;
-                if (!inf.isEmpty()) text += " (" + inf + ")";
-                colorOverride = QColor("#e10600"); // Red
+                text = penText + QString::fromUtf8(" — ") + name + infSuffix;
+                colorOverride = (pt == 2 || pt == 4) ? tnr::themed("#c47d0e", "#A04300")
+                                                     : tnr::themed("#e10600", "#C4162A");
             }
         } else if (code == "SCAR") {
             int t = ev.safety_car_type.value_or(0);
@@ -1100,8 +1148,7 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
             text = action;
         } else if (code == "RTMT" || code == "RCWN" || code == "DTSV" || code == "SGSV") {
             eventType = eventCodeLabel(code);
-            QString nameCode = get3LetterCode(ev.car_idx.value_or(-1));
-            text = nameCode;
+            text = driverSurname(ev.car_idx.value_or(0));
         } else {
             eventType = eventCodeLabel(code);
             text = "";
@@ -1190,7 +1237,7 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
                 QFont lf; lf.setPointSize(eventsSpacious_ ? 11 : 9); lf.setWeight(QFont::DemiBold);
                 textLbl->setFont(lf);
                 textLbl->setWordWrap(true);
-                textLbl->setStyleSheet("color: #E5E7EB; background: transparent;");
+                textLbl->setStyleSheet("color: palette(text); background: transparent;");
                 vl->addWidget(textLbl);
 
                 textH = QFontMetrics(lf).boundingRect(
@@ -1220,76 +1267,75 @@ void SessionPage::updateProximity(const TimingRow* timing, const tnrp::Participa
         return;
     }
 
+    // Electron: only running cars (result_status 2); the gap shown is the
+    // interval to the player — green "-x.xxx" ahead, grey "+x.xxx" behind.
     struct CarEntry { int idx; int pos; int gapMs; };
     std::vector<CarEntry> cars;
-    for (const TimingCar& car : timing->cars) {
-        if (car.result_status == 0 || car.result_status == 3) continue;
-        cars.push_back({car.idx, car.position, car.gap_ms});
-    }
+    for (const TimingCar& car : timing->cars)
+        if (car.result_status == 2 && car.position > 0)
+            cars.push_back({car.idx, car.position, car.gap_ms});
     std::sort(cars.begin(), cars.end(), [](const CarEntry& a, const CarEntry& b){ return a.pos < b.pos; });
 
-    int playerSortIdx = -1;
-    for (int i = 0; i < (int)cars.size(); ++i)
-        if (cars[i].idx == playerIdx) { playerSortIdx = i; break; }
-
-    if (playerSortIdx < 0) {
+    const auto playerIt = std::find_if(cars.begin(), cars.end(),
+        [playerIdx](const CarEntry& c) { return c.idx == playerIdx; });
+    if (playerIt == cars.end()) {
         for (int i = 0; i < 3; ++i)
             if (sp_proxRow[i]->isVisible()) sp_proxRow[i]->setVisible(false);
         return;
     }
-
-    // Always show 3 rows: P1→[0,1,2], last→[n-2,n-1,n], mid→[n-1,n,n+1]
-    int n = (int)cars.size();
-    int rowSlot[3];
-    if (playerSortIdx == 0) {
-        rowSlot[0] = 0; rowSlot[1] = 1; rowSlot[2] = 2;
-    } else if (playerSortIdx == n - 1) {
-        rowSlot[0] = n - 3; rowSlot[1] = n - 2; rowSlot[2] = n - 1;
+    const CarEntry player = *playerIt;
+    const auto atPos = [&cars](int pos) -> const CarEntry* {
+        for (const CarEntry& c : cars) if (c.pos == pos) return &c;
+        return nullptr;
+    };
+    struct Row { CarEntry car; bool isPlayer; int deltaMs; bool ahead; };
+    std::vector<Row> rows;
+    if (player.pos == 1) {
+        rows.push_back({player, true, 0, false});
+        if (const CarEntry* c = atPos(2)) rows.push_back({*c, false, c->gapMs - player.gapMs, false});
+        if (const CarEntry* c = atPos(3)) rows.push_back({*c, false, c->gapMs - player.gapMs, false});
+    } else if (player.pos == (int)cars.size()) {
+        if (const CarEntry* c = atPos(player.pos - 2)) rows.push_back({*c, false, player.gapMs - c->gapMs, true});
+        if (const CarEntry* c = atPos(player.pos - 1)) rows.push_back({*c, false, player.gapMs - c->gapMs, true});
+        rows.push_back({player, true, 0, false});
     } else {
-        rowSlot[0] = playerSortIdx - 1;
-        rowSlot[1] = playerSortIdx;
-        rowSlot[2] = playerSortIdx + 1;
+        if (const CarEntry* c = atPos(player.pos - 1)) rows.push_back({*c, false, player.gapMs - c->gapMs, true});
+        rows.push_back({player, true, 0, false});
+        if (const CarEntry* c = atPos(player.pos + 1)) rows.push_back({*c, false, c->gapMs - player.gapMs, false});
     }
 
     auto driverName = [&](int carIdx) -> QString {
-        if (carIdx < 0 || !participants) return "—";
-        for (const tnrp::Driver& d : participants->drivers) {
-            if (d.idx == carIdx) {
-                QString qn = QString::fromStdString(d.name);
-                QStringList parts = qn.split(' ');
-                return (parts.size() > 1 ? parts.last() : qn).left(3).toUpper();
+        if (participants) {
+            for (const tnrp::Driver& d : participants->drivers) {
+                if (d.idx == carIdx) {
+                    const QStringList parts = QString::fromStdString(d.name).trimmed()
+                        .split(' ', Qt::SkipEmptyParts);
+                    if (!parts.isEmpty()) return parts.last().toUpper();
+                }
             }
         }
-        return QString("C%1").arg(carIdx);
+        return QString("Car %1").arg(carIdx);
     };
 
     for (int i = 0; i < 3; ++i) {
-        int si = rowSlot[i];
-        if (si < 0 || si >= n) {
+        if (i >= (int)rows.size()) {
             if (sp_proxRow[i]->isVisible()) sp_proxRow[i]->setVisible(false);
             continue;
         }
         if (!sp_proxRow[i]->isVisible()) sp_proxRow[i]->setVisible(true);
-        const CarEntry& ce = cars[si];
-        bool isPlayer = (ce.idx == playerIdx);
-        bool isLeader = (ce.pos == 1);
-
-        setLabelText(sp_proxPos[i], QString("P%1").arg(ce.pos));
-        setLabelText(sp_proxName[i], driverName(ce.idx));
-
-        if (isPlayer) {
-            setLabelStyle(sp_proxPos[i], "color:#5794F2;");
-            setLabelStyle(sp_proxName[i], "color:#5794F2;");
-            setLabelText(sp_proxGap[i], "—");
+        const Row& row = rows[i];
+        setLabelText(sp_proxPos[i], QString("P%1").arg(row.car.pos));
+        setLabelText(sp_proxName[i], driverName(row.car.idx));
+        setLabelStyle(sp_proxPos[i], "");
+        setLabelStyle(sp_proxName[i], row.isPlayer ? QString() : QStringLiteral("color: palette(placeholder-text);"));
+        if (!row.isPlayer && row.deltaMs > 0) {
+            setLabelText(sp_proxGap[i], QString("%1%2").arg(row.ahead ? "-" : "+")
+                .arg(row.deltaMs / 1000.0, 0, 'f', 3));
+            setLabelStyle(sp_proxGap[i], row.ahead ? QStringLiteral("color:#73BF69;")
+                                                   : QStringLiteral("color:#6e7177;"));
         } else {
-            setLabelStyle(sp_proxPos[i], "");
-            setLabelStyle(sp_proxName[i], "");
-            if (isLeader)
-                setLabelText(sp_proxGap[i], "LEAD");
-            else if (ce.gapMs > 0)
-                setLabelText(sp_proxGap[i], QString("+%1.%2").arg(ce.gapMs/1000).arg(ce.gapMs%1000, 3, 10, QChar('0')));
-            else
-                setLabelText(sp_proxGap[i], "—");
+            setLabelText(sp_proxGap[i], QString());
+            setLabelStyle(sp_proxGap[i], "");
         }
     }
 }

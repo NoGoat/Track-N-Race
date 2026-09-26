@@ -18,6 +18,7 @@
 #include <QFont>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -103,11 +104,11 @@ private:
     bool dragging_ = false;
 };
 
-// Formats session time as M:SS.
+// Formats playback time as M:SS.mmm (Electron's fmtLap).
 QString fmtTime(float s) {
-    int m   = (int)s / 60;
-    int sec = (int)s % 60;
-    return QString("%1:%2").arg(m).arg(sec, 2, 10, QChar('0'));
+    if (!std::isfinite(s) || s < 0.0f) s = 0.0f;
+    const int m = int(s / 60.0f);
+    return QString("%1:%2").arg(m).arg(double(s) - m * 60.0, 6, 'f', 3, QChar('0'));
 }
 
 } // namespace
@@ -155,16 +156,24 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
     seekFwdBtn_->setToolTip("Skip Forward 5s");
     pbLayout->addWidget(seekFwdBtn_);
 
+    // Electron's tracker: current time · slider · total time.
+    timeLabel_ = new QLabel(fmtTime(0), bar_);
+    timeLabel_->setForegroundRole(QPalette::PlaceholderText);
+    pbLayout->addWidget(timeLabel_);
+
     slider_ = new ScrubSlider(Qt::Horizontal, bar_);
     slider_->setRange(0, 1000);
     slider_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     pbLayout->addWidget(slider_);
 
-    timeLabel_ = new QLabel("0:00 / 0:00", bar_);
-    pbLayout->addWidget(timeLabel_);
+    totalLabel_ = new QLabel(fmtTime(0), bar_);
+    totalLabel_->setForegroundRole(QPalette::PlaceholderText);
+    pbLayout->addWidget(totalLabel_);
 
+    // Lap picker shows the current lap number ("—" between laps), as Electron.
     lapCombo_ = new QComboBox(bar_);
-    lapCombo_->addItem("Select Lap...", -1.0f);
+    lapCombo_->addItem(QString::fromUtf8("—"), -1.0f);
+    lapCombo_->setToolTip("Lap");
     pbLayout->addWidget(lapCombo_);
 
     speedCombo_ = new QComboBox(bar_);
@@ -251,10 +260,10 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
         if (lapCombo_) {
             lapCombo_->blockSignals(true);
             lapCombo_->clear();
-            lapCombo_->addItem("Select Lap...", -1.0f);
+            lapCombo_->addItem(QString::fromUtf8("—"), -1.0f);
             if (model_)
                 for (const LapBlock& lap : model_->data().laps)
-                    lapCombo_->addItem(QString("Lap %1").arg(lap.lapNum), lap.startSessionTime);
+                    lapCombo_->addItem(QString::number(lap.lapNum), lap.startSessionTime);
             lapCombo_->setCurrentIndex(0);
             lapCombo_->blockSignals(false);
         }
@@ -309,7 +318,11 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
             slider_->setValue((int)(cur / total * 1000.0f));
             seekerUpdating_ = false;
         }
-        timeLabel_->setText(fmtTime(cur) + " / " + fmtTime(total));
+        QString current = fmtTime(cur);
+        if (density_ == tnr::DensityMode::Spacious && total > 0.0f)
+            current += QString(" (%1%)").arg(qRound(qBound(0.0f, cur / total, 1.0f) * 100.0f));
+        timeLabel_->setText(current);
+        totalLabel_->setText(fmtTime(total));
         if (model_ && lapCombo_) {
             const LapBlock* currentLap = model_->data().lapAtTime(player_->currentTime());
             if (currentLap) {
@@ -462,7 +475,11 @@ void PlaybackController::setDensityMode(tnr::DensityMode mode) {
     }
     QFont font = timeLabel_->font();
     font.setPointSize(compact ? 8 : spacious ? 11 : 9);
+    font.setFeature(QFont::Tag("tnum"), 1);
+    font.setBold(spacious);
     timeLabel_->setFont(font);
+    totalLabel_->setFont(font);
+    timeLabel_->setForegroundRole(spacious ? QPalette::WindowText : QPalette::PlaceholderText);
     lapCombo_->setMinimumHeight(compact ? 26 : spacious ? 38 : 32);
     speedCombo_->setMinimumHeight(compact ? 26 : spacious ? 38 : 32);
 }
@@ -486,13 +503,27 @@ void PlaybackController::handleSeekFlush(const std::shared_ptr<EngineSeekFlush>&
 
 void PlaybackController::setDataRequirements(uint32_t streamMask,
                                              uint32_t historyMask,
-                                             float windowSeconds) {
+                                             float windowSeconds,
+                                             std::vector<uint8_t> v6Types,
+                                             std::vector<uint8_t> v6HistoryTypes) {
     // Lap progress is a coordinate dependency of every retained chart family,
-    // but is unnecessary for state/table-only pages.
+    // but is unnecessary for state/table-only pages. Its V6 type (24, lap
+    // timing) follows the lap family into the V6 type lists.
     const uint32_t effectiveHistory = historyMask == 0
         ? 0u : historyMask | (1u << 4);
+    if (effectiveHistory) {
+        v6Types.push_back(24);
+        v6HistoryTypes.push_back(24);
+    }
+    const auto normalize = [](std::vector<uint8_t>& types) {
+        std::sort(types.begin(), types.end());
+        types.erase(std::unique(types.begin(), types.end()), types.end());
+    };
+    normalize(v6Types);
+    normalize(v6HistoryTypes);
     if (model_) model_->retainPlaybackHistoryMask(effectiveHistory);
-    if (player_) player_->setDataRequirements(streamMask, effectiveHistory, windowSeconds);
+    if (player_) player_->setDataRequirements(streamMask, effectiveHistory, windowSeconds,
+                                              std::move(v6Types), std::move(v6HistoryTypes));
 }
 
 void PlaybackController::requestLapData(int lapNum, uint32_t rowTypeMask) {

@@ -270,7 +270,8 @@ void PowerPage::update(const StatusRow* status) {
         { "total",    havePower ? QString::number(std::round(totalKw)) : QStringLiteral("—"), "power.total", totalKw, havePower },
         { "ice",      haveIce ? QString::number(std::round(iceKw)) : QStringLiteral("—"), "power.ice", NAN, haveIce },
         { "mguk",     haveMguk ? QString::number(std::round(mgukKw)) : QStringLiteral("—"), "power.mguk", NAN, haveMguk },
-        { "split",    havePower ? QString("%1:%2").arg(std::round(icePct)).arg(std::round(ersPctS)) : QStringLiteral("—"), "power.split", NAN, havePower },
+        // Electron shows the ratio only while the car is making power (total > 0).
+        { "split",    havePower && totalKw > 0 ? QString("%1:%2").arg(std::round(icePct)).arg(std::round(ersPctS)) : QStringLiteral("—"), "power.split", NAN, havePower && totalKw > 0 },
         { "ersStore", number(ersMj, 2), "power.ers", ersPct, std::isfinite(ersPct) },
         { "ersPct",   std::isfinite(ersPct) ? QString::number(std::round(ersPct)) : QStringLiteral("—"), "power.ers", ersPct, std::isfinite(ersPct) },
         { "fuel",     number(fuelKg, 1), "power.fuel", NAN, std::isfinite(fuelKg) },

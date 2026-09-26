@@ -32,6 +32,7 @@ public slots:
 
 protected:
     void showEvent(QShowEvent* e) override;
+    void changeEvent(QEvent* e) override;   // re-tint corner colours for the theme
 
 private:
     void requestRefresh();

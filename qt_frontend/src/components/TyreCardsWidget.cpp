@@ -58,7 +58,6 @@ void TyreCardsWidget::buildCards() {
         cards_[i] = nullptr;
         surfaceTemp_[i] = innerTemp_[i] = brakeTemp_[i] = wearLabel_[i] = nullptr;
         wear_[i] = nullptr;
-        blisters_[i] = nullptr;
         compactCorner_[i].clear();
         // clearLayout() above deleted the cards (and any table/stack children); drop
         // the dangling pointers. cornerTableMode_ persists across the rebuild.
@@ -91,32 +90,53 @@ void TyreCardsWidget::buildCards() {
         return row;
     };
 
-    // The card body (temp rows + wear bar + blisters) built into a given layout;
-    // shared by the plain card and the toggle-able stacked card.
+    // The card body, as Electron's WheelCard: Surface / Inner, a rule, Brake,
+    // then the wear bar. Normal and Spacious put "Wear  12.3% · 4% blisters"
+    // above the bar; the compact column puts the bare percentage below it.
+    // Spacious spells the temperature labels out ("Surface Temp").
     auto buildBody = [&](int i, QVBoxLayout* bl) {
-        bl->addWidget(makeRow("Surface", surfaceTemp_[i]));
-        bl->addWidget(makeRow("Inner",   innerTemp_[i]));
-        bl->addWidget(makeRow("Brake",   brakeTemp_[i]));
-        bl->addWidget(makeRow("Wear",    wearLabel_[i]));
+        const bool spacious = level_ == Spacious;
+        const bool compactColumn = level_ == CompactColumn;
+        bl->addWidget(makeRow(spacious ? "Surface Temp" : "Surface", surfaceTemp_[i]));
+        bl->addWidget(makeRow(spacious ? "Inner Temp" : "Inner",     innerTemp_[i]));
+        if (!compactColumn) {
+            QFrame* rule = new QFrame;
+            rule->setFrameShape(QFrame::HLine);
+            rule->setFrameShadow(QFrame::Sunken);
+            bl->addWidget(rule);
+        }
+        bl->addWidget(makeRow(spacious ? "Brake Temp" : "Brake", brakeTemp_[i]));
+
+        wearLabel_[i] = new QLabel("—");
+        QFont wf; wf.setPointSize(spacious ? 8 : 7); wf.setBold(spacious || compactColumn);
+        wearLabel_[i]->setFont(wf);
+        if (!compactColumn) {
+            bl->addSpacing(spacious ? 6 : 3);
+            QWidget* header = new QWidget;
+            QHBoxLayout* h = new QHBoxLayout(header);
+            h->setContentsMargins(0, 0, 0, 0);
+            QLabel* lbl = new QLabel("Wear");
+            lbl->setFont(wf);
+            lbl->setForegroundRole(QPalette::PlaceholderText);
+            wearLabel_[i]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            h->addWidget(lbl);
+            h->addStretch();
+            h->addWidget(wearLabel_[i]);
+            bl->addWidget(header);
+        }
 
         auto* wearBar = new QProgressBar;
-        wearBar->setRange(0, 100);
+        wearBar->setRange(0, 1000);   // tenths of a percent, for the 1-decimal readout
         wearBar->setValue(0);
         wearBar->setTextVisible(false);
-        wearBar->setFixedHeight(6);
+        wearBar->setFixedHeight(spacious ? 10 : compactColumn ? 6 : 8);
         wearBar->setStyleSheet(
             "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
             "QProgressBar::chunk { background: #73BF69; border-radius: 3px; }"
         );
         wear_[i] = wearBar;
         bl->addWidget(wearBar);
-
-        blisters_[i] = new QLabel;
-        blisters_[i]->setVisible(false);
-        QFont bf; bf.setPointSize(7);
-        blisters_[i]->setFont(bf);
-        blisters_[i]->setForegroundRole(QPalette::PlaceholderText);
-        bl->addWidget(blisters_[i]);
+        if (compactColumn) bl->addWidget(wearLabel_[i]);
     };
 
     for (int i = 0; i < 4; ++i) {
@@ -501,18 +521,19 @@ void TyreCardsWidget::update(const TelemetryRow* telemetry, const DamageRow* dam
                            telemetry->brake_temp_rl, telemetry->brake_temp_rr };
         std::copy(s, s + 4, surf); std::copy(n, n + 4, inner); std::copy(b, b + 4, brake);
     }
-    int wear[4] = {missing, missing, missing, missing};
+    const double noWear = std::numeric_limits<double>::quiet_NaN();
+    double wear[4] = {noWear, noWear, noWear, noWear};
     int blisters[4] = {missing, missing, missing, missing};
     if (damage) {
-        const auto wearValue = [missing](double value) {
-            return std::isfinite(value) ? qRound(value) : missing;
-        };
-        const int w[4]  = { wearValue(damage->tyre_wear_fl), wearValue(damage->tyre_wear_fr),
-                            wearValue(damage->tyre_wear_rl), wearValue(damage->tyre_wear_rr) };
+        const double w[4] = { damage->tyre_wear_fl, damage->tyre_wear_fr,
+                              damage->tyre_wear_rl, damage->tyre_wear_rr };
         const int bl[4] = { damage->blisters_fl, damage->blisters_fr,
                             damage->blisters_rl, damage->blisters_rr };
         std::copy(w, w + 4, wear); std::copy(bl, bl + 4, blisters);
     }
+    // Electron: the full cards read wear to 1 decimal (plus blisters above the
+    // bar); the single-row compact levels use a whole percent.
+    const bool fullCard = level_ == Full || level_ == Spacious || level_ == CompactColumn;
 
     for (int i = 0; i < 4; ++i) {
         if (telemetry) {
@@ -525,27 +546,25 @@ void TyreCardsWidget::update(const TelemetryRow* telemetry, const DamageRow* dam
         }
 
         if (damage) {
-            const bool haveWear = wear[i] != missing;
-            const QString wearCol = haveWear ? wearPctColor(wear[i]).name() : QString();
-            setLabel(wearLabel_[i], haveWear ? QString::number(wear[i]) + "%" : "—",
+            const bool haveWear = std::isfinite(wear[i]);
+            const QString wearCol = haveWear ? wearPctColor(qRound(wear[i])).name() : QString();
+            QString wearText = QStringLiteral("—");
+            if (haveWear) {
+                wearText = fullCard ? QString::number(wear[i], 'f', 1) + "%"
+                                    : QString::number(qRound(wear[i])) + "%";
+                if (fullCard && level_ != CompactColumn && blisters[i] != missing && blisters[i] > 0)
+                    wearText += QString(" · %1% blisters").arg(blisters[i]);
+            }
+            setLabel(wearLabel_[i], wearText,
                      haveWear ? "color: " + wearCol + "; font-weight: bold;" : QString());
-            if (wear_[i]) {   // no wear bar in compact mode
-                const int barValue = haveWear ? wear[i] : 0;
+            if (wear_[i]) {   // no wear bar in the single-row compact levels
+                const int barValue = haveWear ? qBound(0, qRound(wear[i] * 10.0), 1000) : 0;
                 if (wear_[i]->value() != barValue) wear_[i]->setValue(barValue);
                 const QString wearStyle = haveWear ? QString(
                     "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
                     "QProgressBar::chunk { background: %1; border-radius: 3px; }"
                 ).arg(wearCol) : QString();
                 if (wear_[i]->styleSheet() != wearStyle) wear_[i]->setStyleSheet(wearStyle);
-            }
-            if (blisters_[i]) {   // no blister line in compact mode
-                if (blisters[i] != missing && blisters[i] > 0) {
-                    const QString text = QString("· %1% blisters").arg(blisters[i]);
-                    if (blisters_[i]->text() != text) blisters_[i]->setText(text);
-                    if (!blisters_[i]->isVisible()) blisters_[i]->setVisible(true);
-                } else {
-                    if (blisters_[i]->isVisible()) blisters_[i]->setVisible(false);
-                }
             }
         }
     }

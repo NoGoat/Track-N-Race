@@ -84,3 +84,5 @@ opus_analysis
 .claude
 
 *.tsbuildinfo
+
+*.tnrd

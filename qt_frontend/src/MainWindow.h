@@ -150,11 +150,11 @@ public:
     void    setReduceAnimations(bool on);
     int     trackMapLabelMode() const { return settings.value("ui/trackMapLabelMode", 0).toInt(); }
     void    setTrackMapLabelMode(int mode);
-    bool    trackMapSectorColors() const { return settings.value("ui/trackMapSectorColors", true).toBool(); }
+    bool    trackMapSectorColors() const { return settings.value("ui/trackMapSectorColors", false).toBool(); }
     void    setTrackMapSectorColors(bool on);
     int     trackMapOpacity() const { return settings.value("ui/trackMapOpacity", 100).toInt(); }
     void    setTrackMapOpacity(int pct);
-    int     trackMapIdleTimeout() const { return settings.value("ui/trackMapIdleTimeout", 0).toInt(); }
+    int     trackMapIdleTimeout() const { return settings.value("ui/trackMapIdleTimeout", 10).toInt(); }
     void    setTrackMapIdleTimeout(int secs);
     bool    toastsEnabled() const { return settings.value("ui/toastsEnabled", true).toBool(); }
     void    setToastsEnabled(bool on) { settings.setValue("ui/toastsEnabled", on); }
@@ -268,10 +268,20 @@ private:
     // to its entered/exited/timeChanged signals.
     PlaybackController* playback_ = nullptr;
     bool         inPlayback_     = false;
-    bool         playbackSeekInstalling_ = false;
+    // Electron's playback seek barrier (bridgeManager.ts). From seekStarted
+    // until the matching authoritative history flush arrives, stream rows are
+    // from the old cursor and are dropped (waiting-flush). From that flush until
+    // the history is installed they belong to the new cursor and are buffered
+    // in engine order (waiting-renderer), then replayed on historyInstalled.
+    bool         playbackSeekInstalling_ = false;   // either phase is active
+    bool         playbackSeekFlushReceived_ = false; // waiting-renderer phase
+    struct SeekReplayItem { QByteArray data; bool binary = false; };
+    QVector<SeekReplayItem> playbackSeekReplay_;
+    qsizetype    playbackSeekReplayBytes_ = 0;
+    void bufferSeekReplay(const QByteArray& data, bool binary);
+    void resetSeekGate();
     bool         playbackRequirementsPending_ = false;
     uint64_t     playbackSeekGeneration_ = 0;
-    QHash<QByteArray, QByteArray> pendingSeekStateRows_;
     PlaybackPatchMerger playbackPatchMerger_;
     bool         playerStatusDrsAvailable_ = true;
     QSet<int>    allStatusDrsAvailable_;

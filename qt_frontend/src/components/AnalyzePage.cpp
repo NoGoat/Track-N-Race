@@ -209,7 +209,8 @@ struct AnalyzePage::FileState {
                 lap.tel.reserve(static_cast<qsizetype>(source.telemetry.size()));
                 for (const auto& point : source.telemetry)
                     lap.tel.push_back({point.session_time, static_cast<float>(point.speed_kph),
-                                       point.rpm, qQNaN(), qQNaN(), qQNaN(), qQNaN()});
+                                       static_cast<float>(point.rpm), float(qQNaN()), float(qQNaN()),
+                                       float(qQNaN()), float(qQNaN())});
                 lap.sts.reserve(static_cast<qsizetype>(source.statusHistory.size()));
                 for (const auto& point : source.statusHistory)
                     lap.sts.push_back({point.session_time, static_cast<float>(point.ers_pct),
@@ -691,13 +692,13 @@ void AnalyzePage::refreshDeltaSummary(){
         QLabel*label=deltaValues_[i];const double value=values[i];
         if(!std::isfinite(value)){
             label->setText(QString::fromUtf8("—.---"));
-            label->setStyleSheet("color: palette(mid);");
+            label->setStyleSheet("color: palette(placeholder-text);");
             continue;
         }
         const double normalized=std::abs(value)<0.0005?0.0:value;
         label->setText((normalized>0?QStringLiteral("+"):QString())+QString::number(normalized,'f',3));
         label->setStyleSheet(QString("color:%1;").arg(
-            normalized>0?positive.name():normalized<0?negative.name():palette().color(QPalette::Mid).name()));
+            normalized>0?positive.name():normalized<0?negative.name():palette().color(QPalette::PlaceholderText).name()));
     }
     deltaSummary_->setToolTip(sectorDelta_->isChecked()
         ? "Sector Delta mode · Lap is the sum of the visible sector deltas"

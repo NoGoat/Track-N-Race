@@ -286,6 +286,26 @@ std::optional<PlaybackDecodedRow> PlaybackPatchMerger::decode(const QByteArray& 
                               std::move(object), sparse};
 }
 
+std::vector<const char*> playbackPatchFields(int v6Type) {
+    std::vector<const char*> fields;
+    forEachPatchField(v6Type, [&fields](QLatin1String field) { fields.push_back(field.data()); });
+    return fields;
+}
+
+QJsonObject PlaybackPatchMerger::mergeObject(const QJsonObject& row, bool* sparse) {
+    const QJsonValue typeValue = row.value(QStringLiteral("_v6_type"));
+    const double rawType = typeValue.toDouble(-1.0);
+    const bool isPatch = typeValue.isDouble() && std::isfinite(rawType) &&
+                         std::floor(rawType) == rawType;
+    if (sparse) *sparse = isPatch;
+    if (!isPatch) return row;
+    const QString rowType = row.value(QStringLiteral("type")).toString();
+    if (rowType.isEmpty()) return row;
+    QJsonObject merged = mergePatch(states_.value(rowType), row, static_cast<int>(rawType));
+    states_.insert(rowType, merged);
+    return merged;
+}
+
 bool playbackFieldAvailable(const QJsonObject* object, const char* field) {
     return !object || object->contains(QLatin1String(field));
 }

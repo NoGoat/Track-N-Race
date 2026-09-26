@@ -84,7 +84,6 @@ private:
     QLabel*       brakeTemp_[4]   = {};
     QLabel*       wearLabel_[4]   = {};
     QProgressBar* wear_[4]        = {};
-    QLabel*       blisters_[4]    = {};
 
     // Per-corner Table view state (vertical/Tyres page, Full level). cornerStack_
     // swaps the card body for cornerTable_. All null on the Overview strip and at

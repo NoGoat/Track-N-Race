@@ -9,6 +9,7 @@ class QAction;
 class QComboBox;
 class QLabel;
 class QMenu;
+class QPropertyAnimation;
 class QToolButton;
 
 struct PlaybackDriverOption {
@@ -47,6 +48,11 @@ public:
                                  bool lapCoordinatesAvailable);
     void setChartOptions(ChartWindow window, int referenceLap,
                          bool sectorBoundaries, bool cursorSync);
+    // Sector Boundaries / Synchronize Tooltip only apply to chart pages; like
+    // Electron they stay visible but disabled elsewhere.
+    void setChartToolsEnabled(bool on);
+    // Skip the delta readout's slide in/out (Settings ▸ Reduce Animations).
+    void setReduceAnimations(bool on) { reduceAnimations_ = on; }
     void setPlaybackDrivers(const QVector<PlaybackDriverOption>& drivers,
                             int selectedDriverIndex);
     void clearPlaybackDrivers();
@@ -82,6 +88,7 @@ private:
     void applyPlaybackDriver(int idx); // sync inline/menu state + emit playbackDriverChanged
     void rebuildChartWindowOptions();  // omit modes unavailable in the current session
     void refreshThemedIcons();
+    void setDeltaShown(bool shown);    // animated reveal/collapse, as Electron's delta slot
 
     QComboBox*    pageBtn_      = nullptr;   // compact page-navigation dropdown
     QAction*      pageAct_      = nullptr;   // kept inline during overflow
@@ -119,4 +126,7 @@ private:
     int       timerSec_   = -1;        // last shown whole second (skip redundant sets)
     int       timerW_     = 0;         // last reserved label width (re-layout on change)
     int       deltaW_     = 0;
+    bool      deltaShown_ = false;
+    bool      reduceAnimations_ = false;
+    QPropertyAnimation* deltaAnim_ = nullptr;
 };

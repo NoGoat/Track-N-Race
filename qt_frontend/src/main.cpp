@@ -29,6 +29,16 @@
 
 #include <tnrp/TnrdReader.h>   // startup sweep of stale playback temp files
 
+#ifdef Q_OS_WIN
+// Keep RivaTuner Statistics Server (and its OSD) out of this process. When
+// RTSSHooks64.dll loads into a process it looks up an exported DWORD named
+// RTSSHooksCompatibility in the host EXE and skips hooking when it is 0
+// ("Incompatible process detected, hooking is disabled via exported
+// variable"). The Vulkan chart backend is additionally shielded from the RTSS
+// implicit layer via DISABLE_RTSS_LAYER (its manifest's disable_environment).
+extern "C" __declspec(dllexport) unsigned long RTSSHooksCompatibility = 0;
+#endif
+
 // Build a multi-resolution app icon from every frame in the .ico. QIcon(".ico")
 // alone only takes the first frame (16x16 here), which the window manager then
 // upscales into a pixelated mess for the (HiDPI) titlebar. Adding all frames lets
@@ -172,6 +182,10 @@ private:
 
 int main(int argc, char* argv[]) {
     // Preserve scales such as 1.25 and 1.5 instead of rounding to integer DPRs.
+#ifdef Q_OS_WIN
+    // Read by the Vulkan loader when the chart backend creates its instance.
+    qputenv("DISABLE_RTSS_LAYER", "1");
+#endif
     // This must be set before constructing QApplication.
     QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
 #ifdef Q_OS_LINUX

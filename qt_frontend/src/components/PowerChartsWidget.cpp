@@ -4,6 +4,7 @@
 #include "GraphTable.h"
 #include "../SessionModel.h"
 #include "../ChartCoordinates.h"
+#include "CardColors.h"
 
 #include <QGridLayout>
 #include <QColor>
@@ -11,11 +12,28 @@
 #include <QStringList>
 #include <QtMath>
 #include <algorithm>
+#include <cmath>
 
 namespace {
 const QColor C_ICE("#5794F2"), C_MGUK("#FADE2A");
 const QColor C_HARV_K("#37872D"), C_HARV_H("#C4162A");
 const QColor C_FUEL("#F0A500");
+
+// Electron's power tooltips: fixed decimals, unit appended without a space.
+ChartView::SeriesSpec powerSeries(const QString& name, const QColor& color, int xAxis,
+                                  int yAxis, const QString& unit, int precision,
+                                  double width = 1.5) {
+    ChartView::SeriesSpec spec{ name, color, width, xAxis, yAxis, unit, precision };
+    spec.unitSpace = false;
+    return spec;
+}
+
+QString tooltipExtraRow(const QString& text) {
+    return QString("<div style='color:%1'>%2</div>")
+        .arg(tnr::themed("#7c8098", "#596168").name(), text.toHtmlEscaped());
+}
+
+double orZero(double value) { return std::isfinite(value) ? value : 0.0; }
 }
 
 PowerChartsWidget::PowerChartsWidget(QWidget* parent)
@@ -43,42 +61,57 @@ PowerChartsWidget::PowerChartsWidget(QWidget* parent)
     const int axSplit = chart_->addAxis({ ChartView::Side::Left, 0.0, 500.0, QColor(), true, 'f', 0 }, SPLIT);
     chart_->setPanelTitle(SPLIT, "POWER");
     chart_->setPanelLegendVisible(SPLIT, true);
-    splitIceId_  = chart_->addSeries({ "ICE",   C_ICE,  1.5, xId_[SPLIT], axSplit, "", 2 });
-    splitMgukId_ = chart_->addSeries({ "MGU-K", C_MGUK, 1.5, xId_[SPLIT], axSplit, "", 2 });
+    splitIceId_  = chart_->addSeries(powerSeries("ICE",   C_ICE,  xId_[SPLIT], axSplit, "kW", 1));
+    splitMgukId_ = chart_->addSeries(powerSeries("MGU-K", C_MGUK, xId_[SPLIT], axSplit, "kW", 1));
     QColor iceRef = C_ICE; iceRef.setAlpha(105); QColor mgukRef = C_MGUK; mgukRef.setAlpha(105);
-    splitIceRefId_ = chart_->addSeries({ "", iceRef, 1.1, xId_[SPLIT], axSplit, "", 2 });
-    splitMgukRefId_ = chart_->addSeries({ "", mgukRef, 1.1, xId_[SPLIT], axSplit, "", 2 });
+    splitIceRefId_ = chart_->addSeries(powerSeries("", iceRef, xId_[SPLIT], axSplit, "kW", 1, 1.1));
+    splitMgukRefId_ = chart_->addSeries(powerSeries("", mgukRef, xId_[SPLIT], axSplit, "kW", 1, 1.1));
+    chart_->setPanelTooltipExtra(SPLIT, [](const QVector<double>& v) {
+        if (v.size() < 2 || (!std::isfinite(v[0]) && !std::isfinite(v[1]))) return QString();
+        return tooltipExtraRow(QString("Total: %1 kW").arg(orZero(v[0]) + orZero(v[1]), 0, 'f', 1));
+    });
 
     // ── ERS HARVEST (panel 1) ────────────────────────────────────────────────
     chart_->addPanel();
     timeAxis(HARVEST);
     harvYId_ = chart_->addAxis({ ChartView::Side::Left, 0.0, 4000.0, QColor(), true, 'f', 0 }, HARVEST);
-    chart_->setPanelTitle(HARVEST, "ERS HARVEST THIS LAP");
+    chart_->setPanelTitle(HARVEST, "ERS HARVEST");
+    chart_->setPanelNote(HARVEST, "resets each lap");
     chart_->setPanelLegendVisible(HARVEST, true);
-    harvKId_ = chart_->addSeries({ "MGU-K Harvest", C_HARV_K, 1.5, xId_[HARVEST], harvYId_, "", 2 });
-    harvHId_ = chart_->addSeries({ "MGU-H Harvest", C_HARV_H, 1.5, xId_[HARVEST], harvYId_, "", 2 });
+    harvKId_ = chart_->addSeries(powerSeries("MGU-K", C_HARV_K, xId_[HARVEST], harvYId_, "kJ", 1));
+    harvHId_ = chart_->addSeries(powerSeries("MGU-H", C_HARV_H, xId_[HARVEST], harvYId_, "kJ", 1));
     QColor hkRef = C_HARV_K; hkRef.setAlpha(105); QColor hhRef = C_HARV_H; hhRef.setAlpha(105);
-    harvKRefId_ = chart_->addSeries({ "", hkRef, 1.1, xId_[HARVEST], harvYId_, "", 2 });
-    harvHRefId_ = chart_->addSeries({ "", hhRef, 1.1, xId_[HARVEST], harvYId_, "", 2 });
+    harvKRefId_ = chart_->addSeries(powerSeries("", hkRef, xId_[HARVEST], harvYId_, "kJ", 1, 1.1));
+    harvHRefId_ = chart_->addSeries(powerSeries("", hhRef, xId_[HARVEST], harvYId_, "kJ", 1, 1.1));
+    chart_->setPanelTooltipExtra(HARVEST, [this](const QVector<double>& v) {
+        if (v.size() < 2 || !std::isfinite(v[0])) return QString();
+        return tooltipExtraRow(QString("Total: %1 kJ")
+            .arg(orZero(v[0]) + (mguhVisible_ ? orZero(v[1]) : 0.0), 0, 'f', 1));
+    });
 
     // ── ERS STORE (panel 2) ──────────────────────────────────────────────────
     chart_->addPanel();
     timeAxis(STORE);
     const int axStore = chart_->addAxis({ ChartView::Side::Left, 0.0, 100.0, QColor(), true, 'f', 0 }, STORE);
-    chart_->setPanelTitle(STORE, "ERS STORE HISTORY");
+    chart_->setPanelTitle(STORE, "ERS STORE");
+    chart_->setPanelNote(STORE, "max 4.0 MJ");
     chart_->setPanelLegendVisible(STORE, true);
-    storeId_ = chart_->addSeries({ "ERS Store", C_ICE, 1.5, xId_[STORE], axStore, "", 2 });
-    storeRefId_ = chart_->addSeries({ "", iceRef, 1.1, xId_[STORE], axStore, "", 2 });
+    storeId_ = chart_->addSeries(powerSeries("ERS", C_ICE, xId_[STORE], axStore, "%", 1));
+    storeRefId_ = chart_->addSeries(powerSeries("", iceRef, xId_[STORE], axStore, "%", 1, 1.1));
+    chart_->setPanelTooltipExtra(STORE, [](const QVector<double>& v) {
+        if (v.isEmpty() || !std::isfinite(v[0])) return QString();
+        return tooltipExtraRow(QString("%1 / 4.00 MJ").arg(v[0] / 100.0 * 4.0, 0, 'f', 2));
+    });
 
     // ── FUEL (panel 3) ───────────────────────────────────────────────────────
     chart_->addPanel();
     timeAxis(FUEL);
-    const int axFuel = chart_->addAxis({ ChartView::Side::Left, 0.0, 110.0, QColor(), true, 'f', 0 }, FUEL);
+    fuelYId_ = chart_->addAxis({ ChartView::Side::Left, 0.0, 110.0, QColor(), true, 'f', 0 }, FUEL);
     chart_->setPanelTitle(FUEL, "FUEL HISTORY");
     chart_->setPanelLegendVisible(FUEL, true);
-    fuelId_ = chart_->addSeries({ "Fuel", C_FUEL, 1.5, xId_[FUEL], axFuel, "", 2 });
+    fuelId_ = chart_->addSeries(powerSeries("Fuel", C_FUEL, xId_[FUEL], fuelYId_, "kg", 2));
     QColor fuelRef = C_FUEL; fuelRef.setAlpha(105);
-    fuelRefId_ = chart_->addSeries({ "", fuelRef, 1.1, xId_[FUEL], axFuel, "", 2 });
+    fuelRefId_ = chart_->addSeries(powerSeries("", fuelRef, xId_[FUEL], fuelYId_, "kg", 2, 1.1));
     const int primary[] = { splitIceId_, splitMgukId_, harvKId_, harvHId_, storeId_, fuelId_ };
     const int refs[] = { splitIceRefId_, splitMgukRefId_, harvKRefId_, harvHRefId_, storeRefId_, fuelRefId_ };
     for (int i = 0; i < 6; ++i) { chart_->setSeriesVisible(refs[i], false); chart_->linkSeriesVisibility(primary[i], refs[i]); }
@@ -330,6 +363,14 @@ void PowerChartsWidget::refresh() {
     chart_->fitAxisToVisibleSeries(harvYId_,
         { harvKId_, harvHId_, harvKRefId_, harvHRefId_ }, 0.0, harvestFixedMax_,
         model_->dynamicYAxis(tnr::GraphSection::PowerHarvest), true);
+    // Fuel ceiling as Electron: the session's fuel upper limit, else the first
+    // sample + 1 kg (minimum 1 kg).
+    double fuelMax = d.fuelUpperLimit;
+    if (!(fuelMax > 0)) {
+        const double first = d.stsBuf.isEmpty() ? 0.0 : double(d.stsBuf.first().fuel_kg);
+        fuelMax = qMax(1.0, (std::isfinite(first) ? first : 0.0) + 1.0);
+    }
+    chart_->setAxisRange(fuelYId_, 0.0, fuelMax);
 
     // Feed any table-mode sections from the same window (newest sample on top).
     if (tableMode_[SPLIT] || tableMode_[HARVEST] || tableMode_[STORE] || tableMode_[FUEL]) {

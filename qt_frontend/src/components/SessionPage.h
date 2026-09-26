@@ -87,6 +87,7 @@ private:
     bool         proximitySpacious_ = false;
     QLabel*      sp_proxHeader    = nullptr;
     QHash<QString, QLabel*> spCardValue_;
+    QHash<QString, QLabel*> spCardUnit_;   // unit labels (Pit Speed's km/h)
     QLabel*      sp_statTotalLaps = nullptr;
     QLabel*      sp_statRemain    = nullptr;
     QLabel*      sp_statPitSpeed  = nullptr;

@@ -186,7 +186,7 @@ AnalyzeInputComparison::AnalyzeInputComparison(QWidget* mapArea)
         row->addWidget(comparison, 1);
         if (!unit.isEmpty()) {
             auto* suffix = new QLabel(unit, body_);
-            suffix->setStyleSheet(QStringLiteral("font-size:9px;color:palette(mid);"));
+            suffix->setStyleSheet(QStringLiteral("font-size:9px;color:palette(placeholder-text);"));
             row->addWidget(suffix);
         }
         bodyLayout->addLayout(row);

@@ -70,7 +70,8 @@ void clearLayout(QLayout* lay) {
 // Compact collapses the card to one line — [label] · value+unit (middle) · [sub]
 // (right) — trading vertical space for a shorter row.
 QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOut,
-                     tnr::DensityMode density, QLabel** subOut = nullptr, QLabel** titleOut = nullptr) {
+                     tnr::DensityMode density, QLabel** subOut = nullptr, QLabel** titleOut = nullptr,
+                     QLabel** unitOut = nullptr) {
     const bool compact = density == tnr::DensityMode::Compact;
     const bool spacious = density == tnr::DensityMode::Spacious;
     QFrame* card = new QFrame;
@@ -82,7 +83,7 @@ QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOu
     lbl->setForegroundRole(QPalette::PlaceholderText);
     if (titleOut) *titleOut = lbl;   // expose the title so it can be re-labelled on format change
 
-    valueOut = new QLabel("—");
+    valueOut = new QLabel("-");
     QFont vf; vf.setPointSize(compact ? 12 : spacious ? 24 : 15); vf.setBold(true);
     valueOut->setFont(vf);
 
@@ -92,7 +93,9 @@ QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOu
         QFont uf; uf.setPointSize(compact ? 8 : spacious ? 10 : 7);
         ulbl->setFont(uf);
         ulbl->setForegroundRole(QPalette::PlaceholderText);
+        ulbl->hide();   // shown once the value is known
     }
+    if (unitOut) *unitOut = ulbl;
     QLabel* sub = nullptr;
     if (subOut) {
         sub = new QLabel;
@@ -148,7 +151,10 @@ QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOu
     return card;
 }
 
-QFrame* makeDmgCard(const QString& label, QLabel*& valueOut, tnr::DensityMode density) {
+// Damage card: label, value + "%" unit and — in Spacious — Electron's
+// Clean / Minor / Critical status line.
+QFrame* makeDmgCard(const QString& label, QLabel*& valueOut, QLabel*& unitOut,
+                    QLabel*& statusOut, tnr::DensityMode density) {
     const bool compact = density == tnr::DensityMode::Compact;
     const bool spacious = density == tnr::DensityMode::Spacious;
     QFrame* card = new QFrame;
@@ -163,14 +169,23 @@ QFrame* makeDmgCard(const QString& label, QLabel*& valueOut, tnr::DensityMode de
     QFont vf; vf.setPointSize(compact ? 11 : spacious ? 18 : 12); vf.setBold(true);
     valueOut->setFont(vf);
 
+    unitOut = new QLabel("%");
+    QFont uf; uf.setPointSize(compact ? 7 : spacious ? 9 : 7);
+    unitOut->setFont(uf);
+    unitOut->setForegroundRole(QPalette::PlaceholderText);
+    unitOut->hide();
+
+    statusOut = nullptr;
+
     if (compact) {
         // One line, two-value: label left, value pinned right.
         QHBoxLayout* cl = new QHBoxLayout(card);
         cl->setContentsMargins(6, 2, 6, 2);
-        cl->setSpacing(4);
+        cl->setSpacing(2);
         cl->addWidget(lbl);
         cl->addStretch();
         cl->addWidget(valueOut);
+        cl->addWidget(unitOut, 0, Qt::AlignBottom);
         return card;
     }
 
@@ -179,19 +194,31 @@ QFrame* makeDmgCard(const QString& label, QLabel*& valueOut, tnr::DensityMode de
                            spacious ? 10 : 6, spacious ? 8 : 4);
     cv->setSpacing(spacious ? 2 : 0);
     cv->addWidget(lbl);
-    cv->addWidget(valueOut);
+    QHBoxLayout* valueRow = new QHBoxLayout;
+    valueRow->setContentsMargins(0, 0, 0, 0);
+    valueRow->setSpacing(2);
+    valueRow->addWidget(valueOut);
+    valueRow->addWidget(unitOut, 0, Qt::AlignBottom);
+    valueRow->addStretch();
+    cv->addLayout(valueRow);
+    if (spacious) {
+        statusOut = new QLabel("—");
+        QFont sf; sf.setPointSize(8);
+        statusOut->setFont(sf);
+        statusOut->setForegroundRole(QPalette::PlaceholderText);
+        cv->addWidget(statusOut);
+    }
     return card;
 }
 
-void setDmgValue(QLabel* lbl, int val) {
-    if (!lbl) return;
-    const QString text = val < 0 ? QStringLiteral("—") : QString::number(val);
-    const QString style = val < 0 ? QString() :
-        (val == 0 ? QStringLiteral("color: #37872D;")
-                  : QStringLiteral("color: #C4162A;"));
-    if (lbl->text() != text) lbl->setText(text);
-    if (lbl->styleSheet() != style) lbl->setStyleSheet(style);
-}
+// Electron's damage-card display order: each corner's tyre then brake, then
+// the bodywork (note Diffuser before Sidepod).
+constexpr int kDamageOrder[OverviewLayout::DmgCardCount] = {
+    OverviewLayout::TyreFl, OverviewLayout::BrakeFl, OverviewLayout::TyreFr, OverviewLayout::BrakeFr,
+    OverviewLayout::TyreRl, OverviewLayout::BrakeRl, OverviewLayout::TyreRr, OverviewLayout::BrakeRr,
+    OverviewLayout::WingFl, OverviewLayout::WingFr, OverviewLayout::WingRear, OverviewLayout::Floor,
+    OverviewLayout::Diffuser, OverviewLayout::Sidepod, OverviewLayout::Gearbox, OverviewLayout::Engine,
+};
 
 } // namespace
 
@@ -430,6 +457,7 @@ void OverviewPage::buildStatCards() {
     cardValue_.clear();
     cardSub_.clear();
     cardTitle_.clear();
+    cardUnit_.clear();
     for (int i = 0; i < OverviewLayout::StatCardCount; ++i) {
         statCardFrame_[i] = nullptr;
         statCardSep_[i]   = nullptr;
@@ -458,12 +486,13 @@ void OverviewPage::buildStatCards() {
     bool first = true;
     for (const CardDef& d : defs) {
         const QString key = OverviewLayout::statCardKey(d.idx);
-        QLabel* val = nullptr; QLabel* sub = nullptr; QLabel* title = nullptr;
+        QLabel* val = nullptr; QLabel* sub = nullptr; QLabel* title = nullptr; QLabel* unit = nullptr;
         QFrame* frame = makeStatCard(tnr::L("ui.overview." + key), d.unit,
-                                     val, statsDensity_, d.sub ? &sub : nullptr, &title);
+                                     val, statsDensity_, d.sub ? &sub : nullptr, &title, &unit);
         statCardFrame_[d.idx] = frame;
         cardValue_[key] = val;
         cardTitle_[key] = title;
+        if (unit) cardUnit_[key] = unit;
         if (sub) cardSub_[key] = sub;
         if (!first) {
             QFrame* sep = tnrui::vline();
@@ -478,51 +507,73 @@ void OverviewPage::buildStatCards() {
 // Build (or rebuild in place) both damage rows. Compact mode collapses the cards
 // to one line, so the rows also shrink from their two-line fixed height.
 void OverviewPage::buildDamageCards() {
-    clearLayout(dmgRowA_->layout());
-    clearLayout(dmgRowB_->layout());
+    // Detach the row items without deleting their widgets, then delete the
+    // separators and every card (hidden cards are not in a row layout).
+    for (QLayout* row : { dmgRowA_->layout(), dmgRowB_->layout() })
+        while (QLayoutItem* item = row->takeAt(0)) delete item;
+    qDeleteAll(dmgSeps_);
+    dmgSeps_.clear();
     for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
+        delete dmgCardFrame_[i];
         dmgCardFrame_[i] = nullptr;
-        dmgCardSep_[i]   = nullptr;
+        dmgValue_[i] = dmgUnit_[i] = dmgStatus_[i] = nullptr;
     }
 
     const bool compact = damageDensity_ == tnr::DensityMode::Compact;
     const bool spacious = damageDensity_ == tnr::DensityMode::Spacious;
-    const int rowH = compact ? 26 : spacious ? 82 : 60;
+    const int rowH = compact ? 26 : spacious ? 96 : 60;
     dmgRowA_->setFixedHeight(rowH);
     dmgRowB_->setFixedHeight(rowH);
 
-    // Drop the rows' L/R inset in compact mode so the first card ("WING FL") lines
-    // up with the rest; the full two-line layout keeps its original inset.
+    // Drop the rows' L/R inset in compact mode so the first card lines up with
+    // the rest; the full two-line layout keeps its original inset.
     const int dmgSide = compact ? 0 : spacious ? 12 : 8;
+    dmgRowA_->layout()->setContentsMargins(dmgSide, 0, dmgSide, 0);
+    dmgRowB_->layout()->setContentsMargins(dmgSide, 0, dmgSide, 0);
 
-    struct DmgDef { int idx; const char* label; QLabel** val; };
-    const DmgDef rowA[] = {
-        { OverviewLayout::TyreFl,  "Tyre FL",  &dmgTyreFl },  { OverviewLayout::TyreFr,  "Tyre FR",  &dmgTyreFr },
-        { OverviewLayout::TyreRl,  "Tyre RL",  &dmgTyreRl },  { OverviewLayout::TyreRr,  "Tyre RR",  &dmgTyreRr },
-        { OverviewLayout::BrakeFl, "Brake FL", &dmgBrakeFl }, { OverviewLayout::BrakeFr, "Brake FR", &dmgBrakeFr },
-        { OverviewLayout::BrakeRl, "Brake RL", &dmgBrakeRl }, { OverviewLayout::BrakeRr, "Brake RR", &dmgBrakeRr },
-    };
-    const DmgDef rowB[] = {
-        { OverviewLayout::WingFl,   "Wing FL",   &dmgWingFl },   { OverviewLayout::WingFr,  "Wing FR",  &dmgWingFr },
-        { OverviewLayout::WingRear, "Wing Rear", &dmgWingRear }, { OverviewLayout::Floor,   "Floor",    &dmgFloor },
-        { OverviewLayout::Sidepod,  "Sidepod",   &dmgSidepod },  { OverviewLayout::Diffuser,"Diffuser", &dmgDiffuser },
-        { OverviewLayout::Gearbox,  "Gearbox",   &dmgGearbox },  { OverviewLayout::Engine,  "Engine",   &dmgEngine },
-    };
+    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
+        QFrame* card = makeDmgCard(OverviewLayout::dmgCardLabel(i), dmgValue_[i], dmgUnit_[i],
+                                   dmgStatus_[i], damageDensity_);
+        card->setParent(dmgFrame_);   // parked until layoutDamageCards places it
+        card->hide();
+        dmgCardFrame_[i] = card;
+    }
+}
 
-    // Cards get equal stretch (all eight the same width, so they line up with the
-    // four equal tyre cards above). The separator preceding a card is tracked in
-    // dmgCardSep_ so applyLayout can hide it together with a hidden card.
-    auto buildRow = [&](QHBoxLayout* rl, const DmgDef* defs, int n) {
-        rl->setContentsMargins(dmgSide, 0, dmgSide, 0);
-        for (int j = 0; j < n; ++j) {
-            if (j > 0) rl->addWidget(dmgCardSep_[defs[j].idx] = tnrui::vline());
-            QFrame* card = makeDmgCard(defs[j].label, *defs[j].val, damageDensity_);
-            dmgCardFrame_[defs[j].idx] = card;
-            rl->addWidget(card, 1);
+// Electron flows the visible damage cards into one row, splitting them into
+// two equal-ish rows only when more than eight are shown.
+void OverviewPage::layoutDamageCards(const OverviewLayout& L) {
+    auto* rowA = qobject_cast<QHBoxLayout*>(dmgRowA_->layout());
+    auto* rowB = qobject_cast<QHBoxLayout*>(dmgRowB_->layout());
+    for (QHBoxLayout* row : { rowA, rowB })
+        while (QLayoutItem* item = row->takeAt(0)) delete item;   // cards stay alive
+    qDeleteAll(dmgSeps_);
+    dmgSeps_.clear();
+
+    QVector<int> visible;
+    for (int idx : kDamageOrder) {
+        if (dmgCardFrame_[idx]) dmgCardFrame_[idx]->setVisible(false);
+        if (L.dmgCards[idx]) visible.push_back(idx);
+    }
+    const int n = visible.size();
+    const bool twoRow = n > 8;
+    const int split = twoRow ? (n + 1) / 2 : n;
+    for (int i = 0; i < n; ++i) {
+        QHBoxLayout* row = i < split ? rowA : rowB;
+        if (i != 0 && i != split) {
+            QFrame* sep = tnrui::vline();
+            dmgSeps_.push_back(sep);
+            row->addWidget(sep);
         }
-    };
-    buildRow(qobject_cast<QHBoxLayout*>(dmgRowA_->layout()), rowA, 8);
-    buildRow(qobject_cast<QHBoxLayout*>(dmgRowB_->layout()), rowB, 8);
+        QFrame* card = dmgCardFrame_[visible[i]];
+        row->addWidget(card, 1);
+        card->setVisible(true);
+    }
+    dmgRowA_->setVisible(n > 0);
+    dmgRowB_->setVisible(twoRow);
+    if (dmgHdiv_)  dmgHdiv_->setVisible(twoRow);
+    if (dmgFrame_) dmgFrame_->setVisible(n > 0);
+    if (sep2_)     sep2_->setVisible(n > 0);
 }
 
 // Live per-section compact toggles. Each rebuilds only its own row/cards, re-applies
@@ -549,7 +600,7 @@ void OverviewPage::setDamageDensity(tnr::DensityMode mode) {
     damageDensity_ = mode;
     buildDamageCards();
     applyLayout(loadLayout());
-    if (lastDamage_) { const DamageRow d = *lastDamage_; onDamage(d); }
+    damageDirty_ = true;
     flushPending();
 }
 
@@ -574,6 +625,7 @@ void OverviewPage::onTelemetry(const TelemetryRow& row) {
     cache_.drs        = row.drs;
     cache_.slm        = row.slm;
     cache_.engineTemp = row.engine_temp;
+    if (!haveTelemetry_) { haveTelemetry_ = true; damageDirty_ = true; }
     cardsDirty_ = true;
 }
 
@@ -598,25 +650,48 @@ void OverviewPage::onDamage(const DamageRow& row) {
 }
 
 void OverviewPage::refreshDamage() {
-    if (!lastDamage_) return;
-    const DamageRow& row = *lastDamage_;
-    setDmgValue(dmgTyreFl,   row.tyre_dmg_fl);
-    setDmgValue(dmgTyreFr,   row.tyre_dmg_fr);
-    setDmgValue(dmgTyreRl,   row.tyre_dmg_rl);
-    setDmgValue(dmgTyreRr,   row.tyre_dmg_rr);
-    setDmgValue(dmgBrakeFl,  row.brake_dmg_fl);
-    setDmgValue(dmgBrakeFr,  row.brake_dmg_fr);
-    setDmgValue(dmgBrakeRl,  row.brake_dmg_rl);
-    setDmgValue(dmgBrakeRr,  row.brake_dmg_rr);
-    setDmgValue(dmgWingFl,   row.wing_fl);
-    setDmgValue(dmgWingFr,   row.wing_fr);
-    setDmgValue(dmgWingRear, row.wing_rear);
-    setDmgValue(dmgFloor,    row.floor_damage);
-    setDmgValue(dmgSidepod,  row.sidepod_damage);
-    setDmgValue(dmgDiffuser, row.diffuser_damage);
-    setDmgValue(dmgGearbox,  row.gearbox_damage);
-    setDmgValue(dmgEngine,   row.engine_damage);
+    // Electron reads a missing damage value as 0 once connected, and shows "—"
+    // (no unit) until the first telemetry row.
+    const bool connected = haveTelemetry_;
+    int values[OverviewLayout::DmgCardCount] = {};
+    if (lastDamage_) {
+        const DamageRow& row = *lastDamage_;
+        const int raw[OverviewLayout::DmgCardCount] = {
+            row.tyre_dmg_fl, row.tyre_dmg_fr, row.tyre_dmg_rl, row.tyre_dmg_rr,
+            row.brake_dmg_fl, row.brake_dmg_fr, row.brake_dmg_rl, row.brake_dmg_rr,
+            row.wing_fl, row.wing_fr, row.wing_rear, row.floor_damage,
+            row.sidepod_damage, row.diffuser_damage, row.gearbox_damage, row.engine_damage,
+        };
+        for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) values[i] = qMax(0, raw[i]);
+    }
+    const QString green = tnr::themed("#37872D", "#137333").name();
+    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
+        const int v = values[i];
+        const QString color = v > 0 ? QStringLiteral("#C4162A") : green;
+        const QString text = connected ? QString::number(v) : QStringLiteral("—");
+        const QString style = connected ? QString("color: %1;").arg(color) : QString();
+        if (QLabel* l = dmgValue_[i]) {
+            if (l->text() != text) l->setText(text);
+            if (l->styleSheet() != style) l->setStyleSheet(style);
+        }
+        if (QLabel* u = dmgUnit_[i]) u->setVisible(connected);
+        if (QLabel* st = dmgStatus_[i]) {
+            const QString status = !connected ? QStringLiteral("—")
+                : v == 0 ? QStringLiteral("Clean") : v > 20 ? QStringLiteral("Critical")
+                : QStringLiteral("Minor");
+            const QString statusStyle = connected && v > 0 ? QString("color: %1;").arg(color) : QString();
+            if (st->text() != status) st->setText(status);
+            if (st->styleSheet() != statusStyle) st->setStyleSheet(statusStyle);
+        }
+    }
+}
 
+void OverviewPage::resetLiveData() {
+    cache_ = OvCache{};
+    lastDamage_.reset();
+    haveTelemetry_ = false;
+    cardsDirty_ = damageDirty_ = true;
+    flushPending();
 }
 
 void OverviewPage::onLap(const LapRow& row) {
@@ -658,15 +733,20 @@ void OverviewPage::refreshTitles() {
 void OverviewPage::refreshCards() {
     const OvCache& c = cache_;
     static const char* FUEL_MIX[] = { "Lean", "Std", "Rich", "Max" };
+    static const QString kMissing = QStringLiteral("-");   // Electron's MISSING placeholder
     const auto haveInt = [](int value) { return value != OvCache::missingInt; };
     const auto haveFloat = [](float value) { return std::isfinite(value); };
+    const bool compact = statsDensity_ == tnr::DensityMode::Compact;
 
+    // A missing value reads "-" with no unit and the default colour.
     auto setCard = [this](const QString& key, const QString& value, const QColor& color) {
+        const bool have = value != kMissing;
         if (QLabel* l = cardValue_.value(key)) {
-            const QString style = tnr::cardColorStyle(color);
+            const QString style = tnr::cardColorStyle(have ? color : QColor());
             if (l->text() != value) l->setText(value);
             if (l->styleSheet() != style) l->setStyleSheet(style);
         }
+        if (QLabel* u = cardUnit_.value(key)) u->setVisible(have);
     };
     auto setSub = [this](const QString& key, const QString& sub, const QColor& subColor = QColor()) {
         if (QLabel* l = cardSub_.value(key)) {
@@ -677,53 +757,62 @@ void OverviewPage::refreshCards() {
         }
     };
 
-    setCard("speed", haveFloat(c.speed) ? QString::number((int)c.speed) : QStringLiteral("—"),
-            haveFloat(c.speed) ? tnr::cardColor("speed") : QColor());
-    setCard("rpm", haveInt(c.rpm) ? QLocale().toString(c.rpm) : QStringLiteral("—"),
-            haveInt(c.rpm) ? tnr::cardColor("rpm") : QColor());
-    const QString gear = !haveInt(c.gear) ? QStringLiteral("—")
+    // Until the first telemetry row every card is blank, as Electron.
+    if (!haveTelemetry_) {
+        for (auto it = cardValue_.cbegin(); it != cardValue_.cend(); ++it) {
+            setCard(it.key(), kMissing, QColor());
+            setSub(it.key(), QString());
+        }
+        return;
+    }
+
+    setCard("speed", haveFloat(c.speed) ? QString::number(qRound(c.speed)) : kMissing,
+            tnr::cardColor("speed"));
+    setCard("rpm", haveInt(c.rpm) ? QLocale().toString(c.rpm) : kMissing, tnr::cardColor("rpm"));
+    const QString gear = !haveInt(c.gear) ? kMissing
         : c.gear <= 0 ? (c.gear < 0 ? QStringLiteral("R") : QStringLiteral("N"))
                       : QString::number(c.gear);
     setCard("gear", gear, haveInt(c.gear) ? tnr::cardColor("gear", c.gear) : QColor());
-    setCard("throttle", haveFloat(c.throttle)
-            ? QString::number((int)(c.throttle * 100)) : QStringLiteral("—"),
-            haveFloat(c.throttle) ? tnr::cardColor("throttle") : QColor());
-    setCard("brake", haveFloat(c.brake)
-            ? QString::number((int)(c.brake * 100)) : QStringLiteral("—"),
-            haveFloat(c.brake)
-                ? tnr::cardColor("brake", NAN, { {"brake", c.brake} }) : QColor());
+    setCard("throttle", haveFloat(c.throttle) ? QString::number(qRound(c.throttle * 100.0f)) : kMissing,
+            tnr::cardColor("throttle"));
+    setCard("brake", haveFloat(c.brake) ? QString::number(qRound(c.brake * 100.0f)) : kMissing,
+            tnr::cardColor("brake", NAN, { {"brake", c.brake} }));
 
-    // Wing card: data field is format-aware (drs in 2025, slm in 2026).
-    const int wingValue = (tnr::Labels::instance().t("card.wing.key") == "slm") ? c.slm : c.drs;
+    // Wing card: data field is format-aware (drs in 2025, slm in 2026). Only
+    // the DRS variant carries the FAULT sub-line.
+    const bool slm = tnr::Labels::instance().t("card.wing.key") == "slm";
+    const int wingValue = slm ? c.slm : c.drs;
     const bool haveWing = haveInt(wingValue);
     const bool wingOpen = haveWing && wingValue != 0;
-    setCard("drs", haveWing ? (wingOpen ? QStringLiteral("ON") : QStringLiteral("OFF"))
-                             : QStringLiteral("—"),
+    setCard("drs", haveWing ? (wingOpen ? QStringLiteral("ON") : QStringLiteral("OFF")) : kMissing,
             haveWing ? tnr::cardColor("wing", wingOpen ? 1 : 0) : QColor());
-    const bool haveDrsFault = haveInt(c.drsFault);
-    setSub("drs", haveDrsFault && c.drsFault == 1 ? QStringLiteral("FAULT") : QString(),
-           haveDrsFault && c.drsFault == 1 ? QColor("#C4162A") : QColor());
+    const bool drsFault = !slm && haveInt(c.drsFault) && c.drsFault == 1;
+    setSub("drs", drsFault ? QStringLiteral("FAULT") : QString(),
+           drsFault ? QColor("#C4162A") : QColor());
 
-    setCard("engine", haveInt(c.engineTemp) ? QString::number(c.engineTemp) : QStringLiteral("—"),
+    setCard("engine", haveInt(c.engineTemp) ? QString::number(c.engineTemp) : kMissing,
             haveInt(c.engineTemp) ? tnr::cardColor("engine", c.engineTemp) : QColor());
 
-    setCard("ers", haveFloat(c.ersPct) ? QString::number((int)c.ersPct) : QStringLiteral("—"),
-            haveFloat(c.ersPct)
-                ? tnr::cardColor("ers", c.ersPct, { {"ers_mode", (double)c.ersMode}, {"ers_pct", c.ersPct} })
-                : QColor());
-    if (haveInt(c.ersFault) && c.ersFault == 1)
+    setCard("ers", haveFloat(c.ersPct) ? QString::number(qRound(c.ersPct)) : kMissing,
+            tnr::cardColor("ers", c.ersPct, { {"ers_mode", haveInt(c.ersMode) ? double(c.ersMode) : NAN},
+                                              {"ers_pct", c.ersPct} }));
+    if (haveInt(c.ersFault) && c.ersFault == 1) {
         setSub("ers", QStringLiteral("FAULT"), QColor("#C4162A"));
-    else
-        setSub("ers", (c.ersMode >= 0 && c.ersMode < 4) ? tnr::Ln("ers.mode", c.ersMode) : QString());
+    } else {
+        QString mode = haveInt(c.ersMode) && c.ersMode >= 0 && c.ersMode < 4
+            ? tnr::Ln("ers.mode", c.ersMode) : QString();
+        if (compact) mode.replace(QStringLiteral("Overtake"), QStringLiteral("OT"));
+        setSub("ers", mode);
+    }
 
-    setCard("fuel", haveFloat(c.fuelKg) ? QString::number(c.fuelKg, 'f', 1) : QStringLiteral("—"),
-            haveFloat(c.fuelKg) && haveFloat(c.fuelLaps)
-                ? tnr::cardColor("fuel", NAN, { {"fuel_laps", c.fuelLaps} }) : QColor());
+    setCard("fuel", haveFloat(c.fuelKg) ? QString::number(c.fuelKg, 'f', 1) : kMissing,
+            tnr::cardColor("fuel", NAN, { {"fuel_laps", c.fuelLaps} }));
     setSub("fuel", haveFloat(c.fuelLaps)
-        ? QString("%1%2 vs fin").arg(c.fuelLaps >= 0 ? "+" : "").arg(c.fuelLaps, 0, 'f', 1)
+        ? QString("%1%2%3").arg(c.fuelLaps >= 0 ? "+" : "").arg(c.fuelLaps, 0, 'f', 1)
+              .arg(compact ? QString() : QStringLiteral(" vs fin"))
         : QString());
 
-    setCard("pos", haveInt(c.pos) && c.pos > 0 ? "P" + QString::number(c.pos) : QStringLiteral("—"), QColor());
+    setCard("pos", haveInt(c.pos) && c.pos > 0 ? "P" + QString::number(c.pos) : kMissing, QColor());
     setSub("pos", haveInt(c.lapNum) && c.lapNum > 0 ? "Lap " + QString::number(c.lapNum) : QString());
 
     QColor tyreColor = haveInt(c.tyreCompound)
@@ -731,8 +820,8 @@ void OverviewPage::refreshCards() {
         : QColor();
     if (!tyreColor.isValid() && haveInt(c.visualCompound))
         tyreColor = tnr::cardColor("tyre", NAN, { {"visual_compound", (double)c.visualCompound} });
-    setCard("tyre", haveInt(c.tyreCompound) ? tyreLabel(c.tyreCompound) : QStringLiteral("—"),
-            tyreColor);
+    const QString tyre = haveInt(c.tyreCompound) ? tyreLabel(c.tyreCompound) : kMissing;
+    setCard("tyre", tyre == QStringLiteral("—") ? kMissing : tyre, tyreColor);
     setSub("tyre", haveInt(c.tyreAgeLaps)
         ? QString("%1L%2").arg(c.tyreAgeLaps)
               .arg(c.fuelMix >= 0 && c.fuelMix < 4 ? QString(" · %1").arg(FUEL_MIX[c.fuelMix]) : QString())
@@ -860,7 +949,8 @@ OverviewLayout OverviewPage::loadLayout()
     settings_.endGroup();
     settings_.beginGroup("dmgCards");
     for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
-        const bool defaultHidden = i < OverviewLayout::WingFl;   // tyre/brake row defaults hidden
+        // Electron defaults: tyre/brake damage and Sidepod hidden.
+        const bool defaultHidden = i < OverviewLayout::WingFl || i == OverviewLayout::Sidepod;
         L.dmgCards[i] = settings_.value(OverviewLayout::dmgCardKey(i), !defaultHidden).toBool();
     }
     settings_.endGroup();
@@ -908,27 +998,7 @@ void OverviewPage::applyLayout(const OverviewLayout& L)
     if (statsFrame_) statsFrame_->setVisible(anyStat);
     if (sep1_)       sep1_->setVisible(anyStat);
 
-    bool rowAVisible = false, rowBVisible = false;
-    bool anyEarlierA = false, anyEarlierB = false;
-    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
-        const bool vis = L.dmgCards[i];
-        if (dmgCardFrame_[i]) dmgCardFrame_[i]->setVisible(vis);
-        // Show a card's preceding separator only when it AND an earlier card in the
-        // same row are visible — one line between consecutive visible cards, none
-        // stranded beside a hidden one (mirrors the stat-card separator logic).
-        bool& anyEarlier = (i < OverviewLayout::WingFl) ? anyEarlierA : anyEarlierB;
-        if (dmgCardSep_[i]) dmgCardSep_[i]->setVisible(vis && anyEarlier);
-        anyEarlier = anyEarlier || vis;
-        if (i < OverviewLayout::WingFl) rowAVisible = rowAVisible || vis;
-        else                            rowBVisible = rowBVisible || vis;
-    }
-    // A row whose cards are all hidden collapses entirely (rather than leaving
-    // an empty 60px bar) so the chart's stretch factor can expand into the space.
-    if (dmgRowA_) dmgRowA_->setVisible(rowAVisible);
-    if (dmgRowB_) dmgRowB_->setVisible(rowBVisible);
-    if (dmgHdiv_) dmgHdiv_->setVisible(rowAVisible && rowBVisible);
-    if (dmgFrame_) dmgFrame_->setVisible(rowAVisible || rowBVisible);
-    if (sep2_)     sep2_->setVisible(rowAVisible || rowBVisible);
+    layoutDamageCards(L);
 
     // Toggle the chart's wrapper (its parent) so hiding it collapses the row
     // instead of leaving the inset wrapper as an empty stretched gap.

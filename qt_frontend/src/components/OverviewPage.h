@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QSettings>
 #include <QPointer>
+#include <QVector>
 
 #include <optional>
 #include <limits>
@@ -42,6 +43,9 @@ public:
     void onStatus(const StatusRow& row);
     void onDamage(const DamageRow& row);
     void onLap(const LapRow& row);
+    // Drop the cached card values (playback open/close, session end) so the
+    // cards return to Electron's no-data "-" state until telemetry resumes.
+    void resetLiveData();
     void flushPending();
 
     // Refresh the per-corner tyre cards from the latest telemetry + damage rows
@@ -87,6 +91,7 @@ protected:
 private:
     void refreshCards();   // recompute value + colour for every built card
     void refreshDamage();
+    void layoutDamageCards(const OverviewLayout& layout);   // flow visible cards into 1–2 rows
     void refreshTelemetryTable();   // repopulate the Speed/RPM/ERS raw-values table
     void buildStatCards();     // (re)populate the stats row with cards at the current density
     void buildDamageCards();   // (re)populate both damage rows at the current density
@@ -99,6 +104,7 @@ private:
     QHash<QString, QLabel*> cardValue_;
     QHash<QString, QLabel*> cardSub_;
     QHash<QString, QLabel*> cardTitle_;
+    QHash<QString, QLabel*> cardUnit_;   // hidden while the value is missing, as Electron
     // Latest values the card resolvers read; updated per row by the on*()
     // methods, then refreshCards() recomputes every visible card.
     struct OvCache {
@@ -115,6 +121,9 @@ private:
         int pos = missingInt; int lapNum = missingInt;
     } cache_;
     std::optional<DamageRow> lastDamage_;   // last damage row, replayed after a compact rebuild
+    // Electron's "connected" state: a telemetry row has arrived since the last
+    // reset. Until then every stat card reads "-" and damage cards read "—".
+    bool haveTelemetry_ = false;
     bool cardsDirty_ = true;
     bool damageDirty_ = false;
     tnr::DensityMode statsDensity_ = tnr::DensityMode::Normal;
@@ -136,8 +145,8 @@ private:
     QFrame*         sep1_        = nullptr;   // separator below the stats row
     QFrame*         sep2_        = nullptr;   // separator above the damage rows
     QFrame*         dmgFrame_    = nullptr;   // damage rows container; hidden if both rows are hidden
-    QFrame*         dmgRowA_     = nullptr;   // tyre/brake damage row
-    QFrame*         dmgRowB_     = nullptr;   // wing/body damage row
+    QFrame*         dmgRowA_     = nullptr;   // first damage row (all cards when 8 or fewer)
+    QFrame*         dmgRowB_     = nullptr;   // second damage row (only when more than 8)
     QFrame*         dmgHdiv_     = nullptr;   // separator between the two damage rows
     // Tyre section
     QFrame*           tyreSep_    = nullptr;
@@ -148,18 +157,13 @@ private:
     // card's flanking separators can be hidden too — otherwise they stack into a
     // double line between the surrounding visible cards.
     QFrame*         statCardSep_[OverviewLayout::StatCardCount]   = {};
+    // Damage cards, indexed by OverviewLayout::DmgCard. Separators are rebuilt
+    // whenever the visible set reflows (see layoutDamageCards).
     QFrame*         dmgCardFrame_[OverviewLayout::DmgCardCount]   = {};
-    // Separator preceding each damage card (first card of each row has none), so a
-    // hidden card's separator is hidden too instead of stacking into a cluster.
-    QFrame*         dmgCardSep_[OverviewLayout::DmgCardCount]     = {};
-    QLabel*         dmgTyreFl   = nullptr; QLabel* dmgTyreFr  = nullptr;
-    QLabel*         dmgTyreRl   = nullptr; QLabel* dmgTyreRr  = nullptr;
-    QLabel*         dmgBrakeFl  = nullptr; QLabel* dmgBrakeFr = nullptr;
-    QLabel*         dmgBrakeRl  = nullptr; QLabel* dmgBrakeRr = nullptr;
-    QLabel*         dmgWingFl   = nullptr; QLabel* dmgWingFr  = nullptr;
-    QLabel*         dmgWingRear = nullptr; QLabel* dmgFloor   = nullptr;
-    QLabel*         dmgSidepod  = nullptr; QLabel* dmgDiffuser = nullptr;
-    QLabel*         dmgGearbox  = nullptr; QLabel* dmgEngine   = nullptr;
+    QLabel*         dmgValue_[OverviewLayout::DmgCardCount]       = {};
+    QLabel*         dmgUnit_[OverviewLayout::DmgCardCount]        = {};
+    QLabel*         dmgStatus_[OverviewLayout::DmgCardCount]      = {};   // Spacious only
+    QVector<QFrame*> dmgSeps_;
 
     QSettings settings_{ "TrackNRace", "NativeRecorder" };
 };

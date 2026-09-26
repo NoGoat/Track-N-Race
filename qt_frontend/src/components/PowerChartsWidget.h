@@ -70,6 +70,7 @@ private:
     int storeId_     = -1;
     int fuelId_      = -1;
     int harvYId_     = -1;   // harvest Y axis, retargeted by applyHarvestScale
+    int fuelYId_     = -1;   // fuel Y axis, sized to the session's fuel upper limit
     int splitIceRefId_ = -1;
     int splitMgukRefId_ = -1;
     int harvKRefId_ = -1;

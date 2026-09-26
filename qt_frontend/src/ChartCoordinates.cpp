@@ -39,7 +39,10 @@ ChartDomain resolveChartDomain(const SessionData& data, ChartWindow window,
 
     out.distance = true;
     out.primary = primaryLap;
-    if (!out.primary || out.primary->progress.isEmpty()) {
+    // Like Electron, a lap-relative window stays on the lap-distance axis even
+    // while the current lap has no progress yet (e.g. just across the line);
+    // only a missing lap falls back to a time window.
+    if (!out.primary) {
         out.window = ChartWindow::Seconds30;
         out.distance = false;
         out.lower = qMax(0.0, currentTime - 30.0);

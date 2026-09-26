@@ -75,6 +75,7 @@ set(SOURCES
     src/UpdateChecker.h
     src/CompactSettings.h
     src/GraphViewSettings.h
+    src/ChartWindowCombo.h
     src/BreezePalette.cpp
     src/BreezePalette.h
     src/TnrdPlayer.cpp

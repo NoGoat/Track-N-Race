@@ -279,7 +279,7 @@ QWidget* SettingsDialog::buildPairingPage() {
         "Let Android displays discover this computer and receive decoded "
         "telemetry over the local network.", page);
     description->setWordWrap(true);
-    description->setStyleSheet("color: palette(mid);");
+    description->setStyleSheet("color: palette(placeholder-text);");
     layout->addWidget(description);
 
     pairingContent_ = new QWidget(page);
@@ -420,7 +420,7 @@ void SettingsDialog::refreshPairingUi() {
                 device.name.isEmpty() ? QStringLiteral("Android display") : device.name);
             auto* status = new QTableWidgetItem(device.connected ? "●  Connected" : "●  Offline");
             status->setForeground(device.connected ? QColor("#4ade80")
-                                                   : palette().color(QPalette::Mid));
+                                                   : palette().color(QPalette::PlaceholderText));
             pairingDevicesTable_->setItem(row, 0, name);
             pairingDevicesTable_->setItem(row, 1, status);
             auto* remove = new QPushButton("Remove", pairingDevicesTable_);
@@ -959,7 +959,7 @@ QWidget* SettingsDialog::buildTeamColorsPage() {
     auto* description = new QLabel(
         QStringLiteral("Choose constructor presets, custom fixed colors, or game "
                        "livery colors for supported formats."), headingText);
-    description->setStyleSheet(QStringLiteral("color:palette(mid);"));
+    description->setStyleSheet(QStringLiteral("color:palette(placeholder-text);"));
     headingLayout->addWidget(heading);
     headingLayout->addWidget(description);
     headingRow->addWidget(headingText, 1);
@@ -1081,7 +1081,7 @@ void SettingsDialog::refreshTeamColorRows() {
         auto* unavailable = new QLabel(QStringLiteral("Team color catalog unavailable."),
                                        teamColorRows_);
         unavailable->setAlignment(Qt::AlignCenter);
-        unavailable->setStyleSheet(QStringLiteral("color:palette(mid);padding:36px;"));
+        unavailable->setStyleSheet(QStringLiteral("color:palette(placeholder-text);padding:36px;"));
         teamColorRowsLayout_->addWidget(unavailable);
         teamColorRowsLayout_->addStretch(1);
         return;
@@ -1170,7 +1170,7 @@ void SettingsDialog::refreshTeamColorRows() {
             auto* preset = new QLabel(
                 useLivery ? QStringLiteral("Uses each car's game livery color")
                           : QStringLiteral("Preset %1").arg(team.color), row);
-            preset->setStyleSheet(QStringLiteral("color:palette(mid);font-size:10px;"));
+            preset->setStyleSheet(QStringLiteral("color:palette(placeholder-text);font-size:10px;"));
             rowLayout->addWidget(name, 0, 0);
             rowLayout->addWidget(preset, 1, 0);
             rowLayout->setColumnStretch(0, 1);
@@ -1906,7 +1906,7 @@ QWidget* SettingsDialog::buildDebugPage() {
         heading->setFont(headingFont);
         auto* detail = new QLabel(description, text);
         detail->setWordWrap(true);
-        detail->setStyleSheet(QStringLiteral("color:palette(mid);"));
+        detail->setStyleSheet(QStringLiteral("color:palette(placeholder-text);"));
         textLayout->addWidget(heading);
         textLayout->addWidget(detail);
         if (!warning.isEmpty()) {

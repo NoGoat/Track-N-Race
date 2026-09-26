@@ -6,6 +6,7 @@
 
 #include <limits>
 #include <optional>
+#include <vector>
 
 #include <tnrp/AnyRow.h>
 
@@ -26,11 +27,19 @@ struct PlaybackDecodedRow {
 class PlaybackPatchMerger {
 public:
     std::optional<PlaybackDecodedRow> decode(const QByteArray& json);
+    // Merges one already-parsed row without re-serialising it: a V6 patch
+    // (with _v6_type) returns the merged state of its row type and sets
+    // *sparse; any other row is returned unchanged.
+    QJsonObject mergeObject(const QJsonObject& row, bool* sparse);
     void clear() { states_.clear(); }
 
 private:
     QHash<QString, QJsonObject> states_;
 };
+
+// The fields one TNRD V6 data type carries (Electron's V6_PATCH_FIELDS). An
+// `available:false` sample of that type withdraws exactly these fields.
+std::vector<const char*> playbackPatchFields(int v6Type);
 
 bool playbackFieldAvailable(const QJsonObject* object, const char* field);
 bool playbackCarFieldAvailable(const QJsonObject* object, int carIndex,

@@ -2,16 +2,19 @@
 #include "PlaybackPatchMerger.h"
 
 #include <QMetaObject>
+#include <QtEndian>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 
 #include <algorithm>
+#include <iterator>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 #include <tnrp/AnyRow.h>
 #include <tnrp/BinaryRows.h>
@@ -91,6 +94,59 @@ void appendHistoryRow(PlaybackHistoryBatch& batch, const tnrp::AnyRow& row,
     }
 }
 
+// Object counterpart of appendHistoryRow for already-parsed JSON (indexed lap
+// reads). A missing field reads as the typed path would: NaN / missing-int for
+// a V6 patch state, the row struct's zero default for a complete legacy row.
+void appendHistoryObject(PlaybackHistoryBatch& batch, const QJsonObject& row, bool sparse) {
+    auto& data = batch.data;
+    const QString type = row.value(QStringLiteral("type")).toString();
+    const float t = static_cast<float>(row.value(QStringLiteral("session_time")).toDouble());
+    const float absent = sparse ? std::numeric_limits<float>::quiet_NaN() : 0.0f;
+    const auto num = [&row, absent](const char* field) {
+        const QJsonValue value = row.value(QLatin1String(field));
+        return value.isDouble() ? static_cast<float>(value.toDouble()) : absent;
+    };
+    const auto integer = [&row, sparse](const char* field) {
+        const QJsonValue value = row.value(QLatin1String(field));
+        return value.isDouble() ? value.toInt() : sparse ? kPlaybackMissingInt : 0;
+    };
+    if (type == QLatin1String("telemetry")) {
+        replaceSameTimestamp(data.telBuf, t, sparse);
+        replaceSameTimestamp(data.tyreBuf, t, sparse);
+        data.onTelemetry(t, num("speed_kph"), num("rpm"), num("gear"),
+                         num("throttle"), num("brake"), num("steering"));
+        data.onTyre(t,
+            num("tyre_temp_surface_fl"), num("tyre_temp_surface_fr"),
+            num("tyre_temp_surface_rl"), num("tyre_temp_surface_rr"),
+            num("tyre_temp_inner_fl"), num("tyre_temp_inner_fr"),
+            num("tyre_temp_inner_rl"), num("tyre_temp_inner_rr"),
+            num("brake_temp_fl"), num("brake_temp_fr"),
+            num("brake_temp_rl"), num("brake_temp_rr"),
+            0.0f, 0.0f, 0.0f, 0.0f);
+    } else if (type == QLatin1String("status")) {
+        replaceSameTimestamp(data.stsBuf, t, sparse);
+        data.onStatus(t, num("ers_pct"), num("fuel_kg"), num("engine_power_ice_kw"),
+                      num("engine_power_mguk_kw"), num("ers_harvested_mguk_j"),
+                      num("ers_harvested_mguh_j"), integer("tyre_compound"),
+                      integer("visual_compound"), integer("tyre_age_laps"));
+    } else if (type == QLatin1String("damage")) {
+        replaceSameTimestamp(data.damageBuf, t, sparse);
+        data.onDamage(t, num("tyre_wear_fl"), num("tyre_wear_fr"),
+                      num("tyre_wear_rl"), num("tyre_wear_rr"));
+    } else if (type == QLatin1String("lap")) {
+        replaceSameTimestamp(batch.progress, t, sparse);
+        batch.progress.push_back({t, integer("current_lap_ms"), num("lap_distance_m"),
+                                  integer("sector")});
+        data.latestTime = std::max(data.latestTime, t);
+    } else if (type == QLatin1String("motion")) {
+        replaceSameTimestamp(data.motionBuf, t, sparse);
+        data.onMotion(t, num("g_lat"), num("g_long"));
+    } else if (type == QLatin1String("motion_ex")) {
+        replaceSameTimestamp(data.motionExBuf, t, sparse);
+        data.onMotionEx(t, num("front_aero_height_mm"), num("rear_aero_height_mm"));
+    }
+}
+
 template <typename T>
 void sortAndCap(QVector<T>& rows) {
     std::stable_sort(rows.begin(), rows.end(),
@@ -130,10 +186,322 @@ void buildLapDetails(PlaybackHistoryBatch& batch,
     }
 }
 
+// ── TNRD V6 columnar history (Config::columnarV6History) ─────────────────────
+// Qt port of Electron's decodeV6History (renderer/src/lib/columnStore.ts). The
+// payload is the library's 'V6H1' block format (TnrdV6Archive::columnarHistory):
+//   u32 magic, u32 v4Mask, u32 blockCount; per block: u8 v6Type, u8 reserved,
+//   u16 fieldCount, u32 rowCount, f32[rowCount] times, then per field
+//   u8 nameLength, name, u8 kind (0 f32, 1 f64, 2 i32, 3 bool), u8 dense,
+//   presence bitmap when sparse, one value per present row.
+// Each row family's blocks are merged by time exactly as the JSON path merged
+// the equivalent V6 patches, but without any JSON.
+constexpr uint32_t kV6HistoryMagic = 0x31483656u;   // 'V6H1'
+
+enum class V6Family { None, Telemetry, Status, Damage, Lap, Motion, MotionEx };
+
+V6Family v6FieldFamily(int type, std::string_view field) {
+    if (type == 7) return field == "drs_allowed" ? V6Family::Status : V6Family::Telemetry;
+    if (type == 13) return field == "sets" || field == "fitted_idx" ? V6Family::None : V6Family::Status;
+    if (type >= 1 && type <= 11) return V6Family::Telemetry;
+    if (type == 12 || type == 14) return V6Family::Damage;
+    if (type >= 15 && type <= 20) return V6Family::Status;
+    if (type == 21) return V6Family::Motion;
+    if (type == 22) return V6Family::MotionEx;
+    if (type == 24) return V6Family::Lap;
+    return V6Family::None;
+}
+
+uint32_t v6FamilyBit(V6Family family) {
+    switch (family) {
+        case V6Family::Telemetry: return 1u << 1;
+        case V6Family::Status:    return 1u << 2;
+        case V6Family::Damage:    return 1u << 3;
+        case V6Family::Lap:       return 1u << 4;
+        case V6Family::Motion:    return 1u << 11;
+        case V6Family::MotionEx:  return 1u << 12;
+        default:                  return 0;
+    }
+}
+
+struct V6HistoryField { std::string name; std::vector<double> values; };   // NaN = absent
+struct V6HistoryBlock {
+    int type = 0;
+    std::vector<float> time;
+    std::vector<V6HistoryField> fields;
+    std::vector<double> available;   // empty when the block has no availability column
+};
+
+bool isV6HistoryPayload(const uint8_t* data, size_t length) {
+    return data && length >= 12 && qFromLittleEndian<quint32>(data) == kV6HistoryMagic;
+}
+
+bool parseV6History(const uint8_t* data, size_t length, uint32_t& mask,
+                    std::vector<V6HistoryBlock>& blocks) {
+    size_t at = 0;
+    const auto need = [&](size_t n) { return at + n <= length; };
+    if (!need(12) || qFromLittleEndian<quint32>(data) != kV6HistoryMagic) return false;
+    mask = qFromLittleEndian<quint32>(data + 4);
+    const quint32 blockCount = qFromLittleEndian<quint32>(data + 8);
+    at = 12;
+    constexpr double nan = std::numeric_limits<double>::quiet_NaN();
+    blocks.reserve(blockCount);
+    for (quint32 b = 0; b < blockCount; ++b) {
+        if (!need(8)) return false;
+        V6HistoryBlock block;
+        block.type = data[at];
+        const quint16 fieldCount = qFromLittleEndian<quint16>(data + at + 2);
+        const quint32 rows = qFromLittleEndian<quint32>(data + at + 4);
+        at += 8;
+        if (!need(size_t(rows) * 4)) return false;
+        block.time.resize(rows);
+        for (quint32 r = 0; r < rows; ++r, at += 4) {
+            const quint32 bits = qFromLittleEndian<quint32>(data + at);
+            std::memcpy(&block.time[r], &bits, sizeof(float));
+        }
+        for (quint16 f = 0; f < fieldCount; ++f) {
+            if (!need(1)) return false;
+            const size_t nameLength = data[at++];
+            if (!need(nameLength + 2)) return false;
+            std::string name(reinterpret_cast<const char*>(data + at), nameLength);
+            at += nameLength;
+            const uint8_t kind = data[at++];
+            const bool dense = data[at++] != 0;
+            const uint8_t* present = nullptr;
+            if (!dense) {
+                const size_t bitmapBytes = (size_t(rows) + 7) / 8;
+                if (!need(bitmapBytes)) return false;
+                present = data + at;
+                at += bitmapBytes;
+            }
+            const size_t width = kind == 1 ? 8 : kind == 3 ? 1 : 4;
+            std::vector<double> values(rows, nan);
+            for (quint32 r = 0; r < rows; ++r) {
+                if (present && !((present[r >> 3] >> (r & 7)) & 1)) continue;
+                if (!need(width)) return false;
+                switch (kind) {
+                    case 0: { const quint32 v = qFromLittleEndian<quint32>(data + at);
+                              float x; std::memcpy(&x, &v, sizeof x); values[r] = x; break; }
+                    case 1: { const quint64 v = qFromLittleEndian<quint64>(data + at);
+                              double x; std::memcpy(&x, &v, sizeof x); values[r] = x; break; }
+                    case 2: values[r] = qFromLittleEndian<qint32>(data + at); break;
+                    default: values[r] = data[at]; break;
+                }
+                at += width;
+            }
+            if (name == "available") block.available = std::move(values);
+            else block.fields.push_back({std::move(name), std::move(values)});
+        }
+        blocks.push_back(std::move(block));
+    }
+    return true;
+}
+
+// One family's merged table: union of its blocks' times with every field
+// carried forward (Electron's decodeV6HistoryInner).
+struct V6FamilyTable {
+    std::vector<float> time;
+    std::vector<std::string> names;
+    std::vector<std::vector<double>> columns;   // [field][row]
+    double at(const std::vector<double>* column, size_t row) const {
+        return column ? (*column)[row] : std::numeric_limits<double>::quiet_NaN();
+    }
+    const std::vector<double>* column(std::string_view name) const {
+        for (size_t i = 0; i < names.size(); ++i) if (names[i] == name) return &columns[i];
+        return nullptr;
+    }
+};
+
+bool mergeV6Family(const std::vector<V6HistoryBlock>& blocks, V6Family family, V6FamilyTable& out) {
+    struct Track { const V6HistoryBlock* block; std::vector<int> fieldSlots; std::vector<int> dropSlots; };
+    std::vector<Track> tracks;
+    std::vector<std::string>& names = out.names;
+    const auto slotOf = [&names](const std::string& name, bool create) -> int {
+        for (size_t i = 0; i < names.size(); ++i) if (names[i] == name) return int(i);
+        if (!create) return -1;
+        names.push_back(name);
+        return int(names.size()) - 1;
+    };
+    for (const V6HistoryBlock& block : blocks) {
+        const std::vector<const char*> patchFields = playbackPatchFields(block.type);
+        bool any = false;
+        for (const V6HistoryField& field : block.fields)
+            if (v6FieldFamily(block.type, field.name) == family) { any = true; break; }
+        const bool availabilityOnly = !any && !block.available.empty() && !patchFields.empty() &&
+            v6FieldFamily(block.type, patchFields.front()) == family;
+        if (!any && !availabilityOnly) continue;
+        Track track{&block, {}, {}};
+        for (const V6HistoryField& field : block.fields)
+            track.fieldSlots.push_back(v6FieldFamily(block.type, field.name) == family
+                ? slotOf(field.name, true) : -1);
+        tracks.push_back(std::move(track));
+    }
+    if (tracks.empty()) return false;
+    // Withdrawal targets are resolved once every field slot exists.
+    for (Track& track : tracks)
+        for (const char* name : playbackPatchFields(track.block->type))
+            if (v6FieldFamily(track.block->type, name) == family)
+                if (const int slot = slotOf(name, false); slot >= 0) track.dropSlots.push_back(slot);
+
+    std::vector<float>& times = out.time;
+    for (const Track& track : tracks) {
+        std::vector<float> merged;
+        merged.reserve(times.size() + track.block->time.size());
+        std::merge(times.begin(), times.end(), track.block->time.begin(), track.block->time.end(),
+                   std::back_inserter(merged));
+        merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+        times.swap(merged);
+    }
+    const size_t rows = times.size();
+    constexpr double nan = std::numeric_limits<double>::quiet_NaN();
+    out.columns.assign(names.size(), std::vector<double>(rows, nan));
+    std::vector<double> state(names.size(), nan);
+    std::vector<size_t> cursors(tracks.size(), 0);
+    for (size_t r = 0; r < rows; ++r) {
+        const float t = times[r];
+        for (size_t k = 0; k < tracks.size(); ++k) {
+            const Track& track = tracks[k];
+            const V6HistoryBlock& block = *track.block;
+            size_t p = cursors[k];
+            while (p < block.time.size() && block.time[p] <= t) {
+                if (!block.available.empty() && block.available[p] == 0.0)
+                    for (const int slot : track.dropSlots) state[size_t(slot)] = nan;
+                for (size_t f = 0; f < block.fields.size(); ++f) {
+                    const int slot = track.fieldSlots[f];
+                    const double value = block.fields[f].values[p];
+                    if (slot >= 0 && value == value) state[size_t(slot)] = value;
+                }
+                ++p;
+            }
+            cursors[k] = p;
+        }
+        for (size_t c = 0; c < state.size(); ++c) out.columns[c][r] = state[c];
+    }
+    return true;
+}
+
+int missingInt(double value) {
+    return std::isfinite(value) ? static_cast<int>(value) : kPlaybackMissingInt;
+}
+
+// Fills the batch's buffers from a V6H1 payload. Returns false when the bytes
+// are not a valid payload (the caller then leaves the batch empty).
+bool decodeColumnarHistory(PlaybackHistoryBatch& batch, const uint8_t* data, size_t length) {
+    uint32_t mask = 0;
+    std::vector<V6HistoryBlock> blocks;
+    if (!parseV6History(data, length, mask, blocks)) return false;
+    auto& out = batch.data;
+    const auto f = [](double value) { return static_cast<float>(value); };
+    for (V6Family family : {V6Family::Telemetry, V6Family::Status, V6Family::Damage,
+                            V6Family::Lap, V6Family::Motion, V6Family::MotionEx}) {
+        if (!(mask & v6FamilyBit(family))) continue;
+        V6FamilyTable table;
+        if (!mergeV6Family(blocks, family, table)) continue;
+        const size_t rows = table.time.size();
+        const auto col = [&table](std::string_view name) { return table.column(name); };
+        switch (family) {
+            case V6Family::Telemetry: {
+                const auto *speed = col("speed_kph"), *rpm = col("rpm"), *gear = col("gear"),
+                           *throttle = col("throttle"), *brake = col("brake"), *steering = col("steering");
+                const std::vector<double>* temps[12] = {
+                    col("tyre_temp_surface_fl"), col("tyre_temp_surface_fr"),
+                    col("tyre_temp_surface_rl"), col("tyre_temp_surface_rr"),
+                    col("tyre_temp_inner_fl"), col("tyre_temp_inner_fr"),
+                    col("tyre_temp_inner_rl"), col("tyre_temp_inner_rr"),
+                    col("brake_temp_fl"), col("brake_temp_fr"),
+                    col("brake_temp_rl"), col("brake_temp_rr") };
+                out.telBuf.reserve(out.telBuf.size() + qsizetype(rows));
+                out.tyreBuf.reserve(out.tyreBuf.size() + qsizetype(rows));
+                for (size_t r = 0; r < rows; ++r) {
+                    const float t = table.time[r];
+                    out.onTelemetry(t, f(table.at(speed, r)), f(table.at(rpm, r)), f(table.at(gear, r)),
+                                    f(table.at(throttle, r)), f(table.at(brake, r)),
+                                    f(table.at(steering, r)));
+                    out.onTyre(t, f(table.at(temps[0], r)), f(table.at(temps[1], r)),
+                               f(table.at(temps[2], r)), f(table.at(temps[3], r)),
+                               f(table.at(temps[4], r)), f(table.at(temps[5], r)),
+                               f(table.at(temps[6], r)), f(table.at(temps[7], r)),
+                               f(table.at(temps[8], r)), f(table.at(temps[9], r)),
+                               f(table.at(temps[10], r)), f(table.at(temps[11], r)),
+                               0.0f, 0.0f, 0.0f, 0.0f);
+                }
+                break;
+            }
+            case V6Family::Status: {
+                const auto *ers = col("ers_pct"), *fuel = col("fuel_kg"),
+                           *ice = col("engine_power_ice_kw"), *mguk = col("engine_power_mguk_kw"),
+                           *harvestK = col("ers_harvested_mguk_j"), *harvestH = col("ers_harvested_mguh_j"),
+                           *compound = col("tyre_compound"), *visual = col("visual_compound"),
+                           *age = col("tyre_age_laps");
+                out.stsBuf.reserve(out.stsBuf.size() + qsizetype(rows));
+                for (size_t r = 0; r < rows; ++r)
+                    out.onStatus(table.time[r], f(table.at(ers, r)), f(table.at(fuel, r)),
+                                 f(table.at(ice, r)), f(table.at(mguk, r)),
+                                 f(table.at(harvestK, r)), f(table.at(harvestH, r)),
+                                 missingInt(table.at(compound, r)), missingInt(table.at(visual, r)),
+                                 missingInt(table.at(age, r)));
+                break;
+            }
+            case V6Family::Damage: {
+                const auto *fl = col("tyre_wear_fl"), *fr = col("tyre_wear_fr"),
+                           *rl = col("tyre_wear_rl"), *rr = col("tyre_wear_rr");
+                out.damageBuf.reserve(out.damageBuf.size() + qsizetype(rows));
+                for (size_t r = 0; r < rows; ++r)
+                    out.onDamage(table.time[r], f(table.at(fl, r)), f(table.at(fr, r)),
+                                 f(table.at(rl, r)), f(table.at(rr, r)));
+                break;
+            }
+            case V6Family::Lap: {
+                const auto *current = col("current_lap_ms"), *distance = col("lap_distance_m"),
+                           *sector = col("sector");
+                batch.progress.reserve(batch.progress.size() + qsizetype(rows));
+                for (size_t r = 0; r < rows; ++r) {
+                    batch.progress.push_back({table.time[r], missingInt(table.at(current, r)),
+                                              f(table.at(distance, r)), missingInt(table.at(sector, r))});
+                    out.latestTime = std::max(out.latestTime, table.time[r]);
+                }
+                break;
+            }
+            case V6Family::Motion: {
+                const auto *lat = col("g_lat"), *lon = col("g_long");
+                out.motionBuf.reserve(out.motionBuf.size() + qsizetype(rows));
+                for (size_t r = 0; r < rows; ++r)
+                    out.onMotion(table.time[r], f(table.at(lat, r)), f(table.at(lon, r)));
+                break;
+            }
+            case V6Family::MotionEx: {
+                const auto *front = col("front_aero_height_mm"), *rear = col("rear_aero_height_mm");
+                out.motionExBuf.reserve(out.motionExBuf.size() + qsizetype(rows));
+                for (size_t r = 0; r < rows; ++r)
+                    out.onMotionEx(table.time[r], f(table.at(front, r)), f(table.at(rear, r)));
+                break;
+            }
+            default: break;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 TnrdPlayer::TnrdPlayer(tnrp::Engine* engine, QObject* parent)
-    : QObject(parent), engine_(engine), worker_(&TnrdPlayer::workerLoop, this) {}
+    : QObject(parent), engine_(engine) {
+    for (int lane = 0; lane < LaneCount; ++lane)
+        lanes_[lane].thread = std::thread(&TnrdPlayer::workerLoop, this, lane);
+}
+
+TnrdPlayer::Lane TnrdPlayer::laneOf(WorkKind kind) {
+    switch (kind) {
+        case WorkKind::LapData:
+        case WorkKind::AnalysisLapData:
+            return ReadLane;
+        case WorkKind::SeekDecode:
+        case WorkKind::RequirementsDecode:
+        case WorkKind::LapDataDecode:
+            return DecodeLane;
+        default:
+            return CommandLane;
+    }
+}
 
 TnrdPlayer::~TnrdPlayer() { shutdown(); }
 
@@ -154,8 +522,11 @@ void TnrdPlayer::setEngine(tnrp::Engine* engine) {
 
 void TnrdPlayer::quiesce() {
     std::unique_lock lock(workMutex_);
-    work_.clear();
-    idleCv_.wait(lock, [this] { return !workerActive_; });
+    for (LaneState& lane : lanes_) lane.work.clear();
+    idleCv_.wait(lock, [this] {
+        return std::none_of(std::begin(lanes_), std::end(lanes_),
+                            [](const LaneState& lane) { return lane.active; });
+    });
 }
 
 void TnrdPlayer::shutdown() {
@@ -163,10 +534,11 @@ void TnrdPlayer::shutdown() {
         std::lock_guard lock(workMutex_);
         if (stopping_) return;
         stopping_ = true;
-        work_.clear();
+        for (LaneState& lane : lanes_) lane.work.clear();
     }
     workCv_.notify_all();
-    if (worker_.joinable()) worker_.join();
+    for (LaneState& lane : lanes_)
+        if (lane.thread.joinable()) lane.thread.join();
     engine_.store(nullptr, std::memory_order_release);
 }
 
@@ -174,48 +546,53 @@ void TnrdPlayer::post(WorkKind kind, std::function<void()> work, bool replacePen
     {
         std::lock_guard lock(workMutex_);
         if (stopping_) return;
+        // Supersession spans lanes: a new seek also drops a pending decode of
+        // an older seek, and load/close empty every lane.
         if (replacePending) {
-            if (kind == WorkKind::Close || kind == WorkKind::Load) {
-                work_.clear();
-            } else if (kind == WorkKind::Driver) {
-                std::erase_if(work_, [](const WorkItem& item) {
-                    return item.kind == WorkKind::Driver ||
-                           item.kind == WorkKind::Seek ||
-                           item.kind == WorkKind::SeekDecode;
-                });
-            } else {
-                std::erase_if(work_, [kind](const WorkItem& item) {
-                    return item.kind == kind ||
-                        (kind == WorkKind::Seek && item.kind == WorkKind::SeekDecode);
-                });
+            for (LaneState& lane : lanes_) {
+                if (kind == WorkKind::Close || kind == WorkKind::Load) {
+                    lane.work.clear();
+                } else if (kind == WorkKind::Driver) {
+                    std::erase_if(lane.work, [](const WorkItem& item) {
+                        return item.kind == WorkKind::Driver ||
+                               item.kind == WorkKind::Seek ||
+                               item.kind == WorkKind::SeekDecode;
+                    });
+                } else {
+                    std::erase_if(lane.work, [kind](const WorkItem& item) {
+                        return item.kind == kind ||
+                            (kind == WorkKind::Seek && item.kind == WorkKind::SeekDecode);
+                    });
+                }
             }
         }
-        work_.push_back({kind, std::move(work)});
+        lanes_[laneOf(kind)].work.push_back({kind, std::move(work)});
     }
-    workCv_.notify_one();
+    workCv_.notify_all();
 }
 
-void TnrdPlayer::workerLoop() {
+void TnrdPlayer::workerLoop(int laneIndex) {
+    LaneState& lane = lanes_[laneIndex];
     for (;;) {
         WorkItem item;
         {
             std::unique_lock lock(workMutex_);
-            workCv_.wait(lock, [this] { return stopping_ || !work_.empty(); });
+            workCv_.wait(lock, [this, &lane] { return stopping_ || !lane.work.empty(); });
             if (stopping_) break;
-            item = std::move(work_.front());
-            work_.pop_front();
-            workerActive_ = true;
+            item = std::move(lane.work.front());
+            lane.work.pop_front();
+            lane.active = true;
         }
         item.run();
         {
             std::lock_guard lock(workMutex_);
-            workerActive_ = false;
+            lane.active = false;
         }
         idleCv_.notify_all();
     }
     {
         std::lock_guard lock(workMutex_);
-        workerActive_ = false;
+        lane.active = false;
     }
     idleCv_.notify_all();
 }
@@ -275,11 +652,12 @@ void TnrdPlayer::close() {
 void TnrdPlayer::seek(float pct) {
     tnrp::Engine* engine = engine_.load(std::memory_order_acquire);
     if (!engine || !loaded_) return;
-    resumeAfterSeek_ = resumeAfterSeek_ || playing_;
-    if (playing_) engine->playerPause();
-    const uint64_t requirementsId =
-        latestRequirementsRequest_.fetch_add(1, std::memory_order_acq_rel) + 1;
-    engine->requestDataRequirements(requirementsId);
+    // Like Electron, a seek does not pause playback: the engine keeps its
+    // clock, and MainWindow's seek barrier drops old-cursor rows and holds the
+    // new cursor's rows until this seek's history has been installed. Nor does
+    // it re-apply the data requirements: Engine::setDataRequirements re-primes
+    // the playback cursor at the *current* (pre-seek) time, which is pure waste
+    // immediately before playerSeek primes it at the target.
     const uint64_t requestId = latestSeekRequest_.fetch_add(1, std::memory_order_acq_rel) + 1;
     engine->playerRequestSeek(requestId);
     emit seekStarted(requestId);
@@ -287,16 +665,9 @@ void TnrdPlayer::seek(float pct) {
     const uint32_t mask = historyMask_;
     const float window = historyWindowSeconds_ < 0.0f ? 0.0f : historyWindowSeconds_;
     const bool allHistory = historyWindowSeconds_ < 0.0f;
-    const uint32_t streamMask = streamMask_;
-    const uint32_t historyMask = historyMask_;
-    const float requirementWindow = historyWindowSeconds_;
-    post(WorkKind::Seek, [this, pct, requestId, mask, window, allHistory,
-                          requirementsId, streamMask, historyMask, requirementWindow] {
-        if (auto* current = engine_.load(std::memory_order_acquire)) {
-            current->setDataRequirements(streamMask, historyMask,
-                                         requirementWindow, requirementsId);
+    post(WorkKind::Seek, [this, pct, requestId, mask, window, allHistory] {
+        if (auto* current = engine_.load(std::memory_order_acquire))
             current->playerSeek(pct, allHistory, requestId, mask, window);
-        }
     }, true);
 }
 
@@ -317,46 +688,43 @@ void TnrdPlayer::selectDriver(int driverIndex, bool useRecordedRows) {
     // Electron changes the engine projection first and then seeks back to the
     // current percentage. Keep that ordering in one worker item so rapid
     // selections cannot interleave a driver change with another cursor rebuild.
-    resumeAfterSeek_ = resumeAfterSeek_ || playing_;
-    if (playing_) engine->playerPause();
+    // As with seek(), playback is not paused around the rebuild.
     const float duration = std::max(0.0f, totalTime_ - startTime_);
     const float progress = duration > 0.0f
         ? std::clamp((currentTime_ - startTime_) / duration, 0.0f, 1.0f)
         : 0.0f;
-    const uint64_t requirementsId =
-        latestRequirementsRequest_.fetch_add(1, std::memory_order_acq_rel) + 1;
-    engine->requestDataRequirements(requirementsId);
     const uint64_t requestId =
         latestSeekRequest_.fetch_add(1, std::memory_order_acq_rel) + 1;
     engine->playerRequestSeek(requestId);
     emit seekStarted(requestId);
     emit seeked();
 
+    // Electron: playerSetDriver, then the re-seek — no requirements re-apply.
     const uint32_t mask = historyMask_;
     const float window = historyWindowSeconds_ < 0.0f ? 0.0f : historyWindowSeconds_;
     const bool allHistory = historyWindowSeconds_ < 0.0f;
-    const uint32_t streamMask = streamMask_;
-    const uint32_t historyMask = historyMask_;
-    const float requirementWindow = historyWindowSeconds_;
     post(WorkKind::Driver,
          [this, driverIndex, useRecordedRows, progress, requestId, mask, window,
-          allHistory, requirementsId, streamMask, historyMask, requirementWindow] {
+          allHistory] {
         if (auto* current = engine_.load(std::memory_order_acquire)) {
             current->playerSetDriver(driverIndex, useRecordedRows);
-            current->setDataRequirements(streamMask, historyMask,
-                                         requirementWindow, requirementsId);
             current->playerSeek(progress, allHistory, requestId, mask, window);
         }
     }, true);
 }
 
 void TnrdPlayer::setDataRequirements(uint32_t streamMask, uint32_t historyMask,
-                                     float windowSeconds) {
+                                     float windowSeconds,
+                                     std::vector<uint8_t> v6Types,
+                                     std::vector<uint8_t> v6HistoryTypes) {
     if (requirementsApplied_ && streamMask_ == streamMask && historyMask_ == historyMask &&
-        historyWindowSeconds_ == windowSeconds) return;
+        historyWindowSeconds_ == windowSeconds && v6Types_ == v6Types &&
+        v6HistoryTypes_ == v6HistoryTypes) return;
     streamMask_ = streamMask;
     historyMask_ = historyMask;
     historyWindowSeconds_ = windowSeconds;
+    v6Types_ = std::move(v6Types);
+    v6HistoryTypes_ = std::move(v6HistoryTypes);
     requirementsApplied_ = true;
     tnrp::Engine* engine = engine_.load(std::memory_order_acquire);
     if (!engine) return;
@@ -364,10 +732,12 @@ void TnrdPlayer::setDataRequirements(uint32_t streamMask, uint32_t historyMask,
         latestRequirementsRequest_.fetch_add(1, std::memory_order_acq_rel) + 1;
     engine->requestDataRequirements(requestId);
     post(WorkKind::Requirements,
-         [this, streamMask, historyMask, windowSeconds, requestId] {
+         [this, streamMask, historyMask, windowSeconds, requestId,
+          v6Types = v6Types_, v6HistoryTypes = v6HistoryTypes_] {
         tnrp::Engine* current = engine_.load(std::memory_order_acquire);
         if (!current) return;
-        current->setDataRequirements(streamMask, historyMask, windowSeconds, requestId);
+        current->setDataRequirements(streamMask, historyMask, windowSeconds, requestId,
+                                     v6Types, v6HistoryTypes);
         if (!loaded_ || historyMask == 0 ||
             !catalogReady_.load(std::memory_order_acquire) ||
             requestId != latestRequirementsRequest_.load(std::memory_order_acquire)) return;
@@ -435,7 +805,8 @@ bool TnrdPlayer::handleControlRow(const QByteArray& json) {
             catalogReady_.store(true, std::memory_order_release);
             emit lapBlocksReady(row);
             requirementsApplied_ = false;
-            setDataRequirements(streamMask_, historyMask_, historyWindowSeconds_);
+            setDataRequirements(streamMask_, historyMask_, historyWindowSeconds_,
+                                v6Types_, v6HistoryTypes_);
         }
         return true;
     }
@@ -536,11 +907,29 @@ TnrdPlayer::decodeHistory(const std::shared_ptr<EngineSeekFlush>& flush,
     result->rowTypeMask = flush->rowTypeMask;
     result->historyStart = flush->historyStart;
 
+    const uint8_t* binary = nullptr;
+    size_t binaryLength = 0;
     if (flush->binaryStore && flush->binaryBegin <= flush->binaryEnd &&
         flush->binaryEnd <= flush->binaryStore->size()) {
-        const uint8_t* begin = flush->binaryStore->data() + flush->binaryBegin;
-        const size_t length = flush->binaryEnd - flush->binaryBegin;
-        tnrp::bin::decodeBatch(begin, length, [&result](auto&& row) {
+        binary = flush->binaryStore->data() + flush->binaryBegin;
+        binaryLength = flush->binaryEnd - flush->binaryBegin;
+    }
+    // TNRD V6 with columnar history: typed column blocks straight from the
+    // recording, no JSON. Like Electron, the cold JSON is not consulted.
+    if (isV6HistoryPayload(binary, binaryLength)) {
+        decodeColumnarHistory(*result, binary, binaryLength);
+        sortAndCap(result->data.telBuf);
+        sortAndCap(result->data.stsBuf);
+        sortAndCap(result->data.motionBuf);
+        sortAndCap(result->data.motionExBuf);
+        sortAndCap(result->data.tyreBuf);
+        sortAndCap(result->data.damageBuf);
+        sortAndCap(result->progress);
+        buildLapDetails(*result, lapRanges);
+        return result;
+    }
+    if (binary) {
+        tnrp::bin::decodeBatch(binary, binaryLength, [&result](auto&& row) {
             appendHistoryRow(*result, tnrp::AnyRow(std::move(row)));
         });
     }
@@ -584,14 +973,17 @@ std::shared_ptr<PlaybackHistoryBatch> TnrdPlayer::decodeLapData(const QByteArray
     result->additive = true;
     result->isolatedLapRequest = true;
 
+    // Rows are merged and read as JSON objects directly. Re-serialising every
+    // row just to parse it twice more (patch merge, then the typed parser) made
+    // an indexed lap read dominate seeks and lap changes.
     PlaybackPatchMerger patchMerger;
     auto appendArray = [&result, &object, &patchMerger](const char* name) {
         const QJsonArray rows = object.value(QString::fromLatin1(name)).toArray();
         for (const QJsonValue& value : rows) {
             if (!value.isObject()) continue;
-            const QByteArray encoded = QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact);
-            if (auto decoded = patchMerger.decode(encoded))
-                appendHistoryRow(*result, decoded->row, decoded->sparse);
+            bool sparse = false;
+            const QJsonObject merged = patchMerger.mergeObject(value.toObject(), &sparse);
+            appendHistoryObject(*result, merged, sparse);
         }
     };
     appendArray("telemetry");

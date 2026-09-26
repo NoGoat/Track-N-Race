@@ -1,6 +1,8 @@
 #include "ChartView.h"
 #include "../ChartGraphicsBackend.h"
 #include "../SessionModel.h"
+#include "../ChartWindowCombo.h"
+#include "../PresentationScheduler.h"
 
 #include <QComboBox>
 #include <QElapsedTimer>
@@ -29,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -110,12 +113,13 @@ struct PanelDivider {
 
 struct Panel {
     bool visible = true, header = false, legend = true;
-    QString title;
+    QString title, note;
     QRect outer, plot;
     QComboBox *window = nullptr, *lap = nullptr;
     tnr::GraphSection section = tnr::GraphSection::Count_;
     bool cursorV = false, cursorH = false;
     double cursorX = 0, cursorY = .5;
+    std::function<QString(const QVector<double>&)> tooltipExtra;
 };
 
 qsizetype lowerBound(const Series& s, double x) {
@@ -819,6 +823,9 @@ protected:
                 for (int i = 0; i < series->size(); ++i) if ((*series)[i].panel == pid && !(*series)[i].spec.name.isEmpty()) {
                     ids.push_back(i); total += 24 + metrics.horizontalAdvance((*series)[i].spec.name);
                 }
+                // Electron's secondary-coloured note after the key (e.g. "resets each lap").
+                const qreal noteW = p.note.isEmpty() ? 0 : 8 + metrics.horizontalAdvance(p.note);
+                total += noteW;
                 qreal x = p.header ? outer.right() - kSidePad - total : plot.center().x() - total / 2;
                 const qreal y = p.header ? outer.top() + (kHeader - labelHeight) / 2 : plot.top() + 4;
                 for (int id : ids) {
@@ -828,6 +835,10 @@ protected:
                     q.setPen(s.visible ? text : muted);
                     drawText(QRectF(x + 16, y, w - 16, labelHeight), Qt::AlignVCenter, s.spec.name);
                     s.legendHit = QRectF(x - 2, y - 3, w, labelHeight + 6).toAlignedRect(); x += w;
+                }
+                if (noteW > 0) {
+                    q.setPen(muted);
+                    drawText(QRectF(x + 8, y, noteW - 8, labelHeight), Qt::AlignVCenter, p.note);
                 }
             }
             int xAxis = -1;
@@ -956,6 +967,10 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent), d_(std::make_unique<Imp
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding); setMinimumHeight(120);
     auto* layout = new QVBoxLayout(this); layout->setContentsMargins(0,0,0,0);
     d_->canvas = new RhiCanvas(&d_->axes, &d_->series, &d_->bands, &d_->panels, &d_->order, this);
+    // Release the next chart batch once this canvas has submitted its frame —
+    // the Qt counterpart of Electron's requestAnimationFrame pacing.
+    connect(d_->canvas, &QRhiWidget::frameSubmitted, this,
+            [] { PresentationScheduler::instance().chartFrameSubmitted(); });
     layout->addWidget(d_->canvas); d_->overlay = new Overlay(
         &d_->axes, &d_->series, &d_->panels, &d_->references, &d_->cursorGuides, this);
     d_->overlay->installEventFilter(this); d_->overlay->raise(); liveCharts().push_back(this);
@@ -1112,6 +1127,7 @@ void ChartView::layoutPanelsRows(const QVector<QVector<int>>&rows){d_->rows=rows
 void ChartView::applyPanelLayout(){d_->geometry(rect());positionPanelChartSettings();requestReplot();}
 void ChartView::setPanelVisible(int id,bool on){if(id>=0&&id<d_->panels.size()){d_->panels[id].visible=on;d_->explicitRows=false;applyPanelLayout();}}
 void ChartView::setPanelTitle(int id,const QString&t){if(id>=0&&id<d_->panels.size()){ensurePanelHeader(id);d_->panels[id].title=t;requestReplot();}}
+void ChartView::setPanelNote(int id,const QString&n){if(id>=0&&id<d_->panels.size()){ensurePanelHeader(id);d_->panels[id].note=n;requestReplot();}}
 void ChartView::setPanelLegendVisible(int id,bool on){if(id>=0&&id<d_->panels.size()){ensurePanelHeader(id);d_->panels[id].legend=on;}}
 void ChartView::setAxisTimeTicker(int id,const QString& format){if(id>=0&&id<d_->axes.size()){auto&a=d_->axes[id];a.timeFormat=format;a.time=true;a.lapBoundaryLabels=false;a.ticks.clear();a.labels.clear();}}
 void ChartView::setAxisDistanceMode(int id,bool on){if(id>=0&&id<d_->axes.size())d_->axes[id].distance=on;}
@@ -1135,10 +1151,12 @@ void ChartView::bindPanelChartSettings(int id,SessionModel*model,tnr::GraphSecti
 
 void ChartView::refreshPanelChartSettings(){
     if(!d_->model)return;bool coords=d_->model->lapCoordinatesAvailable();for(Panel&p:d_->panels){if(!p.window||p.section==tnr::GraphSection::Count_)continue;
-        p.window->blockSignals(true);p.window->clear();
-        const ChartWindow values[]={ChartWindow::Seconds15,ChartWindow::Seconds30,ChartWindow::Seconds60,ChartWindow::Seconds120,ChartWindow::Seconds300,ChartWindow::Seconds600,ChartWindow::CurrentLap,ChartWindow::PreviousLap,ChartWindow::FastestLap,ChartWindow::SelectedLap,ChartWindow::StintLaps,ChartWindow::AllLaps};
-        for(auto w:values)if(chartWindowIsAvailable(w,coords,d_->model->playbackMode()))p.window->addItem(chartWindowLabel(w),chartWindowKey(w));
-        int i=p.window->findData(chartWindowKey(d_->model->effectiveChartWindow(p.section)));p.window->setCurrentIndex(i>=0?i:0);p.window->blockSignals(false);
+        p.window->blockSignals(true);
+        // Same grouped Laps / Time list as the toolbar (heading rows carry no data).
+        populateChartWindowCombo(p.window,coords,d_->model->playbackMode());
+        int i=p.window->findData(chartWindowKey(d_->model->effectiveChartWindow(p.section)));
+        if(i<0)i=p.window->findData(chartWindowKey(ChartWindow::Seconds30));
+        p.window->setCurrentIndex(i);p.window->blockSignals(false);
         int wanted=d_->model->referenceLap(p.section);p.lap->blockSignals(true);p.lap->clear();for(const LapBlock&lap:d_->model->data().laps)if(!lap.progress.isEmpty()||d_->model->playbackCatalogHasLapDistance())p.lap->addItem(QString::number(lap.lapNum),lap.lapNum);i=p.lap->findData(wanted);p.lap->setCurrentIndex(i>=0?i:(p.lap->count()?0:-1));p.lap->blockSignals(false);}positionPanelChartSettings();
 }
 
@@ -1155,7 +1173,7 @@ QString ChartView::showSyncedCursor(double time,double sourceX,bool sourceDistan
     for(int pid=0;pid<d_->panels.size();++pid){Panel&p=d_->panels[pid];int xid=-1;for(int i=0;i<d_->axes.size();++i)if(d_->axes[i].panel==pid&&d_->axes[i].side==Side::Bottom){xid=i;break;}if(xid<0)continue;const Axis&a=d_->axes[xid];bool target=a.distance;double key=sourceDistance==target?sourceX:target?interpolate(a.sessionTimes,a.sessionKeys,time):time;bool mapped=sourceDistance==target||!target||(!a.sessionTimes.isEmpty()&&time>=a.sessionTimes.first()&&time<=a.sessionTimes.last());
         if(source==this&&pid==sourcePanel)continue;
         if(!p.visible||!mapped||key<a.lo||key>a.hi){if(!(source==this&&pid==sourcePanel))p.cursorV=false;p.cursorH=false;continue;}if(!(source==this&&pid==sourcePanel)){p.cursorX=key;p.cursorV=d_->secondaryV;}p.cursorY=yRatio;p.cursorH=d_->secondaryH&&!(source==this&&pid==sourcePanel);bool any=false;
-        for(const Series&s:d_->series){if(s.panel!=pid||!s.visible||s.spec.name.isEmpty()||s.empty())continue;double lo=s.data[size_t(s.first)].x,hi=s.data.back().x;bool endpoint=sourceDistance==target&&key>hi;if(key<lo||(key>hi&&!endpoint))continue;qsizetype at=nearest(s,key);if(at<0||!std::isfinite(s.data[size_t(at)].y))continue;QString value=numberText(s.data[size_t(at)].y,'f',s.spec.tipPrecision,s.spec.tipGroupThousands);if(!s.spec.unit.isEmpty())value+=(s.spec.unit=="%"?"":" ")+s.spec.unit;html+=QString("<div style='color:%1'><b>%2:</b> %3</div>").arg(s.spec.color.name(),s.spec.name.toHtmlEscaped(),value.toHtmlEscaped());any=true;}if(!any&&!(source==this&&pid==sourcePanel)){p.cursorV=p.cursorH=false;}}
+        html+=panelTooltipRows(pid,key,true,sourceDistance==target,&any);if(!any&&!(source==this&&pid==sourcePanel)){p.cursorV=p.cursorH=false;}}
     d_->overlay->update();return html;
 }
 void ChartView::clearSyncedCursor(){d_->hoverActive=false;if(d_->hoverTimer)d_->hoverTimer->stop();for(Panel&p:d_->panels)p.cursorV=p.cursorH=false;if(d_->tooltip)d_->tooltip->hide();if(d_->overlay)d_->overlay->update();}
@@ -1215,6 +1233,97 @@ void ChartView::zoomX(double factor){if(!d_->nav||d_->navAxis<0||d_->navAxis>=d_
 void ChartView::panX(double f){if(!d_->nav||d_->navAxis<0||d_->navAxis>=d_->axes.size())return;const Axis&a=d_->axes[d_->navAxis];double dx=(a.hi-a.lo)*f;auto r=navRange(d_->navMin,d_->navMax,d_->navSpan,a.lo+dx,a.hi+dx);setXRange(d_->navAxis,r.first,r.second);requestReplot();}
 void ChartView::resetX(){if(d_->navAxis>=0&&d_->navAxis<d_->axes.size()){setXRange(d_->navAxis,d_->navMin,d_->navMax);requestReplot();}}
 
+void ChartView::setPanelTooltipExtra(int id, std::function<QString(const QVector<double>&)> extra) {
+    if (id >= 0 && id < d_->panels.size()) d_->panels[id].tooltipExtra = std::move(extra);
+}
+
+QString ChartView::panelTooltipRows(int pid, double key, bool strictRange,
+                                    bool allowEndpoint, bool* any) const {
+    *any = false;
+    if (pid < 0 || pid >= d_->panels.size()) return {};
+    const Panel& panel = d_->panels[pid];
+    const QColor background = palette().color(QPalette::Button);
+    // Electron draws the comparison values at 35% opacity; QLabel rich text has
+    // no opacity, so blend toward the tooltip background instead.
+    const auto faded = [&background](const QColor& c) {
+        const double a = .35;
+        return QColor::fromRgbF(c.redF() * a + background.redF() * (1 - a),
+                                c.greenF() * a + background.greenF() * (1 - a),
+                                c.blueF() * a + background.blueF() * (1 - a));
+    };
+    const auto sampleAt = [&](const Series& s) -> double {
+        if (s.empty()) return qQNaN();
+        if (strictRange) {
+            const double lo = s.data[size_t(s.first)].x, hi = s.data.back().x;
+            if (key < lo || (key > hi && !allowEndpoint)) return qQNaN();
+        }
+        const qsizetype at = nearest(s, key);
+        return at < 0 ? qQNaN() : s.data[size_t(at)].y;
+    };
+    const auto row = [](const QColor& color, const Series& s, double value) {
+        QString text = numberText(value, 'f', s.spec.tipPrecision, s.spec.tipGroupThousands);
+        if (!s.spec.unit.isEmpty())
+            text += (s.spec.unit == "%" || !s.spec.unitSpace ? "" : " ") + s.spec.unit;
+        return QString("<div style='color:%1'><b>%2:</b> %3</div>")
+            .arg(color.name(), s.spec.name.toHtmlEscaped(), text.toHtmlEscaped());
+    };
+
+    QString rows, comparisonRows;
+    QVector<double> values, comparisonValues;
+    bool anyComparison = false;
+    for (const Series& s : d_->series) {
+        if (s.panel != pid || s.spec.name.isEmpty()) continue;
+        const double value = sampleAt(s);
+        values.push_back(value);
+        if (s.visible && std::isfinite(value)) { rows += row(s.spec.color, s, value); *any = true; }
+        double reference = qQNaN();
+        if (s.linked >= 0 && s.linked < d_->series.size() && d_->series[s.linked].visible)
+            reference = sampleAt(d_->series[s.linked]);
+        comparisonValues.push_back(reference);
+        if (s.visible && std::isfinite(reference)) {
+            comparisonRows += row(faded(s.spec.color), s, reference);
+            anyComparison = true;
+        }
+    }
+    if (!*any) return {};
+    if (panel.tooltipExtra) rows += panel.tooltipExtra(values);
+
+    // Comparison-lap section + lap delta (Previous / Fastest / Selected windows).
+    const SessionModel* model = d_->model;
+    if (!model || panel.section == tnr::GraphSection::Count_) return rows;
+    const ChartWindow window = model->effectiveChartWindow(panel.section);
+    if (!chartWindowIsComparison(window)) return rows;
+    if (anyComparison) {
+        const QString label = window == ChartWindow::PreviousLap ? QStringLiteral("Previous lap")
+            : window == ChartWindow::FastestLap ? QStringLiteral("Fastest lap")
+            : QStringLiteral("Reference lap");
+        QString extra = panel.tooltipExtra ? panel.tooltipExtra(comparisonValues) : QString();
+        // Extra rows carry their own colours; fade them with the section.
+        if (!extra.isEmpty()) extra = QString("<div style='color:%1'>%2</div>")
+            .arg(faded(palette().color(QPalette::ToolTipText)).name(), extra);
+        rows += QString("<div style='color:%1; margin-top:5px'>%2</div>")
+                    .arg(palette().color(QPalette::PlaceholderText).name(), label)
+              + comparisonRows + extra;
+    }
+    const Axis* axis = nullptr;
+    for (const Axis& a : d_->axes) if (a.panel == pid && a.side == Side::Bottom) { axis = &a; break; }
+    if (!axis || !axis->distance || axis->lapNum < 0 || axis->sessionKeys.size() < 2 ||
+        key < axis->sessionKeys.first() || key > axis->sessionKeys.last()) return rows;
+    const LapBlock* reference = model->chartReferenceLap(
+        window, model->referenceLap(panel.section), axis->lapStart + 0.001f);
+    if (!reference || reference->progress.size() < 2 ||
+        key < reference->progress.first().distanceM || key > reference->progress.last().distanceM)
+        return rows;
+    const double delta = (interpolate(axis->sessionKeys, axis->sessionTimes, key) - axis->lapStart)
+        - (model->data().timeAtDistance(reference, key) - reference->startSessionTime);
+    if (!std::isfinite(delta)) return rows;
+    rows += QString("<div style='margin-top:5px'><span style='color:%1'>Delta</span>: %2%3 s</div>")
+        .arg(delta >= 0 ? QStringLiteral("#C4162A") : QStringLiteral("#37872D"),
+             delta >= 0 ? QStringLiteral("+") : QString())
+        .arg(delta, 0, 'f', 3);
+    return rows;
+}
+
 void ChartView::updateHover(const QPoint& position) {
     int pid = -1;
     for (int i = 0; i < d_->panels.size(); ++i)
@@ -1231,18 +1340,16 @@ void ChartView::updateHover(const QPoint& position) {
     const double yRatio = qBound(0., double(position.y() - panel.plot.top()) / panel.plot.height(), 1.);
     double sampled = key;
     bool covered = false;
-    QString rows;
     for (const Series& series : d_->series) {
         if (series.panel != pid || !series.visible || series.spec.name.isEmpty() || series.empty()) continue;
         const qsizetype at = nearest(series, key);
         const Point& point = series.data[size_t(at)];
         if (!std::isfinite(point.y)) continue;
-        if (!covered) { sampled = point.x; covered = true; }
-        QString value = numberText(point.y, 'f', series.spec.tipPrecision, series.spec.tipGroupThousands);
-        if (!series.spec.unit.isEmpty()) value += (series.spec.unit == "%" ? "" : " ") + series.spec.unit;
-        rows += QString("<div style='color:%1'><b>%2:</b> %3</div>")
-            .arg(series.spec.color.name(), series.spec.name.toHtmlEscaped(), value.toHtmlEscaped());
+        sampled = point.x; covered = true;
+        break;
     }
+    bool anyRow = false;
+    const QString rows = panelTooltipRows(pid, key, false, false, &anyRow);
     if (!covered) {
         for (auto* chart : liveCharts()) chart->clearSyncedCursor();
         d_->hoverActive = true; // A later model update may supply a value here.

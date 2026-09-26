@@ -4,20 +4,26 @@
 #include "GraphTable.h"
 #include "../SessionModel.h"
 #include "../ChartCoordinates.h"
+#include "CardColors.h"
 
 #include <QGridLayout>
 #include <QColor>
+#include <QEvent>
 #include <QShowEvent>
 #include <QStringList>
 #include <QtMath>
 #include <algorithm>
 
 namespace {
-const QColor C_FL("#e10600");
-const QColor C_FR("#4488ff");
-const QColor C_RL("#37872D");
-const QColor C_RR("#ffd700");
-const QColor kWheelColors[4] = { C_FL, C_FR, C_RL, C_RR };
+// Corner colours; Electron darkens FR/RL/RR on its light theme for contrast.
+QColor wheelColor(int w) {
+    switch (w) {
+        case 0:  return QColor("#e10600");
+        case 1:  return tnr::themed("#4488ff", "#0B57D0");
+        case 2:  return tnr::themed("#37872D", "#137333");
+        default: return tnr::themed("#ffd700", "#765900");
+    }
+}
 const char*  kWheelNames[4]  = { "FL", "FR", "RL", "RR" };
 }
 
@@ -50,9 +56,9 @@ TyreChartsWidget::TyreChartsWidget(bool grid, QWidget* parent)
         chart_->setPanelLegendVisible(sec, true);
         for (int w = 0; w < 4; ++w) {
             seriesIds_[sec][w] = chart_->addSeries({
-                kWheelNames[w], kWheelColors[w], 1.5, xId_[sec], yId_[sec], unit, 0
+                kWheelNames[w], wheelColor(w), 1.5, xId_[sec], yId_[sec], unit, 0
             });
-            QColor muted = kWheelColors[w]; muted.setAlpha(105);
+            QColor muted = wheelColor(w); muted.setAlpha(105);
             referenceIds_[sec][w] = chart_->addSeries({ "", muted, 1.1, xId_[sec], yId_[sec], unit, 0 });
             chart_->setSeriesVisible(referenceIds_[sec][w], false);
             chart_->linkSeriesVisibility(seriesIds_[sec][w], referenceIds_[sec][w]);
@@ -77,6 +83,19 @@ TyreChartsWidget::TyreChartsWidget(bool grid, QWidget* parent)
 void TyreChartsWidget::showEvent(QShowEvent* e) {
     QWidget::showEvent(e);
     requestRefresh();
+}
+
+void TyreChartsWidget::changeEvent(QEvent* e) {
+    QWidget::changeEvent(e);
+    if (e->type() != QEvent::ApplicationPaletteChange && e->type() != QEvent::PaletteChange) return;
+    for (int sec = 0; sec < SECTIONS; ++sec) {
+        for (int w = 0; w < 4; ++w) {
+            QColor muted = wheelColor(w); muted.setAlpha(105);
+            chart_->setSeriesColor(seriesIds_[sec][w], wheelColor(w));
+            chart_->setSeriesColor(referenceIds_[sec][w], muted);
+        }
+    }
+    chart_->requestReplot();
 }
 
 void TyreChartsWidget::setModel(SessionModel* m) {

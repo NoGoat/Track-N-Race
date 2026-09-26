@@ -29,9 +29,10 @@ struct OverviewLayout {
         WingFl, WingFr, WingRear, Floor, Sidepod, Diffuser, Gearbox, Engine,
         DmgCardCount
     };
+    // Electron defaults: tyre/brake damage and Sidepod hidden.
     std::array<bool, DmgCardCount> dmgCards = {
         false, false, false, false, false, false, false, false,
-        true,  true,  true,  true,  true,  true,  true,  true,
+        true,  true,  true,  true,  false, true,  true,  true,
     };
 
     static const char* statCardLabel(int i);

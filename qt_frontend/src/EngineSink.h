@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <utility>
@@ -36,6 +37,12 @@ struct EngineSeekFlush {
 // call each Sink method from UDP, playback, or command workers. Normal traffic
 // is accumulated behind one queued GUI callback; if the GUI falls behind, the
 // buffers grow into a larger batch instead of creating an event per row.
+//
+// Seek flushes share that ordered queue. A playback seek's history flush marks
+// the boundary between rows from the old cursor and rows from the new one, and
+// MainWindow's seek gate (Electron's waiting-flush / waiting-renderer phases)
+// depends on seeing them in engine order. Coalescing rows emitted after a
+// flush into a batch delivered before it would mix the two timelines.
 class EngineSink : public QObject, public tnrp::Sink {
     Q_OBJECT
 public:
@@ -45,12 +52,10 @@ public:
         bool schedule = false;
         {
             QMutexLocker lock(&mutex_);
-            if (!pendingRows_.isEmpty()) pendingRows_.append('\n');
-            pendingRows_.append(json.data(), static_cast<qsizetype>(json.size()));
-            if (!flushScheduled_) {
-                flushScheduled_ = true;
-                schedule = true;
-            }
+            Event& event = dataEventLocked();
+            if (!event.rows.isEmpty()) event.rows.append('\n');
+            event.rows.append(json.data(), static_cast<qsizetype>(json.size()));
+            schedule = scheduleLocked();
         }
         if (schedule)
             QMetaObject::invokeMethod(this, [this] { flushPending(); }, Qt::QueuedConnection);
@@ -61,12 +66,9 @@ public:
         bool schedule = false;
         {
             QMutexLocker lock(&mutex_);
-            pendingBinary_.append(reinterpret_cast<const char*>(data),
-                                  static_cast<qsizetype>(len));
-            if (!flushScheduled_) {
-                flushScheduled_ = true;
-                schedule = true;
-            }
+            dataEventLocked().binary.append(reinterpret_cast<const char*>(data),
+                                            static_cast<qsizetype>(len));
+            schedule = scheduleLocked();
         }
         if (schedule)
             QMetaObject::invokeMethod(this, [this] { flushPending(); }, Qt::QueuedConnection);
@@ -89,9 +91,16 @@ public:
         flush->authoritativeSeek = authoritativeSeek;
         flush->rowTypeMask = rowTypeMask;
         flush->historyStart = historyStart;
-        QMetaObject::invokeMethod(this, [this, flush = std::move(flush)] {
-            emit seekFlushReady(flush);
-        }, Qt::QueuedConnection);
+        bool schedule = false;
+        {
+            QMutexLocker lock(&mutex_);
+            Event event;
+            event.flush = std::move(flush);
+            events_.push_back(std::move(event));
+            schedule = scheduleLocked();
+        }
+        if (schedule)
+            QMetaObject::invokeMethod(this, [this] { flushPending(); }, Qt::QueuedConnection);
     }
 
     void onPairState(const std::string& publicStateJson,
@@ -122,21 +131,45 @@ signals:
     void pairDiagnosticReady(const QString& message);
 
 private:
-    void flushPending() {
+    // One ordered unit of GUI delivery: either coalesced rows/binary or a
+    // single seek flush.
+    struct Event {
         QByteArray rows;
         QByteArray binary;
+        std::shared_ptr<EngineSeekFlush> flush;
+    };
+
+    // The data event rows are appended to: the queue tail, unless that is a
+    // seek flush (rows after a flush must be delivered after it).
+    Event& dataEventLocked() {
+        if (events_.empty() || events_.back().flush) events_.emplace_back();
+        return events_.back();
+    }
+
+    bool scheduleLocked() {
+        if (flushScheduled_) return false;
+        flushScheduled_ = true;
+        return true;
+    }
+
+    void flushPending() {
+        std::deque<Event> events;
         {
             QMutexLocker lock(&mutex_);
-            rows.swap(pendingRows_);
-            binary.swap(pendingBinary_);
+            events.swap(events_);
             flushScheduled_ = false;
         }
-        if (!rows.isEmpty()) emit rowsReady(rows);
-        if (!binary.isEmpty()) emit binaryReady(binary);
+        for (Event& event : events) {
+            if (event.flush) {
+                emit seekFlushReady(event.flush);
+                continue;
+            }
+            if (!event.rows.isEmpty()) emit rowsReady(event.rows);
+            if (!event.binary.isEmpty()) emit binaryReady(event.binary);
+        }
     }
 
     QMutex mutex_;
-    QByteArray pendingRows_;
-    QByteArray pendingBinary_;
+    std::deque<Event> events_;
     bool flushScheduled_ = false;
 };

@@ -1,6 +1,7 @@
 #include "SessionModel.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
 #include <QSettings>
@@ -319,6 +320,7 @@ void SessionData::clear() {
     latestTime = 0;
     trackLengthM = 0;
     currentStintStartTime = 0;
+    fuelUpperLimit = -1;
 }
 
 void SessionData::trim() {
@@ -522,8 +524,7 @@ void SessionModel::onTelemetry(float t, float speed, float rpm, float gear, floa
     }
     d_.onTelemetry(t, speed, rpm, gear, throttle, brake, steering);
     if (playbackMode_) {
-        if (LapBlock* lap = d_.lapAtTime(t);
-            lap && (playbackActiveLapMasks_.value(lap->lapNum) & rowBit(1)))
+        if (LapBlock* lap = playbackStreamLap(t, rowBit(1)))
             lap->tel.push_back({t, speed, rpm, gear, throttle, brake, steering});
     }
     telemetryDirty_ = true;
@@ -537,9 +538,10 @@ void SessionModel::onStatus(float t, float ers, float fuel_kg, float ice_kw, flo
         return;
     }
     d_.onStatus(t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j, tyre_compound, visual_compound, tyre_age_laps);
+    if (!playbackMode_ && std::isfinite(fuel_kg) && fuel_kg >= 0.0f && fuel_kg + 1.0f > d_.fuelUpperLimit)
+        d_.fuelUpperLimit = fuel_kg + 1.0f;
     if (playbackMode_) {
-        if (LapBlock* lap = d_.lapAtTime(t);
-            lap && (playbackActiveLapMasks_.value(lap->lapNum) & rowBit(2)))
+        if (LapBlock* lap = playbackStreamLap(t, rowBit(2)))
             lap->sts.push_back({t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j,
                                 mguh_harvest_j, tyre_compound, visual_compound,
                                 tyre_age_laps});
@@ -555,8 +557,7 @@ void SessionModel::onDamage(float t, float wearFl, float wearFr, float wearRl, f
     }
     d_.onDamage(t, wearFl, wearFr, wearRl, wearRr);
     if (playbackMode_) {
-        if (LapBlock* lap = d_.lapAtTime(t);
-            lap && (playbackActiveLapMasks_.value(lap->lapNum) & rowBit(3)))
+        if (LapBlock* lap = playbackStreamLap(t, rowBit(3)))
             lap->damage.push_back({t, wearFl, wearFr, wearRl, wearRr});
     }
     telemetryDirty_ = true;
@@ -570,8 +571,7 @@ void SessionModel::onMotion(float t, float g_lat, float g_long) {
     }
     d_.onMotion(t, g_lat, g_long);
     if (playbackMode_) {
-        if (LapBlock* lap = d_.lapAtTime(t);
-            lap && (playbackActiveLapMasks_.value(lap->lapNum) & rowBit(11)))
+        if (LapBlock* lap = playbackStreamLap(t, rowBit(11)))
             lap->motion.push_back({t, g_lat, g_long});
     }
     telemetryDirty_ = true;
@@ -585,8 +585,7 @@ void SessionModel::onMotionEx(float t, float front_aero, float rear_aero) {
     }
     d_.onMotionEx(t, front_aero, rear_aero);
     if (playbackMode_) {
-        if (LapBlock* lap = d_.lapAtTime(t);
-            lap && (playbackActiveLapMasks_.value(lap->lapNum) & rowBit(12)))
+        if (LapBlock* lap = playbackStreamLap(t, rowBit(12)))
             lap->motionEx.push_back({t, front_aero, rear_aero});
     }
     telemetryDirty_ = true;
@@ -608,8 +607,7 @@ void SessionModel::onTyre(float t,
               brakeFl, brakeFr, brakeRl, brakeRr,
               wearFl, wearFr, wearRl, wearRr);
     if (playbackMode_) {
-        if (LapBlock* lap = d_.lapAtTime(t);
-            lap && (playbackActiveLapMasks_.value(lap->lapNum) & rowBit(1)))
+        if (LapBlock* lap = playbackStreamLap(t, rowBit(1)))
             lap->tyre.push_back({t, surfFl, surfFr, surfRl, surfRr,
                                  innerFl, innerFr, innerRl, innerRr,
                                  brakeFl, brakeFr, brakeRl, brakeRr,
@@ -628,8 +626,9 @@ void SessionModel::onLap(int lapNum, int currentLapMs, int lastLapMs, bool inval
             lap->invalid = invalid;
             // A streamed lap row is one point, not proof that a whole indexed
             // lap family was loaded. Only extend a current-lap history that an
-            // actual seek/window response already installed.
-            if (playbackActiveLapMasks_.value(lapNum) & rowBit(4)) {
+            // actual seek/window response already installed (or that the
+            // stream carried forward across the line, see playbackStreamLap).
+            if (playbackStreamLap(sessionTime, rowBit(4)) == lap) {
                 lap->progress.push_back({sessionTime, currentLapMs,
                                          qMax(0.0f, lapDistanceM), sector});
                 if (pitStatus == 0) d_.trackLengthM = qMax(d_.trackLengthM, lapDistanceM);
@@ -820,10 +819,37 @@ void SessionModel::truncateAfter(float newTime) {
     emit tyreAppended();
 }
 
+// Electron's store keeps building the current lap from the stream when playback
+// crosses the line. Here the laps' histories are installed by seek/window
+// responses, so the finished lap's installed families are carried forward to
+// the next lap: the continuous stream covers that lap from its first row.
+// Without this the new lap had no progress, the lap-distance charts fell back
+// to a scrolling 30 s window, and they only recovered once an indexed lap read
+// for the new lap came back.
+LapBlock* SessionModel::playbackStreamLap(float t, uint32_t familyBit) {
+    LapBlock* lap = d_.lapAtTime(t);
+    if (!lap) return nullptr;
+    uint32_t mask = playbackActiveLapMasks_.value(lap->lapNum);
+    if (mask == 0 && playbackStreamLapNum_ == lap->lapNum - 1) {
+        mask = playbackActiveLapMasks_.value(lap->lapNum - 1);
+        if (mask) playbackActiveLapMasks_.insert(lap->lapNum, mask);
+    }
+    if (mask) playbackStreamLapNum_ = lap->lapNum;
+    return (mask & familyBit) ? lap : nullptr;
+}
+
+bool SessionModel::playbackLapCovered(int lapNum, uint32_t rowTypeMask) const {
+    if ((playbackActiveLapMasks_.value(lapNum) & rowTypeMask) == rowTypeMask) return true;
+    // The next lap is about to be carried forward by the stream.
+    return playbackStreamLapNum_ == lapNum - 1 &&
+           (playbackActiveLapMasks_.value(lapNum - 1) & rowTypeMask) == rowTypeMask;
+}
+
 void SessionModel::clear() {
     d_.clear();
     playbackCatalogLaps_.clear();
     playbackActiveLapMasks_.clear();
+    playbackStreamLapNum_ = -1;
     playbackLapDataCache_.clear();
     playbackLapDataMasks_.clear();
     playbackLapLru_.clear();
@@ -841,6 +867,8 @@ void SessionModel::setPlaybackCatalog(const tnrp::PlaybackLapBlocksRow& catalog)
     d_.trimBuffers = true;
     d_.fastestLapNum = catalog.fastestLapNum;
     d_.trackLengthM = static_cast<float>(catalog.trackLengthM);
+    d_.fuelUpperLimit = catalog.initialFuelKg >= 0.0
+        ? static_cast<float>(catalog.initialFuelKg + 1.0) : -1.0f;
     playbackCatalogReady_ = true;
     playbackLapDistanceAvailable_ = catalog.lapDistanceAvailable;
 
@@ -856,7 +884,8 @@ void SessionModel::setPlaybackCatalog(const tnrp::PlaybackLapBlocksRow& catalog)
         lap.tel.reserve(static_cast<qsizetype>(source.telemetry.size()));
         for (const auto& point : source.telemetry)
             lap.tel.push_back({point.session_time, static_cast<float>(point.speed_kph),
-                               point.rpm, qQNaN(), qQNaN(), qQNaN(), qQNaN()});
+                               static_cast<float>(point.rpm), float(qQNaN()), float(qQNaN()),
+                               float(qQNaN()), float(qQNaN())});
         lap.sts.reserve(static_cast<qsizetype>(source.statusHistory.size()));
         for (const auto& point : source.statusHistory)
             lap.sts.push_back({point.session_time, static_cast<float>(point.ers_pct),
@@ -898,6 +927,7 @@ void SessionModel::setPlaybackCatalog(const tnrp::PlaybackLapBlocksRow& catalog)
 
     playbackCatalogLaps_ = d_.laps;
     playbackActiveLapMasks_.clear();
+    playbackStreamLapNum_ = -1;
     playbackLapDataCache_.clear();
     playbackLapDataMasks_.clear();
     playbackLapLru_.clear();
@@ -940,6 +970,8 @@ void SessionModel::installPlaybackHistory(SessionData&& incoming,
         d_.curLap = {};
         d_.curLapNum = -1;
         playbackActiveLapMasks_.clear();
+        // The stream resumes from the seek target's lap; roll forward from there.
+        playbackStreamLapNum_ = requestedLapNum > 0 ? requestedLapNum : -1;
     }
 
     // Indexed lap reads are an independent cache in Electron. Never merge them

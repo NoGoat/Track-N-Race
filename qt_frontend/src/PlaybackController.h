@@ -43,8 +43,12 @@ public:
     float currentTime() const;                    // absolute session_time playhead
     bool handleControlRow(const QByteArray& json);
     void handleSeekFlush(const std::shared_ptr<EngineSeekFlush>& flush);
+    // v6Types / v6HistoryTypes are Electron's TNRD V6 data-type lists: the
+    // engine streams and extracts only those types for a V6 recording.
     void setDataRequirements(uint32_t streamMask, uint32_t historyMask,
-                             float windowSeconds);
+                             float windowSeconds,
+                             std::vector<uint8_t> v6Types = {},
+                             std::vector<uint8_t> v6HistoryTypes = {});
     void requestLapData(int lapNum, uint32_t rowTypeMask);
     void requestAnalysisLapData(uint64_t generation, int driverIndex,
                                 int lapNum, uint32_t rowTypeMask);
@@ -116,7 +120,8 @@ private:
     QPushButton* playBtn_     = nullptr;
     QPushButton* seekFwdBtn_  = nullptr;
     QSlider*     slider_      = nullptr;
-    QLabel*      timeLabel_   = nullptr;
+    QLabel*      timeLabel_   = nullptr;   // current time, left of the slider
+    QLabel*      totalLabel_  = nullptr;   // total time, right of the slider
     QComboBox*   speedCombo_  = nullptr;
     QComboBox*   lapCombo_    = nullptr;
     QPushButton* exportBtn_   = nullptr;

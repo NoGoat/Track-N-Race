@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <tnrp/control_rows.h>
 
@@ -70,7 +71,9 @@ public:
     // the same generation-safe seek path used by the scrubber.
     void selectDriver(int driverIndex, bool useRecordedRows);
     void setDataRequirements(uint32_t streamMask, uint32_t historyMask,
-                             float windowSeconds);
+                             float windowSeconds,
+                             std::vector<uint8_t> v6Types = {},
+                             std::vector<uint8_t> v6HistoryTypes = {});
     void requestLapData(int lapNum, uint32_t rowTypeMask);
     void requestAnalysisLapData(uint64_t generation, int driverIndex,
                                 int lapNum, uint32_t rowTypeMask);
@@ -111,8 +114,20 @@ private:
     };
     struct WorkItem { WorkKind kind; std::function<void()> run; };
 
+    // Three independent lanes, as Electron runs seek/history reads on the libuv
+    // pool and decodes in the renderer concurrently: engine commands (ordered),
+    // indexed lap reads, and payload decoding. A seek's decode therefore never
+    // waits behind a lap read, and a seek never waits behind a decode.
+    enum Lane { CommandLane = 0, ReadLane = 1, DecodeLane = 2, LaneCount = 3 };
+    struct LaneState {
+        std::deque<WorkItem> work;
+        std::thread thread;
+        bool active = false;
+    };
+    static Lane laneOf(WorkKind kind);
+
     void post(WorkKind kind, std::function<void()> work, bool replacePending);
-    void workerLoop();
+    void workerLoop(int lane);
     static std::shared_ptr<PlaybackHistoryBatch>
         decodeHistory(const std::shared_ptr<EngineSeekFlush>& flush,
                       const QVector<PlaybackLapRange>& lapRanges);
@@ -120,10 +135,8 @@ private:
     std::mutex workMutex_;
     std::condition_variable workCv_;
     std::condition_variable idleCv_;
-    std::deque<WorkItem> work_;
-    std::thread worker_;
+    LaneState lanes_[LaneCount];
     bool stopping_ = false;
-    bool workerActive_ = false;
 
     float startTime_ = 0.0f;
     float totalTime_ = 0.0f;
@@ -137,6 +150,8 @@ private:
     uint32_t streamMask_ = 0xFFFFFFFFu;
     uint32_t historyMask_ = 0;
     float historyWindowSeconds_ = 30.0f;
+    std::vector<uint8_t> v6Types_;          // V6 types to stream (empty = all)
+    std::vector<uint8_t> v6HistoryTypes_;   // V6 types to extract for history
     bool requirementsApplied_ = false;
     QVector<PlaybackLapRange> lapRanges_;
     std::atomic<uint64_t> latestSeekRequest_{0};

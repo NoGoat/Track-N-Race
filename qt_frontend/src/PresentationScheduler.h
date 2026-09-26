@@ -36,8 +36,19 @@ public:
     void configureChartFrameRates(int focused, int unfocused) {
         chartFocusedFps_ = normalizeRate(focused, MatchDisplay);
         chartUnfocusedFps_ = normalizeRate(unfocused, 30);
-        chart_.timer.stop();
-        chart_.hasPresented = false;
+        resetChartCadence();
+        schedule(chart_, Policy::Chart);
+    }
+
+    // Called by every chart canvas (QRhiWidget::frameSubmitted). In "Match
+    // display" mode this is the chart queue's requestAnimationFrame: the next
+    // batch of chart work is released only once the previous frame has been
+    // submitted, so the swapchain's vsync wait — not a millisecond timer — sets
+    // the frame rate, exactly like Electron's rAF-driven TimeChart scheduler.
+    void chartFrameSubmitted() {
+        if (!chartAwaitingFrame_) return;
+        chartAwaitingFrame_ = false;
+        chartFrameFallback_.stop();
         schedule(chart_, Policy::Chart);
     }
 
@@ -73,19 +84,34 @@ private:
         bool hasPresented = false;
     };
 
+    void resetChartCadence() {
+        chart_.timer.stop();
+        chart_.hasPresented = false;
+        chartAwaitingFrame_ = false;
+        chartFrameFallback_.stop();
+    }
+
     explicit PresentationScheduler(QObject* parent) : QObject(parent) {
         initializeQueue(ui_, Policy::Ui);
         initializeQueue(animation_, Policy::Animation);
         initializeQueue(chart_, Policy::Chart);
+        // Safety net for display-paced charts: if a released batch did not
+        // repaint any canvas (nothing changed, or every chart is hidden), no
+        // frameSubmitted arrives, so release the queue after two display frames.
+        chartFrameFallback_.setSingleShot(true);
+        chartFrameFallback_.setTimerType(Qt::PreciseTimer);
+        connect(&chartFrameFallback_, &QTimer::timeout, this, [this] {
+            chartAwaitingFrame_ = false;
+            schedule(chart_, Policy::Chart);
+        });
         if (qApp) {
             connect(qApp, &QGuiApplication::applicationStateChanged, this,
                     [this](Qt::ApplicationState) {
                 ui_.timer.stop();
                 animation_.timer.stop();
-                chart_.timer.stop();
                 ui_.hasPresented = false;
                 animation_.hasPresented = false;
-                chart_.hasPresented = false;
+                resetChartCadence();
                 schedule(ui_, Policy::Ui);
                 schedule(animation_, Policy::Animation);
                 schedule(chart_, Policy::Chart);
@@ -135,7 +161,9 @@ private:
         target.timer.setTimerType(Qt::PreciseTimer);
         Queue* targetPtr = &target;
         connect(&target.timer, &QTimer::timeout, this, [this, targetPtr, policy] {
-            if (policy != Policy::Ui) {
+            if (policy == Policy::Chart) {
+                if (!advanceChartCadence()) return;   // woke early for a capped rate
+            } else if (policy != Policy::Ui) {
                 if (!targetPtr->clock.isValid()) targetPtr->clock.start();
                 targetPtr->lastPresentedNs = targetPtr->clock.nsecsElapsed();
                 targetPtr->hasPresented = true;
@@ -144,12 +172,50 @@ private:
             ready.swap(targetPtr->pending);
             for (auto it = ready.begin(); it != ready.end(); ++it)
                 if (tracked_.contains(it.key())) it.value()();
+            if (policy == Policy::Chart && configuredFrameRate(policy) == MatchDisplay
+                    && !ready.isEmpty()) {
+                // Wait for the frame this batch produces before releasing the next.
+                chartAwaitingFrame_ = true;
+                chartFrameFallback_.start(qMax(4, int(std::ceil(2.0 * 1000.0 / displayRefreshRate()))));
+                return;
+            }
             schedule(*targetPtr, policy);
         });
     }
 
+    // Electron's capped-rate cadence (frameScheduler.ts): accept the frame once
+    // at least interval - 0.25 ms has elapsed and advance the reference by whole
+    // intervals, so fractional cadences alternate correctly (e.g. 120 FPS on a
+    // 180 Hz display) instead of rounding every gap up. Returns false when the
+    // timer fired too early; the queue is then rescheduled.
+    bool advanceChartCadence() {
+        Queue& target = chart_;
+        if (!target.clock.isValid()) target.clock.start();
+        const qint64 now = target.clock.nsecsElapsed();
+        const int configured = configuredFrameRate(Policy::Chart);
+        if (configured == MatchDisplay || !target.hasPresented) {
+            target.lastPresentedNs = now;
+            target.hasPresented = true;
+            return true;
+        }
+        const double interval = frameIntervalNs(Policy::Chart);
+        const double elapsed = double(now - target.lastPresentedNs);
+        if (elapsed < interval - 250000.0 - 1000000.0) {
+            schedule(target, Policy::Chart);
+            return false;
+        }
+        if (elapsed > interval * 4) {
+            target.lastPresentedNs = now;
+        } else {
+            const double steps = qMax(1.0, std::floor((elapsed + 250000.0) / interval));
+            target.lastPresentedNs += qint64(steps * interval);
+        }
+        return true;
+    }
+
     void schedule(Queue& target, Policy policy) {
         if (target.pending.isEmpty() || target.timer.isActive()) return;
+        if (policy == Policy::Chart && chartAwaitingFrame_) return;   // released by frameSubmitted
         if (policy == Policy::Ui) {
             // Match Electron's ordinary store/component path: publish when data
             // arrives, while collapsing duplicate requests made during the same
@@ -172,7 +238,18 @@ private:
         // effectively immediate, but it participates in the timer queue and
         // cannot be indefinitely postponed by focused-window events.
         int delayMs = 1;
-        if (target.hasPresented) {
+        if (policy == Policy::Chart) {
+            // Display rate: no interval wait at all — the frameSubmitted gate
+            // above and the swapchain's vsync pace the charts. Capped rates sleep
+            // until one millisecond before the next slot (Electron's setTimeout
+            // before rAF); the present then aligns the frame to vsync.
+            if (configuredFrameRate(policy) != MatchDisplay && target.hasPresented) {
+                const double remainingNs = frameNs -
+                    double(target.clock.nsecsElapsed() - target.lastPresentedNs);
+                if (remainingNs > 1000000.0)
+                    delayMs = qMax(1, int(std::floor(remainingNs / 1000000.0)) - 1);
+            }
+        } else if (target.hasPresented) {
             const double elapsedNs = double(target.clock.nsecsElapsed() - target.lastPresentedNs);
             const double remainingNs = frameNs - elapsedNs;
             if (remainingNs > 0.0)
@@ -189,4 +266,6 @@ private:
     QSet<QObject*> tracked_;
     int chartFocusedFps_ = MatchDisplay;
     int chartUnfocusedFps_ = 30;
+    bool chartAwaitingFrame_ = false;   // display mode: a released batch's frame is pending
+    QTimer chartFrameFallback_;
 };

@@ -23,8 +23,9 @@ inline QString tyreLabel(int compound) {
 }
 
 // F2's actual compounds carry their own fixed colors; the reported visual
-// compound is only authoritative for F1 compounds. Returns invalid QColor for
-// F1 hard/unknown values so the caller can retain its native text color.
+// compound is only authoritative for F1 compounds. F1 colours follow the theme
+// like Electron's --compound-* variables; unknown values return an invalid
+// QColor so the caller can retain its native text color.
 inline QColor tyreTextColor(int actualCompound, int visualCompound) {
     switch (actualCompound) {
         case 11: return QColor("#a855f7"); // Supersoft — purple
@@ -35,11 +36,11 @@ inline QColor tyreTextColor(int actualCompound, int visualCompound) {
         default: break;
     }
     switch (visualCompound) {
-        case 16: return QColor("#e8002d"); // Soft   — red
-        case 17: return QColor("#ffd700"); // Medium — yellow
-        case 18: return {};                // Hard   — OS default
-        case  7: return QColor("#39b54a"); // INT    — green
-        case  8: return QColor("#4488ff"); // WET    — blue
+        case 16: return tnr::compoundSoftColor();
+        case 17: return tnr::compoundMediumColor();
+        case 18: return tnr::compoundHardColor();
+        case  7: return tnr::compoundInterColor();
+        case  8: return tnr::compoundWetColor();
         default: return {};
     }
 }
@@ -83,9 +84,9 @@ inline QString setStatusText(const tnrp::TyreSet& s) {
 
 inline QColor setStatusColor(const tnrp::TyreSet& s) {
     const std::string st = setStatusText(s).toStdString();
-    if (st == "FITTED")   return QColor("#5794F2");
-    if (st == "NEW")      return QColor("#37872D");
-    if (st == "USED")     return QColor("#d4ad04");
-    if (st == "RESERVED") return QColor("#a78bfa");
-    return QColor("#484c62"); // RETURNED
+    if (st == "FITTED")   return tnr::themed("#5794F2", "#0B57D0");
+    if (st == "NEW")      return tnr::themed("#37872D", "#137333");
+    if (st == "USED")     return tnr::themed("#d4ad04", "#8B5200");
+    if (st == "RESERVED") return tnr::themed("#a78bfa", "#6d28d9");
+    return tnr::themed("#484c62", "#565B70"); // RETURNED
 }

@@ -398,7 +398,7 @@ void TyresPage::updateTyreSets(const tnrp::TyreSetsRow* tyreSets) {
                 deltaText = QString("%1%2").arg(deltaMs > 0 ? "+" : "").arg(deltaMs / 1000.0, 0, 'f', 3);
             auto* deltaItem = makeItem(deltaText);
             if (deltaMs > 0)      deltaItem->setForeground(QColor("#C4162A"));
-            else if (deltaMs < 0) deltaItem->setForeground(QColor("#37872D"));
+            else if (deltaMs < 0) deltaItem->setForeground(tnr::themed("#37872D", "#137333"));
             table->setItem(row, 6, deltaItem);
 
             table->setRowHeight(row, 22);

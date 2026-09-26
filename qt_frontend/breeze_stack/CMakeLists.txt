@@ -86,6 +86,19 @@ set(COMMON_CMAKE_ARGS
     -DKDE_INSTALL_USE_QT_SYS_PATHS=OFF
 )
 
+# KI18n compiles its .pmap transcript files with Python at build time. On
+# Windows, FindPython in the sub-builds can pick the Microsoft Store
+# WindowsApps\python3.exe alias, which is not a runnable interpreter and fails
+# the ki18n build. Pass -DPython3_EXECUTABLE=<real python.exe> to pin it.
+# KI18n also caches its own KI18N_PYTHON_EXECUTABLE (baked into its pmap build
+# step), so pin both.
+set(Python3_EXECUTABLE "" CACHE FILEPATH "Python interpreter for sub-builds (ki18n); avoid the WindowsApps alias")
+if(Python3_EXECUTABLE)
+    list(APPEND COMMON_CMAKE_ARGS
+        -DPython3_EXECUTABLE=${Python3_EXECUTABLE}
+        -DKI18N_PYTHON_EXECUTABLE=${Python3_EXECUTABLE})
+endif()
+
 set(KDE_GIT https://github.com/KDE)
 
 # Helper: declare a KDE framework ExternalProject named <name> from repo <repo>,

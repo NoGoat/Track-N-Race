@@ -28,6 +28,9 @@
 #include <QSplitter>
 #include <QResizeEvent>
 #include <QTimer>
+#include <QDateTime>
+#include <QVariantList>
+#include <QVariantMap>
 
 #include <algorithm>
 #include <cmath>
@@ -87,6 +90,56 @@ QString formatSector(int ms) {
     int msec = ms % 1000;
     return QString("%1.%2").arg(sec).arg(msec, 3, 10, QChar('0'));
 }
+
+// The tower's empty last lap reads "--:--.---" (Electron); the race panel keeps "—".
+QString formatTowerLapTime(int ms) {
+    return ms <= 0 ? QStringLiteral("--:--.---") : formatLapTime(ms);
+}
+
+// Electron's tower badges: bordered chips with a 10% tint of their colour.
+// The cell carries a QVariantList of {text, color} maps in BadgeRole.
+constexpr int BadgeRole = Qt::UserRole + 1;
+
+QVariantMap badge(const QString& text, const QColor& color) {
+    return QVariantMap{ { QStringLiteral("text"), text }, { QStringLiteral("color"), color } };
+}
+
+class BadgeDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        QStyleOptionViewItem opt = option;
+        initStyleOption(&opt, index);
+        painter->save();
+        if (opt.backgroundBrush.style() != Qt::NoBrush) painter->fillRect(opt.rect, opt.backgroundBrush);
+        QFont font = opt.font;
+        font.setPointSize(std::max(1, font.pointSize() - 2));
+        font.setBold(true);
+        painter->setFont(font);
+        const QFontMetrics fm(font);
+        const int h = fm.height() + 2;
+        int x = opt.rect.left() + 4;
+        const int y = opt.rect.top() + (opt.rect.height() - h) / 2;
+        painter->setRenderHint(QPainter::Antialiasing);
+        for (const QVariant& v : index.data(BadgeRole).toList()) {
+            const QVariantMap m = v.toMap();
+            const QString text = m.value(QStringLiteral("text")).toString();
+            const QColor color = m.value(QStringLiteral("color")).value<QColor>();
+            const int w = fm.horizontalAdvance(text) + 10;
+            if (x + w > opt.rect.right()) break;
+            const QRectF r(x + .5, y + .5, w - 1, h - 1);
+            QColor fill = color; fill.setAlphaF(.1);
+            painter->setPen(QPen(color, 1));
+            painter->setBrush(fill);
+            painter->drawRoundedRect(r, 3, 3);
+            painter->setPen(color);
+            painter->drawText(r, Qt::AlignCenter, text);
+            x += w + 4;
+        }
+        painter->restore();
+    }
+};
 
 QString formatGap(int ms, bool isLeader) {
     if (isLeader) return "LEADER";
@@ -225,7 +278,7 @@ StandingsPage::StandingsPage(QWidget* parent)
     // cell on every setItem and tanks the UI when the table rebuilds rapidly.
     timingTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     {
-        const int colW[12] = { 44, 36, 150, 46, 84, 80, 60, 60, 60, 52, 74, 72 };
+        const int colW[12] = { 44, 36, 150, 46, 84, 80, 60, 60, 60, 52, 110, 100 };
         for (int c = 0; c < 12; ++c)
             timingTable_->setColumnWidth(c, colW[c]);
     }
@@ -245,6 +298,9 @@ StandingsPage::StandingsPage(QWidget* parent)
         : tableDensity_ == tnr::DensityMode::Spacious ? 34 : 28);
 
     timingTable_->setItemDelegateForColumn(2, new DriverDelegate(timingTable_));
+    timingTable_->setItemDelegateForColumn(10, new BadgeDelegate(timingTable_));
+    timingTable_->setItemDelegateForColumn(11, new BadgeDelegate(timingTable_));
+    showPlaceholderRows();
 
     connect(timingTable_, &QTableWidget::cellClicked, this, [this](int row, int) {
         int clicked = (row >= 0 && row < (int)tableRowCarIdx_.size())
@@ -458,7 +514,9 @@ QWidget* StandingsPage::buildRacePanel() {
     };
     sh->addWidget(makeSect("S1", rp_s1));
     sh->addWidget(makeSect("S2", rp_s2));
+    sh->addWidget(makeSect("S3", rp_s3));
     vbox->addWidget(sectRow);
+    rp_pitStatus->setTextFormat(Qt::RichText);   // yellow pit + red flags, as Electron
 
     sections->addWidget(cardDividers_[0] = tnrui::hline());
 
@@ -487,8 +545,22 @@ QWidget* StandingsPage::buildRacePanel() {
         vbox->addWidget(barWrap);
     }
 
+    {
+        rp_ersStore = new QLabel("— MJ / 4.00 MJ");
+        QFont sf; sf.setPointSize(7); rp_ersStore->setFont(sf);
+        rp_ersStore->setForegroundRole(QPalette::PlaceholderText);
+        rp_ersStore->setContentsMargins(14, 0, 14, 0);
+        vbox->addWidget(rp_ersStore);
+    }
     vbox->addWidget(makeRow("Mode", rp_ersMode));
-    vbox->addWidget(makeRow("DRS",  rp_drs));
+    vbox->addWidget(makeRow("Deployed", rp_ersDeployed));
+    if (cardDensity_[1] == tnr::DensityMode::Spacious)
+        vbox->addWidget(makeRow("Harvested", rp_ersHarvested));
+    {
+        QWidget* drsRow = makeRow(tnr::L("drs.label"), rp_drs);
+        rp_drsLabel = drsRow->findChild<QLabel*>();   // the caption is the row's first label
+        vbox->addWidget(drsRow);
+    }
 
     sections->addWidget(cardDividers_[1] = tnrui::hline());
 
@@ -531,6 +603,45 @@ void StandingsPage::resetForNewSession() {
     fastestLapCarIdx_ = -1;
     fastestLapSet_ = false;
     sessionHistoryBest_.clear();
+    tableSectors_.clear();
+    playerSectors_ = SectorTrack{};
+}
+
+void StandingsPage::trackSectors(SectorTrack& t, int lapNum, int sector, int s1, int s2,
+                                 int lastLapMs, qint64 now) {
+    // Capture S1+S2 when the car enters sector 3 so S3 can be derived at the line.
+    if (sector == 2 && s1 > 0 && s2 > 0 && t.snapLap != lapNum) {
+        t.snapLap = lapNum; t.snapS1 = s1; t.snapS2 = s2;
+    }
+    // Lap just completed: derive S3 and hold the previous lap's sectors for 7 s.
+    if (t.seen && lapNum > t.lapNum) {
+        const int s3 = (t.snapLap == t.lapNum && lastLapMs > 0)
+            ? std::max(0, lastLapMs - t.snapS1 - t.snapS2) : 0;
+        t.frozenS1 = t.s1; t.frozenS2 = t.s2; t.frozenS3 = s3;
+        t.frozenUntilMs = now + 7000;
+    }
+    t.seen = true; t.lapNum = lapNum; t.s1 = s1; t.s2 = s2;
+}
+
+void StandingsPage::showPlaceholderRows() {
+    tableRowCarIdx_.clear();
+    rowSafeColors_.clear();
+    timingTable_->setUpdatesEnabled(false);
+    timingTable_->setRowCount(20);
+    const QColor muted = timingTable_->palette().color(QPalette::PlaceholderText);
+    for (int row = 0; row < 20; ++row) {
+        for (int column = 0; column < timingTable_->columnCount(); ++column) {
+            QString text = QStringLiteral("—");
+            if (column == 0) text = QString("P%1").arg(row + 1);
+            else if (column == 4) text = QStringLiteral("--:--.---");
+            else if (column >= 10) text.clear();
+            auto* item = new QTableWidgetItem(text);
+            item->setTextAlignment(column == 2 ? Qt::AlignLeft | Qt::AlignVCenter : Qt::AlignCenter);
+            item->setForeground(muted);
+            timingTable_->setItem(row, column, item);
+        }
+    }
+    timingTable_->setUpdatesEnabled(true);
 }
 
 void StandingsPage::selectDriver(int driverIndex) {
@@ -578,8 +689,15 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
             setLabelStyle(rp_driverName, QString());
     }
 
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (playerLap)
+        trackSectors(playerSectors_, playerLap->lap_num, playerLap->sector, playerLap->s1_ms,
+                     playerLap->s2_ms, playerLap->last_lap_ms, now);
+
     // Generic over LapRow and TimingCar — both carry the same timing field names.
-    auto applyTiming = [&](const auto& lap) {
+    // `player` enables the 7 s finished-lap sector hold (Electron applies it to
+    // the player's own lap row only; another car shows S1/S2 once reached).
+    auto applyTiming = [&](const auto& lap, bool player) {
         int lapNum    = lap.lap_num;
         int pos       = lap.position;
         int pitSt     = lap.pit_status;
@@ -593,26 +711,38 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
         setLabelText(rp_lapNum, lapNum > 0 ? QString::number(lapNum) : "—");
         setLabelText(rp_position, pos > 0 ? "P" + QString::number(pos) : "—");
 
+        // Pit state in the compound-medium yellow, invalid/penalty flags in red.
         QStringList flags;
-        if (pitSt == 1)      flags << "In pit lane";
-        else if (pitSt == 2) flags << "In pit";
-        if (invalid)         flags << "INVALID";
-        if (penS > 0)        flags << ("+" + QString::number(penS) + "s");
+        const auto flag = [](const QString& text, const QColor& color) {
+            return QString("<span style='color:%1; font-weight:bold'>%2</span>").arg(color.name(), text);
+        };
+        if (pitSt == 1)      flags << flag("Pitting", tnr::compoundMediumColor());
+        else if (pitSt == 2) flags << flag("In pit lane", tnr::compoundMediumColor());
+        if (invalid)         flags << flag("INVALID", QColor("#C4162A"));
+        if (penS > 0)        flags << flag("+" + QString::number(penS) + "s", QColor("#C4162A"));
         setLabelText(rp_pitStatus, flags.isEmpty() ? "—" : flags.join(" · "));
-        setLabelStyle(rp_pitStatus, flags.isEmpty() ? "" : "color: #C4162A; font-weight: bold;");
 
         setLabelText(rp_currentLap, formatLapTime(currentMs));
         setLabelText(rp_lastLap, formatLapTime(lastMs));
-        setLabelText(rp_s1, formatSector(s1Ms));
-        setLabelText(rp_s2, formatSector(s2Ms));
+        int showS1 = 0, showS2 = 0, showS3 = 0;
+        if (player && playerSectors_.frozen(now)) {
+            showS1 = playerSectors_.frozenS1; showS2 = playerSectors_.frozenS2;
+            showS3 = playerSectors_.frozenS3;
+        } else {
+            showS1 = lap.sector >= 1 ? s1Ms : 0;
+            showS2 = lap.sector >= 2 ? s2Ms : 0;
+        }
+        setLabelText(rp_s1, formatSector(showS1));
+        setLabelText(rp_s2, formatSector(showS2));
+        setLabelText(rp_s3, formatSector(showS3));
     };
 
     if (viewingOther && timing) {
         for (const TimingCar& car : timing->cars) {
-            if (car.idx == selectedCarIdx_) { applyTiming(car); break; }
+            if (car.idx == selectedCarIdx_) { applyTiming(car, false); break; }
         }
     } else if (playerLap) {
-        applyTiming(*playerLap);
+        applyTiming(*playerLap, true);
     }
 
     // Generic over StatusRow and AllStatusCar — same status field names.
@@ -629,31 +759,53 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
         bool  drsOk     = st.drs_allowed;
 
         const bool haveErs = std::isfinite(ersPct);
-        setLabelText(rp_ersPct, haveErs ? QString::number((int)ersPct) + "%" : "—");
-        const int ersBarValue = haveErs ? (int)ersPct : 0;
+        const QColor ersColor = ersPct > 60 ? tnr::themed("#5794F2", "#0B57D0")
+                              : ersPct > 30 ? tnr::themed("#d4ad04", "#765900")
+                              : QColor("#C4162A");
+        setLabelText(rp_ersPct, haveErs ? QString::number(ersPct, 'f', 1) + "%" : "—%");
+        setLabelStyle(rp_ersPct, haveErs ? QString("color: %1;").arg(ersColor.name()) : QString());
+        const int ersBarValue = haveErs ? qBound(0, qRound(ersPct), 100) : 0;
         if (rp_ersBar->value() != ersBarValue) rp_ersBar->setValue(ersBarValue);
-        const char* ersColor = ersPct > 60 ? "#4488ff" : ersPct > 30 ? "#ffd700" : "#C4162A";
         const QString ersStyle = haveErs
-            ? QString("QProgressBar::chunk { background-color: %1; }").arg(ersColor)
+            ? QString("QProgressBar::chunk { background-color: %1; }").arg(ersColor.name())
             : QString();
         if (rp_ersBar->styleSheet() != ersStyle) rp_ersBar->setStyleSheet(ersStyle);
+        const auto mj = [](double joules) { return QString::number(joules / 1'000'000.0, 'f', 2); };
+        setLabelText(rp_ersStore, mj(st.ers_j) + " MJ / 4.00 MJ");
+        setLabelText(rp_ersDeployed, mj(st.ers_deployed_j) + " MJ");
+        setLabelText(rp_ersHarvested,
+                     mj(double(st.ers_harvested_mguk_j) + double(st.ers_harvested_mguh_j)) + " MJ");
 
         // ERS deploy mode label (protocol-aware: "Overtake" → "Boost" in 2026).
         setLabelText(rp_ersMode, ersMode >= 0 && ersMode < 4 ? tnr::Ln("ers.mode", ersMode) : "—");
+        // Mode colour: none / blue / yellow / red for modes 0–3, as Electron.
+        const QColor modeColor = ersMode == 1 ? tnr::themed("#5794F2", "#0B57D0")
+                               : ersMode == 2 ? tnr::compoundMediumColor()
+                               : ersMode == 3 ? QColor("#C4162A") : QColor();
+        setLabelStyle(rp_ersMode, modeColor.isValid()
+            ? QString("color: %1; font-weight: bold;").arg(modeColor.name()) : QString());
+        if (rp_drsLabel) setLabelText(rp_drsLabel, tnr::L("drs.label"));
 
         setLabelText(rp_drs, drsAvailable ? (drsOk ? "AVAILABLE" : "LOCKED") : "—");
         setLabelStyle(rp_drs, drsAvailable && drsOk
             ? "color: #37872D; font-weight: bold;" : "");
+        const auto density = cardDensity_[2];
 
         const bool haveFuelKg = std::isfinite(fuelKg);
         const bool haveFuelLaps = std::isfinite(fuelLaps);
         setLabelText(rp_fuelKg, haveFuelKg ? QString::number(fuelKg, 'f', 1) + " kg" : "—");
-        setLabelText(rp_fuelLaps, haveFuelLaps ? QString::number(fuelLaps, 'f', 1) + "L" : "—");
-        const char* fuelColor = fuelLaps > 1.0f ? "#37872D" : fuelLaps >= 0.0f ? "#ffd700" : "#C4162A";
+        // Signed laps of fuel margin; Spacious spells out "vs finish" (Electron).
+        setLabelText(rp_fuelLaps, haveFuelLaps
+            ? QString("%1%2 laps%3").arg(fuelLaps >= 0 ? "+" : "").arg(fuelLaps, 0, 'f', 1)
+                  .arg(density == tnr::DensityMode::Spacious ? QStringLiteral(" vs finish") : QString())
+            : "—");
+        const QColor fuelColor = fuelLaps > 1.0f ? tnr::themed("#37872D", "#137333")
+                               : fuelLaps >= 0.0f ? tnr::themed("#d4ad04", "#8B5200")
+                               : QColor("#C4162A");
         setLabelStyle(rp_fuelKg, haveFuelKg && haveFuelLaps
-            ? QString("color: %1; font-weight: bold;").arg(fuelColor) : QString());
+            ? QString("color: %1; font-weight: bold;").arg(fuelColor.name()) : QString());
 
-        static const char* mixes[] = {"Lean", "Standard", "Rich", "Max Power"};
+        static const char* mixes[] = {"Lean", "Standard", "Rich", "Max power"};
         setLabelText(rp_fuelMix, fuelMix >= 0 && fuelMix < 4 ? mixes[fuelMix] : "—");
 
         setLabelText(rp_tyre, tyreLabel(compound));
@@ -662,7 +814,14 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
             ? QString("color: %1; font-weight: bold;").arg(tyreFg.name())
             : "font-weight: bold;");
         setLabelText(rp_tyreAge, tyreAge >= 0 ? QString::number(tyreAge) + "L" : "—");
-        setLabelText(rp_brakeBias, brakeBias >= 0 ? QString::number(brakeBias, 'f', 1) + "% front" : "—");
+        // Brake bias as Electron: "56% F" (Compact), "56% front", and
+        // "56% front · 44% rear" (Spacious).
+        const int front = qRound(brakeBias);
+        setLabelText(rp_brakeBias, !(std::isfinite(brakeBias) && brakeBias >= 0) ? QStringLiteral("—")
+            : density == tnr::DensityMode::Compact ? QString("%1% F").arg(front)
+            : density == tnr::DensityMode::Spacious
+                ? QString("%1% front · %2% rear").arg(front).arg(100 - front)
+            : QString("%1% front").arg(front));
     };
 
     if (viewingOther && allStatus) {
@@ -683,7 +842,13 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
 void StandingsPage::updateTimingTable(const TimingRow* timing,
                                       const tnrp::ParticipantsRow* participants,
                                       const AllStatusRow* allStatus) {
-    if (!timingTable_ || !timing) return;
+    if (!timingTable_) return;
+    if (!timing) { showPlaceholderRows(); return; }
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (const TimingCar& car : timing->cars)
+        trackSectors(tableSectors_[car.idx], car.lap_num, car.sector, car.s1_ms, car.s2_ms,
+                     car.last_lap_ms, now);
 
     struct DriverInfo { QString name; int raceNum; QColor color; };
     std::unordered_map<int, DriverInfo> driverMap;
@@ -810,7 +975,13 @@ void StandingsPage::updateTimingTable(const TimingRow* timing,
         int  resultSt   = car.result_status;
         bool isPlayer   = (idx == playerIdx);
 
-        int s3Ms = (lastLapMs > 0 && s1Ms > 0 && s2Ms > 0) ? lastLapMs - s1Ms - s2Ms : 0;
+        // Sectors: the finished lap's S1/S2/S3 for 7 s after the line, else the
+        // live S1/S2 with S3 blank.
+        int s3Ms = 0;
+        if (const auto it = tableSectors_.find(idx);
+            it != tableSectors_.end() && it->second.frozen(now)) {
+            s1Ms = it->second.frozenS1; s2Ms = it->second.frozenS2; s3Ms = it->second.frozenS3;
+        }
 
         auto di = driverMap.find(idx);
         int     raceNum    = (di != driverMap.end()) ? di->second.raceNum : 0;
@@ -821,23 +992,31 @@ void StandingsPage::updateTimingTable(const TimingRow* timing,
         int compound = tyreMap.count(idx) ? tyreMap.at(idx).compound : -1;
         int visual   = tyreMap.count(idx) ? tyreMap.at(idx).visual   : -1;
 
-        QString statusText;
-        if      (resultSt == 4)  statusText = "DNF";
-        else if (resultSt == 5)  statusText = "DSQ";
-        else if (resultSt == 7)  statusText = "RET";
-        else if (pitStatus == 1) statusText = "PITLANE";
-        else if (pitStatus == 2) statusText = "IN PIT";
-        else if (lapInvalid)     statusText = "INV";
+        // Retirement replaces the gap (red), as Electron.
+        QString retired;
+        if      (resultSt == 4) retired = "DNF";
+        else if (resultSt == 5) retired = "DSQ";
+        else if (resultSt == 7) retired = "RET";
 
-        QString penText;
-        if      (numDt > 0)      penText = QString("DT ×%1").arg(numDt);
-        else if (numSg > 0)      penText = QString("SG ×%1").arg(numSg);
-        else if (penaltiesS > 0) penText = QString("+%1s").arg(penaltiesS);
+        // Electron's stacked badges: pit/INV in STATUS, every penalty in PENALTIES.
+        QVariantList statusBadges, penaltyBadges;
+        if (pitStatus > 0)
+            statusBadges << badge(pitStatus == 1 ? QStringLiteral("PIT") : QStringLiteral("PIT LANE"),
+                                  tnr::compoundMediumColor());
+        if (lapInvalid) statusBadges << badge(QStringLiteral("INV"), QColor("#C4162A"));
+        if (penaltiesS > 0)
+            penaltyBadges << badge(QString("+%1s").arg(penaltiesS), tnr::themed("#c47d0e", "#8B5200"));
+        if (numDt > 0)
+            penaltyBadges << badge(numDt > 1 ? QString("%1× DT").arg(numDt) : QStringLiteral("DT"),
+                                   QColor("#e10600"));
+        if (numSg > 0)
+            penaltyBadges << badge(numSg > 1 ? QString("%1× SG").arg(numSg) : QStringLiteral("SG"),
+                                   QColor("#e10600"));
 
         QColor posColor;
-        if      (pos == 1) posColor = QColor("#FFD700");
-        else if (pos == 2) posColor = QColor("#C0C0C0");
-        else if (pos == 3) posColor = QColor("#CD7F32");
+        if      (pos == 1) posColor = tnr::themed("#FFD700", "#765900");
+        else if (pos == 2) posColor = tnr::themed("#C0C0C0", "#5E6475");
+        else if (pos == 3) posColor = tnr::themed("#CD7F32", "#9C5B23");
 
         // Highlight when this driver's data is shown in the race panel:
         // — explicit selection, or player when nothing is selected
@@ -877,9 +1056,10 @@ void StandingsPage::updateTimingTable(const TimingRow* timing,
 
         updateItem(row, 3, lapNum > 0 ? QString::number(lapNum) : "—",
                    Qt::AlignCenter, {}, hasCustomBg ? bgBrush : QBrush());
-        updateItem(row, 4, formatLapTime(lastLapMs), Qt::AlignCenter, {},
+        updateItem(row, 4, formatTowerLapTime(lastLapMs), Qt::AlignCenter, {},
                    hasCustomBg ? bgBrush : QBrush());
-        updateItem(row, 5, formatGap(gapMs, pos == 1), Qt::AlignCenter, {},
+        updateItem(row, 5, retired.isEmpty() ? formatGap(gapMs, pos == 1) : retired, Qt::AlignCenter,
+                   retired.isEmpty() ? QColor() : QColor("#C4162A"),
                    hasCustomBg ? bgBrush : QBrush());
         updateItem(row, 6, formatSector(s1Ms), Qt::AlignCenter, {},
                    hasCustomBg ? bgBrush : QBrush());
@@ -893,14 +1073,17 @@ void StandingsPage::updateTimingTable(const TimingRow* timing,
         updateItem(row, 9, tyreLabel(compound), Qt::AlignCenter, tyreFg,
                    hasCustomBg ? bgBrush : QBrush());
 
-        // Col 10: PENALTIES
-        updateItem(row, 10, penText, {},
-                   penText.isEmpty() ? QColor() : QColor("#C4162A"),
-                   hasCustomBg ? bgBrush : QBrush());
+        // Col 10: PENALTIES (badges painted by BadgeDelegate)
+        updateItem(row, 10, QString(), {}, {}, hasCustomBg ? bgBrush : QBrush());
+        if (QTableWidgetItem* item = timingTable_->item(row, 10);
+            item && item->data(BadgeRole).toList() != penaltyBadges)
+            item->setData(BadgeRole, penaltyBadges);
 
-        // Col 11: STATUS
-        updateItem(row, 11, statusText, {}, {},
-                   hasCustomBg ? bgBrush : QBrush());
+        // Col 11: STATUS (badges painted by BadgeDelegate)
+        updateItem(row, 11, QString(), {}, {}, hasCustomBg ? bgBrush : QBrush());
+        if (QTableWidgetItem* item = timingTable_->item(row, 11);
+            item && item->data(BadgeRole).toList() != statusBadges)
+            item->setData(BadgeRole, statusBadges);
 
         const int rowHeight = tableDensity_ == tnr::DensityMode::Compact ? 22
             : tableDensity_ == tnr::DensityMode::Spacious ? 34 : 28;

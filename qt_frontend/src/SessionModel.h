@@ -81,6 +81,9 @@ struct SessionData {
     float latestTime    = 0;
     float trackLengthM  = 0;
     float currentStintStartTime = 0;
+    // Fuel chart ceiling (kg), as Electron: live = highest fuel seen + 1,
+    // playback = the recording's initial fuel + 1. <= 0 means unknown.
+    float fuelUpperLimit = -1;
     bool  trimBuffers   = true;    // source histories use Electron's 750,000-row cap
 
     void onTelemetry(float t, float speed, float rpm, float gear, float throttle, float brake, float steering);
@@ -160,6 +163,9 @@ public:
                                 float historyStart, int requestedLapNum);
     void retainPlaybackHistoryMask(uint32_t rowTypeMask);
     uint32_t missingPlaybackLapMask(int lapNum, uint32_t rowTypeMask) const;
+    // True when the active (seek/window/stream) timeline already holds these
+    // families for the lap, so no indexed lap read is needed for it.
+    bool playbackLapCovered(int lapNum, uint32_t rowTypeMask) const;
     const LapBlock* playbackLapData(int lapNum) const;
     const LapBlock* chartPrimaryLap(float sessionTime) const;
     const LapBlock* chartReferenceLap(ChartWindow window, int selectedLap,
@@ -226,6 +232,8 @@ private:
     // history installed into d_.laps; the indexed cache owns complete requested
     // laps used by Selected/Previous/Fastest and Analyze.
     QHash<int, uint32_t> playbackActiveLapMasks_;
+    int playbackStreamLapNum_ = -1;   // lap the continuous stream is extending
+    LapBlock* playbackStreamLap(float t, uint32_t familyBit);
     QHash<int, LapBlock> playbackLapDataCache_;
     QHash<int, uint32_t> playbackLapDataMasks_;
     QVector<int> playbackLapLru_;

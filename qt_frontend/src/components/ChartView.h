@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <functional>
 #include <memory>
 
 class SessionModel;
@@ -60,6 +61,7 @@ public:
         double  fillBaseline = 0.0;
         double  opacity = 1.0;           // multiplies line and fill alpha
         LineType lineType = LineType::Line;
+        bool    unitSpace = true;        // "12 kW" vs Electron's unspaced "12kW" tooltip style
     };
 
     struct BandSpec {
@@ -115,7 +117,13 @@ public:
     void setPanelVisible(int panelId, bool on);
     void setPanelTitle(int panelId, const QString& title);
     void setPanelLegendVisible(int panelId, bool on);
+    void setPanelNote(int panelId, const QString& note);   // muted text after the colour key
     void bindPanelChartSettings(int panelId, SessionModel* model, tnr::GraphSection section);
+    // Extra tooltip rows for a panel (e.g. Electron's "Total: 412.3 kW"). The
+    // callback receives the value of every named series in the panel, in
+    // creation order (NaN where a series has no sample at the cursor). It is
+    // also applied to the comparison-lap section when one is shown.
+    void setPanelTooltipExtra(int panelId, std::function<QString(const QVector<double>&)> extra);
 
     // Data.
     void appendPoint(int seriesId, double x, double y);
@@ -205,6 +213,13 @@ private:
                              ChartView* source, int sourcePanel);
     void clearSyncedCursor();
     void updateHover(const QPoint& position);
+    // One panel's tooltip body at x = key: the series rows, any extra rows, and
+    // — in a Previous/Fastest/Selected lap window — the comparison-lap section
+    // and the lap delta, matching Electron's chart tooltips. strictRange limits
+    // sampling to each series' own x range (synced peer panels); allowEndpoint
+    // also accepts keys just past a series' last sample.
+    QString panelTooltipRows(int panelId, double key, bool strictRange,
+                             bool allowEndpoint, bool* any) const;
 
     struct Impl;
     std::unique_ptr<Impl> d_;

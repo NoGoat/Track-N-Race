@@ -1,4 +1,5 @@
 #include "AppToolbar.h"
+#include "ChartWindowCombo.h"
 #include "IconUtils.h"
 
 #include <QApplication>
@@ -10,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
+#include <QPropertyAnimation>
 #include <QResizeEvent>
 #include <QSizePolicy>
 #include <QStyle>
@@ -23,16 +25,6 @@
 #include <QTextStream>
 #include <QDir>
 
-// Chart window-size options, shown as a segmented toolbar control.
-static const struct { const char* label; ChartWindow window; } kWindowOptions[] = {
-    {"15s", ChartWindow::Seconds15}, {"30s", ChartWindow::Seconds30},
-    {"1m", ChartWindow::Seconds60}, {"2m", ChartWindow::Seconds120},
-    {"5m", ChartWindow::Seconds300}, {"10m", ChartWindow::Seconds600},
-    {"Current", ChartWindow::CurrentLap}, {"Previous", ChartWindow::PreviousLap},
-    {"Fastest", ChartWindow::FastestLap}, {"Selected", ChartWindow::SelectedLap},
-    {"Stint Laps", ChartWindow::StintLaps}, {"All Laps", ChartWindow::AllLaps}
-};
-static constexpr int kWindowOptionCount = 12;
 
 static constexpr int kToolbarHeight = 44;
 
@@ -301,6 +293,11 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     });
 }
 
+void AppToolbar::setChartToolsEnabled(bool on) {
+    if (sectorBtn_) sectorBtn_->setEnabled(on);
+    if (syncBtn_) syncBtn_->setEnabled(on);
+}
+
 void AppToolbar::setEditLayoutEnabled(bool on) {
     if (editLayoutAct_) editLayoutAct_->setEnabled(on);
 }
@@ -370,11 +367,8 @@ void AppToolbar::updateSessionTimer(float sessionTime) {
 void AppToolbar::updateSessionDelta(double deltaSeconds) {
     if (!deltaLabel_) return;
     if (!std::isfinite(deltaSeconds)) {
-        if (deltaLabel_->isVisible()) {
-            deltaLabel_->hide();
-            deltaW_ = 0;
-            relayout();
-        }
+        // Electron keeps showing the last value while its slot slides shut.
+        setDeltaShown(false);
         return;
     }
 
@@ -387,9 +381,49 @@ void AppToolbar::updateSessionDelta(double deltaSeconds) {
         deltaLabel_->setStyleSheet(QStringLiteral("color: #37872D;"));
     else
         deltaLabel_->setStyleSheet(QString());
-    if (!deltaLabel_->isVisible()) deltaLabel_->show();
+    setDeltaShown(true);
     const int w = deltaLabel_->sizeHint().width();
     if (w != deltaW_) { deltaW_ = w; relayout(); }
+}
+
+void AppToolbar::setDeltaShown(bool shown) {
+    if (!deltaLabel_ || shown == deltaShown_) return;
+    deltaShown_ = shown;
+    if (!deltaAnim_) {
+        deltaAnim_ = new QPropertyAnimation(deltaLabel_, "maximumWidth", this);
+        deltaAnim_->setDuration(220);
+        deltaAnim_->setEasingCurve(QEasingCurve::OutQuint);
+        connect(deltaAnim_, &QPropertyAnimation::finished, this, [this] {
+            if (deltaShown_) {
+                deltaLabel_->setMaximumWidth(QWIDGETSIZE_MAX);
+            } else {
+                deltaLabel_->hide();
+                deltaLabel_->setMaximumWidth(QWIDGETSIZE_MAX);
+                deltaW_ = 0;
+                relayout();
+            }
+        });
+    }
+    deltaAnim_->stop();
+    if (reduceAnimations_) {
+        deltaLabel_->setMaximumWidth(QWIDGETSIZE_MAX);
+        deltaLabel_->setVisible(shown);
+        if (!shown) deltaW_ = 0;
+        relayout();
+        return;
+    }
+    const int full = deltaLabel_->sizeHint().width();
+    if (shown) {
+        deltaLabel_->setMaximumWidth(0);
+        deltaLabel_->show();
+        relayout();
+        deltaAnim_->setStartValue(0);
+        deltaAnim_->setEndValue(full);
+    } else {
+        deltaAnim_->setStartValue(qMin(deltaLabel_->width(), full));
+        deltaAnim_->setEndValue(0);
+    }
+    deltaAnim_->start();
 }
 
 void AppToolbar::resetSessionTimer() {
@@ -400,9 +434,12 @@ void AppToolbar::resetSessionTimer() {
         timerLabel_->hide();
     }
     deltaW_ = 0;
+    deltaShown_ = false;
+    if (deltaAnim_) deltaAnim_->stop();
     if (deltaLabel_) {
         deltaLabel_->clear();
         deltaLabel_->hide();
+        deltaLabel_->setMaximumWidth(QWIDGETSIZE_MAX);
     }
     relayout();   // reclaim the freed timer/delta width for inline items
 }
@@ -443,6 +480,7 @@ void AppToolbar::refreshThemedIcons() {
 
 void AppToolbar::applyChartWindow(int idx) {
     if (!windowBtn_ || idx < 0 || idx >= windowBtn_->count()) return;
+    if (!windowBtn_->itemData(idx).isValid()) return;   // "Laps" / "Time" heading
     const ChartWindow selected = chartWindowFromKey(windowBtn_->itemData(idx).toString());
     window_ = selected;
     emit chartWindowChanged(selected);
@@ -455,12 +493,7 @@ void AppToolbar::applyChartWindow(int idx) {
 void AppToolbar::rebuildChartWindowOptions() {
     if (!windowBtn_) return;
     windowBtn_->blockSignals(true);
-    windowBtn_->clear();
-    for (int i = 0; i < kWindowOptionCount; ++i) {
-        const ChartWindow candidate = kWindowOptions[i].window;
-        if (!chartWindowIsAvailable(candidate, lapCoordinatesAvailable_, playback_)) continue;
-        windowBtn_->addItem(kWindowOptions[i].label, chartWindowKey(candidate));
-    }
+    populateChartWindowCombo(windowBtn_, lapCoordinatesAvailable_, playback_);
     // Electron keeps the persisted value untouched when it is temporarily
     // unavailable, but presents and renders the startup default in its place.
     const ChartWindow displayed = chartWindowIsAvailable(
@@ -480,7 +513,7 @@ void AppToolbar::setChartLapAvailability(const QVector<int>& laps, bool playback
     if (referenceLap_) {
         referenceLap_->blockSignals(true);
         referenceLap_->clear();
-        for (int lap : laps) referenceLap_->addItem(QString("Lap %1").arg(lap), lap);
+        for (int lap : laps) referenceLap_->addItem(QString::number(lap), lap);
         int idx = referenceLap_->findData(selected);
         if (idx < 0) idx = referenceLap_->findData(1);
         referenceLap_->setCurrentIndex(idx >= 0 ? idx :
@@ -489,7 +522,6 @@ void AppToolbar::setChartLapAvailability(const QVector<int>& laps, bool playback
         referenceLap_->setVisible(playback &&
             window_ == ChartWindow::SelectedLap);
     }
-    if (sectorBtn_) sectorBtn_->setVisible(lapCoordinatesAvailable);
 }
 
 void AppToolbar::setChartOptions(ChartWindow window, int referenceLap,
@@ -639,6 +671,10 @@ void AppToolbar::relayout() {
     if (!segIn && !analyzeVisible_) {
         overflowMenu_->addSection("Chart Window");
         for (int i = 0; i < windowBtn_->count(); ++i) {
+            if (!windowBtn_->itemData(i).isValid()) {   // "Laps" / "Time" heading
+                overflowMenu_->addSection(windowBtn_->itemText(i));
+                continue;
+            }
             QAction* a = overflowMenu_->addAction(windowBtn_->itemText(i));
             a->setCheckable(true);
             a->setChecked(i == windowBtn_->currentIndex());
@@ -660,11 +696,13 @@ void AppToolbar::relayout() {
             QAction* sectors = overflowMenu_->addAction("Sector Boundaries");
             sectors->setCheckable(true);
             sectors->setChecked(sectorBtn_->isChecked());
+            sectors->setEnabled(sectorBtn_->isEnabled());
             connect(sectors, &QAction::toggled, sectorBtn_, &QToolButton::setChecked);
         }
         QAction* sync = overflowMenu_->addAction("Synchronize Tooltips");
         sync->setCheckable(true);
         sync->setChecked(syncBtn_ && syncBtn_->isChecked());
+        sync->setEnabled(syncBtn_ && syncBtn_->isEnabled());
         connect(sync, &QAction::toggled, syncBtn_, &QToolButton::setChecked);
     }
     if (analyzeVisible_ && !analyzeNavIn) {

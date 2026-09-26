@@ -220,6 +220,7 @@ MainWindow::MainWindow(QWidget* parent)
         { "Overview", "Analyze", "Standings", "Session", "Tyres", "Strategy", "Input", "Power", "Misc" },
         settings.value("ui/toolbarShowLabels", false).toBool(), this);
     addToolBar(Qt::TopToolBarArea, toolbar_);
+    toolbar_->setReduceAnimations(reduceAnimations());
     // QMainWindow draws its own separator line between the toolbar area and the
     // central widget — a different element from QToolBar's own borders; keep it
     // suppressed so no stray line shows under the toolbar.
@@ -482,6 +483,9 @@ MainWindow::MainWindow(QWidget* parent)
                                        currentPage_ == Session || currentPage_ == Tyres ||
                                        currentPage_ == Standings);
         toolbar_->setAnalyzeControlsVisible(currentPage_ == Analyze);
+        toolbar_->setChartToolsEnabled(currentPage_ == Overview || currentPage_ == Input ||
+                                       currentPage_ == Misc || currentPage_ == Power ||
+                                       currentPage_ == Tyres);
         // Return from the click handler before pruning/requesting history or
         // rebuilding the newly visible page.  This lets the tab selection paint
         // immediately and collapses rapid tab changes onto the final page.
@@ -541,7 +545,7 @@ MainWindow::MainWindow(QWidget* parent)
         }
         // Clear any frozen live value; the first replayed packet sets it afresh.
         if (toolbar_) toolbar_->resetSessionTimer();
-        if (overviewPage_) overviewPage_->setPlaybackMode(true, currentTime);
+        if (overviewPage_) { overviewPage_->resetLiveData(); overviewPage_->setPlaybackMode(true, currentTime); }
         if (analyzePage_) {
             analyzePage_->setPrimaryRecording(hdr.track_id, QString::fromStdString(hdr.track_name));
             analyzePage_->resetPlaybackSelections();
@@ -582,36 +586,22 @@ MainWindow::MainWindow(QWidget* parent)
         scheduleUiRefresh();
     });
     connect(playback_, &PlaybackController::seekStarted, this, [this](uint64_t generation) {
-        playbackSeekInstalling_ = true;
+        resetSeekGate();
+        playbackSeekInstalling_ = true;   // waiting-flush: drop old-cursor rows
         playbackSeekGeneration_ = generation;
-        pendingSeekStateRows_.clear();
         playbackPatchMerger_.clear();
     });
     connect(playback_, &PlaybackController::historyInstalled, this, [this](uint64_t generation) {
         if (!playbackSeekInstalling_ || generation != playbackSeekGeneration_) return;
-        playbackSeekInstalling_ = false;
-        static const QByteArray orderedTypes[] = {
-            "session", "participants", "timing", "all_status", "lap",
-            "telemetry", "status", "damage", "positions", "tyre_sets", "strategy"
-        };
-        for (const QByteArray& type : orderedTypes) {
-            const auto it = pendingSeekStateRows_.constFind(type);
-            if (it == pendingSeekStateRows_.cend()) continue;
-            if (auto decoded = playbackPatchMerger_.decode(*it)) {
-                if (currentPage_ == Strategy && playback_ &&
-                    playback_->tnrdVersion() == QStringLiteral("TNRD_V6") &&
-                    !decoded->sparse &&
-                    (std::holds_alternative<TelemetryRow>(decoded->row) ||
-                     std::holds_alternative<StatusRow>(decoded->row) ||
-                     std::holds_alternative<DamageRow>(decoded->row) ||
-                     std::holds_alternative<AllStatusRow>(decoded->row) ||
-                     std::holds_alternative<tnrp::TyreSetsRow>(decoded->row)))
-                    continue;
-                emitLiveData(decoded->row,
-                             decoded->sparse ? &decoded->normalizedObject : nullptr);
-            }
+        // Electron's releaseSeekForwarding(): the history is installed, so the
+        // new cursor's rows held since the flush are released in engine order.
+        QVector<SeekReplayItem> replay;
+        replay.swap(playbackSeekReplay_);
+        resetSeekGate();
+        for (const SeekReplayItem& item : replay) {
+            if (item.binary) onEngineBinary(item.data);
+            else onEngineRow(item.data);
         }
-        pendingSeekStateRows_.clear();
         // The active seek window changed, while the independent indexed-lap
         // cache remains valid. Re-evaluate current/selected dependencies so a
         // newly active lap is materialised immediately.
@@ -649,15 +639,14 @@ MainWindow::MainWindow(QWidget* parent)
         applyEngineLogging();   // back to live: resume recording if it was enabled
         // Drop the playback timer value; live packets (if any) repopulate it.
         if (toolbar_) toolbar_->resetSessionTimer();
-        if (overviewPage_) overviewPage_->setPlaybackMode(false);
+        if (overviewPage_) { overviewPage_->resetLiveData(); overviewPage_->setPlaybackMode(false); }
         if (analyzePage_) analyzePage_->setPlaybackMode(false);
         if (tyresPage_) tyresPage_->setPlaybackMode(false);
         if (inputPage_) inputPage_->setPlaybackMode(false);
         if (powerPage_) powerPage_->setPlaybackMode(false);
         if (miscPage_) miscPage_->setPlaybackMode(false);
         model_->setPlaybackMode(false);
-        playbackSeekInstalling_ = false;
-        pendingSeekStateRows_.clear();
+        resetSeekGate();
         playbackPatchMerger_.clear();
         playerStatusDrsAvailable_ = true;
         allStatusDrsAvailable_.clear();
@@ -676,6 +665,11 @@ MainWindow::MainWindow(QWidget* parent)
     connect(engineSink_, &EngineSink::binaryReady, this, &MainWindow::onEngineBinary);
     connect(engineSink_, &EngineSink::seekFlushReady, this,
             [this](const std::shared_ptr<EngineSeekFlush>& flush) {
+        // The authoritative flush for the pending seek separates old-cursor rows
+        // (dropped) from new-cursor rows (held until the history is installed).
+        if (flush && flush->authoritativeSeek && playbackSeekInstalling_ &&
+            flush->requestId == playbackSeekGeneration_)
+            playbackSeekFlushReceived_ = true;
         if (playback_) playback_->handleSeekFlush(flush);
     });
     connect(engineSink_, &EngineSink::pairStateReady, this,
@@ -1512,6 +1506,7 @@ void MainWindow::logAdditionalDiagnostics(const QString& reason) {
 
 void MainWindow::setReduceAnimations(bool on) {
     settings.setValue("ui/reduceAnimations", on);
+    if (toolbar_) toolbar_->setReduceAnimations(on);
     if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
         map->setReduceAnimations(on);
 }
@@ -1776,6 +1771,9 @@ QString MainWindow::recreateEngine() {
                       serializeTeamColorOverrides(cfg.teamColorOverrides));
     cfg.binaryPlayback  = true;
     cfg.sparseV6Playback = true;
+    // As Electron: V6 seek/history payloads arrive as typed column blocks read
+    // on a second archive handle, instead of per-row JSON patches.
+    cfg.columnarV6History = true;
     cfg.hotRowsAsJson   = false;
     cfg.pairEnabled     = settings.value("pairing/enabled", false).toBool();
     cfg.pairPort        = 20779;
@@ -1874,6 +1872,24 @@ void MainWindow::showRecordingError(const QString& operation, const QString& mes
     recordingErrorDialog_->activateWindow();
 }
 
+void MainWindow::resetSeekGate() {
+    playbackSeekInstalling_ = false;
+    playbackSeekFlushReceived_ = false;
+    playbackSeekReplay_.clear();
+    playbackSeekReplayBytes_ = 0;
+}
+
+// Electron caps the held seek rows at 64 MiB, dropping the oldest first.
+void MainWindow::bufferSeekReplay(const QByteArray& data, bool binary) {
+    constexpr qsizetype kMaxSeekReplayBytes = 64 * 1024 * 1024;
+    playbackSeekReplay_.push_back({data, binary});
+    playbackSeekReplayBytes_ += data.size();
+    qsizetype drop = 0;
+    while (playbackSeekReplayBytes_ > kMaxSeekReplayBytes && drop < playbackSeekReplay_.size())
+        playbackSeekReplayBytes_ -= playbackSeekReplay_[drop++].data.size();
+    if (drop > 0) playbackSeekReplay_.remove(0, drop);
+}
+
 void MainWindow::onEngineRow(const QByteArray& json) {
     // EngineSink coalesces cold/control traffic into JSONL. Process each row in
     // order while retaining only one GUI callback for the whole producer burst.
@@ -1898,14 +1914,21 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     // inPlayback_ before the following initial snapshot rows are routed.
     if (playback_ && playback_->handleControlRow(json)) return;
 
+    // Playback seek barrier (see playbackSeekInstalling_). Protocol rows describe
+    // the loaded file, not the cursor, and are never held back.
+    if (inPlayback_ && playbackSeekInstalling_ &&
+        !json.contains("\"type\":\"protocol_status\"") &&
+        !json.contains("\"type\":\"protocol_warning\"")) {
+        if (playbackSeekFlushReceived_) bufferSeekReplay(json, false);
+        return;
+    }
+
     std::optional<PlaybackDecodedRow> playbackDecoded;
     std::optional<tnrp::AnyRow> parsed;
-    const QByteArray* normalizedJson = &json;
     const QJsonObject* sparseObject = nullptr;
     if (inPlayback_) {
         playbackDecoded = playbackPatchMerger_.decode(json);
         if (!playbackDecoded) return;
-        normalizedJson = &playbackDecoded->normalizedJson;
         if (playbackDecoded->sparse)
             sparseObject = &playbackDecoded->normalizedObject;
     } else {
@@ -1913,19 +1936,6 @@ void MainWindow::onEngineRow(const QByteArray& json) {
         if (!parsed) return;
     }
     tnrp::AnyRow& row = inPlayback_ ? playbackDecoded->row : *parsed;
-
-    if (inPlayback_ && playbackSeekInstalling_) {
-        const QByteArray key("\"type\":\"");
-        const qsizetype begin = normalizedJson->indexOf(key);
-        if (begin >= 0) {
-            const qsizetype value = begin + key.size();
-            const qsizetype end = normalizedJson->indexOf('"', value);
-            if (end > value)
-                pendingSeekStateRows_.insert(normalizedJson->mid(value, end - value),
-                                             *normalizedJson);
-        }
-        return;
-    }
 
     // Track the active packet format so UI labels resolve through the library's
     // i18n catalog (tnr::Labels). The engine emits protocol_status on connect and
@@ -1987,7 +1997,10 @@ void MainWindow::onEngineBinary(const QByteArray& batch) {
         ++diagnosticBinaryCallbacks_;
         diagnosticBinaryBytes_ += static_cast<quint64>(batch.size());
     }
-    if (inPlayback_ && playbackSeekInstalling_) return;
+    if (inPlayback_ && playbackSeekInstalling_) {
+        if (playbackSeekFlushReceived_) bufferSeekReplay(batch, true);
+        return;
+    }
 
     // Every sample still enters SessionModel, but panel widgets need only the
     // newest telemetry/position snapshot from a producer burst.  Publishing a
@@ -2098,6 +2111,8 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row,
         lastSafetyCarStatus_ = sc;
         dirtySession_ = true; dirtyTrackMapSession_ = true; scheduleUiRefresh();
     } else if (const auto* ev = std::get_if<tnrp::RaceEventRow>(&row)) {
+        // Electron resets its live store on session end, blanking the cards.
+        if (ev->code == "SEND" && !inPlayback_ && overviewPage_) overviewPage_->resetLiveData();
         if (ev->code == "SSTA") {
             if (sessionPage_) sessionPage_->clearEvents();
             if (standingsPage_) standingsPage_->resetForNewSession();
@@ -2367,8 +2382,28 @@ void MainWindow::updatePlaybackDataRequirements() {
     uint32_t stream = bit(4) | bit(5) | bit(6) | bit(8) | bit(14);
     uint32_t history = 0;
     QVector<tnr::GraphSection> sections;
+    // TNRD V6 data types, as Electron's DATA_CONSUMERS (historyDependencies.ts):
+    // the engine streams only `v6Types` and extracts only `v6HistoryTypes`, so
+    // a V6 seek decodes the visible charts' fields rather than every type.
+    std::vector<uint8_t> v6Types{1, 24};   // global clock
+    std::vector<uint8_t> v6HistoryTypes;
+    const auto addTypes = [&](std::initializer_list<uint8_t> types, bool withHistory) {
+        v6Types.insert(v6Types.end(), types);
+        if (withHistory) v6HistoryTypes.insert(v6HistoryTypes.end(), types);
+    };
+    // Electron's v6TypesForRowMask.
+    const auto typesForRowMask = [&](uint32_t mask, bool withHistory) {
+        if (mask & bit(1)) addTypes({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, withHistory);
+        if (mask & bit(2)) addTypes({7, 13, 15, 16, 17, 18, 19, 20}, withHistory);
+        if (mask & bit(3)) addTypes({12, 14}, withHistory);
+        if (mask & bit(10)) addTypes({13}, withHistory);
+        if (mask & (bit(4) | bit(7))) addTypes({24}, withHistory);
+        if (mask & bit(11)) addTypes({21}, withHistory);
+        if (mask & bit(12)) addTypes({22}, withHistory);
+        if (mask & bit(13)) addTypes({23}, withHistory);
+    };
     switch (currentPage_) {
-        case Overview:
+        case Overview: {
             stream |= bit(1) | bit(2) | bit(3) | bit(4);
             history |= bit(1) | bit(2) | bit(3);
             sections = {tnr::GraphSection::OverviewTelemetry,
@@ -2376,30 +2411,54 @@ void MainWindow::updatePlaybackDataRequirements() {
                         tnr::GraphSection::OverviewTyreInner,
                         tnr::GraphSection::OverviewTyreBrake,
                         tnr::GraphSection::OverviewTyreWear};
+            const OverviewLayout layout = overviewPage_ ? overviewPage_->loadLayout() : OverviewLayout{};
+            const auto any = [](const auto& flags) {
+                return std::any_of(flags.begin(), flags.end(), [](bool on) { return on; });
+            };
+            if (any(layout.statCards))
+                for (uint8_t type = 1; type <= 24; ++type) v6Types.push_back(type);
+            if (layout.showChart) addTypes({1, 2, 16}, true);
+            if (layout.tyreView == OverviewLayout::TyreCharts) {
+                const auto& charts = layout.tyreChartVisible;
+                if (charts[0] || charts[1] || charts[2]) addTypes({8, 9, 10}, true);
+                if (charts[3]) addTypes({12}, true);
+            } else if (any(layout.tyreCardVisible)) {
+                addTypes({8, 9, 10}, false);
+                addTypes({14}, false);
+            }
+            if (any(layout.dmgCards)) addTypes({14}, false);
             break;
+        }
         case Analyze:
             history |= analyzePage_ ? analyzePage_->playbackRowMask()
                                     : bit(1) | bit(2) | bit(4);
             stream |= history;
+            typesForRowMask(history, true);
             break;
         case Standings:
             stream |= bit(2) | bit(4) | bit(7) | bit(8) | bit(9);
+            addTypes({24, 13, 7, 15, 16, 17, 18, 20}, false);
             break;
         case Session:
             stream |= bit(5) | bit(6) | bit(7) | bit(8) | bit(13);
+            addTypes({24, 23}, false);
             break;
         case Tyres:
             stream |= bit(1) | bit(3) | bit(5) | bit(10);
             history |= bit(1) | bit(3);
             sections = {tnr::GraphSection::TyreSurface, tnr::GraphSection::TyreInner,
                         tnr::GraphSection::TyreBrake, tnr::GraphSection::TyreWear};
+            addTypes({13, 8, 9, 10, 12, 14}, false);
+            addTypes({8, 9, 10, 12}, true);
             break;
         case Strategy:
             stream |= bit(15);
+            addTypes({15, 13, 12, 24}, false);
             break;
         case Input:
             stream |= bit(1); history |= bit(1);
             if (inputPage_) sections = inputPage_->chartSections();
+            addTypes({3, 4, 5, 6}, true);
             break;
         case Power:
             stream |= bit(2); history |= bit(2);
@@ -2407,10 +2466,13 @@ void MainWindow::updatePlaybackDataRequirements() {
                         tnr::GraphSection::PowerHarvest,
                         tnr::GraphSection::PowerStore,
                         tnr::GraphSection::PowerFuel};
+            addTypes({15, 16, 17, 18, 19, 20}, false);
+            addTypes({15, 16, 17, 18, 19}, true);
             break;
         case Misc:
             stream |= bit(11) | bit(12); history |= bit(11) | bit(12);
             if (miscPage_) sections = miscPage_->chartSections();
+            addTypes({21, 22}, true);
             break;
         default:
             break;
@@ -2419,6 +2481,9 @@ void MainWindow::updatePlaybackDataRequirements() {
     float windowSeconds = currentPage_ == Analyze ? 0.0f : 30.0f;
     bool sawFinite = false;
     bool sawLap = currentPage_ == Analyze;
+    bool sawStint = false;
+    for (tnr::GraphSection section : sections)
+        sawStint = sawStint || model_->effectiveChartWindow(section) == ChartWindow::StintLaps;
     for (tnr::GraphSection section : sections) {
         const ChartWindow window = model_->effectiveChartWindow(section);
         if (window == ChartWindow::AllLaps || window == ChartWindow::StintLaps) {
@@ -2436,7 +2501,14 @@ void MainWindow::updatePlaybackDataRequirements() {
         }
     }
     if (!sawFinite && sawLap) windowSeconds = 0.0f;
-    playback_->setDataRequirements(stream, history, windowSeconds);
+    // Electron's AppShell extras. Aero (7), tyre state (13) and brake bias (20)
+    // are edge-encoded in V6 — recorded only on change — so any history request
+    // carries them or a value last changed laps ago would stay missing after a
+    // seek. Stint Laps needs tyre state and fuel (13, 15) to find the stint.
+    if (history) v6HistoryTypes.insert(v6HistoryTypes.end(), {7, 13, 20});
+    if (sawStint) addTypes({13, 15}, true);
+    playback_->setDataRequirements(stream, history, windowSeconds,
+                                   std::move(v6Types), std::move(v6HistoryTypes));
 
     if (!inPlayback_) return;
     if (playbackSparseRebuildPending_) {
@@ -2453,12 +2525,17 @@ void MainWindow::updatePlaybackDataRequirements() {
         if (currentLap) requestedLaps.insert(currentLap->lapNum);
         for (int lap : analyzePage_->requestedPlaybackLaps()) requestedLaps.insert(lap);
     }
+    const uint32_t lapMask = history == 0 ? 0u : history | bit(4);
     for (tnr::GraphSection section : sections) {
         const ChartWindow window = model_->effectiveChartWindow(section);
-        // Distance/lap-relative charts read from LapBlock rather than the rolling
-        // timeline. Always materialise their primary lap explicitly; relying on
-        // the generic history window left only packets streamed after a tab switch.
-        if (chartWindowIsDistance(window) && currentLap)
+        // Distance/lap-relative charts read their primary lap from LapBlock.
+        // The seek/window history (and the stream carrying it across the line)
+        // normally installs that lap already; Electron reads indexed lap data
+        // only for comparison laps. Fetch the current lap only when the active
+        // timeline does not hold it — an indexed lap read renders the whole lap
+        // as JSON under the engine lock, which made every seek and lap change slow.
+        if (chartWindowIsDistance(window) && currentLap &&
+            !model_->playbackLapCovered(currentLap->lapNum, lapMask))
             requestedLaps.insert(currentLap->lapNum);
         int lap = 0;
         if (window == ChartWindow::SelectedLap) lap = model_->referenceLap(section);
@@ -2467,7 +2544,6 @@ void MainWindow::updatePlaybackDataRequirements() {
             lap = currentLap->lapNum - 1;
         if (lap > 0) requestedLaps.insert(lap);
     }
-    const uint32_t lapMask = history == 0 ? 0u : history | bit(4);
     for (int lap : requestedLaps) {
         const uint32_t missing = model_->missingPlaybackLapMask(lap, lapMask);
         if (missing) playback_->requestLapData(lap, missing);

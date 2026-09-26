@@ -1,7 +1,9 @@
 #pragma once
 
+#include <QApplication>
 #include <QColor>
 #include <QHash>
+#include <QPalette>
 #include <QString>
 
 #include <cmath>
@@ -15,25 +17,44 @@
 
 namespace tnr {
 
+// Electron picks a separate, darker shade of every data colour on its light
+// theme so it stays readable on a pale background. Mirror that by deriving the
+// theme from the active palette.
+inline bool isDarkTheme() {
+    return QApplication::palette().color(QPalette::Window).lightness() < 128;
+}
+
+// Pick the Electron dark- or light-theme variant of a colour.
+inline QColor themed(const char* dark, const char* light) {
+    return QColor(isDarkTheme() ? dark : light);
+}
+
+// Compound colours (Electron's --compound-* CSS variables, dark / light).
+inline QColor compoundSoftColor()   { return themed("#e8002d", "#c8001a"); }
+inline QColor compoundMediumColor() { return themed("#ffd700", "#765900"); }
+inline QColor compoundHardColor()   { return themed("#c8c8c8", "#555555"); }
+inline QColor compoundInterColor()  { return themed("#39b54a", "#1e7a2e"); }
+inline QColor compoundWetColor()    { return themed("#4488ff", "#1a55bb"); }
+
 // token → QColor. An invalid QColor() means "use the widget default".
 inline QColor tokenQColor(const std::string& token) {
-    if (token == "pos")            return QColor("#37872D");
+    if (token == "pos")            return themed("#37872D", "#137333");
     if (token == "neg")            return QColor("#C4162A");
-    if (token == "warn")           return QColor("#d4ad04");
-    if (token == "warnAlt")        return QColor("#c47d0e");
-    if (token == "info")           return QColor("#5794F2");
-    if (token == "ice")            return QColor("#5794F2");
-    if (token == "mguk")           return QColor("#FADE2A");
-    if (token == "fuel")           return QColor("#F0A500");
-    if (token == "off")            return QColor("#7a7a7a");
-    if (token == "wear1")          return QColor("#73BF69");
-    if (token == "wear2")          return QColor("#A8D436");
-    if (token == "wear3")          return QColor("#FF9830");
-    if (token == "compoundSoft")   return QColor("#e8002d");
-    if (token == "compoundMedium") return QColor("#ffd700");
-    if (token == "compoundHard")   return QColor();          // default text
-    if (token == "compoundInter")  return QColor("#39b54a");
-    if (token == "compoundWet")    return QColor("#4488ff");
+    if (token == "warn")           return themed("#d4ad04", "#8B5200");
+    if (token == "warnAlt")        return themed("#c47d0e", "#A04300");
+    if (token == "info")           return themed("#5794F2", "#0B57D0");
+    if (token == "ice")            return themed("#5794F2", "#0B57D0");
+    if (token == "mguk")           return themed("#FADE2A", "#765900");
+    if (token == "fuel")           return themed("#F0A500", "#A04300");
+    if (token == "off")            return themed("#7a7a7a", "#565B70");
+    if (token == "wear1")          return themed("#73BF69", "#137333");
+    if (token == "wear2")          return themed("#A8D436", "#5F7418");
+    if (token == "wear3")          return themed("#FF9830", "#A04300");
+    if (token == "compoundSoft")   return compoundSoftColor();
+    if (token == "compoundMedium") return compoundMediumColor();
+    if (token == "compoundHard")   return compoundHardColor();
+    if (token == "compoundInter")  return compoundInterColor();
+    if (token == "compoundWet")    return compoundWetColor();
     return QColor();   // neutral / unknown → default
 }
 
