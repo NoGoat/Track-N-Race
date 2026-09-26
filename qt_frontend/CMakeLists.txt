@@ -117,12 +117,16 @@ set(SOURCES
     src/components/AnalyzeMetrics.cpp
     src/components/AnalyzeChart.h
     src/components/AnalyzeChart.cpp
+    src/components/AnalyzeInputComparison.h
+    src/components/AnalyzeInputComparison.cpp
     src/components/AnalyzeMapComparison.h
     src/components/AnalyzeMapComparison.cpp
     src/components/AnalyzePage.h
     src/components/AnalyzePage.cpp
     src/components/SettingsDialog.h
     src/components/SettingsDialog.cpp
+    src/components/PairingQrCode.h
+    src/components/PairingQrCode.cpp
     src/components/TyresPage.h
     src/components/TyresPage.cpp
     src/components/TyreCardsWidget.h
@@ -176,6 +180,10 @@ set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track-N-Race - Qt"
 # runtime via QApplication::applicationVersion()).
 target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(native_recorder PRIVATE tnrp ${QT_LIBS})
+if(WIN32)
+    # GetProcessMemoryInfo backs the optional one-second diagnostics sampler.
+    target_link_libraries(native_recorder PRIVATE psapi)
+endif()
 
 qt_add_shaders(native_recorder "tnr_chart_shaders"
     PREFIX "/shaders"

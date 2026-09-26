@@ -40,12 +40,33 @@ class QLabel;
 class QProgressBar;
 class QThread;
 class QMessageBox;
+class QJsonObject;
 
 struct UdpForwardTargetSetting {
     QString address;
     int     port = 20777;
 
     bool operator==(const UdpForwardTargetSetting&) const = default;
+};
+
+struct PairDeviceState {
+    QString id;
+    QString name;
+    qint64 pairedAt = 0;
+    qint64 lastSeenAt = 0;
+    bool connected = false;
+};
+
+struct PairServiceState {
+    bool enabled = false;
+    QString serverId;
+    int port = 20779;
+    bool pairingOpen = false;
+    qint64 pairingExpiresAt = 0;
+    QString matchingCode;
+    QString qrPayload;
+    QVector<PairDeviceState> devices;
+    QString error;
 };
 
 class MainWindow : public QMainWindow {
@@ -141,8 +162,15 @@ public:
     void    setToastDurationSecs(int s) { settings.setValue("ui/bannerDuration", s); }
     bool    updateChecksEnabled() const { return settings.value("updates/enabled", true).toBool(); }
     void    setUpdateChecksEnabled(bool on) { settings.setValue("updates/enabled", on); }
+    bool    additionalLoggingEnabled() const { return settings.value("debug/additionalLogging", false).toBool(); }
+    void    setAdditionalLoggingEnabled(bool on);
+    bool    memoryLogEnabled() const { return settings.value("debug/memoryLog", false).toBool(); }
+    void    setMemoryLogEnabled(bool on);
     QString currentProtocolOverride() const { return settings.value("protocolOverride", "auto").toString(); }
     void    setProtocolOverride(const QString& ovr);
+    QByteArray teamColorCatalogJson() const;
+    QByteArray teamColorOverridesJson() const;
+    void setTeamColorOverridesJson(const QByteArray& json);
     int     lastDetectedProtocolFormat() const { return lastDetectedProtocolFormat_; }
     int     detectedProtocolWarningFormat() const { return detectedProtocolWarningFormat_; }
     int     forcedProtocolWarningFormat() const { return forcedProtocolWarningFormat_; }
@@ -155,9 +183,15 @@ public:
     QString applyUdpConfiguration(int port, const QString& bindAddress,
                                   bool forwardingEnabled,
                                   const QVector<UdpForwardTargetSetting>& targets);
+    const PairServiceState& pairServiceState() const { return pairServiceState_; }
+    void setPairServiceEnabled(bool enabled);
+    void openPairingWindow();
+    void closePairingWindow();
+    void removePairDevice(const QString& id);
 
 signals:
     void protocolWarningChanged(int detectedFormat, int forcedFormat);
+    void pairServiceStateChanged();
 
 private slots:
     // Receives a coalesced JSONL batch (cold/control) from the libtnrp engine
@@ -266,8 +300,14 @@ private:
     // engineSink_ marshals its JSON rows onto the GUI thread → onEngineRow().
     std::unique_ptr<tnrp::Engine> engine_;
     EngineSink*                   engineSink_ = nullptr;
+    PairServiceState              pairServiceState_;
     void applyEngineLogging();   // push wantRecord/outputDirectory to the engine
     QString recreateEngine();    // stop/create/start using the current persisted host config
+    void receivePairState(const QByteArray& publicStateJson,
+                          const QByteArray& persistedStateJson,
+                          const QString& fallbackError = {});
+    void syncPairStateFromEngine(const QString& fallbackError = {});
+    void persistPairStateFromEngine();
     bool handleRecordingErrorRow(const QByteArray& json);
     void showRecordingError(const QString& operation, const QString& message,
                             const QString& path);
@@ -287,6 +327,22 @@ private:
     QTimer*        hotFillTimer_ = nullptr;
     void feedHotSmoother(const tnrp::AnyRow& row);
     void onHotFillTick();
+
+    // Optional diagnostics. The launch/fatal log in Diagnostics remains active
+    // regardless of these settings; this timer only emits the detailed native
+    // pipeline health snapshot selected on the Debug settings page.
+    QTimer* diagnosticTimer_ = nullptr;
+    qint64 diagnosticStartedAtMs_ = 0;
+    quint64 diagnosticJsonRows_ = 0;
+    quint64 diagnosticJsonBytes_ = 0;
+    quint64 diagnosticBinaryCallbacks_ = 0;
+    quint64 diagnosticBinaryBytes_ = 0;
+    bool diagnosticWarnedNoDatagrams_ = false;
+    bool diagnosticWarnedNoOutput_ = false;
+    bool diagnosticWarnedNoConsumerMask_ = false;
+    void resetAdditionalDiagnostics();
+    void logAdditionalDiagnostics(const QString& reason);
+    QJsonObject memoryDiagnosticsSnapshot() const;
 
     // ── Persistence ───────────────────────────────────────────────
     QSettings settings{ "TrackNRace", "NativeRecorder" };

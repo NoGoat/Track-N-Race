@@ -67,6 +67,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QHostInfo>
+#include <QRegularExpression>
 
 #include <algorithm>
 #include <exception>
@@ -75,8 +77,57 @@
 
 #include <tnrp/Engine.h>
 #include <tnrp/Config.h>
+#include <tnrp/TeamColors.h>
 #include <tnrp/AeroMode.h>
 #include <tnrp/BinaryRows.h>
+
+namespace {
+tnrp::TeamColorOverrides parseTeamColorOverrides(const QByteArray& json) {
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(json, &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()) return {};
+
+    tnrp::TeamColorOverrides parsed;
+    static const QRegularExpression teamIdPattern(QStringLiteral("^[0-9]+$"));
+    static const QRegularExpression colorPattern(
+        QStringLiteral("^#[0-9A-Fa-f]{6}$"));
+    const QJsonObject root = document.object();
+    for (const int format : {2024, 2025, 2026}) {
+        const QJsonValue teamsValue = root.value(QString::number(format));
+        if (!teamsValue.isObject()) continue;
+        const QJsonObject teams = teamsValue.toObject();
+        for (auto it = teams.constBegin(); it != teams.constEnd(); ++it) {
+            if (!teamIdPattern.match(it.key()).hasMatch() || !it.value().isString())
+                continue;
+            bool idOk = false;
+            const uint teamId = it.key().toUInt(&idOk);
+            if (!idOk || teamId > std::numeric_limits<uint16_t>::max()) continue;
+            const QString value = it.value().toString();
+            if (value == QStringLiteral("livery") && format != 2024) {
+                parsed[static_cast<uint16_t>(format)][static_cast<uint16_t>(teamId)] =
+                    "livery";
+            } else if (colorPattern.match(value).hasMatch()) {
+                parsed[static_cast<uint16_t>(format)][static_cast<uint16_t>(teamId)] =
+                    value.toUpper().toStdString();
+            }
+        }
+    }
+    return tnrp::sanitizeTeamColorOverrides(parsed);
+}
+
+QByteArray serializeTeamColorOverrides(const tnrp::TeamColorOverrides& overrides) {
+    QJsonObject root;
+    for (const auto& [format, teams] : overrides) {
+        QJsonObject serializedTeams;
+        for (const auto& [teamId, value] : teams)
+            serializedTeams.insert(QString::number(teamId),
+                                   QString::fromStdString(value));
+        if (!serializedTeams.isEmpty())
+            root.insert(QString::number(format), serializedTeams);
+    }
+    return QJsonDocument(root).toJson(QJsonDocument::Compact);
+}
+}
 
 // std::optional cache → nullable pointer for the page update methods.
 template <class T>
@@ -322,7 +373,15 @@ MainWindow::MainWindow(QWidget* parent)
     playback_->setShowLabels(toolbarLabelsEnabled());   // match the toolbar labels option
     playback_->setDensityMode(densitySection(tnr::CompactSection::PlaybackBar));
     connect(playback_, &PlaybackController::playbackDriverCatalogChanged,
-            this, &MainWindow::refreshPlaybackDriverSelector);
+            this, [this] {
+        refreshPlaybackDriverSelector();
+        if (inPlayback_ && analyzePage_ && playback_)
+            analyzePage_->setPrimaryCatalog(playback_->playbackLapCatalog());
+    });
+    connect(analyzePage_, &AnalyzePage::primaryLapDataRequested,
+            playback_, &PlaybackController::requestAnalysisLapData);
+    connect(playback_, &PlaybackController::analysisLapDataReady,
+            analyzePage_, &AnalyzePage::installPrimaryLap);
     connect(toolbar_, &AppToolbar::playbackDriverChanged, this, [this](int driverIndex) {
         if (!inPlayback_ || !playback_ ||
             playback_->tnrdVersion() != QStringLiteral("TNRD_V6") ||
@@ -619,6 +678,15 @@ MainWindow::MainWindow(QWidget* parent)
             [this](const std::shared_ptr<EngineSeekFlush>& flush) {
         if (playback_) playback_->handleSeekFlush(flush);
     });
+    connect(engineSink_, &EngineSink::pairStateReady, this,
+            [this](const QByteArray& publicState, const QByteArray& persistedState) {
+        receivePairState(publicState, persistedState);
+    });
+    connect(engineSink_, &EngineSink::pairDiagnosticReady, this,
+            [this](const QString& message) {
+        if (additionalLoggingEnabled())
+            qInfo("[pair] %s", qUtf8Printable(message));
+    });
 
     const QString udpError = recreateEngine();
     if (udpError.startsWith("engine-startup:")) {
@@ -637,6 +705,22 @@ MainWindow::MainWindow(QWidget* parent)
     tnr::diagnostics::setFatalFlushHandler([this] {
         if (engine_) engine_->flushRecording();
     });
+
+    diagnosticTimer_ = new QTimer(this);
+    diagnosticTimer_->setInterval(10'000);
+    connect(diagnosticTimer_, &QTimer::timeout, this,
+            [this] { logAdditionalDiagnostics(QStringLiteral("periodic")); });
+    if (additionalLoggingEnabled()) {
+        resetAdditionalDiagnostics();
+        diagnosticTimer_->start();
+        QTimer::singleShot(0, this, [this] {
+            if (additionalLoggingEnabled())
+                logAdditionalDiagnostics(QStringLiteral("bridge-started"));
+        });
+    }
+    tnr::diagnostics::setMemorySnapshotProvider(
+        [this] { return memoryDiagnosticsSnapshot(); });
+    tnr::diagnostics::setMemoryLoggingEnabled(memoryLogEnabled());
 
     // Forward-fill timer: re-emits the last hot row during dropped/late frames so
     // the live charts stay smooth on a lossy link (see HotRowSmoother). Runs at the
@@ -705,8 +789,12 @@ void MainWindow::setTyreGraphLifeMode(bool life) {
 }
 
 MainWindow::~MainWindow() {
+    if (diagnosticTimer_) diagnosticTimer_->stop();
+    tnr::diagnostics::setMemoryLoggingEnabled(false);
+    tnr::diagnostics::setMemorySnapshotProvider({});
     tnr::diagnostics::setFatalFlushHandler({});
     if (playback_) playback_->shutdown();
+    persistPairStateFromEngine();
     // The engine's destructor stops the UDP thread and flushes/closes any active
     // .tnrd stream. Reset explicitly so it tears down before the sink it points at.
     engine_.reset();
@@ -1240,6 +1328,188 @@ void MainWindow::setDeltaUpdateInterval(int ms) {
     lastToolbarDeltaUpdateMs_ = -1;
 }
 
+void MainWindow::resetAdditionalDiagnostics() {
+    diagnosticStartedAtMs_ = QDateTime::currentMSecsSinceEpoch();
+    diagnosticJsonRows_ = 0;
+    diagnosticJsonBytes_ = 0;
+    diagnosticBinaryCallbacks_ = 0;
+    diagnosticBinaryBytes_ = 0;
+    diagnosticWarnedNoDatagrams_ = false;
+    diagnosticWarnedNoOutput_ = false;
+    diagnosticWarnedNoConsumerMask_ = false;
+}
+
+void MainWindow::setAdditionalLoggingEnabled(bool on) {
+    const bool changed = additionalLoggingEnabled() != on;
+    settings.setValue("debug/additionalLogging", on);
+    if (engine_) engine_->setDiagnosticsEnabled(on);
+    if (!diagnosticTimer_) return;
+
+    if (on) {
+        resetAdditionalDiagnostics();
+        diagnosticTimer_->start();
+        logAdditionalDiagnostics(changed ? QStringLiteral("settings-enabled")
+                                         : QStringLiteral("settings-applied"));
+    } else {
+        diagnosticTimer_->stop();
+        if (changed)
+            qInfo("[telemetry-diagnostics][qt] additional logging disabled");
+    }
+}
+
+void MainWindow::setMemoryLogEnabled(bool on) {
+    settings.setValue("debug/memoryLog", on);
+    tnr::diagnostics::setMemoryLoggingEnabled(on);
+}
+
+QJsonObject MainWindow::memoryDiagnosticsSnapshot() const {
+    const auto number = [](auto value) { return static_cast<double>(value); };
+    QJsonObject snapshot;
+    snapshot["sampled_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    snapshot["mode"] = inPlayback_ ? QStringLiteral("playback")
+                                    : QStringLiteral("realtime");
+    snapshot["renderer_visible"] = renderingActive_;
+    snapshot["active_page"] = static_cast<int>(currentPage_);
+
+    const QJsonObject session = model_ ? model_->retentionDiagnostics() : QJsonObject{};
+    snapshot["session_model"] = session;
+    quint64 retainedBytes = static_cast<quint64>(
+        session.value("estimated_retained_bytes").toDouble());
+
+    if (engine_) {
+        const auto runtime = engine_->runtimeMemoryStats();
+        const auto history = engine_->liveHistoryMemoryStats();
+        const auto strategy = engine_->strategyMemoryStats();
+        const auto writer = engine_->writerMemoryStats();
+
+        QJsonObject runtimeJson;
+        runtimeJson["retained_bytes"] = number(runtime.retainedBytes);
+        runtimeJson["duplicate_cache_used_bytes"] = number(runtime.duplicateCacheUsedBytes);
+        runtimeJson["duplicate_cache_capacity_bytes"] = number(runtime.duplicateCacheCapacityBytes);
+        runtimeJson["latest_row_cache_used_bytes"] = number(runtime.latestRowCacheUsedBytes);
+        runtimeJson["latest_row_cache_capacity_bytes"] = number(runtime.latestRowCacheCapacityBytes);
+        runtimeJson["playback_path_capacity_bytes"] = number(runtime.playbackPathCapacityBytes);
+        runtimeJson["datagrams_processed"] = number(runtime.datagramsProcessed);
+        runtimeJson["parser_rows_produced"] = number(runtime.parserRowsProduced);
+        runtimeJson["parser_binary_bytes_produced"] = number(runtime.parserBinaryBytesProduced);
+        snapshot["engine_runtime"] = runtimeJson;
+
+        QJsonObject historyJson;
+        historyJson["retained_bytes"] = number(history.retainedBytes);
+        historyJson["lap_count"] = number(history.lapCount);
+        historyJson["pinned_lap_count"] = number(history.pinnedLapCount);
+        historyJson["compressed_lap_count"] = number(history.compressedLapCount);
+        historyJson["packed_capacity_bytes"] = number(history.packedCapacityBytes);
+        historyJson["json_rows"] = number(history.jsonRows);
+        historyJson["json_payload_capacity_bytes"] = number(history.jsonPayloadCapacityBytes);
+        historyJson["compressed_capacity_bytes"] = number(history.compressedCapacityBytes);
+        historyJson["queued_jobs"] = number(history.queuedJobs);
+        snapshot["engine_live_history"] = historyJson;
+
+        QJsonObject strategyJson;
+        strategyJson["subscribed"] = strategy.subscribed;
+        strategyJson["retained_bytes"] = number(strategy.retainedBytes);
+        strategyJson["cache_capacity_bytes"] = number(strategy.cacheCapacityBytes);
+        strategyJson["queued_work_items"] = number(strategy.queuedWorkItems);
+        strategyJson["queued_rows"] = number(strategy.queuedRows);
+        strategyJson["queued_retained_bytes"] = number(strategy.queuedRetainedBytes);
+        strategyJson["active_retained_bytes"] = number(strategy.activeRetainedBytes);
+        strategyJson["processor_retained_bytes"] = number(strategy.processor.retainedBytes);
+        strategyJson["rollback_retained_bytes"] = number(strategy.rollback.retainedBytes);
+        snapshot["engine_strategy"] = strategyJson;
+
+        QJsonObject writerJson;
+        writerJson["stream_active"] = writer.streamActive;
+        writerJson["retained_bytes"] = number(writer.retainedBytes);
+        writerJson["queued_events"] = number(writer.queuedEvents);
+        writerJson["queued_retained_bytes"] = number(writer.queuedRetainedBytes);
+        writerJson["rolling_entries"] = number(writer.rollingEntries);
+        writerJson["rolling_payload_bytes"] = number(writer.rollingPayloadBytes);
+        writerJson["rolling_payload_capacity_bytes"] = number(writer.rollingPayloadCapacityBytes);
+        snapshot["recording_writer"] = writerJson;
+
+        retainedBytes += static_cast<quint64>(runtime.retainedBytes) +
+            static_cast<quint64>(history.retainedBytes) +
+            static_cast<quint64>(strategy.retainedBytes) +
+            static_cast<quint64>(writer.retainedBytes);
+    }
+
+    snapshot["estimated_retained_bytes"] = number(retainedBytes);
+    snapshot["byte_basis"] = QStringLiteral(
+        "Qt session-model allocated capacity plus native engine-cache, live-history, strategy, and recording-writer retained capacity; already included in process totals");
+    snapshot["already_included_in_process_totals"] = true;
+    return snapshot;
+}
+
+void MainWindow::logAdditionalDiagnostics(const QString& reason) {
+    if (!additionalLoggingEnabled()) return;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 elapsed = qMax<qint64>(0, now - diagnosticStartedAtMs_);
+    QJsonObject native;
+    tnrp::Engine::LiveDiagnostics live{};
+    if (engine_) {
+        live = engine_->liveDiagnostics();
+        native["udp_running"] = live.udpRunning;
+        native["in_playback"] = live.inPlayback;
+        native["recording"] = live.recording;
+        native["datagrams"] = static_cast<double>(live.datagrams);
+        native["bytes"] = static_cast<double>(live.bytes);
+        native["too_short"] = static_cast<double>(live.tooShort);
+        native["unsupported_format"] = static_cast<double>(live.unsupportedFormat);
+        native["parser_dropped"] = static_cast<double>(live.parserDropped);
+        native["accepted"] = static_cast<double>(live.accepted);
+        native["rows_produced"] = static_cast<double>(live.rowsProduced);
+        native["binary_bytes_produced"] = static_cast<double>(live.binaryBytesProduced);
+        native["no_output"] = static_cast<double>(live.noOutput);
+        native["last_incoming_format"] = live.lastIncomingFormat;
+        native["last_packet_id"] = live.lastPacketId;
+        native["last_datagram_length"] = live.lastDatagramLength;
+        native["last_session_time"] = live.lastSessionTime;
+        native["consumer_row_mask"] = static_cast<double>(live.consumerRowMask);
+        native["consumer_history_mask"] = static_cast<double>(live.consumerHistoryMask);
+        native["consumer_window_seconds"] = live.consumerWindowSeconds;
+        native["udp_error"] = QString::fromStdString(engine_->udpLastError());
+    }
+
+    QJsonObject frontend;
+    frontend["json_rows"] = static_cast<double>(diagnosticJsonRows_);
+    frontend["json_bytes"] = static_cast<double>(diagnosticJsonBytes_);
+    frontend["binary_callbacks"] = static_cast<double>(diagnosticBinaryCallbacks_);
+    frontend["binary_bytes"] = static_cast<double>(diagnosticBinaryBytes_);
+    frontend["rendering_active"] = renderingActive_;
+    frontend["active_page"] = static_cast<int>(currentPage_);
+    frontend["playback_seek_installing"] = playbackSeekInstalling_;
+    frontend["ui_refresh_pending"] = uiRefreshPending_;
+
+    QJsonObject health;
+    health["reason"] = reason;
+    health["elapsed_ms"] = static_cast<double>(elapsed);
+    health["engine_ready"] = engine_ != nullptr;
+    health["mode"] = inPlayback_ ? QStringLiteral("playback")
+                                  : QStringLiteral("realtime");
+    health["native"] = native;
+    health["frontend"] = frontend;
+    const QByteArray encoded = QJsonDocument(health).toJson(QJsonDocument::Compact);
+    qInfo("[telemetry-diagnostics][qt] health: %s", encoded.constData());
+
+    const quint64 produced = live.rowsProduced + live.binaryBytesProduced;
+    if (engine_ && !inPlayback_ && elapsed >= 10'000 && live.datagrams == 0 &&
+        !diagnosticWarnedNoDatagrams_) {
+        diagnosticWarnedNoDatagrams_ = true;
+        qWarning("[telemetry-diagnostics][qt] Listener is running but has received zero UDP datagrams. Check the game UDP destination IP/port, network interface, firewall, and whether UDP telemetry is enabled.");
+    } else if (engine_ && !inPlayback_ && live.datagrams > 0 && produced == 0 &&
+               !diagnosticWarnedNoOutput_) {
+        diagnosticWarnedNoOutput_ = true;
+        qWarning("[telemetry-diagnostics][qt] UDP datagrams are reaching the native socket but the parser has produced no telemetry output. Inspect formats, packet IDs, short/unsupported packets, parser drops, and the consumer masks in the health snapshot.");
+    }
+    if (engine_ && elapsed >= 10'000 && live.consumerRowMask == 0 &&
+        !diagnosticWarnedNoConsumerMask_) {
+        diagnosticWarnedNoConsumerMask_ = true;
+        qWarning("[telemetry-diagnostics][qt] Native consumerRowMask is still zero; no visible Qt page has declared telemetry requirements.");
+    }
+}
+
 void MainWindow::setReduceAnimations(bool on) {
     settings.setValue("ui/reduceAnimations", on);
     if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
@@ -1276,6 +1546,23 @@ void MainWindow::setTrackMapIdleTimeout(int secs) {
 void MainWindow::setProtocolOverride(const QString& ovr) {
     settings.setValue("protocolOverride", ovr);
     if (engine_) engine_->setOverride(tnrp::overrideFromString(ovr.toStdString()));
+}
+
+QByteArray MainWindow::teamColorCatalogJson() const {
+    return engine_ ? QByteArray::fromStdString(engine_->teamColorCatalogJson())
+                   : QByteArrayLiteral("{}");
+}
+
+QByteArray MainWindow::teamColorOverridesJson() const {
+    return serializeTeamColorOverrides(parseTeamColorOverrides(
+        settings.value("teamColorOverrides", QByteArrayLiteral("{}"))
+            .toByteArray()));
+}
+
+void MainWindow::setTeamColorOverridesJson(const QByteArray& json) {
+    const tnrp::TeamColorOverrides overrides = parseTeamColorOverrides(json);
+    settings.setValue("teamColorOverrides", serializeTeamColorOverrides(overrides));
+    if (engine_) engine_->setTeamColorOverrides(overrides);
 }
 
 bool MainWindow::chartDynamicYAxis(tnr::GraphSection section) const {
@@ -1341,6 +1628,132 @@ QString MainWindow::applyUdpConfiguration(
     return recreateEngine();
 }
 
+void MainWindow::receivePairState(const QByteArray& publicStateJson,
+                                  const QByteArray& persistedStateJson,
+                                  const QString& fallbackError) {
+    if (!persistedStateJson.isEmpty()) {
+        settings.setValue("pairing/engineState", persistedStateJson);
+        QJsonParseError persistedError;
+        const QJsonDocument persisted = QJsonDocument::fromJson(
+            persistedStateJson, &persistedError);
+        if (persistedError.error == QJsonParseError::NoError &&
+            persisted.isObject() && persisted.object().value("enabled").isBool()) {
+            settings.setValue("pairing/enabled",
+                              persisted.object().value("enabled").toBool());
+        }
+    }
+
+    PairServiceState next;
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(publicStateJson, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        next.error = fallbackError.isEmpty()
+            ? QStringLiteral("The native paired-display state was invalid.")
+            : fallbackError;
+        pairServiceState_ = std::move(next);
+        emit pairServiceStateChanged();
+        return;
+    }
+
+    const QJsonObject object = document.object();
+    next.enabled = object.value("enabled").toBool(false);
+    next.serverId = object.value("serverId").toString();
+    const int port = object.value("port").toInt(20779);
+    next.port = port >= 1 && port <= 65535 ? port : 20779;
+    next.pairingOpen = object.value("pairingOpen").toBool(false);
+    next.pairingExpiresAt = object.value("pairingExpiresAt").toInteger(0);
+    next.matchingCode = object.value("matchingCode").toString();
+    next.qrPayload = object.value("qrPayload").toString();
+    next.error = object.value("error").toString();
+    if (next.error.isEmpty()) next.error = fallbackError;
+    const QJsonArray devices = object.value("devices").toArray();
+    next.devices.reserve(devices.size());
+    for (const QJsonValue& value : devices) {
+        if (!value.isObject()) continue;
+        const QJsonObject device = value.toObject();
+        const QString id = device.value("id").toString();
+        if (id.isEmpty()) continue;
+        next.devices.push_back({
+            id,
+            device.value("name").toString(),
+            device.value("pairedAt").toInteger(0),
+            device.value("lastSeenAt").toInteger(0),
+            device.value("connected").toBool(false),
+        });
+    }
+    pairServiceState_ = std::move(next);
+    emit pairServiceStateChanged();
+}
+
+void MainWindow::syncPairStateFromEngine(const QString& fallbackError) {
+    if (!engine_) {
+        pairServiceState_.error = fallbackError.isEmpty()
+            ? QStringLiteral("The telemetry engine is not available.")
+            : fallbackError;
+        emit pairServiceStateChanged();
+        return;
+    }
+    const std::string publicState = engine_->pairStateJson();
+    const std::string persistedState = engine_->pairPersistedStateJson();
+    receivePairState(
+        QByteArray(publicState.data(), static_cast<qsizetype>(publicState.size())),
+        QByteArray(persistedState.data(), static_cast<qsizetype>(persistedState.size())),
+        fallbackError);
+}
+
+void MainWindow::persistPairStateFromEngine() {
+    if (!engine_) return;
+    const std::string persistedState = engine_->pairPersistedStateJson();
+    if (persistedState.empty()) return;
+    const QByteArray encoded(persistedState.data(),
+                             static_cast<qsizetype>(persistedState.size()));
+    settings.setValue("pairing/engineState", encoded);
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(encoded, &parseError);
+    if (parseError.error == QJsonParseError::NoError && document.isObject() &&
+        document.object().value("enabled").isBool()) {
+        settings.setValue("pairing/enabled",
+                          document.object().value("enabled").toBool());
+    }
+}
+
+void MainWindow::setPairServiceEnabled(bool enabled) {
+    if (!engine_) {
+        syncPairStateFromEngine();
+        return;
+    }
+    QString error;
+    if (enabled) {
+        std::string nativeError;
+        engine_->pairStart(&nativeError);
+        error = QString::fromStdString(nativeError);
+    } else {
+        engine_->pairStop(true);
+    }
+    syncPairStateFromEngine(error);
+}
+
+void MainWindow::openPairingWindow() {
+    if (!engine_) {
+        syncPairStateFromEngine();
+        return;
+    }
+    engine_->pairOpenWindow();
+    syncPairStateFromEngine();
+}
+
+void MainWindow::closePairingWindow() {
+    if (!engine_) return;
+    engine_->pairCloseWindow();
+    syncPairStateFromEngine();
+}
+
+void MainWindow::removePairDevice(const QString& id) {
+    if (!engine_ || id.isEmpty()) return;
+    engine_->pairRemoveDevice(id.toStdString());
+    syncPairStateFromEngine();
+}
+
 QString MainWindow::recreateEngine() {
     lastRaceLeader_.reset();
     // Config owns forwarding targets, so applying a changed target list requires
@@ -1349,15 +1762,27 @@ QString MainWindow::recreateEngine() {
     // unchanged.
     if (playback_) playback_->setEngine(nullptr);
     if (engine_) engine_->flushRecording();
+    persistPairStateFromEngine();
     engine_.reset();
 
     tnrp::Config cfg;
     cfg.port            = static_cast<uint16_t>(udpPort());
     cfg.bindAddress     = udpBindAddress().toStdString();
     cfg.protocol        = tnrp::overrideFromString(currentProtocolOverride().toStdString());
+    cfg.teamColorOverrides = parseTeamColorOverrides(
+        settings.value("teamColorOverrides", QByteArrayLiteral("{}"))
+            .toByteArray());
+    settings.setValue("teamColorOverrides",
+                      serializeTeamColorOverrides(cfg.teamColorOverrides));
     cfg.binaryPlayback  = true;
     cfg.sparseV6Playback = true;
     cfg.hotRowsAsJson   = false;
+    cfg.pairEnabled     = settings.value("pairing/enabled", false).toBool();
+    cfg.pairPort        = 20779;
+    const QString hostName = QHostInfo::localHostName().trimmed();
+    cfg.pairName        = (hostName.isEmpty() ? QStringLiteral("Track N Race") : hostName)
+                              .toStdString();
+    cfg.pairStateJson   = settings.value("pairing/engineState").toByteArray().toStdString();
     cfg.loggingEnabled  = wantRecord && !outputDirectory.isEmpty() && !inPlayback_;
     cfg.outputDirectory = outputDirectory.toStdString();
     if (udpForwardingEnabled()) {
@@ -1372,6 +1797,7 @@ QString MainWindow::recreateEngine() {
 
     try {
         engine_ = std::make_unique<tnrp::Engine>(cfg, engineSink_);
+        engine_->setDiagnosticsEnabled(additionalLoggingEnabled());
         if (playback_) playback_->setEngine(engine_.get());
         updatePlaybackDataRequirements();
         if (engine_->startUdp()) return {};
@@ -1460,6 +1886,10 @@ void MainWindow::onEngineRow(const QByteArray& json) {
             offset = end + 1;
         }
         return;
+    }
+    if (additionalLoggingEnabled()) {
+        ++diagnosticJsonRows_;
+        diagnosticJsonBytes_ += static_cast<quint64>(json.size());
     }
     if (handleRecordingErrorRow(json)) return;
 
@@ -1553,6 +1983,10 @@ void MainWindow::onEngineRow(const QByteArray& json) {
 // Hot 60 Hz rows (telemetry/motion/motion_ex/positions) as one packed batch —
 // decoded straight into typed structs, no JSON anywhere on this path.
 void MainWindow::onEngineBinary(const QByteArray& batch) {
+    if (additionalLoggingEnabled()) {
+        ++diagnosticBinaryCallbacks_;
+        diagnosticBinaryBytes_ += static_cast<quint64>(batch.size());
+    }
     if (inPlayback_ && playbackSeekInstalling_) return;
 
     // Every sample still enters SessionModel, but panel widgets need only the

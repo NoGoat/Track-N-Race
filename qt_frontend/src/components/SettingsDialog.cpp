@@ -1,19 +1,24 @@
 #include "SettingsDialog.h"
 #include "../ChartGraphicsBackend.h"
+#include "../Diagnostics.h"
 #include "../MainWindow.h"
 #include "../CompactSettings.h"
 #include "../GraphViewSettings.h"
 #include "../IconUtils.h"
 #include "../PresentationScheduler.h"
+#include "PairingQrCode.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QFrame>
+#include <QGroupBox>
 #include <QLabel>
 #include <QCheckBox>
 #include <QRadioButton>
 #include <QComboBox>
+#include <QColorDialog>
 #include <QSlider>
 #include <QSpinBox>
 #include <QLineEdit>
@@ -26,12 +31,16 @@
 #include <QFont>
 #include <QButtonGroup>
 #include <QStackedWidget>
+#include <QScrollArea>
 #include <QListWidget>
 #include <QPalette>
 #include <QApplication>
+#include <QDesktopServices>
 #include <QAbstractItemView>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QIcon>
+#include <QMessageBox>
 #include <QToolButton>
 #include <QStyle>
 #include <QTextBrowser>
@@ -40,7 +49,12 @@
 #include <QTextStream>
 #include <QFontDatabase>
 #include <QRegularExpression>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSignalBlocker>
 #include <QTimer>
+#include <QUrl>
 #include <iterator>
 
 static QFrame* horizontalSeparator() {
@@ -135,6 +149,7 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     struct Page { const char* title; QWidget* widget; };
     const Page pages[] = {
         { "Appearance",    buildAppearancePage()    },
+        { "Team Colors",   buildTeamColorsPage()    },
         { "Compact",       buildCompactPage()       },
         { "Graphs",        buildGraphsPage()        },
         { "Y Axis Behavior", buildYAxisPage()       },
@@ -143,6 +158,8 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
         { "Track Map",     buildTrackMapPage()      },
         { "Notifications", buildNotificationsPage() },
         { "Protocol",      buildProtocolPage()      },
+        { "Paired Devices", buildPairingPage()      },
+        { "Debug",         buildDebugPage()         },
     };
 
     QWidget*     tabBar = new QWidget;
@@ -245,6 +262,176 @@ QWidget* SettingsDialog::makePage(QFormLayout*& formOut) {
 
     formOut = form;
     return page;
+}
+
+QWidget* SettingsDialog::buildPairingPage() {
+    QWidget* page = new QWidget;
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(20, 16, 20, 16);
+    layout->setSpacing(12);
+
+    pairingEnabledCheck_ = new QCheckBox("Enable paired mode", page);
+    QFont enabledFont = pairingEnabledCheck_->font();
+    enabledFont.setBold(true);
+    pairingEnabledCheck_->setFont(enabledFont);
+    layout->addWidget(pairingEnabledCheck_);
+    auto* description = new QLabel(
+        "Let Android displays discover this computer and receive decoded "
+        "telemetry over the local network.", page);
+    description->setWordWrap(true);
+    description->setStyleSheet("color: palette(mid);");
+    layout->addWidget(description);
+
+    pairingContent_ = new QWidget(page);
+    auto* content = new QVBoxLayout(pairingContent_);
+    content->setContentsMargins(0, 4, 0, 0);
+    content->setSpacing(12);
+
+    auto* pairBox = new QGroupBox("Add an Android display", pairingContent_);
+    auto* pairBoxLayout = new QVBoxLayout(pairBox);
+    pairBoxLayout->setContentsMargins(12, 12, 12, 12);
+
+    pairingClosed_ = new QWidget(pairBox);
+    auto* closedLayout = new QHBoxLayout(pairingClosed_);
+    closedLayout->setContentsMargins(0, 0, 0, 0);
+    auto* closedText = new QLabel(
+        "Opens discovery, QR, and matching-code pairing for two minutes.",
+        pairingClosed_);
+    closedText->setWordWrap(true);
+    auto* pairButton = new QPushButton("Pair a device", pairingClosed_);
+    closedLayout->addWidget(closedText, 1);
+    closedLayout->addWidget(pairButton);
+    pairBoxLayout->addWidget(pairingClosed_);
+
+    pairingOpen_ = new QWidget(pairBox);
+    auto* openLayout = new QHBoxLayout(pairingOpen_);
+    openLayout->setContentsMargins(0, 0, 0, 0);
+    openLayout->setSpacing(18);
+    pairingQrLabel_ = new QLabel(pairingOpen_);
+    pairingQrLabel_->setFixedSize(260, 260);
+    pairingQrLabel_->setAlignment(Qt::AlignCenter);
+    pairingQrLabel_->setStyleSheet(
+        "background: white; color: #333; border: 1px solid palette(mid); "
+        "border-radius: 6px;");
+    openLayout->addWidget(pairingQrLabel_);
+    auto* codeColumn = new QWidget(pairingOpen_);
+    auto* codeLayout = new QVBoxLayout(codeColumn);
+    codeLayout->setContentsMargins(0, 10, 0, 10);
+    auto* codeHeading = new QLabel("MATCHING CODE", codeColumn);
+    QFont headingFont = codeHeading->font();
+    headingFont.setBold(true);
+    headingFont.setLetterSpacing(QFont::AbsoluteSpacing, 1.5);
+    codeHeading->setFont(headingFont);
+    pairingCodeLabel_ = new QLabel(codeColumn);
+    QFont codeFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    codeFont.setPointSize(24);
+    codeFont.setBold(true);
+    codeFont.setLetterSpacing(QFont::AbsoluteSpacing, 5);
+    pairingCodeLabel_->setFont(codeFont);
+    pairingCodeLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto* instructions = new QLabel(
+        "Scan the QR in Android Settings, or select this desktop and enter "
+        "the same code.", codeColumn);
+    instructions->setWordWrap(true);
+    auto* cancelButton = new QPushButton("Cancel pairing", codeColumn);
+    codeLayout->addWidget(codeHeading);
+    codeLayout->addWidget(pairingCodeLabel_);
+    codeLayout->addSpacing(6);
+    codeLayout->addWidget(instructions);
+    codeLayout->addStretch(1);
+    codeLayout->addWidget(cancelButton, 0, Qt::AlignLeft);
+    openLayout->addWidget(codeColumn, 1);
+    pairBoxLayout->addWidget(pairingOpen_);
+    content->addWidget(pairBox);
+
+    auto* devicesHeading = subHeading("Saved devices");
+    content->addWidget(devicesHeading);
+    pairingDevicesTable_ = new QTableWidget(pairingContent_);
+    pairingDevicesTable_->setColumnCount(3);
+    pairingDevicesTable_->setHorizontalHeaderLabels({"Device", "State", QString()});
+    pairingDevicesTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    pairingDevicesTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    pairingDevicesTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    pairingDevicesTable_->verticalHeader()->hide();
+    pairingDevicesTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    pairingDevicesTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    pairingDevicesTable_->setShowGrid(false);
+    pairingDevicesTable_->setMinimumHeight(120);
+    pairingDevicesTable_->setMaximumHeight(190);
+    content->addWidget(pairingDevicesTable_);
+    layout->addWidget(pairingContent_);
+
+    pairingErrorLabel_ = new QLabel(page);
+    pairingErrorLabel_->setWordWrap(true);
+    pairingErrorLabel_->setStyleSheet("color: #d44252;");
+    layout->addWidget(pairingErrorLabel_);
+    layout->addStretch(1);
+
+    connect(pairingEnabledCheck_, &QCheckBox::toggled, this,
+            [this](bool enabled) { mainWindow_->setPairServiceEnabled(enabled); });
+    connect(pairButton, &QPushButton::clicked,
+            mainWindow_, &MainWindow::openPairingWindow);
+    connect(cancelButton, &QPushButton::clicked,
+            mainWindow_, &MainWindow::closePairingWindow);
+    connect(mainWindow_, &MainWindow::pairServiceStateChanged,
+            this, &SettingsDialog::refreshPairingUi);
+    refreshPairingUi();
+    return page;
+}
+
+void SettingsDialog::refreshPairingUi() {
+    if (!pairingEnabledCheck_) return;
+    const PairServiceState& state = mainWindow_->pairServiceState();
+    {
+        QSignalBlocker guard(pairingEnabledCheck_);
+        pairingEnabledCheck_->setChecked(state.enabled);
+    }
+    pairingContent_->setVisible(state.enabled);
+    pairingClosed_->setVisible(!state.pairingOpen);
+    pairingOpen_->setVisible(state.pairingOpen);
+    pairingCodeLabel_->setText(state.matchingCode);
+    if (state.pairingOpen && !state.qrPayload.isEmpty()) {
+        const QImage qr = pairingQrCodeImage(state.qrPayload);
+        if (!qr.isNull()) {
+            pairingQrLabel_->setPixmap(QPixmap::fromImage(qr));
+            pairingQrLabel_->setText({});
+        } else {
+            pairingQrLabel_->setPixmap({});
+            pairingQrLabel_->setText("QR payload is too long");
+        }
+    } else {
+        pairingQrLabel_->setPixmap({});
+        pairingQrLabel_->setText("QR unavailable");
+    }
+
+    pairingDevicesTable_->clearSpans();
+    pairingDevicesTable_->clearContents();
+    if (state.devices.isEmpty()) {
+        pairingDevicesTable_->setRowCount(1);
+        auto* empty = new QTableWidgetItem("No Android devices paired.");
+        empty->setFlags(Qt::NoItemFlags);
+        pairingDevicesTable_->setItem(0, 0, empty);
+        pairingDevicesTable_->setSpan(0, 0, 1, 3);
+    } else {
+        pairingDevicesTable_->setRowCount(state.devices.size());
+        for (int row = 0; row < state.devices.size(); ++row) {
+            const PairDeviceState& device = state.devices[row];
+            auto* name = new QTableWidgetItem(
+                device.name.isEmpty() ? QStringLiteral("Android display") : device.name);
+            auto* status = new QTableWidgetItem(device.connected ? "●  Connected" : "●  Offline");
+            status->setForeground(device.connected ? QColor("#4ade80")
+                                                   : palette().color(QPalette::Mid));
+            pairingDevicesTable_->setItem(row, 0, name);
+            pairingDevicesTable_->setItem(row, 1, status);
+            auto* remove = new QPushButton("Remove", pairingDevicesTable_);
+            connect(remove, &QPushButton::clicked, this,
+                    [this, id = device.id] { mainWindow_->removePairDevice(id); });
+            pairingDevicesTable_->setCellWidget(row, 2, remove);
+        }
+    }
+    pairingDevicesTable_->resizeRowsToContents();
+    pairingErrorLabel_->setText(state.error);
+    pairingErrorLabel_->setVisible(!state.error.isEmpty());
 }
 
 QWidget* SettingsDialog::buildProtocolPage() {
@@ -755,6 +942,303 @@ QWidget* SettingsDialog::buildAppearancePage() {
         mainWindow_->setContrastThreshold(f);
     });
     return page;
+}
+
+QWidget* SettingsDialog::buildTeamColorsPage() {
+    auto* page = new QWidget;
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 12, 16, 12);
+    layout->setSpacing(10);
+
+    auto* headingRow = new QHBoxLayout;
+    auto* headingText = new QWidget(page);
+    auto* headingLayout = new QVBoxLayout(headingText);
+    headingLayout->setContentsMargins(0, 0, 0, 0);
+    headingLayout->setSpacing(2);
+    auto* heading = subHeading(QStringLiteral("Team Colors"));
+    auto* description = new QLabel(
+        QStringLiteral("Choose constructor presets, custom fixed colors, or game "
+                       "livery colors for supported formats."), headingText);
+    description->setStyleSheet(QStringLiteral("color:palette(mid);"));
+    headingLayout->addWidget(heading);
+    headingLayout->addWidget(description);
+    headingRow->addWidget(headingText, 1);
+
+    auto* formatControl = new QWidget(page);
+    auto* formatLayout = new QHBoxLayout(formatControl);
+    formatLayout->setContentsMargins(0, 0, 0, 0);
+    formatLayout->setSpacing(0);
+    auto* formatGroup = new QButtonGroup(formatControl);
+    formatGroup->setExclusive(true);
+    for (const int format : {2024, 2025, 2026}) {
+        auto* button = new SegmentButton(formatControl);
+        button->setText(QString::number(format));
+        button->setCheckable(true);
+        button->setAutoRaise(true);
+        button->setMinimumWidth(62);
+        formatGroup->addButton(button, format);
+        formatLayout->addWidget(button);
+        if (format == teamColorFormat_) button->setChecked(true);
+    }
+    connect(formatGroup, &QButtonGroup::idClicked, this, [this](int format) {
+        teamColorFormat_ = format;
+        refreshTeamColorRows();
+    });
+    headingRow->addWidget(formatControl);
+    layout->addLayout(headingRow);
+
+    auto* scroll = new QScrollArea(page);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setMinimumSize(810, 460);
+    teamColorRows_ = new QWidget(scroll);
+    teamColorRowsLayout_ = new QVBoxLayout(teamColorRows_);
+    teamColorRowsLayout_->setContentsMargins(0, 0, 6, 0);
+    teamColorRowsLayout_->setSpacing(10);
+    scroll->setWidget(teamColorRows_);
+    layout->addWidget(scroll, 1);
+
+    loadTeamColorConfiguration();
+    refreshTeamColorRows();
+    return page;
+}
+
+void SettingsDialog::loadTeamColorConfiguration() {
+    teamColorCatalog_.clear();
+    teamColorOverrides_.clear();
+    if (!mainWindow_) return;
+
+    QJsonParseError error;
+    const QJsonDocument catalogDocument = QJsonDocument::fromJson(
+        mainWindow_->teamColorCatalogJson(), &error);
+    if (error.error == QJsonParseError::NoError && catalogDocument.isObject()) {
+        const QJsonObject root = catalogDocument.object();
+        for (const int format : {2024, 2025, 2026}) {
+            const QJsonArray teams = root.value(QString::number(format)).toArray();
+            QVector<TeamColorPresetSetting> parsed;
+            parsed.reserve(teams.size());
+            for (const QJsonValue& value : teams) {
+                const QJsonObject object = value.toObject();
+                const int id = object.value("id").toInt(-1);
+                const QString name = object.value("name").toString();
+                const QString color = object.value("color").toString().toUpper();
+                const QString group = object.value("group").toString();
+                if (id < 0 || name.isEmpty() || !QColor(color).isValid()) continue;
+                parsed.push_back({id, name, color,
+                                  group.isEmpty() ? QStringLiteral("Teams") : group});
+            }
+            if (!parsed.isEmpty()) teamColorCatalog_.insert(format, parsed);
+        }
+    }
+
+    error = {};
+    const QJsonDocument overridesDocument = QJsonDocument::fromJson(
+        mainWindow_->teamColorOverridesJson(), &error);
+    if (error.error != QJsonParseError::NoError || !overridesDocument.isObject()) return;
+    const QJsonObject root = overridesDocument.object();
+    for (const int format : {2024, 2025, 2026}) {
+        const QJsonObject teams = root.value(QString::number(format)).toObject();
+        QHash<int, QString> parsed;
+        for (auto it = teams.constBegin(); it != teams.constEnd(); ++it) {
+            bool ok = false;
+            const int id = it.key().toInt(&ok);
+            if (ok && it.value().isString()) parsed.insert(id, it.value().toString());
+        }
+        if (!parsed.isEmpty()) teamColorOverrides_.insert(format, parsed);
+    }
+}
+
+void SettingsDialog::commitTeamColorOverrides() {
+    QJsonObject root;
+    for (const int format : {2024, 2025, 2026}) {
+        const auto formatIt = teamColorOverrides_.constFind(format);
+        if (formatIt == teamColorOverrides_.cend() || formatIt->isEmpty()) continue;
+        QJsonObject teams;
+        for (auto it = formatIt->constBegin(); it != formatIt->constEnd(); ++it)
+            teams.insert(QString::number(it.key()), it.value());
+        root.insert(QString::number(format), teams);
+    }
+    mainWindow_->setTeamColorOverridesJson(
+        QJsonDocument(root).toJson(QJsonDocument::Compact));
+    QTimer::singleShot(0, this, [this] {
+        loadTeamColorConfiguration();
+        refreshTeamColorRows();
+    });
+}
+
+void SettingsDialog::refreshTeamColorRows() {
+    if (!teamColorRowsLayout_) return;
+    while (QLayoutItem* item = teamColorRowsLayout_->takeAt(0)) {
+        if (QWidget* widget = item->widget()) {
+            widget->hide();
+            widget->deleteLater();
+        }
+        delete item;
+    }
+
+    const QVector<TeamColorPresetSetting> teams = teamColorCatalog_.value(teamColorFormat_);
+    if (teams.isEmpty()) {
+        auto* unavailable = new QLabel(QStringLiteral("Team color catalog unavailable."),
+                                       teamColorRows_);
+        unavailable->setAlignment(Qt::AlignCenter);
+        unavailable->setStyleSheet(QStringLiteral("color:palette(mid);padding:36px;"));
+        teamColorRowsLayout_->addWidget(unavailable);
+        teamColorRowsLayout_->addStretch(1);
+        return;
+    }
+
+    const bool supportsLivery = teamColorFormat_ != 2024;
+    int first = 0;
+    while (first < teams.size()) {
+        int end = first + 1;
+        while (end < teams.size() && teams[end].group == teams[first].group) ++end;
+
+        auto* groupBox = new QGroupBox(teams[first].group, teamColorRows_);
+        auto* groupLayout = new QVBoxLayout(groupBox);
+        groupLayout->setContentsMargins(10, 8, 10, 10);
+        groupLayout->setSpacing(5);
+        auto* groupActions = new QHBoxLayout;
+        groupActions->setContentsMargins(0, 0, 0, 2);
+        groupActions->addStretch(1);
+
+        int liveryCount = 0;
+        bool hasOverrides = false;
+        for (int index = first; index < end; ++index) {
+            const QString override = teamColorOverrides_.value(teamColorFormat_)
+                                         .value(teams[index].id);
+            hasOverrides |= !override.isEmpty();
+            if (override == QStringLiteral("livery")) ++liveryCount;
+        }
+        if (supportsLivery) {
+            auto* source = new QComboBox(groupBox);
+            source->addItem(QStringLiteral("Fixed colors"), QStringLiteral("fixed"));
+            source->addItem(QStringLiteral("Livery colors"), QStringLiteral("livery"));
+            source->setAccessibleName(
+                QStringLiteral("Color source for %1").arg(teams[first].group));
+            source->setPlaceholderText(QStringLiteral("Mixed sources"));
+            if (liveryCount == 0) source->setCurrentIndex(0);
+            else if (liveryCount == end - first) source->setCurrentIndex(1);
+            else source->setCurrentIndex(-1);
+            connect(source, &QComboBox::currentIndexChanged, this,
+                    [this, source, teams, first, end](int index) {
+                if (index < 0) return;
+                const bool livery = source->currentData().toString() == "livery";
+                auto& overrides = teamColorOverrides_[teamColorFormat_];
+                for (int teamIndex = first; teamIndex < end; ++teamIndex) {
+                    const int id = teams[teamIndex].id;
+                    if (livery) overrides[id] = QStringLiteral("livery");
+                    else if (overrides.value(id) == QStringLiteral("livery"))
+                        overrides.remove(id);
+                }
+                if (overrides.isEmpty()) teamColorOverrides_.remove(teamColorFormat_);
+                commitTeamColorOverrides();
+            });
+            groupActions->addWidget(source);
+        }
+        auto* resetGroup = new QPushButton(QStringLiteral("Reset group"), groupBox);
+        resetGroup->setEnabled(hasOverrides);
+        resetGroup->setToolTip(hasOverrides ? QStringLiteral("Reset section to presets")
+                                            : QStringLiteral("Section is using preset colors"));
+        connect(resetGroup, &QPushButton::clicked, this,
+                [this, teams, first, end] {
+            auto& overrides = teamColorOverrides_[teamColorFormat_];
+            for (int index = first; index < end; ++index)
+                overrides.remove(teams[index].id);
+            if (overrides.isEmpty()) teamColorOverrides_.remove(teamColorFormat_);
+            commitTeamColorOverrides();
+        });
+        groupActions->addWidget(resetGroup);
+        groupLayout->addLayout(groupActions);
+
+        for (int index = first; index < end; ++index) {
+            const TeamColorPresetSetting team = teams[index];
+            const QString override = teamColorOverrides_.value(teamColorFormat_)
+                                         .value(team.id);
+            const bool useLivery = supportsLivery && override == QStringLiteral("livery");
+            const QString color = override.startsWith('#') ? override : team.color;
+
+            if (index > first) groupLayout->addWidget(horizontalSeparator());
+            auto* row = new QWidget(groupBox);
+            auto* rowLayout = new QGridLayout(row);
+            rowLayout->setContentsMargins(2, 3, 2, 3);
+            rowLayout->setHorizontalSpacing(9);
+            rowLayout->setVerticalSpacing(1);
+            auto* name = new QLabel(team.name, row);
+            QFont nameFont = name->font();
+            nameFont.setBold(true);
+            name->setFont(nameFont);
+            auto* preset = new QLabel(
+                useLivery ? QStringLiteral("Uses each car's game livery color")
+                          : QStringLiteral("Preset %1").arg(team.color), row);
+            preset->setStyleSheet(QStringLiteral("color:palette(mid);font-size:10px;"));
+            rowLayout->addWidget(name, 0, 0);
+            rowLayout->addWidget(preset, 1, 0);
+            rowLayout->setColumnStretch(0, 1);
+
+            if (supportsLivery) {
+                auto* source = new QComboBox(row);
+                source->addItem(QStringLiteral("Fixed"), QStringLiteral("fixed"));
+                source->addItem(QStringLiteral("Livery"), QStringLiteral("livery"));
+                source->setCurrentIndex(useLivery ? 1 : 0);
+                source->setAccessibleName(
+                    QStringLiteral("Color source for %1").arg(team.name));
+                connect(source, &QComboBox::currentIndexChanged, this,
+                        [this, source, team](int) {
+                    auto& overrides = teamColorOverrides_[teamColorFormat_];
+                    if (source->currentData().toString() == QStringLiteral("livery"))
+                        overrides[team.id] = QStringLiteral("livery");
+                    else if (overrides.value(team.id) == QStringLiteral("livery"))
+                        overrides.remove(team.id);
+                    if (overrides.isEmpty()) teamColorOverrides_.remove(teamColorFormat_);
+                    commitTeamColorOverrides();
+                });
+                rowLayout->addWidget(source, 0, 1, 2, 1);
+            }
+
+            auto* picker = new QPushButton(row);
+            picker->setFixedSize(38, 28);
+            picker->setEnabled(!useLivery);
+            picker->setAccessibleName(QStringLiteral("%1 color picker").arg(team.name));
+            picker->setStyleSheet(useLivery
+                ? QStringLiteral("background:palette(alternate-base);border:1px solid palette(mid);")
+                : QStringLiteral("background:%1;border:1px solid palette(mid);border-radius:4px;")
+                      .arg(color));
+            rowLayout->addWidget(picker, 0, 2, 2, 1);
+            auto* hex = new QLabel(useLivery ? QStringLiteral("Livery") : color, row);
+            hex->setMinimumWidth(62);
+            QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+            mono.setPointSizeF(qMax(7.0, mono.pointSizeF() - 1.0));
+            hex->setFont(mono);
+            rowLayout->addWidget(hex, 0, 3, 2, 1);
+            connect(picker, &QPushButton::clicked, this, [this, team, color] {
+                const QColor selected = QColorDialog::getColor(
+                    QColor(color), this, QStringLiteral("Select %1 color").arg(team.name),
+                    QColorDialog::DontUseNativeDialog);
+                if (!selected.isValid()) return;
+                const QString normalized = selected.name(QColor::HexRgb).toUpper();
+                auto& overrides = teamColorOverrides_[teamColorFormat_];
+                if (normalized == team.color.toUpper()) overrides.remove(team.id);
+                else overrides[team.id] = normalized;
+                if (overrides.isEmpty()) teamColorOverrides_.remove(teamColorFormat_);
+                commitTeamColorOverrides();
+            });
+
+            auto* reset = new QPushButton(QStringLiteral("Reset"), row);
+            reset->setEnabled(!override.isEmpty());
+            reset->setToolTip(QStringLiteral("Reset to preset"));
+            connect(reset, &QPushButton::clicked, this, [this, team] {
+                auto& overrides = teamColorOverrides_[teamColorFormat_];
+                overrides.remove(team.id);
+                if (overrides.isEmpty()) teamColorOverrides_.remove(teamColorFormat_);
+                commitTeamColorOverrides();
+            });
+            rowLayout->addWidget(reset, 0, 4, 2, 1);
+            groupLayout->addWidget(row);
+        }
+        teamColorRowsLayout_->addWidget(groupBox);
+        first = end;
+    }
+    teamColorRowsLayout_->addStretch(1);
 }
 
 QWidget* SettingsDialog::buildCompactPage() {
@@ -1399,6 +1883,63 @@ QWidget* SettingsDialog::buildNotificationsPage() {
     return page;
 }
 
+QWidget* SettingsDialog::buildDebugPage() {
+    QWidget* page = new QWidget;
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(20, 16, 20, 16);
+    layout->setSpacing(16);
+
+    const auto addDiagnosticToggle = [this, layout](
+        const QString& title, const QString& description, const QString& warning,
+        bool checked, auto setter) {
+        auto* section = new QWidget;
+        auto* row = new QHBoxLayout(section);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(18);
+        auto* text = new QWidget(section);
+        auto* textLayout = new QVBoxLayout(text);
+        textLayout->setContentsMargins(0, 0, 0, 0);
+        textLayout->setSpacing(3);
+        auto* heading = new QLabel(title, text);
+        QFont headingFont = heading->font();
+        headingFont.setBold(true);
+        heading->setFont(headingFont);
+        auto* detail = new QLabel(description, text);
+        detail->setWordWrap(true);
+        detail->setStyleSheet(QStringLiteral("color:palette(mid);"));
+        textLayout->addWidget(heading);
+        textLayout->addWidget(detail);
+        if (!warning.isEmpty()) {
+            auto* warningLabel = new QLabel(warning, text);
+            warningLabel->setWordWrap(true);
+            warningLabel->setStyleSheet(QStringLiteral("color:#d68a22;"));
+            textLayout->addWidget(warningLabel);
+        }
+        auto* toggle = new QCheckBox(section);
+        toggle->setChecked(checked);
+        toggle->setAccessibleName(title);
+        connect(toggle, &QCheckBox::toggled, this, setter);
+        row->addWidget(text, 1);
+        row->addWidget(toggle, 0, Qt::AlignTop);
+        layout->addWidget(section);
+    };
+
+    addDiagnosticToggle(
+        QStringLiteral("Additional logging"),
+        QStringLiteral("Enable detailed native telemetry pipeline, playback, pairing, Qt renderer, and performance diagnostics. Startup and fatal-error logging remain enabled."),
+        QStringLiteral("Development instrumentation is fully applied the next time the app starts."),
+        mainWindow_->additionalLoggingEnabled(),
+        [this](bool enabled) { mainWindow_->setAdditionalLoggingEnabled(enabled); });
+    layout->addWidget(horizontalSeparator());
+    addDiagnosticToggle(
+        QStringLiteral("Memory log"),
+        QStringLiteral("Sample the Qt process and retained telemetry once per second into launch-diagnostics/ram_usage.log. This can be changed while the app is running."),
+        QString(), mainWindow_->memoryLogEnabled(),
+        [this](bool enabled) { mainWindow_->setMemoryLogEnabled(enabled); });
+    layout->addStretch(1);
+    return page;
+}
+
 QWidget* SettingsDialog::buildOverviewPage() {
     QFormLayout* form;
     QWidget* page = makePage(form);
@@ -1473,9 +2014,10 @@ QWidget* SettingsDialog::buildTrackMapPage() {
     return page;
 }
 
-// About: app identity + version, the project license, and attribution for every
-// bundled third-party library. Each library exposes its full license text via a
-// "View" button (showLicenseText), satisfying the GPL/LGPL notice requirements.
+// About: app identity + version, project links, creator/non-affiliation details,
+// the project license, and attribution for every bundled third-party library.
+// Each library exposes its full license text via a "View" button
+// (showLicenseText), satisfying the GPL/LGPL notice requirements.
 QWidget* SettingsDialog::buildAboutPage() {
     QWidget* page = new QWidget;
     QVBoxLayout* v = new QVBoxLayout(page);
@@ -1500,10 +2042,51 @@ QWidget* SettingsDialog::buildAboutPage() {
     QLabel* copyright = new QLabel("© 2026 Track N Race");
     v->addWidget(copyright);
 
+    QWidget* links = new QWidget;
+    QHBoxLayout* linksLayout = new QHBoxLayout(links);
+    linksLayout->setContentsMargins(0, 0, 0, 0);
+    linksLayout->setSpacing(16);
+
+    QLabel* websiteLink = new QLabel(
+        "<a href=\"https://track-n-race.com\">Official website</a>");
+    websiteLink->setOpenExternalLinks(true);
+    linksLayout->addWidget(websiteLink);
+
     QLabel* repoLink = new QLabel(
-        "<a href=\"https://github.com/nogoat/track-n-race\">github.com/nogoat/track-n-race</a>");
+        "<a href=\"https://github.com/nogoat/track-n-race\">GitHub repository</a>");
     repoLink->setOpenExternalLinks(true);
-    v->addWidget(repoLink);
+    linksLayout->addWidget(repoLink);
+    QPushButton* diagnosticsButton = new QPushButton("Launch diagnostics");
+    diagnosticsButton->setToolTip("Open launch diagnostics folder");
+    diagnosticsButton->setIcon(adaptThemeIcon(
+        QIcon::fromTheme("folder-open-symbolic"),
+        palette().color(QPalette::WindowText),
+        style()->standardIcon(QStyle::SP_DirOpenIcon)));
+    connect(diagnosticsButton, &QPushButton::clicked, this, [this] {
+        const QString directory = tnr::diagnostics::directoryPath();
+        if (!QDesktopServices::openUrl(QUrl::fromLocalFile(directory))) {
+            QMessageBox::critical(
+                this, "Unable to Open Launch Diagnostics",
+                QStringLiteral("Track N Race could not open the launch-diagnostics folder.\n\n%1")
+                    .arg(directory));
+        }
+    });
+    linksLayout->addWidget(diagnosticsButton);
+    linksLayout->addStretch(1);
+    v->addWidget(links);
+
+    QLabel* creator = new QLabel("Created by NoGoat");
+    QFont creatorFont = creator->font();
+    creatorFont.setBold(true);
+    creator->setFont(creatorFont);
+    v->addWidget(creator);
+
+    QLabel* nonAffiliation = new QLabel(
+        "Track N Race is not affiliated with, endorsed by, or associated with EA, "
+        "Codemasters, Formula One, the FIA, the drivers or the teams participating "
+        "in Formula One.");
+    nonAffiliation->setWordWrap(true);
+    v->addWidget(nonAffiliation);
 
     // Project license row.
     QWidget* licRow = new QWidget;

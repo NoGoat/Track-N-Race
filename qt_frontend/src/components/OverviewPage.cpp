@@ -726,10 +726,13 @@ void OverviewPage::refreshCards() {
     setCard("pos", haveInt(c.pos) && c.pos > 0 ? "P" + QString::number(c.pos) : QStringLiteral("—"), QColor());
     setSub("pos", haveInt(c.lapNum) && c.lapNum > 0 ? "Lap " + QString::number(c.lapNum) : QString());
 
+    QColor tyreColor = haveInt(c.tyreCompound)
+        ? tyreTextColor(c.tyreCompound, haveInt(c.visualCompound) ? c.visualCompound : 0)
+        : QColor();
+    if (!tyreColor.isValid() && haveInt(c.visualCompound))
+        tyreColor = tnr::cardColor("tyre", NAN, { {"visual_compound", (double)c.visualCompound} });
     setCard("tyre", haveInt(c.tyreCompound) ? tyreLabel(c.tyreCompound) : QStringLiteral("—"),
-            haveInt(c.visualCompound)
-                ? tnr::cardColor("tyre", NAN, { {"visual_compound", (double)c.visualCompound} })
-                : QColor());
+            tyreColor);
     setSub("tyre", haveInt(c.tyreAgeLaps)
         ? QString("%1L%2").arg(c.tyreAgeLaps)
               .arg(c.fuelMix >= 0 && c.fuelMix < 4 ? QString(" · %1").arg(FUEL_MIX[c.fuelMix]) : QString())

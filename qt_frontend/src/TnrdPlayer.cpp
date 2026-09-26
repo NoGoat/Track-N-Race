@@ -386,6 +386,28 @@ void TnrdPlayer::requestLapData(int lapNum, uint32_t rowTypeMask) {
     }, false);
 }
 
+void TnrdPlayer::requestAnalysisLapData(uint64_t generation, int driverIndex,
+                                        int lapNum, uint32_t rowTypeMask) {
+    if (lapNum <= 0 || !loaded_) return;
+    post(WorkKind::AnalysisLapData,
+         [this, generation, driverIndex, lapNum, rowTypeMask] {
+        auto* current = engine_.load(std::memory_order_acquire);
+        if (!current) return;
+        const std::string encoded = current->playerGetAnalysisLapData(
+            lapNum, rowTypeMask, driverIndex);
+        auto batch = encoded.empty() ? std::shared_ptr<PlaybackHistoryBatch>{}
+            : decodeLapData(QByteArray(encoded.data(),
+                                      static_cast<qsizetype>(encoded.size())));
+        QMetaObject::invokeMethod(this,
+            [this, generation, driverIndex, lapNum, rowTypeMask,
+             batch = std::move(batch)] {
+                if (loaded_)
+                    emit analysisLapDecoded(generation, driverIndex, lapNum,
+                                            rowTypeMask, batch);
+            }, Qt::QueuedConnection);
+    }, false);
+}
+
 bool TnrdPlayer::handleControlRow(const QByteArray& json) {
     const std::string_view source(json.constData(), static_cast<size_t>(json.size()));
     const std::string_view type = typeOf(source);

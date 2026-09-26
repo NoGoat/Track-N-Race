@@ -4,6 +4,7 @@
 #include <QVector>
 #include <QTimer>
 #include <QHash>
+#include <QJsonObject>
 #include <climits>
 #include <cstdint>
 #include <tnrp/control_rows.h>
@@ -172,6 +173,10 @@ public:
     void setLiveFlushActive(bool on);
 
     const SessionData& data() const { return d_; }
+    // Cheap capacity/count snapshot for the optional one-second memory log.
+    // The estimate covers retained sample/container storage and intentionally
+    // does not allocate or copy any telemetry payloads.
+    QJsonObject retentionDiagnostics() const;
 
     // Shared ordinary-chart configuration. Per-chart selectors always show their
     // effective value, matching Electron: choosing the global value removes the

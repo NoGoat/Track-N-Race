@@ -72,6 +72,8 @@ public:
     void setDataRequirements(uint32_t streamMask, uint32_t historyMask,
                              float windowSeconds);
     void requestLapData(int lapNum, uint32_t rowTypeMask);
+    void requestAnalysisLapData(uint64_t generation, int driverIndex,
+                                int lapNum, uint32_t rowTypeMask);
 
     bool handleControlRow(const QByteArray& json);
     void handleSeekFlush(const std::shared_ptr<EngineSeekFlush>& flush);
@@ -95,13 +97,16 @@ signals:
     void seekStarted(uint64_t requestId);
     void driverRestrictionChanged(int driverIndex, bool restricted, bool known);
     void historyDecoded(const std::shared_ptr<PlaybackHistoryBatch>& batch);
+    void analysisLapDecoded(uint64_t generation, int driverIndex, int lapNum,
+                            uint32_t rowTypeMask,
+                            const std::shared_ptr<PlaybackHistoryBatch>& batch);
     void seeked();
     void finished();
     void closed();
 
 private:
     enum class WorkKind {
-        Load, Seek, Driver, Requirements, LapData,
+        Load, Seek, Driver, Requirements, LapData, AnalysisLapData,
         SeekDecode, RequirementsDecode, LapDataDecode, Close
     };
     struct WorkItem { WorkKind kind; std::function<void()> run; };

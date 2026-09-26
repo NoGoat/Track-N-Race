@@ -12,6 +12,7 @@
 #include <QMatrix4x4>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPointer>
 #include <QResizeEvent>
 #include <QRegion>
@@ -601,8 +602,10 @@ private:
 class Overlay final : public QWidget {
 public:
     Overlay(QVector<Axis>* a, QVector<Series>* s, QVector<Panel>* p,
-            QVector<ReferenceLine>* refs, QWidget* parent)
-        : QWidget(parent), axes(a), series(s), panels(p), references(refs) {
+            QVector<ReferenceLine>* refs, QVector<ChartView::CursorGuide>* cursors,
+            QWidget* parent)
+        : QWidget(parent), axes(a), series(s), panels(p), references(refs),
+          cursorGuides(cursors) {
         setAttribute(Qt::WA_TranslucentBackground); setAttribute(Qt::WA_NoSystemBackground); setMouseTracking(true);
     }
 
@@ -742,6 +745,75 @@ protected:
                 const double y = plot.top() + plot.height() * (axis.hi - ref.value) / (axis.hi - axis.lo);
                 hairline(QPointF(plot.left(), y), QPointF(plot.right(), y), kAxis, ref.dashed);
             }
+            int guideAxis = -1;
+            for (int i = 0; i < axes->size(); ++i)
+                if ((*axes)[i].panel == pid && (*axes)[i].side == ChartView::Side::Bottom) {
+                    guideAxis = i;
+                    break;
+                }
+            if (guideAxis >= 0 && !cursorGuides->isEmpty()) {
+                const Axis& axis = (*axes)[guideAxis];
+                QVector<double> guidePixels(cursorGuides->size(), qQNaN());
+                QVector<double> playheadPixels(cursorGuides->size(), qQNaN());
+                for (int i = 0; i < cursorGuides->size(); ++i) {
+                    const double value = (*cursorGuides)[i].x;
+                    if (!std::isfinite(value) || value < axis.lo || value > axis.hi ||
+                        axis.hi <= axis.lo) continue;
+                    const double pixel = plot.left() +
+                        (value - axis.lo) / (axis.hi - axis.lo) * plot.width();
+                    guidePixels[i] = playheadPixels[i] = pixel;
+                }
+                if (guidePixels.size() == 2 && std::isfinite(guidePixels[0]) &&
+                    std::isfinite(guidePixels[1])) {
+                    const double gap = std::abs(guidePixels[1] - guidePixels[0]);
+                    if (gap < 2.0) {
+                        guidePixels[0] -= 0.75;
+                        guidePixels[1] += 0.75;
+                    }
+                    constexpr double playheadGap = 11.0;
+                    if (gap < playheadGap) {
+                        const double midpoint = (playheadPixels[0] + playheadPixels[1]) / 2.0;
+                        playheadPixels[0] = midpoint - playheadGap / 2.0;
+                        playheadPixels[1] = midpoint + playheadGap / 2.0;
+                    }
+                }
+
+                q.save();
+                q.setClipRect(plot);
+                constexpr double halfWidth = 5.0;
+                constexpr double playheadHeight = 9.0;
+                const double top = plot.top() + 1.0;
+                for (int i = 0; i < cursorGuides->size(); ++i) {
+                    if (!std::isfinite(guidePixels[i])) continue;
+                    const QColor base = (*cursorGuides)[i].color;
+                    QColor halo = base; halo.setAlphaF(base.alphaF() * 0.07);
+                    QPen haloPen(halo, 7.0, Qt::SolidLine, Qt::RoundCap);
+                    q.setPen(haloPen);
+                    q.drawLine(QPointF(guidePixels[i], top + playheadHeight),
+                               QPointF(guidePixels[i], plot.bottom()));
+
+                    QColor guide = base; guide.setAlphaF(base.alphaF() * 0.58);
+                    QPen guidePen(guide, 1.0, Qt::CustomDashLine, Qt::RoundCap);
+                    guidePen.setDashPattern({2.0, 4.0});
+                    q.setPen(guidePen);
+                    q.drawLine(QPointF(guidePixels[i], top + playheadHeight),
+                               QPointF(guidePixels[i], plot.bottom()));
+
+                    const double center = playheadPixels[i];
+                    QPainterPath playhead;
+                    playhead.moveTo(center - halfWidth, top);
+                    playhead.lineTo(center + halfWidth, top);
+                    playhead.lineTo(center + halfWidth, top + 4.0);
+                    playhead.lineTo(guidePixels[i], top + playheadHeight);
+                    playhead.lineTo(center - halfWidth, top + 4.0);
+                    playhead.closeSubpath();
+                    q.fillPath(playhead, base);
+                    q.setPen(QPen(background, 1.5, Qt::SolidLine, Qt::SquareCap,
+                                  Qt::RoundJoin));
+                    q.drawPath(playhead);
+                }
+                q.restore();
+            }
             if (p.legend) {
                 q.setFont(smallFont); QVector<int> ids; qreal total = 0;
                 for (int i = 0; i < series->size(); ++i) if ((*series)[i].panel == pid && !(*series)[i].spec.name.isEmpty()) {
@@ -776,6 +848,7 @@ protected:
 private:
     QVector<Axis>* axes; QVector<Series>* series; QVector<Panel>* panels;
     QVector<ReferenceLine>* references;
+    QVector<ChartView::CursorGuide>* cursorGuides;
     QVector<QFrame*> dividerFrames;
 };
 } // namespace
@@ -784,6 +857,7 @@ struct ChartView::Impl {
     RhiCanvas* canvas = nullptr; Overlay* overlay = nullptr; QLabel* tooltip = nullptr;
     QVector<Axis> axes; QVector<Series> series; QVector<Band> bands; QVector<Panel> panels{Panel{}};
     QVector<ReferenceLine> references;
+    QVector<ChartView::CursorGuide> cursorGuides;
     QVector<int> order; QVector<QVector<int>> rows; QVector<int> linkedXAxes; int columns = 1;
     bool explicitRows = false, hover = false, sync = false, secondaryV = true, secondaryH = false;
     QString cursorMode; QPointer<SessionModel> model;
@@ -882,7 +956,8 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent), d_(std::make_unique<Imp
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding); setMinimumHeight(120);
     auto* layout = new QVBoxLayout(this); layout->setContentsMargins(0,0,0,0);
     d_->canvas = new RhiCanvas(&d_->axes, &d_->series, &d_->bands, &d_->panels, &d_->order, this);
-    layout->addWidget(d_->canvas); d_->overlay = new Overlay(&d_->axes, &d_->series, &d_->panels, &d_->references, this);
+    layout->addWidget(d_->canvas); d_->overlay = new Overlay(
+        &d_->axes, &d_->series, &d_->panels, &d_->references, &d_->cursorGuides, this);
     d_->overlay->installEventFilter(this); d_->overlay->raise(); liveCharts().push_back(this);
     d_->hoverTimer = new QTimer(this);
     d_->hoverTimer->setSingleShot(true);
@@ -915,6 +990,12 @@ void ChartView::addBand(const BandSpec& s) { Band b; b.spec=s; if(s.axisId>=0&&s
 void ChartView::addReferenceLine(int axis, double value, bool dashed) {
     if (axis < 0 || axis >= d_->axes.size() || d_->axes[axis].side == Side::Bottom || !std::isfinite(value)) return;
     d_->references.push_back({axis, value, dashed}); requestReplot();
+}
+
+void ChartView::setCursorGuides(const QVector<CursorGuide>& guides) {
+    if (d_->cursorGuides == guides) return;
+    d_->cursorGuides = guides;
+    if (d_->overlay && isVisible()) d_->overlay->update();
 }
 
 void ChartView::appendPoint(int id, double x, double y) {

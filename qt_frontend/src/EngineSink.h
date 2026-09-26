@@ -94,10 +94,32 @@ public:
         }, Qt::QueuedConnection);
     }
 
+    void onPairState(const std::string& publicStateJson,
+                     const std::string& persistedStateJson) override {
+        const QByteArray publicState(publicStateJson.data(),
+                                     static_cast<qsizetype>(publicStateJson.size()));
+        const QByteArray persistedState(persistedStateJson.data(),
+                                        static_cast<qsizetype>(persistedStateJson.size()));
+        QMetaObject::invokeMethod(this, [this, publicState, persistedState] {
+            emit pairStateReady(publicState, persistedState);
+        }, Qt::QueuedConnection);
+    }
+
+    void onPairDiagnostic(const std::string& message) override {
+        const QString text = QString::fromUtf8(message.data(),
+                                               static_cast<qsizetype>(message.size()));
+        QMetaObject::invokeMethod(this, [this, text] {
+            emit pairDiagnosticReady(text);
+        }, Qt::QueuedConnection);
+    }
+
 signals:
     void rowsReady(const QByteArray& jsonLines);
     void binaryReady(const QByteArray& batch);
     void seekFlushReady(const std::shared_ptr<EngineSeekFlush>& flush);
+    void pairStateReady(const QByteArray& publicStateJson,
+                        const QByteArray& persistedStateJson);
+    void pairDiagnosticReady(const QString& message);
 
 private:
     void flushPending() {

@@ -271,7 +271,7 @@ void TyresPage::updateTyreSets(const tnrp::TyreSetsRow* tyreSets) {
         QString txt;
         for (const tnrp::TyreSet& s : tyreSets->sets) {
             if (!s.fitted) continue;
-            const QColor cmp   = tyreTextColor(s.visual_compound);
+            const QColor cmp   = tyreTextColor(s.actual_compound, s.visual_compound);
             const QString cmpCol  = (cmp.isValid() ? cmp : palette().color(QPalette::WindowText)).name();
             const QString wearCol = wearPctColor(s.wear).name();
             const QString secCol  = palette().color(QPalette::PlaceholderText).name();
@@ -288,7 +288,7 @@ void TyresPage::updateTyreSets(const tnrp::TyreSetsRow* tyreSets) {
     std::vector<const tnrp::TyreSet*> wetSets;
     for (const tnrp::TyreSet& s : tyreSets->sets) {
         if (s.actual_compound != 0) {
-            if (s.actual_compound == 7 || s.actual_compound == 8) {
+            if (isWetTyreCompound(s.actual_compound)) {
                 wetSets.push_back(&s);
             } else {
                 drySets.push_back(&s);
@@ -296,29 +296,24 @@ void TyresPage::updateTyreSets(const tnrp::TyreSetsRow* tyreSets) {
         }
     }
 
-    auto statusPriority = [](const tnrp::TyreSet& s) {
-        QString st = setStatusText(s);
-        if (st == "FITTED")   return 1;
-        if (st == "NEW")      return 2;
-        if (st == "USED")     return 3;
-        if (st == "RESERVED") return 4;
-        return 5;
-    };
-
-    auto sortSets = [&](std::vector<const tnrp::TyreSet*>& vec) {
+    auto sortDrySets = [](std::vector<const tnrp::TyreSet*>& vec) {
         std::sort(vec.begin(), vec.end(), [&](const tnrp::TyreSet* a, const tnrp::TyreSet* b) {
-            if (a->visual_compound != b->visual_compound)
-                return a->visual_compound < b->visual_compound;
-
-            int spA = statusPriority(*a);
-            int spB = statusPriority(*b);
-            if (spA != spB) return spA < spB;
-
+            const int orderA = dryTyreCompoundOrder(a->actual_compound, a->visual_compound);
+            const int orderB = dryTyreCompoundOrder(b->actual_compound, b->visual_compound);
+            if (orderA != orderB) return orderA < orderB;
             return a->idx < b->idx;
         });
     };
-    sortSets(drySets);
-    sortSets(wetSets);
+    auto sortWetSets = [](std::vector<const tnrp::TyreSet*>& vec) {
+        std::sort(vec.begin(), vec.end(), [](const tnrp::TyreSet* a, const tnrp::TyreSet* b) {
+            const int orderA = wetTyreCompoundOrder(a->actual_compound);
+            const int orderB = wetTyreCompoundOrder(b->actual_compound);
+            if (orderA != orderB) return orderA < orderB;
+            return a->idx < b->idx;
+        });
+    };
+    sortDrySets(drySets);
+    sortWetSets(wetSets);
 
     drySetsTable_->setRowCount(drySets.size());
     wetSetsTable_->setRowCount(wetSets.size());
@@ -346,7 +341,7 @@ void TyresPage::updateTyreSets(const tnrp::TyreSetsRow* tyreSets) {
 
             QString status    = setStatusText(s);
             QColor  statusCol = setStatusColor(s);
-            QColor  cmpFg     = tyreTextColor(visual);
+            QColor  cmpFg     = tyreTextColor(compound, visual);
 
             auto* idxItem = makeItem(QString::number(idx + 1));
             idxItem->setTextAlignment(Qt::AlignCenter);

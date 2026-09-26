@@ -1,4 +1,5 @@
 #include "StrategyPage.h"
+#include "TyreHelpers.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -50,16 +51,9 @@ QString words(const std::string& value) {
 bool isDark() { return QApplication::palette().color(QPalette::Window).lightness() < 128; }
 QColor defensiveColor() { return QColor(isDark() ? "#5794f2" : "#0b57d0"); }
 QColor attackingColor() { return QColor(isDark() ? "#fade2a" : "#8b5200"); }
-QColor compoundColor(int visual) {
-    const bool dark = isDark();
-    switch (visual) {
-    case 16: return QColor(dark ? "#e8002d" : "#c8001a");
-    case 17: return QColor(dark ? "#ffd700" : "#765900");
-    case 18: return QColor(dark ? "#c8c8c8" : "#555555");
-    case 7: return QColor(dark ? "#39b54a" : "#1e7a2e");
-    case 8: return QColor(dark ? "#4488ff" : "#1a55bb");
-    default: return QApplication::palette().color(QPalette::Text);
-    }
+QColor compoundColor(int actual, int visual) {
+    const QColor color = tyreTextColor(actual, visual);
+    return color.isValid() ? color : QApplication::palette().color(QPalette::Text);
 }
 QColor wearColor(double value) {
     if (value < 20) return QColor("#73bf69");
@@ -259,7 +253,8 @@ QWidget* StrategyPage::makeHeader() {
 
     auto* tyreCell = new QWidget; auto* tyreLayout = new QHBoxLayout(tyreCell);
     tyreLayout->setContentsMargins(horizontalPad, pad, horizontalPad, pad); tyreLayout->setSpacing(compact ? 12 : spacious ? 24 : 16);
-    const QColor compound = compoundColor(s ? s->current_visual_compound : 0);
+    const QColor compound = compoundColor(s ? s->current_actual_compound : 0,
+                                          s ? s->current_visual_compound : 0);
     auto* chip = makeLabel(ready ? QString::fromStdString(s->current_compound_name) : QStringLiteral("—"));
     chip->setTextFormat(Qt::PlainText); chip->setContentsMargins(8, 2, 8, 2);
     chip->setStyleSheet(QStringLiteral("color:%1; border:1px solid %1; border-radius:3px; font-weight:bold;").arg(compound.name()));
@@ -383,7 +378,7 @@ QWidget* StrategyPage::makePlan(const QString& title, const tnrp::StrategyPlan& 
         auto* card = new QFrame; card->setFrameShape(QFrame::NoFrame);
         auto* cv = new QVBoxLayout(card); cv->setContentsMargins(0, 0, 0, 0); cv->setSpacing(0);
         auto* stintLabel = makeLabel(QStringLiteral("<b><span style='color:%1'>●</span> Stint %2 · %3</b>  L%4–%5")
-            .arg(compoundColor(stint.visual_compound).name()).arg(stint.stint_number)
+            .arg(compoundColor(stint.actual_compound, stint.visual_compound).name()).arg(stint.stint_number)
             .arg(QString::fromStdString(stint.compound_name).toHtmlEscaped()).arg(stint.start_lap).arg(stint.end_lap));
         stintLabel->setContentsMargins(12, 8, 12, 0); cv->addWidget(stintLabel);
         auto* counts = makeLabel(QStringLiteral("Expected <b>%1</b> · Actual <b>%2</b>").arg(stint.expected_laps).arg(stint.actual_laps));

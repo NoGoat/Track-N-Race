@@ -657,7 +657,7 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
         setLabelText(rp_fuelMix, fuelMix >= 0 && fuelMix < 4 ? mixes[fuelMix] : "—");
 
         setLabelText(rp_tyre, tyreLabel(compound));
-        QColor tyreFg = tyreTextColor(visual);
+        QColor tyreFg = tyreTextColor(compound, visual);
         setLabelStyle(rp_tyre, tyreFg.isValid()
             ? QString("color: %1; font-weight: bold;").arg(tyreFg.name())
             : "font-weight: bold;");
@@ -889,7 +889,7 @@ void StandingsPage::updateTimingTable(const TimingRow* timing,
                    hasCustomBg ? bgBrush : QBrush());
 
         // Col 9: TYRE
-        QColor tyreFg = tyreTextColor(visual);
+        QColor tyreFg = tyreTextColor(compound, visual);
         updateItem(row, 9, tyreLabel(compound), Qt::AlignCenter, tyreFg,
                    hasCustomBg ? bgBrush : QBrush());
 

@@ -130,16 +130,17 @@ void AnalysisFileReader::rejectLoaded(uint64_t generation) {
     }, false);
 }
 
-void AnalysisFileReader::requestLapData(int lapNum, uint32_t rowTypeMask) {
+void AnalysisFileReader::requestLapData(int driverIndex, int lapNum, uint32_t rowTypeMask) {
     const uint64_t generation = d_->activeGeneration.load(std::memory_order_acquire);
-    d_->post([this, generation, lapNum, rowTypeMask] {
+    d_->post([this, generation, driverIndex, lapNum, rowTypeMask] {
         if (!d_->active || d_->activeGeneration.load(std::memory_order_acquire) != generation || lapNum <= 0) return;
-        const std::string encoded = d_->active->getLapDataMessage(lapNum, rowTypeMask);
+        const std::string encoded = d_->active->getLapDataMessage(
+            lapNum, rowTypeMask, driverIndex);
         auto batch = TnrdPlayer::decodeLapData(
             QByteArray(encoded.data(), static_cast<qsizetype>(encoded.size())));
-        QMetaObject::invokeMethod(this, [this, generation, lapNum, rowTypeMask, batch] {
+        QMetaObject::invokeMethod(this, [this, generation, driverIndex, lapNum, rowTypeMask, batch] {
             if (d_->activeGeneration.load(std::memory_order_acquire) == generation)
-                emit lapDataReady(generation, lapNum, rowTypeMask, batch);
+                emit lapDataReady(generation, driverIndex, lapNum, rowTypeMask, batch);
         }, Qt::QueuedConnection);
     }, false);
 }

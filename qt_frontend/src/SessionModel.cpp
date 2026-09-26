@@ -11,6 +11,45 @@ constexpr uint32_t rowBit(uint8_t type) { return 1u << type; }
 constexpr qsizetype kTrimChunk = 4096;
 constexpr qsizetype kMaxRows = 750000;
 
+struct RetentionEstimate {
+    quint64 bytes = 0;
+    quint64 samples = 0;
+    quint64 laps = 0;
+};
+
+template <typename T>
+void addVectorRetention(const QVector<T>& values, RetentionEstimate& estimate) {
+    estimate.bytes += static_cast<quint64>(values.capacity()) * sizeof(T);
+    estimate.samples += static_cast<quint64>(values.size());
+}
+
+void addLapRetention(const LapBlock& lap, RetentionEstimate& estimate) {
+    if (lap.lapNum > 0 || !lap.tel.isEmpty() || !lap.sts.isEmpty() ||
+        !lap.tyre.isEmpty() || !lap.damage.isEmpty() || !lap.motion.isEmpty() ||
+        !lap.motionEx.isEmpty() || !lap.progress.isEmpty() || !lap.positions.isEmpty())
+        ++estimate.laps;
+    addVectorRetention(lap.tel, estimate);
+    addVectorRetention(lap.sts, estimate);
+    addVectorRetention(lap.tyre, estimate);
+    addVectorRetention(lap.damage, estimate);
+    addVectorRetention(lap.motion, estimate);
+    addVectorRetention(lap.motionEx, estimate);
+    addVectorRetention(lap.progress, estimate);
+    addVectorRetention(lap.positions, estimate);
+}
+
+void addSessionRetention(const SessionData& data, RetentionEstimate& estimate) {
+    addVectorRetention(data.telBuf, estimate);
+    addVectorRetention(data.stsBuf, estimate);
+    addVectorRetention(data.tyreBuf, estimate);
+    addVectorRetention(data.damageBuf, estimate);
+    addVectorRetention(data.motionBuf, estimate);
+    addVectorRetention(data.motionExBuf, estimate);
+    estimate.bytes += static_cast<quint64>(data.laps.capacity()) * sizeof(LapBlock);
+    for (const LapBlock& lap : data.laps) addLapRetention(lap, estimate);
+    addLapRetention(data.curLap, estimate);
+}
+
 template <typename T>
 void mergeTimed(QVector<T>& target, QVector<T>&& incoming) {
     if (incoming.isEmpty()) return;
@@ -409,6 +448,43 @@ SessionModel::SessionModel(QObject* parent) : QObject(parent) {
     discardUnavailableChartOverrides();
 }
 
+QJsonObject SessionModel::retentionDiagnostics() const {
+    RetentionEstimate active;
+    addSessionRetention(d_, active);
+
+    RetentionEstimate catalog;
+    catalog.bytes += static_cast<quint64>(playbackCatalogLaps_.capacity()) * sizeof(LapBlock);
+    for (const LapBlock& lap : playbackCatalogLaps_) addLapRetention(lap, catalog);
+
+    RetentionEstimate lapCache;
+    lapCache.bytes += static_cast<quint64>(playbackLapDataCache_.size()) *
+        (sizeof(int) + sizeof(LapBlock));
+    for (auto it = playbackLapDataCache_.cbegin(); it != playbackLapDataCache_.cend(); ++it)
+        addLapRetention(it.value(), lapCache);
+    lapCache.bytes += static_cast<quint64>(playbackLapLru_.capacity()) * sizeof(int);
+    lapCache.bytes += static_cast<quint64>(playbackActiveLapMasks_.size()) *
+        (sizeof(int) + sizeof(uint32_t));
+    lapCache.bytes += static_cast<quint64>(playbackLapDataMasks_.size()) *
+        (sizeof(int) + sizeof(uint32_t));
+
+    const quint64 total = active.bytes + catalog.bytes + lapCache.bytes;
+    QJsonObject result;
+    result["estimated_retained_bytes"] = static_cast<double>(total);
+    result["byte_basis"] = QStringLiteral(
+        "QVector allocated capacity plus approximate QHash key/value storage; Qt allocator overhead and widget/GPU resources are excluded");
+    result["mode"] = playbackMode_ ? QStringLiteral("playback") : QStringLiteral("realtime");
+    result["active_history_bytes"] = static_cast<double>(active.bytes);
+    result["active_history_samples"] = static_cast<double>(active.samples);
+    result["active_laps"] = static_cast<double>(active.laps);
+    result["playback_catalog_bytes"] = static_cast<double>(catalog.bytes);
+    result["playback_catalog_samples"] = static_cast<double>(catalog.samples);
+    result["playback_catalog_laps"] = static_cast<double>(playbackCatalogLaps_.size());
+    result["playback_lap_cache_bytes"] = static_cast<double>(lapCache.bytes);
+    result["playback_lap_cache_samples"] = static_cast<double>(lapCache.samples);
+    result["playback_lap_cache_entries"] = static_cast<double>(playbackLapDataCache_.size());
+    return result;
+}
+
 // Emits telemetryAppended()/tyreAppended() at most once per event-loop pass. On the
 // GUI thread that is once per arriving packet, so charts refresh at the true data
 // rate (20..60 Hz) instead of a fixed clock, while the several ingest setters fired
@@ -780,7 +856,7 @@ void SessionModel::setPlaybackCatalog(const tnrp::PlaybackLapBlocksRow& catalog)
         lap.tel.reserve(static_cast<qsizetype>(source.telemetry.size()));
         for (const auto& point : source.telemetry)
             lap.tel.push_back({point.session_time, static_cast<float>(point.speed_kph),
-                               point.rpm, 0, 0.0f, 0.0f, 0.0f});
+                               point.rpm, qQNaN(), qQNaN(), qQNaN(), qQNaN()});
         lap.sts.reserve(static_cast<qsizetype>(source.statusHistory.size()));
         for (const auto& point : source.statusHistory)
             lap.sts.push_back({point.session_time, static_cast<float>(point.ers_pct),

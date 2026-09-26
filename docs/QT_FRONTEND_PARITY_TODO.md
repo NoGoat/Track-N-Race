@@ -15,6 +15,9 @@ Audited revision: `c681a2b`
 Incremental audit date: 2026-09-21
 Incrementally audited revision: `b9b6ad8`
 
+Current delta-audit date: 2026-09-22
+Delta-audited revision: `78cef0c`
+
 The incremental audit covers reachable Electron behavior added after the
 original `c681a2b` baseline. The September 15 re-audit at the end of this file
 was intentionally limited to the fixed original backlog, so it did not capture
@@ -112,12 +115,12 @@ Do not rebuild these features:
 
 | Priority | Items |
 | --- | --- |
-| P1 | PAIR-001, ANALYZE-009 |
-| P2 | ANALYZE-006, ANALYZE-008, APPEAR-001, APPEAR-002 |
-| P3 | ANALYZE-007, RUNTIME-004, DESKTOP-006 |
+| P1 | — |
+| P2 | — |
+| P3 | — |
 
 All tasks from the original fixed-revision backlog are checked off below. The
-table above lists only gaps found by the 2026-09-21 incremental audit.
+table above lists only gaps found by the latest incremental/delta audit.
 
 ---
 
@@ -291,14 +294,24 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the paired-mode toggle, pairing-window controls, QR/matching-code
+- [x] Add the paired-mode toggle, pairing-window controls, QR/matching-code
       presentation, saved-device list, connection state, removal, and error UI.
-- [ ] Persist and restore only the same host preference/opaque engine state as
+- [x] Persist and restore only the same host preference/opaque engine state as
       Electron; do not duplicate the pair protocol in Qt.
-- [ ] Keep the service attached to the engine rather than to page visibility so
+- [x] Keep the service attached to the engine rather than to page visibility so
       changing pages or hiding the window does not disconnect a display.
-- [ ] Use the existing public engine pairing APIs and callbacks. Do not modify
+- [x] Use the existing public engine pairing APIs and callbacks. Do not modify
       `protocol_parser_library/` for this task.
+
+Implemented in `qt_frontend/src/EngineSink.h`, `MainWindow.cpp`,
+`components/SettingsDialog.cpp`, and `components/PairingQrCode.cpp` (with their
+matching headers). Qt now adapts the engine's public pair controls and public/
+opaque state callback, persists only the enabled preference and opaque engine
+document, and keeps the service independent of UI visibility. Paired Devices
+provides the enable, two-minute open/cancel, QR/code, live device status,
+individual removal, and error states. Ordinary engine teardown saves state and
+lets the engine stop with `persistDisabled=false`; no pair transport or protocol
+logic was added to Qt.
 
 ---
 
@@ -704,12 +717,21 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the persisted Split view with Electron's playback/circuit gates.
-- [ ] Keep graph-to-map inspection in Split and focus the corresponding map
+- [x] Add the persisted Split view with Electron's playback/circuit gates.
+- [x] Keep graph-to-map inspection in Split and focus the corresponding map
       position.
-- [ ] Add the cursor-aware S1/S2/S3/Lap delta readout with Electron's missing,
+- [x] Add the cursor-aware S1/S2/S3/Lap delta readout with Electron's missing,
       mismatch, sector-delta, and color behavior.
-- [ ] Add the Analysis Controls help dialog for the controls that exist in Qt.
+- [x] Add the Analysis Controls help dialog for the controls that exist in Qt.
+
+Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}`. Analysis now
+persists Graphs/Split/Map, renders Graphs and Map in equal split panes, gates
+map-bearing views for live data and known circuit mismatches, and moves chart
+inspection into Split before focusing the map. The toolbar computes cursor- or
+finish-aware S1/S2/S3/Lap values from the selected driver-qualified lap data,
+uses the Delta metric colors and placeholder state, hides sector summaries for
+mismatches, and exposes a help dialog describing the reachable Qt controls and
+interactions.
 
 ### ANALYZE-007 — Custom comparison labels and collapsible selection groups
 
@@ -739,11 +761,18 @@ Qt gap:
 
 TODO:
 
-- [ ] Add and persist the four optional labels with the same defaults and
+- [x] Add and persist the four optional labels with the same defaults and
       length limit.
-- [ ] Use the resolved labels on every Analysis chart/map surface.
-- [ ] Group the comparison controls by side and add independent collapse/expand
+- [x] Use the resolved labels on every Analysis chart/map surface.
+- [x] Group the comparison controls by side and add independent collapse/expand
       behavior with the Electron summary fields.
+
+Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}`,
+`AnalyzeChart.{h,cpp}`, and `AnalyzeMapComparison.{h,cpp}`. Current, Compare,
+Lap A, and Lap B now have independently collapsible driver/lap/name groups whose
+summaries include driver, compound, lap, and lap time. Optional 40-character
+names persist with Analysis settings, resolve to the Electron defaults when
+blank, and flow through chart hover series, map markers, and the map data overlay.
 
 ### ANALYZE-008 — Draggable map data-comparison overlay
 
@@ -757,7 +786,7 @@ Electron behavior to match:
 
 - The Analysis map has a **Data Comparison** overlay for both selected laps.
 - It shows color-coded Steering, Brake, and Throttle bars plus Speed and Gear.
-- Samples follow the same elapsed cursor as the map at 50 ms cadence, hold the
+- Samples follow the same elapsed cursor as the map at presentation cadence, hold the
   latest row, and clamp each lap independently at its end.
 - The overlay can be collapsed and dragged anywhere inside the map. Its
   normalized position persists across resizing/restarts.
@@ -770,12 +799,20 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the two-lap steering/brake/throttle/speed/gear overlay.
-- [ ] Drive it from the existing Analysis map cursor without adding another
+- [x] Add the two-lap steering/brake/throttle/speed/gear overlay.
+- [x] Drive it from the existing Analysis map cursor without adding another
       playback timer or reader.
-- [ ] Add collapse, bounded pointer dragging, keyboard movement, and persisted
+- [x] Add collapse, bounded pointer dragging, keyboard movement, and persisted
       normalized position.
-- [ ] Match end-of-lap clamping and missing-value behavior.
+- [x] Match end-of-lap clamping and missing-value behavior.
+
+Implemented in `qt_frontend/src/components/AnalyzeInputComparison.{h,cpp}`,
+`AnalyzeMapComparison.{h,cpp}`, `AnalyzePage.cpp`, and `SessionModel.cpp`. The
+map overlay samples both selected laps from the shared cursor on the map's
+existing visible-only timer, holds the latest telemetry row, and clamps each lap at its
+own endpoint. It supports collapse, bounded drag/keyboard positioning, persisted
+normalized coordinates, and explicit missing readings; map-bearing Analysis
+views now request the telemetry family alongside position data.
 
 ### ANALYZE-009 — Multi-driver Analysis for TNRD V6
 
@@ -811,14 +848,113 @@ Qt gap:
 
 TODO:
 
-- [ ] Retain the primary and secondary per-driver lap catalogs exposed by the
+- [x] Retain the primary and secondary per-driver lap catalogs exposed by the
       existing engine control data.
-- [ ] Add driver selectors to Current/Compare and Lap A/Lap B with Electron's
+- [x] Add driver selectors to Current/Compare and Lap A/Lap B with Electron's
       source grouping and reset behavior.
-- [ ] Key lazy lap data and delta results by file, driver, lap, and row mask.
-- [ ] Preserve the single Recorded driver fallback for pre-V6 files.
-- [ ] Use existing public reader/engine APIs; do not change the TNRD format or
+- [x] Key lazy lap data and delta results by file, driver, lap, and row mask.
+- [x] Preserve the single Recorded driver fallback for pre-V6 files.
+- [x] Use existing public reader/engine APIs; do not change the TNRD format or
       `protocol_parser_library/` for this task.
+
+Implemented in `qt_frontend/src/components/AnalyzePage.cpp`,
+`AnalyzeChart.cpp`, `AnalysisFileReader.cpp`, `TnrdPlayer.cpp`,
+`PlaybackController.cpp`, and `MainWindow.cpp` (with their matching headers).
+Analysis now retains per-file/per-driver catalogs, scopes all selectors and its
+bounded lazy caches by driver identity, and fetches primary and secondary laps
+through the existing public engine/reader APIs. Driver changes reset their lap
+selection, secondary removal clears only affected selections, and pre-V6 files
+continue to expose one Recorded driver.
+
+### ANALYZE-010 — Fixed split-view map cursor guides on charts
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/components/AnalyzeMapComparison.tsx`
+  publishes the fixed comparison clock.
+- `electron-frontend/src/renderer/src/components/AnalyzeScreen.tsx` enables the
+  guides only for fixed-lap Split view and supplies the two map colors.
+- `electron-frontend/src/renderer/src/components/charts/AnalyzeTimeChart.tsx`
+  converts each lap's shared elapsed cursor to time or distance coordinates.
+- `electron-frontend/src/renderer/src/lib/timechart/cursorLines.ts` draws the
+  colored halo, dashed guide, and top playhead without repainting chart traces.
+
+Electron behavior to match:
+
+- Fixed-lap Split view draws one colored chart cursor for each available map
+  lap, using the same elapsed clock and colors as the map markers.
+- Each lap clamps independently at its endpoint. Time mode uses elapsed
+  seconds; distance mode maps that lap's elapsed time through its own progress
+  history.
+- Every visible combined/individual Analysis chart panel shows the cursors.
+- Coincident time cursors remain visibly two-color: guides split subtly and
+  their top playheads sit side-by-side while pointing to the shared sample.
+- The cursor overlay updates independently of the retained chart traces.
+
+Qt gap:
+
+- Qt's fixed Split map has the shared clock, markers, and chart data, but
+  `AnalyzeChart`/`ChartView` expose no persistent map-clock cursor overlay.
+
+TODO:
+
+- [x] Add overlay-only colored halo/guide/playhead cursors to the chart view.
+- [x] Drive them from the fixed Split map clock for every visible Analysis
+      panel without rebuilding series data.
+- [x] Match per-lap endpoint clamping and time/distance conversion.
+- [x] Keep coincident cursors distinguishable and clear them outside fixed
+      Split view.
+
+Implemented in `qt_frontend/src/components/ChartView.{h,cpp}`,
+`AnalyzeChart.{h,cpp}`, `AnalyzeMapComparison.{h,cpp}`, and `AnalyzePage.cpp`.
+The visible-only map clock now publishes its elapsed position at presentation
+cadence. AnalyzeChart converts that position independently through each selected
+lap, then updates lightweight raster-overlay guides on every combined/individual
+panel without touching QRhi series buffers. The overlay matches the colored
+halo, dashed guide, top playhead, coincident two-color separation, zoom clipping,
+and fixed-Split-only lifetime of the Electron implementation.
+
+### ANALYZE-011 — ERS in the map data-comparison overlay
+
+Electron evidence:
+
+- `electron-frontend/src/renderer/src/components/AnalyzeInputComparison.tsx`
+  samples telemetry and status independently and adds an **ERS** comparison bar.
+- `electron-frontend/src/renderer/src/lib/historyDependencies.ts` adds status
+  history and the ERS-store V6 field to the Analysis map requirement.
+
+Electron behavior to match:
+
+- The draggable Data Comparison overlay shows ERS after Throttle and before
+  Speed/Gear, using the same two colored 0–100% lanes.
+- Each lap holds the latest status row at the shared map cursor and clamps at
+  its own endpoint independently from telemetry sampling.
+- Missing ERS stays explicitly missing rather than becoming zero.
+- Map and Split views request the status/ERS history needed for live, primary,
+  secondary, and lazy per-driver lap sources.
+
+Qt gap:
+
+- Qt's new overlay samples only `LapBlock::tel`, has no ERS row, and its
+  map-bearing Analysis requirement does not request the status family.
+
+TODO:
+
+- [x] Add the two-lap ERS bar using independently sampled `StsSample` history.
+- [x] Include status history in map/split row masks, cache signatures, and lazy
+      lap requests.
+- [x] Reuse the existing map clock/timer and preserve missing-value behavior.
+
+Implemented in `qt_frontend/src/components/AnalyzeInputComparison.{h,cpp}`,
+`AnalyzeMapComparison.cpp`, and `AnalyzePage.cpp`. The Data Comparison card now
+samples `LapBlock::sts` independently from telemetry and renders a two-lane ERS
+percentage bar after Throttle. Map/Split requirements include status history,
+the copied-lap cache signature includes status size, and the existing shared
+cursor supplies independently clamped latest status samples with NaN/missing
+preservation. Source/diff review only; owner runtime checks for ANALYZE-010/011:
+exercise fixed Split in time/distance and combined/individual modes, zoom across
+the cursor, compare unequal lap lengths and coincident positions, and verify ERS
+for primary/secondary files, multiple drivers, missing fields, and lap endpoints.
 
 ---
 
@@ -1174,14 +1310,22 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the three format catalogs, grouped team rows, hex picker, individual
+- [x] Add the three format catalogs, grouped team rows, hex picker, individual
       and group reset actions.
-- [ ] Add Fixed/Livery source selection for 2025/2026 with mixed group state;
+- [x] Add Fixed/Livery source selection for 2025/2026 with mixed group state;
       do not offer Livery for 2024.
-- [ ] Sanitize and persist only the Electron-supported fixed/livery values and
+- [x] Sanitize and persist only the Electron-supported fixed/livery values and
       apply them immediately and at engine construction.
-- [ ] Use `tnrp::Engine::teamColorCatalogJson()` and
+- [x] Use `tnrp::Engine::teamColorCatalogJson()` and
       `setTeamColorOverrides()` without changing `protocol_parser_library/`.
+
+Implemented in `qt_frontend/src/components/SettingsDialog.{h,cpp}` and
+`MainWindow.{h,cpp}`. The native Team Colors page renders the engine-ordered
+2024/2025/2026 groups, fixed color picker/readout and individual/group resets;
+2025/2026 additionally expose team/group livery selection with a mixed group
+state. MainWindow sanitizes the sparse persisted document through the existing
+team-color contract, supplies it in `tnrp::Config`, and applies edits immediately
+through the public engine API.
 
 ### APPEAR-002 — Formula 2 tyre compounds
 
@@ -1211,11 +1355,18 @@ Qt gap:
 
 TODO:
 
-- [ ] Extend the Qt frontend tyre presentation helper for F2 IDs 11–15 and the
+- [x] Extend the Qt frontend tyre presentation helper for F2 IDs 11–15 and the
       Electron actual-compound colors.
-- [ ] Apply the helper consistently to every Qt surface that shows compounds.
-- [ ] Match the F2 dry/wet grouping and ordering in the Tyres page.
-- [ ] Keep this frontend-only; do not modify shared labels or parser code.
+- [x] Apply the helper consistently to every Qt surface that shows compounds.
+- [x] Match the F2 dry/wet grouping and ordering in the Tyres page.
+- [x] Keep this frontend-only; do not modify shared labels or parser code.
+
+Implemented in `qt_frontend/src/components/TyreHelpers.h`, `TyresPage.cpp`,
+`OverviewPage.cpp`, `StandingsPage.cpp`, `StrategyPage.cpp`, and
+`AnalyzePage.cpp`. F2 IDs 11–15 now use the shared labels and fixed
+purple/red/yellow/white/blue colors on every Qt compound surface. F2 wet is
+grouped with wet sets, and allocation rows follow Electron's compound order
+with set index as the tie-breaker.
 
 ### RUNTIME-001 — Reduce Animations
 
@@ -1342,14 +1493,31 @@ Qt gap:
 
 TODO:
 
-- [ ] Add persisted Qt-equivalent Additional logging and Memory log controls
+- [x] Add persisted Qt-equivalent Additional logging and Memory log controls
       without disabling the always-on startup/fatal log.
-- [ ] Sample the Qt process and relevant retained frontend state at the same
+- [x] Sample the Qt process and relevant retained frontend state at the same
       one-second cadence while Memory log is enabled.
-- [ ] Add an About-page action to open the existing Qt launch-diagnostics
+- [x] Add an About-page action to open the existing Qt launch-diagnostics
       directory and an equivalent failure message.
-- [ ] Do not invent a Node-API setting in Qt; expose only diagnostics that have
+- [x] Do not invent a Node-API setting in Qt; expose only diagnostics that have
       a real Qt/native equivalent.
+
+Implemented in `qt_frontend/src/Diagnostics.{h,cpp}`, `MainWindow.{h,cpp}`,
+`SessionModel.{h,cpp}`, and `components/SettingsDialog.{h,cpp}`. The Debug tab
+persists only the portable Additional logging and Memory log controls. Detailed
+logging enables libtnrp's existing native counters plus ten-second Qt host,
+playback, pairing, visibility, and pipeline health snapshots while the launch
+and fatal log remains unconditional. Memory logging can be toggled live and
+writes one JSONL sample per second to `launch-diagnostics/ram_usage.log`, with
+platform process memory, native engine/history/strategy/writer retention, and
+Qt session-model allocated-capacity estimates; the sampler retains no telemetry
+payload itself. About opens the same diagnostics directory and uses **Unable to
+Open Launch Diagnostics** on immediate shell-open failure. No Node-API-only
+control was added. The implementation uses only existing public libtnrp APIs;
+`protocol_parser_library/` is unchanged. Source/diff review only; owner runtime
+checks: toggle each control during live and playback sessions, inspect both log
+files at the documented cadences, restart to confirm persistence, and exercise
+the About action's success/failure paths on each supported desktop OS.
 
 ---
 
@@ -1649,11 +1817,17 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the official website link and the current non-affiliation notice to
+- [x] Add the official website link and the current non-affiliation notice to
       Qt About.
-- [ ] Identify the creator as Electron does.
-- [ ] Preserve Qt's existing repository link, project license, and third-party
+- [x] Identify the creator as Electron does.
+- [x] Preserve Qt's existing repository link, project license, and third-party
       attribution controls.
+
+Implemented in `qt_frontend/src/components/SettingsDialog.cpp`. The native
+About dialog now exposes the official website alongside the existing repository
+link, identifies NoGoat as the creator, and carries Electron's current
+non-affiliation notice without changing the GPL or third-party attribution
+controls.
 
 
 ---
@@ -1738,3 +1912,19 @@ tasks:
   portable diagnostic controls are covered by RUNTIME-004.
 - F2 team catalog additions flow through the engine catalog and are covered by
   APPEAR-001; F2 compound presentation is separately covered by APPEAR-002.
+
+## Current delta parity re-audit
+
+Re-audited 2026-09-22 from `b9b6ad8` through Electron revision `78cef0c` and
+the current working tree. The only Electron frontend changes in that range are
+the fixed Split chart cursors and the ERS extension to the map Data Comparison
+card. They were recorded as ANALYZE-010 and ANALYZE-011 above and implemented in
+the same pass.
+
+The `historyDependencies.ts` edit is the subscription support required by the
+ERS row rather than a separate user-visible feature. The cursor helper/plugin
+files and later cursor-design commit are the implementation and visual treatment
+of ANALYZE-010 rather than additional controls or states. The same commit range's
+shared-library CMake cleanup changes no reachable Electron behavior and is not a
+Qt frontend parity task. After source comparison against the completed Qt
+implementations, no other current Electron delta creates an unchecked item.

@@ -20,6 +20,7 @@ class QWidget;
 class SessionModel;
 class TnrdPlayer;
 struct EngineSeekFlush;
+struct PlaybackHistoryBatch;
 namespace tnrp { class Engine; }
 
 // Owns the .tnrd playback controls: the engine-backed TnrdPlayer facade and the bottom transport
@@ -45,6 +46,8 @@ public:
     void setDataRequirements(uint32_t streamMask, uint32_t historyMask,
                              float windowSeconds);
     void requestLapData(int lapNum, uint32_t rowTypeMask);
+    void requestAnalysisLapData(uint64_t generation, int driverIndex,
+                                int lapNum, uint32_t rowTypeMask);
     void selectPlaybackDriver(int driverIndex, bool useRecordedRows);
     void rebuildCurrentCursor();
     void setEngine(tnrp::Engine* engine);
@@ -59,6 +62,9 @@ public:
     int currentPlaybackDriverIndex() const { return currentPlaybackDriverIndex_; }
     const std::vector<tnrp::AnalysisDriverLapCatalog>& playbackDriverCatalog() const {
         return playbackDriverCatalog_;
+    }
+    const tnrp::PlaybackLapBlocksRow& playbackLapCatalog() const {
+        return playbackLapCatalog_;
     }
 
     // Follows the toolbar's "Show button labels" option: icon-only vs a labelled
@@ -78,6 +84,9 @@ signals:
     void historyInstalled(uint64_t requestId);     // authoritative model swap completed
     void lapCatalogInstalled();                    // lap-relative requests can now be resolved
     void playbackDriverCatalogChanged();           // V6 version/driver metadata changed
+    void analysisLapDataReady(uint64_t generation, int driverIndex, int lapNum,
+                              uint32_t rowTypeMask,
+                              const std::shared_ptr<PlaybackHistoryBatch>& batch);
     void driverRestrictionChanged(int driverIndex, bool restricted, bool known);
     void activeLapChanged(int lapNum);             // refresh Current/Previous lap data
     void timeChanged(float absoluteTime);          // per playback tick / scrub
@@ -93,6 +102,7 @@ private:
     int currentPlaybackDriverIndex_ = -1;
     bool playbackDriverMetadataReady_ = false;
     std::vector<tnrp::AnalysisDriverLapCatalog> playbackDriverCatalog_;
+    tnrp::PlaybackLapBlocksRow playbackLapCatalog_;
 
     bool    seekerUpdating_ = false;
     qint64  lastSeekMs_     = 0;       // leading-edge throttle for scrub-bar seeks

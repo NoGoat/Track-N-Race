@@ -22,10 +22,13 @@ public:
     void setDistanceMode(bool on);
     void setIndividualGraphs(bool on, bool syncedTooltip);
     void setSectorOptions(bool boundaries, bool sectorDelta);
-    void setSecondarySource(const SessionData* catalog, const QHash<int,LapBlock>* cache);
-    void setComparisonLap(int lapNum, bool secondary = false);
-    void setFixedLaps(bool enabled, int lapA, bool lapASecondary,
-                      int lapB, bool lapBSecondary);
+    void setLabels(const QString& current, const QString& comparison);
+    void setMapCursors(bool visible, const QColor& currentColor,
+                       const QColor& comparisonColor);
+    void setMapCursorElapsed(double elapsedSeconds);
+    void setSelectedLaps(bool fixed,
+                         const SessionData* primaryData, const LapBlock* primary,
+                         const SessionData* comparisonData, const LapBlock* comparison);
 
 public slots:
     void zoomIn() { zoomX(0.7); }
@@ -56,18 +59,23 @@ private:
     bool syncedTooltip_ = false;
     bool sectorBoundaries_ = false;
     bool sectorDelta_ = false;
-    const SessionData* secondaryData_ = nullptr;
-    const QHash<int,LapBlock>* secondaryCache_ = nullptr;
+    const SessionData* selectedPrimaryData_ = nullptr;
+    const SessionData* selectedComparisonData_ = nullptr;
+    const LapBlock* selectedPrimary_ = nullptr;
+    const LapBlock* selectedComparison_ = nullptr;
     float currentTime_ = 0;
-    int compareLap_ = -1;
-    bool compareSecondary_ = false;
     bool fixed_ = false;
-    int lapA_ = -1, lapB_ = -1;
-    bool lapASecondary_ = false, lapBSecondary_ = false;
     bool dirty_ = true;
     QString fixedDomainKey_;
     QString panelLayoutKey_;
+    QString currentLabel_{"Current"};
+    QString comparisonLabel_{"Compare"};
+    bool mapCursorsVisible_ = false;
+    double mapCursorElapsed_ = 0.0;
+    QColor mapCurrentColor_{"#5794F2"};
+    QColor mapComparisonColor_{"#C4162A"};
 
     void requestRefresh();
     void refresh();
+    void refreshMapCursorGuides();
 };

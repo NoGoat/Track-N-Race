@@ -69,6 +69,12 @@ public:
         QColor  color;
     };
 
+    struct CursorGuide {
+        double x = 0.0;
+        QColor color;
+        bool operator==(const CursorGuide&) const = default;
+    };
+
     explicit ChartView(QWidget* parent = nullptr);
     ~ChartView() override;
 
@@ -159,6 +165,9 @@ public:
     void setHoverReadout(bool on);
     void setCursorSync(bool enabled, bool secondaryVertical, bool secondaryHorizontal);
     void setCursorModeKey(const QString& key);
+    // Persistent, non-interactive cursors drawn only by the lightweight raster
+    // overlay. Updating these never rebuilds or resubmits the GPU traces.
+    void setCursorGuides(const QVector<CursorGuide>& guides);
 
     // Current min/max x (key) of a series. Returns false if the series is empty.
     bool seriesKeyRange(int seriesId, double& lo, double& hi) const;

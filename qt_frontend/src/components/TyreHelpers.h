@@ -14,6 +14,7 @@
 inline QString tyreLabel(int compound) {
     switch (compound) {
         case 22: case 16: case 17: case 18: case 19: case 20: case 21:
+        case 11: case 12: case 13: case 14: case 15:
         case  7: case  8:
             return tnr::Ln("tyre.actual", compound);
         default:
@@ -21,10 +22,18 @@ inline QString tyreLabel(int compound) {
     }
 }
 
-// Text color keyed on visual_compound (16=soft, 17=medium, 18=hard, 7=int, 8=wet)
-// NOT tyre_compound — visual_compound is fixed; tyre_compound varies by weekend
-// Returns invalid QColor for hard → caller leaves text at the OS default color
-inline QColor tyreTextColor(int visualCompound) {
+// F2's actual compounds carry their own fixed colors; the reported visual
+// compound is only authoritative for F1 compounds. Returns invalid QColor for
+// F1 hard/unknown values so the caller can retain its native text color.
+inline QColor tyreTextColor(int actualCompound, int visualCompound) {
+    switch (actualCompound) {
+        case 11: return QColor("#a855f7"); // Supersoft — purple
+        case 12: return QColor("#e8002d"); // Soft      — red
+        case 13: return QColor("#ffd700"); // Medium    — yellow
+        case 14: return QColor("#ffffff"); // Hard      — white
+        case 15: return QColor("#4488ff"); // Wet       — blue
+        default: break;
+    }
     switch (visualCompound) {
         case 16: return QColor("#e8002d"); // Soft   — red
         case 17: return QColor("#ffd700"); // Medium — yellow
@@ -33,6 +42,26 @@ inline QColor tyreTextColor(int visualCompound) {
         case  8: return QColor("#4488ff"); // WET    — blue
         default: return {};
     }
+}
+
+inline bool isWetTyreCompound(int actualCompound) {
+    return actualCompound == 7 || actualCompound == 8 || actualCompound == 15;
+}
+
+inline int dryTyreCompoundOrder(int actualCompound, int visualCompound) {
+    if (actualCompound >= 11 && actualCompound <= 14) return actualCompound - 11;
+    switch (visualCompound) {
+        case 16: return 0;
+        case 17: return 1;
+        case 18: return 2;
+        default: return 3;
+    }
+}
+
+inline int wetTyreCompoundOrder(int actualCompound) {
+    if (actualCompound == 7) return 0;
+    if (actualCompound == 8) return 1;
+    return 2;
 }
 
 // ── Temperature / wear color helpers ─────────────────────────────────────

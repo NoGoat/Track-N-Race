@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDialog>
+#include <QHash>
 #include <QVector>
 #include "OverviewLayout.h"
 
@@ -18,6 +19,14 @@ class QWidget;
 class QTableWidget;
 class QPushButton;
 class QTimer;
+class QVBoxLayout;
+
+struct TeamColorPresetSetting {
+    int id = -1;
+    QString name;
+    QString color;
+    QString group;
+};
 
 // Modal Settings dialog, opened from its own toolbar icon. Underline tabs
 // matching the main toolbar's page switcher group the controls into category
@@ -34,12 +43,15 @@ private:
     QWidget* buildProtocolPage();
     QWidget* buildRecordingPage();
     QWidget* buildAppearancePage();
+    QWidget* buildTeamColorsPage();
     QWidget* buildCompactPage();
     QWidget* buildGraphsPage();
     QWidget* buildYAxisPage();
     QWidget* buildNotificationsPage();
     QWidget* buildOverviewPage();
     QWidget* buildTrackMapPage();
+    QWidget* buildPairingPage();
+    QWidget* buildDebugPage();
     QWidget* buildAboutPage();
 
     // Shared page scaffold: a page whose body form is returned via formOut.
@@ -61,6 +73,10 @@ private:
     bool networkDraftDirty() const;
     void refreshNetworkDraftUi();
     void applyNetworkDraft();
+    void refreshPairingUi();
+    void loadTeamColorConfiguration();
+    void refreshTeamColorRows();
+    void commitTeamColorOverrides();
 
     enum class UdpApplyState { Idle, Applying, Ok, Error };
 
@@ -99,4 +115,17 @@ private:
     QComboBox*    trackMapIdleCombo_   = nullptr;
     QCheckBox*    trackMapSectorColorsCheck_ = nullptr;
     QSlider*      trackMapOpacitySlider_     = nullptr;
+    QCheckBox*    pairingEnabledCheck_       = nullptr;
+    QWidget*      pairingContent_            = nullptr;
+    QWidget*      pairingClosed_             = nullptr;
+    QWidget*      pairingOpen_               = nullptr;
+    QLabel*       pairingQrLabel_            = nullptr;
+    QLabel*       pairingCodeLabel_          = nullptr;
+    QLabel*       pairingErrorLabel_         = nullptr;
+    QTableWidget* pairingDevicesTable_       = nullptr;
+    QWidget*      teamColorRows_              = nullptr;
+    QVBoxLayout*  teamColorRowsLayout_        = nullptr;
+    QHash<int, QVector<TeamColorPresetSetting>> teamColorCatalog_;
+    QHash<int, QHash<int, QString>> teamColorOverrides_;
+    int teamColorFormat_ = 2026;
 };

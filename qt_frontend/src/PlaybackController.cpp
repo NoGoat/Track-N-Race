@@ -116,6 +116,8 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
     : QObject(barParent), model_(model)
 {
     player_ = new TnrdPlayer(engine, this);
+    connect(player_, &TnrdPlayer::analysisLapDecoded,
+            this, &PlaybackController::analysisLapDataReady);
     bar_ = new QWidget(barParent);
     bar_->setAutoFillBackground(true);
     {
@@ -214,6 +216,7 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
         currentPlaybackDriverIndex_ = -1;
         playbackDriverMetadataReady_ = false;
         playbackDriverCatalog_.clear();
+        playbackLapCatalog_ = {};
         emit playbackDriverCatalogChanged();
         sep_->show();
         bar_->show();
@@ -230,6 +233,7 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
         tnrdVersion_ = QString::fromStdString(blocks.tnrdVersion);
         currentPlaybackDriverIndex_ = blocks.playbackDriverIndex;
         playbackDriverCatalog_ = blocks.analysisDrivers;
+        playbackLapCatalog_ = blocks;
         if (!playbackDriverMetadataReady_) {
             originalPlaybackDriverIndex_ = blocks.playbackDriverIndex;
             if (originalPlaybackDriverIndex_ < 0) {
@@ -343,6 +347,7 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
         currentPlaybackDriverIndex_ = -1;
         playbackDriverMetadataReady_ = false;
         playbackDriverCatalog_.clear();
+        playbackLapCatalog_ = {};
         emit playbackDriverCatalogChanged();
         sep_->hide();
         bar_->hide();
@@ -492,6 +497,13 @@ void PlaybackController::setDataRequirements(uint32_t streamMask,
 
 void PlaybackController::requestLapData(int lapNum, uint32_t rowTypeMask) {
     if (player_) player_->requestLapData(lapNum, rowTypeMask | (1u << 4));
+}
+
+void PlaybackController::requestAnalysisLapData(uint64_t generation, int driverIndex,
+                                                int lapNum, uint32_t rowTypeMask) {
+    if (player_)
+        player_->requestAnalysisLapData(generation, driverIndex, lapNum,
+                                        rowTypeMask | (1u << 4));
 }
 
 void PlaybackController::selectPlaybackDriver(int driverIndex, bool useRecordedRows) {
