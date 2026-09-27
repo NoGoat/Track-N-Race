@@ -4,6 +4,7 @@
 
 #include <QColor>
 #include <QSettings>
+#include <QVector>
 #include <QWidget>
 
 #include <cstdint>
@@ -27,7 +28,6 @@ class QListView;
 class QMenu;
 class QScrollArea;
 class QSplitter;
-class QStackedWidget;
 class QTabBar;
 class QToolBar;
 class QToolButton;
@@ -118,7 +118,7 @@ private:
     QFrame* messageBar_ = nullptr;
     QLabel* messageText_ = nullptr;
     QTabBar* modeTabs_ = nullptr;
-    QStackedWidget* slotPages_ = nullptr;
+    QVector<QWidget*> slotPages_;   // Follow Playback, Fixed Laps
     AnalysisLapSlot* currentSlot_ = nullptr;
     AnalysisLapSlot* compareSlot_ = nullptr;
     AnalysisLapSlot* lapASlot_ = nullptr;
@@ -180,6 +180,7 @@ private:
     void refreshFollowedSlot();
     void refreshSecondaryRow();
     void refreshMetricActions();
+    void showSlotPage(int index);
     void fitLapPanel();
     void applyState();
     void showFollowedLap(const LapBlock* lap);

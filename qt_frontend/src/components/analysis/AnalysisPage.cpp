@@ -34,9 +34,9 @@
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
-#include <QStackedWidget>
 #include <QStyle>
 #include <QTabBar>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -145,7 +145,7 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
             &AnalysisPage::refreshMetricActions);
 
     connect(modeTabs_, &QTabBar::currentChanged, this, [this](int index) {
-        slotPages_->setCurrentIndex(index);
+        showSlotPage(index);
         applyState();
     });
     connect(compareSlot_, &AnalysisLapSlot::driverActivated, this, [this] {
@@ -200,19 +200,19 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
     fitLapPanel();
 }
 
-// The lap panel is exactly as tall as what it shows: the stack measures only
-// its visible page (the Fixed Laps page is taller), and the panel may not grow
-// past its content, so it scrolls only when something is actually cut off.
+void AnalysisPage::showSlotPage(int index) {
+    for (int page = 0; page < slotPages_.size(); ++page) slotPages_[page]->setVisible(page == index);
+    fitLapPanel();
+}
+
+// The lap panel may not grow past its content, so it scrolls only when part of
+// it is actually cut off. Measured once layouts have settled after a change.
 void AnalysisPage::fitLapPanel() {
-    for (int index = 0; index < slotPages_->count(); ++index) {
-        const bool current = index == slotPages_->currentIndex();
-        slotPages_->widget(index)->setSizePolicy(
-            QSizePolicy::Preferred, current ? QSizePolicy::Preferred : QSizePolicy::Ignored);
-    }
-    slotPages_->updateGeometry();
-    QWidget* content = lapScroll_->widget();
-    if (QLayout* layout = content->layout()) layout->activate();
-    lapScroll_->setMaximumHeight(content->sizeHint().height() + 2 * lapScroll_->frameWidth());
+    QTimer::singleShot(0, this, [this] {
+        QWidget* content = lapScroll_->widget();
+        if (QLayout* layout = content->layout()) layout->activate();
+        lapScroll_->setMaximumHeight(content->sizeHint().height() + 2 * lapScroll_->frameWidth());
+    });
 }
 
 AnalysisPage::~AnalysisPage() = default;
@@ -418,16 +418,17 @@ QWidget* AnalysisPage::buildLapGroup() {
     modeTabs_->setTabToolTip(kFixedTab, QStringLiteral("Compare any two laps, from either recording"));
     layout->addWidget(modeTabs_);
 
-    slotPages_ = new QStackedWidget(group);
-    auto makePage = [this](AnalysisLapSlot* first, AnalysisLapSlot* second) {
-        auto* page = new QWidget(slotPages_);
+    // Both pages live in one layout and only the active one is shown, so the
+    // group is always exactly as tall as the page on screen.
+    auto makePage = [this, layout, group](AnalysisLapSlot* first, AnalysisLapSlot* second) {
+        auto* page = new QWidget(group);
         auto* pageLayout = new QVBoxLayout(page);
         pageLayout->setContentsMargins(0, 0, 0, 0);
         pageLayout->setSpacing(8);
         pageLayout->addWidget(first);
         pageLayout->addWidget(second);
-        pageLayout->addStretch(1);
-        slotPages_->addWidget(page);
+        slotPages_.push_back(page);
+        layout->addWidget(page);
     };
     currentSlot_ = new AnalysisLapSlot(QStringLiteral("Current Lap"), QStringLiteral("Current"),
                                        AnalysisLapSlot::Mode::FollowsPlayback);
@@ -439,8 +440,7 @@ QWidget* AnalysisPage::buildLapGroup() {
                                     AnalysisLapSlot::Mode::Selectable);
     makePage(currentSlot_, compareSlot_);
     makePage(lapASlot_, lapBSlot_);
-    layout->addWidget(slotPages_);
-    connect(slotPages_, &QStackedWidget::currentChanged, this, &AnalysisPage::fitLapPanel);
+    slotPages_[kFixedTab]->hide();
     return group;
 }
 
@@ -898,7 +898,7 @@ void AnalysisPage::applyState() {
     if (!haveLaps && modeTabs_->currentIndex() == kFixedTab) {
         QSignalBlocker guard(modeTabs_);
         modeTabs_->setCurrentIndex(kPlaybackTab);
-        slotPages_->setCurrentIndex(kPlaybackTab);
+        showSlotPage(kPlaybackTab);
     }
     const qsizetype driverCount = (primary_ ? primary_->driverOrder().size() : 0) +
                                   (secondary_ ? secondary_->driverOrder().size() : 0);
@@ -1210,7 +1210,7 @@ void AnalysisPage::resetPlaybackSelections() {
     {
         QSignalBlocker guard(modeTabs_);
         modeTabs_->setCurrentIndex(kPlaybackTab);
-        slotPages_->setCurrentIndex(kPlaybackTab);
+        showSlotPage(kPlaybackTab);
     }
     for (AnalysisLapSlot* slot : {compareSlot_, lapASlot_, lapBSlot_}) slot->clearLap();
     refreshDriverChoices();
