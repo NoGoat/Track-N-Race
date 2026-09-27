@@ -38,6 +38,9 @@ const QVector<AnalyzeMetric>& analyzeMetrics() {
                 << M(qPrintable(QString("wear-%1").arg(c.key)),"Tyres",qPrintable(QString("Tyre Wear %1").arg(c.label)),AnalyzeSource::Damage,qPrintable(QString("wear_%1").arg(c.key)),c.color,"percent",0,100,"%",1)
                 << M(qPrintable(QString("life-%1").arg(c.key)),"Tyres",qPrintable(QString("Tyre Life %1").arg(c.label)),AnalyzeSource::Damage,qPrintable(QString("life_%1").arg(c.key)),c.color,"percent",0,100,"%",1);
         }
+        // Whole-car baselines: the mean of whichever corners report.
+        out << M("wear-avg","Tyres","Average Tyre Wear",AnalyzeSource::Damage,"wear_avg","#FF780A","percent",0,100,"%",1)
+            << M("life-avg","Tyres","Average Tyre Life",AnalyzeSource::Damage,"life_avg","#73BF69","percent",0,100,"%",1);
         return out;
     }();
     return v;
@@ -46,4 +49,83 @@ const QVector<AnalyzeMetric>& analyzeMetrics() {
 const AnalyzeMetric* analyzeMetric(const QString& id) {
     for (const auto& m : analyzeMetrics()) if (m.id == id) return &m;
     return nullptr;
+}
+
+const QStringList& analyzeMetricGroups() {
+    static const QStringList groups{QStringLiteral("Driving"), QStringLiteral("Motion"),
+                                    QStringLiteral("Power"), QStringLiteral("Tyres")};
+    return groups;
+}
+
+const QVector<AnalyzeTyreCorner>& analyzeTyreCorners() {
+    static const QVector<AnalyzeTyreCorner> corners{
+        {QStringLiteral("fl"), QStringLiteral("FL")}, {QStringLiteral("fr"), QStringLiteral("FR")},
+        {QStringLiteral("rl"), QStringLiteral("RL")}, {QStringLiteral("rr"), QStringLiteral("RR")}};
+    return corners;
+}
+
+const QVector<AnalyzeTyreRow>& analyzeTyreRows() {
+    static const QVector<AnalyzeTyreRow> rows{
+        {QStringLiteral("surface"), QStringLiteral("Surface Temp"), QStringLiteral("Surface"), QColor("#FF9830")},
+        {QStringLiteral("inner"), QStringLiteral("Inner Temp"), QStringLiteral("Inner"), QColor("#B877DB")},
+        {QStringLiteral("brake-temp"), QStringLiteral("Brake Temp"), QStringLiteral("Brake"), QColor("#F2495C")},
+        {QStringLiteral("wear"), QStringLiteral("Tyre Wear"), QStringLiteral("T.Wear"), QColor("#8AB8FF")},
+        {QStringLiteral("life"), QStringLiteral("Tyre Life"), QStringLiteral("T.Life"), QColor("#73BF69")},
+    };
+    return rows;
+}
+
+const AnalyzeTyreRow* analyzeCombinedRow(const QString& seriesId) {
+    for (const AnalyzeTyreRow& row : analyzeTyreRows())
+        if (row.combinedId() == seriesId) return &row;
+    return nullptr;
+}
+
+const AnalyzeTyreRow* analyzeCornerRow(const QString& metricId, QString* cornerKey) {
+    for (const AnalyzeTyreRow& row : analyzeTyreRows()) {
+        for (const AnalyzeTyreCorner& corner : analyzeTyreCorners()) {
+            if (metricId != row.idPrefix + QLatin1Char('-') + corner.key) continue;
+            if (cornerKey) *cornerKey = corner.key;
+            return &row;
+        }
+    }
+    return nullptr;
+}
+
+const AnalyzeMetric* analyzeScaleMetric(const QString& seriesId) {
+    if (const AnalyzeTyreRow* row = analyzeCombinedRow(seriesId))
+        return analyzeMetric(row->idPrefix + QLatin1Char('-') + analyzeTyreCorners().first().key);
+    return analyzeMetric(seriesId);
+}
+
+QStringList analyzeSeriesConflicts(const QString& seriesId) {
+    QStringList conflicts;
+    if (const AnalyzeTyreRow* row = analyzeCombinedRow(seriesId)) {
+        for (const AnalyzeTyreCorner& corner : analyzeTyreCorners())
+            conflicts << row->idPrefix + QLatin1Char('-') + corner.key;
+    } else if (const AnalyzeTyreRow* row = analyzeCornerRow(seriesId)) {
+        conflicts << row->combinedId();
+    }
+    return conflicts;
+}
+
+QStringList analyzeSanitizeCorners(const QStringList& corners) {
+    QStringList out;
+    for (const AnalyzeTyreCorner& corner : analyzeTyreCorners())
+        if (corners.contains(corner.key)) out << corner.key;
+    return out;
+}
+
+bool analyzeSeriesHasLines(const AnalyzeSeriesSetting& setting) {
+    return !analyzeCombinedRow(setting.metricId) || !setting.corners.isEmpty();
+}
+
+QColor analyzeSeriesLineColor(const AnalyzeSeriesSetting& setting, const QString& memberId) {
+    QString key;
+    const AnalyzeTyreRow* row = analyzeCornerRow(memberId, &key);
+    if (!row || row->combinedId() != setting.metricId) return setting.color;
+    const QColor custom = setting.cornerColors.value(key);
+    if (custom.isValid()) return custom;
+    const AnalyzeMetric* member = analyzeMetric(memberId);
+    return member ? member->defaultColor : setting.color;
 }

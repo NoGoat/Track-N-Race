@@ -540,7 +540,7 @@ TODO:
 - [x] Keep the existing Qt elapsed-time overlay as the fallback when distance
       data is unavailable.
 
-Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}`,
+Implemented in `qt_frontend/src/components/analysis/AnalysisPage.{h,cpp}`,
 `AnalyzeChart.{h,cpp}`, and `qt_frontend/src/SessionModel.{h,cpp}`. Analysis uses
 lap progress for distance alignment and signed delta, retains the elapsed-time
 fallback and unsupported-file state, and keeps Delta non-removable while exposing
@@ -576,7 +576,7 @@ TODO:
 - [x] Add the Analysis-only synced-tooltip toggle with Electron's availability
       rule.
 
-Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}` and
+Implemented in `qt_frontend/src/components/analysis/AnalysisPage.{h,cpp}` and
 `AnalyzeChart.{h,cpp}` using panels of the existing shared `ChartView`. Individual
 panels link their X axes and navigation, and the tooltip option is enabled only
 while Individual Graphs is active.
@@ -615,7 +615,7 @@ TODO:
 - [x] Keep the primary playback transport independent of the secondary reader.
 
 Implemented in `qt_frontend/src/AnalysisFileReader.{h,cpp}` and
-`qt_frontend/src/components/AnalyzePage.{h,cpp}`. The secondary TNRD reader owns a
+`qt_frontend/src/components/analysis/AnalysisPage.{h,cpp}`. The secondary TNRD reader owns a
 separate worker and lazy lap cache, selectors qualify both files, incompatible
 circuits require confirmation, and clear/replace invalidates secondary choices
 without changing the primary playback transport.
@@ -646,8 +646,8 @@ TODO:
 - [x] Render two comparable paths and markers with configurable colors.
 - [x] Drive marker positions from the existing primary playback cursor.
 
-Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}`,
-`AnalyzeMapComparison.{h,cpp}`, and `TrackMapWidget.{h,cpp}`. The map view is
+Implemented in `qt_frontend/src/components/analysis/AnalysisPage.{h,cpp}`,
+`analysis/AnalysisMapView.{h,cpp}`, and `TrackMapWidget.{h,cpp}`. The map view is
 playback-only, preserves the map appearance settings, and supports primary-cursor
 animation plus the fixed-lap local transport.
 
@@ -678,7 +678,7 @@ TODO:
 - [x] Add sector-local delta behavior.
 - [x] Connect chart inspection to the Analysis map focus state.
 
-Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}` and
+Implemented in `qt_frontend/src/components/analysis/AnalysisPage.{h,cpp}` and
 `AnalyzeChart.{h,cpp}`. Sector Delta depends on Sector Boundaries, resets at
 resolved sector starts, and chart inspection switches the Analysis view to the
 corresponding focused map position.
@@ -724,7 +724,7 @@ TODO:
       mismatch, sector-delta, and color behavior.
 - [x] Add the Analysis Controls help dialog for the controls that exist in Qt.
 
-Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}`. Analysis now
+Implemented in `qt_frontend/src/components/analysis/AnalysisPage.{h,cpp}`. Analysis now
 persists Graphs/Split/Map, renders Graphs and Map in equal split panes, gates
 map-bearing views for live data and known circuit mismatches, and moves chart
 inspection into Split before focusing the map. The toolbar computes cursor- or
@@ -767,8 +767,8 @@ TODO:
 - [x] Group the comparison controls by side and add independent collapse/expand
       behavior with the Electron summary fields.
 
-Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}`,
-`AnalyzeChart.{h,cpp}`, and `AnalyzeMapComparison.{h,cpp}`. Current, Compare,
+Implemented in `qt_frontend/src/components/analysis/AnalysisPage.{h,cpp}`,
+`AnalyzeChart.{h,cpp}`, and `analysis/AnalysisMapView.{h,cpp}`. Current, Compare,
 Lap A, and Lap B now have independently collapsible driver/lap/name groups whose
 summaries include driver, compound, lap, and lap time. Optional 40-character
 names persist with Analysis settings, resolve to the Electron defaults when
@@ -806,8 +806,8 @@ TODO:
       normalized position.
 - [x] Match end-of-lap clamping and missing-value behavior.
 
-Implemented in `qt_frontend/src/components/AnalyzeInputComparison.{h,cpp}`,
-`AnalyzeMapComparison.{h,cpp}`, `AnalyzePage.cpp`, and `SessionModel.cpp`. The
+Implemented in `qt_frontend/src/components/analysis/AnalysisMapView.{h,cpp}` (inputs panel),
+`analysis/AnalysisMapView.{h,cpp}`, `analysis/AnalysisPage.cpp`, and `SessionModel.cpp`. The
 map overlay samples both selected laps from the shared cursor on the map's
 existing visible-only timer, holds the latest telemetry row, and clamps each lap at its
 own endpoint. It supports collapse, bounded drag/keyboard positioning, persisted
@@ -857,7 +857,7 @@ TODO:
 - [x] Use existing public reader/engine APIs; do not change the TNRD format or
       `protocol_parser_library/` for this task.
 
-Implemented in `qt_frontend/src/components/AnalyzePage.cpp`,
+Implemented in `qt_frontend/src/components/analysis/AnalysisPage.cpp`,
 `AnalyzeChart.cpp`, `AnalysisFileReader.cpp`, `TnrdPlayer.cpp`,
 `PlaybackController.cpp`, and `MainWindow.cpp` (with their matching headers).
 Analysis now retains per-file/per-driver catalogs, scopes all selectors and its
@@ -906,7 +906,7 @@ TODO:
       Split view.
 
 Implemented in `qt_frontend/src/components/ChartView.{h,cpp}`,
-`AnalyzeChart.{h,cpp}`, `AnalyzeMapComparison.{h,cpp}`, and `AnalyzePage.cpp`.
+`AnalyzeChart.{h,cpp}`, `analysis/AnalysisMapView.{h,cpp}`, and `analysis/AnalysisPage.cpp`.
 The visible-only map clock now publishes its elapsed position at presentation
 cadence. AnalyzeChart converts that position independently through each selected
 lap, then updates lightweight raster-overlay guides on every combined/individual
@@ -945,8 +945,8 @@ TODO:
       lap requests.
 - [x] Reuse the existing map clock/timer and preserve missing-value behavior.
 
-Implemented in `qt_frontend/src/components/AnalyzeInputComparison.{h,cpp}`,
-`AnalyzeMapComparison.cpp`, and `AnalyzePage.cpp`. The Data Comparison card now
+Implemented in `qt_frontend/src/components/analysis/AnalysisMapView.{h,cpp}` (inputs panel),
+`analysis/AnalysisMapView.cpp`, and `analysis/AnalysisPage.cpp`. The Data Comparison card now
 samples `LapBlock::sts` independently from telemetry and renders a two-lane ERS
 percentage bar after Throttle. Map/Split requirements include status history,
 the copied-lap cache signature includes status size, and the existing shared
@@ -1363,7 +1363,7 @@ TODO:
 
 Implemented in `qt_frontend/src/components/TyreHelpers.h`, `TyresPage.cpp`,
 `OverviewPage.cpp`, `StandingsPage.cpp`, `StrategyPage.cpp`, and
-`AnalyzePage.cpp`. F2 IDs 11–15 now use the shared labels and fixed
+`analysis/AnalysisPage.cpp`. F2 IDs 11–15 now use the shared labels and fixed
 purple/red/yellow/white/blue colors on every Qt compound surface. F2 wet is
 grouped with wet sets, and allocation rows follow Electron's compound order
 with set index as the tie-breaker.

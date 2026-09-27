@@ -29,6 +29,8 @@
 #include <rhi/qshader.h>
 
 #include <algorithm>
+#include <QHash>
+#include <QPair>
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -83,6 +85,7 @@ struct Axis {
     int tickSpacePx = 80;
     bool lapBoundaryLabels = false;
     int labelWidth = 1, laneOffset = 0;
+    int laneOrder = 0;   // position among same-side axes, innermost first
     double scale = 1, step = 0;
     QString suffix, timeFormat = "%m:%s";
     QVector<double> ticks, sessionKeys, sessionTimes;
@@ -871,6 +874,7 @@ struct ChartView::Impl {
     QVector<ChartView::CursorGuide> cursorGuides;
     QVector<int> order; QVector<QVector<int>> rows; QVector<int> linkedXAxes; int columns = 1;
     bool explicitRows = false, hover = false, sync = false, secondaryV = true, secondaryH = false;
+    bool alignedInsets = false;   // panels in a column share their widest gutters
     QString cursorMode; QPointer<SessionModel> model;
     int navAxis = -1; bool nav = false, dragging = false;
     double navMin = 0, navMax = 1, navSpan = .5, dragMin = 0, dragMax = 1;
@@ -912,8 +916,11 @@ struct ChartView::Impl {
                         else if (axis.side == ChartView::Side::Right) rightAxes.push_back(axisId);
                         else bottomAxes.push_back(axisId);
                     }
-                    auto sideInset = [&](const QVector<int>& sideAxes) {
+                    auto sideInset = [&](QVector<int> sideAxes) {
                         if (sideAxes.isEmpty()) return kPlotEdgePad;
+                        std::stable_sort(sideAxes.begin(), sideAxes.end(), [&](int a, int b) {
+                            return axes[a].laneOrder < axes[b].laneOrder;
+                        });
                         int used = 0;
                         for (int index = 0; index < sideAxes.size(); ++index) {
                             Axis& axis = axes[sideAxes[index]];
@@ -957,6 +964,24 @@ struct ChartView::Impl {
             if (ri + 1 < lr.size()) {
                 dividers.push_back({ QRect(bounds.left(), y, bounds.width(), kGap), QFrame::HLine });
                 y += kGap;
+            }
+        }
+        if (alignedInsets) {
+            // Stacked panels read as one chart only when their plot areas share
+            // edges, so every panel in a column takes the column's widest gutters.
+            QHash<int, QPair<int, int>> widest;   // outer.left -> (left, right) inset
+            for (const Panel& p : panels) {
+                if (!p.visible || p.plot.isEmpty()) continue;
+                QPair<int, int>& inset = widest[p.outer.left()];
+                inset.first = qMax(inset.first, p.plot.left() - p.outer.left());
+                inset.second = qMax(inset.second, p.outer.right() - p.plot.right());
+            }
+            for (Panel& p : panels) {
+                if (!p.visible || p.plot.isEmpty()) continue;
+                const QPair<int, int> inset = widest.value(p.outer.left());
+                p.plot.setLeft(p.outer.left() + inset.first);
+                p.plot.setRight(p.outer.right() - inset.second);
+                if (p.plot.width() < 8) p.plot = {};
             }
         }
         if (overlay) overlay->setPanelDividers(dividers);
@@ -1115,6 +1140,8 @@ void ChartView::setAxisNativeLines(int axis, bool enabled) {
 }
 void ChartView::setSeriesOrder(const QVector<int>& ids){QVector<int>o;for(int id:ids)if(id>=0&&id<d_->series.size()&&!o.contains(id))o.push_back(id);for(int id:d_->order)if(!o.contains(id))o.push_back(id);d_->order=o;}
 void ChartView::linkSeriesVisibility(int a,int b){if(a>=0&&a<d_->series.size())d_->series[a].linked=b;}
+void ChartView::setAxisSide(int id,Side side,int laneOrder){if(id<0||id>=d_->axes.size())return;Axis&a=d_->axes[id];if(a.side==side&&a.laneOrder==laneOrder)return;a.side=side;a.laneOrder=laneOrder;d_->geometry(rect());requestReplot();}
+void ChartView::setPanelInsetsAligned(bool on){if(d_->alignedInsets==on)return;d_->alignedInsets=on;applyPanelLayout();}
 void ChartView::setAxisVisible(int id,bool on){if(id>=0&&id<d_->axes.size()&&d_->axes[id].visible!=on){d_->axes[id].visible=on;d_->geometry(rect());}}
 void ChartView::setAxisColor(int id,const QColor&c){if(id>=0&&id<d_->axes.size()){d_->axes[id].color=c;d_->axes[id].inherit=false;}}
 void ChartView::setAxisGridVisible(int id,bool on){if(id>=0&&id<d_->axes.size())d_->axes[id].grid=on;}
@@ -1128,7 +1155,8 @@ void ChartView::applyPanelLayout(){d_->geometry(rect());positionPanelChartSettin
 void ChartView::setPanelVisible(int id,bool on){if(id>=0&&id<d_->panels.size()){d_->panels[id].visible=on;d_->explicitRows=false;applyPanelLayout();}}
 void ChartView::setPanelTitle(int id,const QString&t){if(id>=0&&id<d_->panels.size()){ensurePanelHeader(id);d_->panels[id].title=t;requestReplot();}}
 void ChartView::setPanelNote(int id,const QString&n){if(id>=0&&id<d_->panels.size()){ensurePanelHeader(id);d_->panels[id].note=n;requestReplot();}}
-void ChartView::setPanelLegendVisible(int id,bool on){if(id>=0&&id<d_->panels.size()){ensurePanelHeader(id);d_->panels[id].legend=on;}}
+// A hidden legend needs no header row, so only a shown one reserves it.
+void ChartView::setPanelLegendVisible(int id,bool on){if(id>=0&&id<d_->panels.size()){if(on)ensurePanelHeader(id);d_->panels[id].legend=on;}}
 void ChartView::setAxisTimeTicker(int id,const QString& format){if(id>=0&&id<d_->axes.size()){auto&a=d_->axes[id];a.timeFormat=format;a.time=true;a.lapBoundaryLabels=false;a.ticks.clear();a.labels.clear();}}
 void ChartView::setAxisDistanceMode(int id,bool on){if(id>=0&&id<d_->axes.size())d_->axes[id].distance=on;}
 

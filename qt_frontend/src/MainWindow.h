@@ -21,7 +21,7 @@
 #include "components/OverviewLayout.h"
 
 class OverviewPage;
-class AnalyzePage;
+class AnalysisPage;
 class StandingsPage;
 class SessionPage;
 class StrategyPage;
@@ -208,7 +208,7 @@ private:
     // damage rows); fed rows synchronously via on*() from emitLiveData and
     // playback state via its setters.
     OverviewPage*   overviewPage_ = nullptr;
-    AnalyzePage*    analyzePage_  = nullptr;
+    AnalysisPage*   analyzePage_  = nullptr;
     SessionModel*   model_        = nullptr;
 
     // ── Standings page ────────────────────────────────────────────

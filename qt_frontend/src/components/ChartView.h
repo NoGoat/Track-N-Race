@@ -149,6 +149,12 @@ public:
     void setSeriesOrder(const QVector<int>& bottomToTop);
     void linkSeriesVisibility(int primarySeriesId, int linkedSeriesId);
     void setAxisVisible(int axisId, bool visible);
+    // Moves an axis to another side; laneOrder ranks it among that side's axes
+    // (lower sits nearer the plot).
+    void setAxisSide(int axisId, Side side, int laneOrder = 0);
+    // Panels sharing a column use the column's widest left/right gutters, so
+    // stacked plots line up edge to edge. Off by default.
+    void setPanelInsetsAligned(bool on);
     void setAxisColor(int axisId, const QColor& color);
     void setAxisGridVisible(int axisId, bool visible);
 

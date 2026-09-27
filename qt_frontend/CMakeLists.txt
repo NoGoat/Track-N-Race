@@ -118,12 +118,22 @@ set(SOURCES
     src/components/AnalyzeMetrics.cpp
     src/components/AnalyzeChart.h
     src/components/AnalyzeChart.cpp
-    src/components/AnalyzeInputComparison.h
-    src/components/AnalyzeInputComparison.cpp
-    src/components/AnalyzeMapComparison.h
-    src/components/AnalyzeMapComparison.cpp
-    src/components/AnalyzePage.h
-    src/components/AnalyzePage.cpp
+    src/components/analysis/AnalysisInputCard.h
+    src/components/analysis/AnalysisInputCard.cpp
+    src/components/analysis/AnalysisLapSlot.h
+    src/components/analysis/AnalysisLapSlot.cpp
+    src/components/analysis/AnalysisMapView.h
+    src/components/analysis/AnalysisMetricPicker.h
+    src/components/analysis/AnalysisMetricPicker.cpp
+    src/components/analysis/AnalysisMapView.cpp
+    src/components/analysis/AnalysisPage.h
+    src/components/analysis/AnalysisPage.cpp
+    src/components/analysis/AnalysisRecording.h
+    src/components/analysis/AnalysisRecording.cpp
+    src/components/analysis/AnalysisSeriesModel.h
+    src/components/analysis/AnalysisSeriesModel.cpp
+    src/components/analysis/AnalysisWidgets.h
+    src/components/analysis/AnalysisWidgets.cpp
     src/components/SettingsDialog.h
     src/components/SettingsDialog.cpp
     src/components/PairingQrCode.h

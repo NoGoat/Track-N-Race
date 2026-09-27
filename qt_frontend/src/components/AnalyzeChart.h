@@ -43,6 +43,8 @@ protected:
 private:
     struct Handles { int current=-1, comparison=-1; };
     struct StackedHandles { int panel=-1,xAxis=-1,yAxis=-1,current=-1,comparison=-1; };
+    // One panel per tyre row; current/comparison series per corner (FL, FR, RL, RR).
+    struct CombinedHandles { int panel=-1,xAxis=-1,yAxis=-1; QVector<int> current, comparison; };
     QPointer<SessionModel> model_;
     QVector<AnalyzeSeriesSetting> selected_;
     QVector<Handles> handles_;
@@ -52,6 +54,7 @@ private:
     int deltaAxis_ = -1;
     Handles deltaHandles_;
     StackedHandles stackedDelta_;
+    QVector<CombinedHandles> combined_;
     bool showYAxis_ = true;
     bool playback_ = false;
     bool distanceMode_ = false;

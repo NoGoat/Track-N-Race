@@ -12,7 +12,7 @@
 #include "components/EditMiscLayoutDialog.h"
 #include "components/EditSessionLayoutDialog.h"
 #include "components/OverviewPage.h"
-#include "components/AnalyzePage.h"
+#include "components/analysis/AnalysisPage.h"
 #include "components/StandingsPage.h"
 #include "components/SessionPage.h"
 #include "components/TyresPage.h"
@@ -340,8 +340,7 @@ MainWindow::MainWindow(QWidget* parent)
     // Order must match the Page enum and the AppToolbar page-name list above.
     QStackedWidget* stack = new QStackedWidget(this);
     stack->addWidget(overviewPage_ = new OverviewPage(model_));   // Overview
-    stack->addWidget(analyzePage_ = new AnalyzePage(model_));     // Analyze
-    toolbar_->setAnalyzeContextWidget(analyzePage_->toolbarControls());
+    stack->addWidget(analyzePage_ = new AnalysisPage(model_));    // Analyze
     stack->addWidget(standingsPage_ = new StandingsPage);   // Standings
     // A row click changed the selection; re-feed the cached rows immediately
     // (same synchronous rebuild as the old in-page click handler).
@@ -379,10 +378,10 @@ MainWindow::MainWindow(QWidget* parent)
         if (inPlayback_ && analyzePage_ && playback_)
             analyzePage_->setPrimaryCatalog(playback_->playbackLapCatalog());
     });
-    connect(analyzePage_, &AnalyzePage::primaryLapDataRequested,
+    connect(analyzePage_, &AnalysisPage::primaryLapDataRequested,
             playback_, &PlaybackController::requestAnalysisLapData);
     connect(playback_, &PlaybackController::analysisLapDataReady,
-            analyzePage_, &AnalyzePage::installPrimaryLap);
+            analyzePage_, &AnalysisPage::installPrimaryLap);
     connect(toolbar_, &AppToolbar::playbackDriverChanged, this, [this](int driverIndex) {
         if (!inPlayback_ || !playback_ ||
             playback_->tnrdVersion() != QStringLiteral("TNRD_V6") ||
@@ -462,14 +461,14 @@ MainWindow::MainWindow(QWidget* parent)
     exportOverlay_->hide();
 
     connect(toolbar_, &AppToolbar::pageSelected, stack, &QStackedWidget::setCurrentIndex);
-    connect(toolbar_, &AppToolbar::analyzeZoomInRequested, analyzePage_, &AnalyzePage::zoomIn);
-    connect(toolbar_, &AppToolbar::analyzeZoomOutRequested, analyzePage_, &AnalyzePage::zoomOut);
-    connect(toolbar_, &AppToolbar::analyzePanLeftRequested, analyzePage_, &AnalyzePage::panLeft);
-    connect(toolbar_, &AppToolbar::analyzePanRightRequested, analyzePage_, &AnalyzePage::panRight);
-    connect(toolbar_, &AppToolbar::analyzeResetZoomRequested, analyzePage_, &AnalyzePage::resetZoom);
-    connect(analyzePage_, &AnalyzePage::navigationEnabledChanged,
+    connect(toolbar_, &AppToolbar::analyzeZoomInRequested, analyzePage_, &AnalysisPage::zoomIn);
+    connect(toolbar_, &AppToolbar::analyzeZoomOutRequested, analyzePage_, &AnalysisPage::zoomOut);
+    connect(toolbar_, &AppToolbar::analyzePanLeftRequested, analyzePage_, &AnalysisPage::panLeft);
+    connect(toolbar_, &AppToolbar::analyzePanRightRequested, analyzePage_, &AnalysisPage::panRight);
+    connect(toolbar_, &AppToolbar::analyzeResetZoomRequested, analyzePage_, &AnalysisPage::resetZoom);
+    connect(analyzePage_, &AnalysisPage::navigationEnabledChanged,
             toolbar_, &AppToolbar::setAnalyzeControlsEnabled);
-    connect(analyzePage_, &AnalyzePage::dataRequirementsChanged,
+    connect(analyzePage_, &AnalysisPage::dataRequirementsChanged,
             this, &MainWindow::updatePlaybackDataRequirements);
     connect(toolbar_, &AppToolbar::pageSelected, this, [this](int i) {
         const Page previousPage = currentPage_;
@@ -2523,7 +2522,6 @@ void MainWindow::updatePlaybackDataRequirements() {
         // cache used by fixed/compare laps. Analyze must do that too: its active
         // seek window is only a fallback and may not contain the full lap.
         if (currentLap) requestedLaps.insert(currentLap->lapNum);
-        for (int lap : analyzePage_->requestedPlaybackLaps()) requestedLaps.insert(lap);
     }
     const uint32_t lapMask = history == 0 ? 0u : history | bit(4);
     for (tnr::GraphSection section : sections) {
