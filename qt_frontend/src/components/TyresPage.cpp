@@ -53,8 +53,10 @@ TyresPage::TyresPage(SessionModel* model, QWidget* parent)
 
     auto createSetsTable = [&](QTableWidget*& outTable, int stretch) {
         outTable = new QTableWidget;
-        outTable->setColumnCount(7);
-        outTable->setHorizontalHeaderLabels({"#", "COMPOUND", "STATUS", "WEAR", "LIFE", "SESSION", "DELTA"});
+        outTable->setColumnCount(8);
+        outTable->setHorizontalHeaderLabels({"#", "COMPOUND", "STATUS", "WEAR", "WEAR/LAP", "LIFE", "SESSION", "DELTA"});
+        outTable->horizontalHeaderItem(4)->setToolTip(
+            QStringLiteral("Average wear per lap on this set in the current session"));
         outTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
         outTable->setSelectionMode(QAbstractItemView::NoSelection);
         outTable->setShowGrid(false);
@@ -64,8 +66,8 @@ TyresPage::TyresPage(SessionModel* model, QWidget* parent)
         outTable->verticalHeader()->setVisible(false);
         outTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
         outTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-        const int colW[7] = { 36, 92, 72, 0, 52, 84, 72 };
-        for (int c = 0; c < 7; ++c)
+        const int colW[8] = { 36, 92, 72, 0, 68, 52, 84, 72 };
+        for (int c = 0; c < 8; ++c)
             if (c != 3) outTable->setColumnWidth(c, colW[c]);
         QFont hf; hf.setPointSize(7);
         outTable->horizontalHeader()->setFont(hf);
@@ -386,12 +388,17 @@ void TyresPage::updateTyreSets(const tnrp::TyreSetsRow* tyreSets) {
                 table->setCellWidget(row, 3, cell);
             }
 
+            auto* perLapItem = makeItem(s.avg_wear_per_lap
+                ? QString::number(*s.avg_wear_per_lap, 'f', 2) + "%" : QStringLiteral("—"));
+            perLapItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            table->setItem(row, 4, perLapItem);
+
             QString lifeText = (lifeSpan > 0 || usable > 0)
                 ? QString("%1/%2L").arg(lifeSpan).arg(usable) : "—";
-            table->setItem(row, 4, makeItem(lifeText));
+            table->setItem(row, 5, makeItem(lifeText));
 
             int rsIdx = (recSess >= 0 && recSess < 19) ? recSess : 0;
-            table->setItem(row, 5, makeItem(sessionLabels[rsIdx]));
+            table->setItem(row, 6, makeItem(sessionLabels[rsIdx]));
 
             QString deltaText;
             if (deltaMs != 0)
@@ -399,7 +406,7 @@ void TyresPage::updateTyreSets(const tnrp::TyreSetsRow* tyreSets) {
             auto* deltaItem = makeItem(deltaText);
             if (deltaMs > 0)      deltaItem->setForeground(QColor("#C4162A"));
             else if (deltaMs < 0) deltaItem->setForeground(tnr::themed("#37872D", "#137333"));
-            table->setItem(row, 6, deltaItem);
+            table->setItem(row, 7, deltaItem);
 
             table->setRowHeight(row, 22);
         }

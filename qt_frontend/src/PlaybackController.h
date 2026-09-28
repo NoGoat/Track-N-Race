@@ -53,6 +53,7 @@ public:
     void requestAnalysisLapData(uint64_t generation, int driverIndex,
                                 int lapNum, uint32_t rowTypeMask);
     void selectPlaybackDriver(int driverIndex, bool useRecordedRows);
+    void setFocusDriver(int driverIndex);
     void rebuildCurrentCursor();
     void setEngine(tnrp::Engine* engine);
     void quiesce();

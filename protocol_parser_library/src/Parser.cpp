@@ -58,6 +58,7 @@ void Parser::reset() {
     formula_.reset();
     knownCars_.fill(false);
     telemetryAccess_.fill(std::nullopt);
+    tyreSetBaselines_ = {};
     rosterSessionUid_.reset();
     rosterFormat_ = 0;
 }
@@ -196,6 +197,7 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     if (rosterSessionUid_ != sessionUid || rosterFormat_ != eff) {
         knownCars_.fill(false);
         telemetryAccess_.fill(std::nullopt);
+        tyreSetBaselines_ = {};
         rosterSessionUid_ = sessionUid;
         rosterFormat_ = eff;
     }
@@ -282,6 +284,7 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     hot.outputRowMask = outputRowMask;
     hot.knownCars = &knownCars_;
     hot.telemetryAccess = &telemetryAccess_;
+    hot.tyreSetBaselines = &tyreSetBaselines_;
     r.rows = (eff == 2024) ? F1_24::ParsePacket(data, length, hdr, ts, hot, teamColorOverrides_)
            : (eff == 2026) ? F1_26::ParsePacket(data, length, hdr, ts, hot, teamColorOverrides_)
                            : F1_25::ParsePacket(data, length, hdr, ts, hot, teamColorOverrides_);

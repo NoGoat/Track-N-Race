@@ -664,15 +664,25 @@ uint32_t oldFamilyMask(V6DataType type) {
 bool requestedByOldMask(V6DataType type, uint32_t mask) {
     return mask == UINT32_MAX || (oldFamilyMask(type) & mask) != 0;
 }
+// The all-car families a timing table shows for every car. Tyre compound and
+// age are displayed per row; the private status families only ever describe
+// one selected car, so they are not read for the whole grid.
 bool requestedForAllDrivers(V6DataType type, uint32_t mask) {
     switch (type) {
         case V6DataType::LapTiming: return (mask & v4TypeBit(7)) != 0;
         case V6DataType::Position: return (mask & v4TypeBit(13)) != 0;
-        case V6DataType::Aero: case V6DataType::TyreState:
-        case V6DataType::Fuel: case V6DataType::ERSStore:
+        case V6DataType::TyreState: return (mask & v4TypeBit(9)) != 0;
+        default: return false;
+    }
+}
+// All-car status families that describe one car in detail: read only for the
+// playback driver and the focus driver.
+bool privateStatusFamily(V6DataType type) {
+    switch (type) {
+        case V6DataType::Aero: case V6DataType::Fuel: case V6DataType::ERSStore:
         case V6DataType::ERSHarvest: case V6DataType::ERSDeployment:
         case V6DataType::EnginePower: case V6DataType::BrakeBias:
-            return (mask & v4TypeBit(9)) != 0;
+            return true;
         default: return false;
     }
 }
@@ -1608,6 +1618,7 @@ struct TnrdV6Archive::Impl {
     }
     std::optional<uint8_t> player;
     uint8_t playback{};
+    int focus{-1};
     std::set<uint8_t> requestedTypes;
     float first{};
     float last{};
@@ -1620,6 +1631,17 @@ struct TnrdV6Archive::Impl {
     uint64_t decompressions{};
 
     float logical(V6Phase, float time) const { return time; }
+    // Whether a chunk belongs to what the requested legacy families display:
+    // the playback driver's own data, the all-car table families, and the
+    // focus driver's private status.
+    bool wanted(const V6ChunkInfo& chunk, uint32_t mask) const {
+        const auto type = static_cast<V6DataType>(chunk.typeId);
+        if (chunk.driverIndex == playback && requestedByOldMask(type, mask)) return true;
+        if (requestedForAllDrivers(type, mask)) return true;
+        return focus >= 0 && chunk.driverIndex == focus && privateStatusFamily(type) &&
+            (mask & v4TypeBit(9)) != 0;
+    }
+    bool skipTyreSets(uint8_t driver) const { return driver != playback; }
     void clearCache() {
         std::lock_guard lock(cacheMutex);
         cache.clear(); lru.clear(); cacheUsed = 0;
@@ -1719,17 +1741,26 @@ namespace {
 
 std::string withDriver(std::string_view json, uint8_t driver);
 
+// skipTyreSets drops a TyreState chunk's tyre-set rows before they are
+// rendered. Only the playback driver's sets are ever displayed, and another
+// car's sets outnumber its compound rows about sixteen to one.
 bool parseChunkRows(const ChunkData& data, const V6ChunkInfo& chunk, float logicalOffset,
                     std::vector<V6TimedRow>& out, float from, float to,
-                    const IndexedCancelCheck& cancelled = {}) {
+                    const IndexedCancelCheck& cancelled = {}, bool skipTyreSets = false) {
+    skipTyreSets = skipTyreSets && chunk.typeId == static_cast<uint8_t>(V6DataType::TyreState);
     if (data.columnar) {
         // The time column is read directly; only rows inside the window are
         // rendered, so a narrow request over a large chunk formats almost nothing.
         const auto& table = data.table;
+        const ColumnarChunk::Column* sets = nullptr;
+        if (skipTyreSets)
+            for (const auto& column : table.columns)
+                if (column.name == "sets") { sets = &column; break; }
         for (uint32_t row = 0; row < table.time.size(); ++row) {
             if (cancelled && (row & 255u) == 0 && cancelled()) return false;
             const float time = table.time[row] + logicalOffset;
             if (time < from || time > to) continue;
+            if (sets && sets->has(row)) continue;
             std::string json; json.reserve(64);
             renderRow(json, table, row, chunk.driverIndex);
             out.push_back({time, chunk.typeId, chunk.sequence, std::move(json), row});
@@ -1745,7 +1776,8 @@ bool parseChunkRows(const ChunkData& data, const V6ChunkInfo& chunk, float logic
         if (length) {
             const auto line = plain.substr(start, length);
             const float raw = scanTime(line); const float time = raw + logicalOffset;
-            if (time >= from && time <= to)
+            if (time >= from && time <= to &&
+                !(skipTyreSets && line.find("\"sets\":") != std::string_view::npos))
                 out.push_back({time, chunk.typeId, chunk.sequence,
                                withDriver(line, chunk.driverIndex), source});
             ++source;
@@ -2268,7 +2300,8 @@ bool TnrdV6Archive::rowsForChunks(const std::vector<size_t>& indices, std::vecto
         std::shared_ptr<const ChunkData> plain; if (!impl_->load(index, plain, errorOut)) return false;
         out.emplace_back(); const auto& chunk = impl_->v6Chunks[index];
         if (!parseChunkRows(*plain, chunk, 0.0f,
-                            out.back(), -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity())) return false;
+                            out.back(), -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+                            {}, impl_->skipTyreSets(chunk.driverIndex))) return false;
     }
     return true;
 }
@@ -2295,17 +2328,16 @@ bool TnrdV6Archive::rowsForRange(float from, float to, V6RowTypeMask mask, std::
     for (size_t index = 0; index < impl_->v6Chunks.size(); ++index) {
         const auto& chunk = impl_->v6Chunks[index];
         if (chunk.phase != V6Phase::Race) continue;
-        const auto type = static_cast<V6DataType>(chunk.typeId);
         if (!impl_->requestedTypes.empty() && !impl_->requestedTypes.contains(chunk.typeId)) continue;
-        if ((!requestedByOldMask(type, mask) || chunk.driverIndex != impl_->playback) &&
-            !requestedForAllDrivers(type, mask)) continue;
+        if (!impl_->wanted(chunk, mask)) continue;
         // V6's explicit type subscription is authoritative inside the legacy
         // family envelope: a telemetry history request for speed must not also
         // decompress RPM, controls, temperatures, and engine state.
         constexpr float offset = 0.0f;
         if (chunk.lastTime + offset < from || chunk.firstTime + offset > to) continue;
         std::shared_ptr<const ChunkData> plain; if (!impl_->load(index, plain, errorOut)) return false;
-        if (!parseChunkRows(*plain, chunk, offset, out, from, to, cancelled)) return false;
+        if (!parseChunkRows(*plain, chunk, offset, out, from, to, cancelled,
+                            impl_->skipTyreSets(chunk.driverIndex))) return false;
     }
     for (size_t i = 0; i < impl_->shared.size(); ++i) {
         const auto& record = impl_->shared[i]; const uint8_t type = sharedRowType(record.json);
@@ -2364,10 +2396,8 @@ void TnrdV6Archive::playbackChunkIndices(V6RowTypeMask mask, std::vector<size_t>
     for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
         const auto& chunk = impl_->v6Chunks[i];
         if (chunk.phase != V6Phase::Race) continue;
-        const auto type = static_cast<V6DataType>(chunk.typeId);
         if (!impl_->requestedTypes.empty() && !impl_->requestedTypes.contains(chunk.typeId)) continue;
-        if ((chunk.driverIndex == impl_->playback && requestedByOldMask(type, mask)) ||
-            requestedForAllDrivers(type, mask)) out.push_back(i);
+        if (impl_->wanted(chunk, mask)) out.push_back(i);
     }
     std::stable_sort(out.begin(), out.end(), [&](size_t left, size_t right) {
         const auto& a = impl_->v6Chunks[left]; const auto& b = impl_->v6Chunks[right];
@@ -2376,6 +2406,10 @@ void TnrdV6Archive::playbackChunkIndices(V6RowTypeMask mask, std::vector<size_t>
     });
 }
 uint8_t TnrdV6Archive::playbackDriver() const { return impl_->playback; }
+void TnrdV6Archive::setFocusDriver(int index) {
+    impl_->focus = index >= 0 && impl_->driverByIndex.contains(static_cast<uint8_t>(index)) ? index : -1;
+}
+int TnrdV6Archive::focusDriver() const { return impl_ ? impl_->focus : -1; }
 std::optional<uint8_t> TnrdV6Archive::playerDriverIndex() const { return impl_->player; }
 const std::vector<V6DriverHeader>& TnrdV6Archive::driverHeaders() const { return impl_->drivers; }
 const V6DriverHeader* TnrdV6Archive::driverHeader(uint8_t index) const {
@@ -2457,7 +2491,12 @@ bool TnrdV6Archive::readMultiDriverLatest(float at, const std::vector<uint8_t>& 
         if (end == ordered.begin()) continue;
 
         const bool state = stateType(static_cast<V6DataType>(type));
-        const auto& groups = stateGroups(static_cast<V6DataType>(type));
+        // Another car's tyre sets are never displayed and are not rendered, so
+        // its tyre state is complete once the compound is recovered.
+        const bool skipSets = impl_->skipTyreSets(driver);
+        static const std::vector<std::string_view> compoundOnly{"tyre_compound"};
+        const auto& groups = skipSets && type == static_cast<uint8_t>(V6DataType::TyreState)
+            ? compoundOnly : stateGroups(static_cast<V6DataType>(type));
 
         // A sample type is written every frame, so its newest chunk always holds
         // the value at the cursor. A state type is edge-encoded and carries only
@@ -2476,7 +2515,7 @@ bool TnrdV6Archive::readMultiDriverLatest(float at, const std::vector<uint8_t>& 
             const auto& chunk = impl_->v6Chunks[*it];
             constexpr float offset = 0.0f;
             if (!parseChunkRows(*plain, chunk, offset, rows,
-                                -std::numeric_limits<float>::infinity(), at)) return false;
+                                -std::numeric_limits<float>::infinity(), at, {}, skipSets)) return false;
             if (rows.empty()) {
                 if (!state) break;
                 continue;

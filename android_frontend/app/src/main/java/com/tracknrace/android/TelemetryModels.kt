@@ -107,6 +107,9 @@ internal data class TyreSetEntry(
     val usableLife: Int,
     val lapDeltaMs: Int,
     val fitted: Boolean,
+    // Wear per lap on this set in the current session; null until it has
+    // done a lap this session.
+    val avgWearPerLap: Float? = null,
 )
 
 internal data class DashboardColdState(

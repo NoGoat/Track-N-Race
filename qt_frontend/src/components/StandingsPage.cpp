@@ -28,6 +28,7 @@
 #include <QSplitter>
 #include <QResizeEvent>
 #include <QTimer>
+#include <QApplication>
 #include <QDateTime>
 #include <QVariantList>
 #include <QVariantMap>
@@ -303,10 +304,24 @@ StandingsPage::StandingsPage(QWidget* parent)
     showPlaceholderRows();
 
     connect(timingTable_, &QTableWidget::cellClicked, this, [this](int row, int) {
+        // A double-click's own clicks must not toggle the selection back off.
+        if (lastDoubleClick_.isValid() &&
+            lastDoubleClick_.elapsed() < QApplication::doubleClickInterval()) return;
         int clicked = (row >= 0 && row < (int)tableRowCarIdx_.size())
                       ? tableRowCarIdx_[row] : -1;
         selectedCarIdx_ = (clicked == selectedCarIdx_) ? -1 : clicked;
         emit refreshRequested();
+    });
+    connect(timingTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (row < 0 || row >= (int)tableRowCarIdx_.size() || tableRowCarIdx_[row] < 0) return;
+        lastDoubleClick_.start();
+        // The double-click leaves the row selected, whatever its first click did.
+        const int car = tableRowCarIdx_[row];
+        if (selectedCarIdx_ != car) {
+            selectedCarIdx_ = car;
+            emit refreshRequested();
+        }
+        emit driverLapsRequested(car);
     });
 
     hbox->addWidget(timingTable_, 1);

@@ -1,8 +1,10 @@
-import { useMemo, useRef, useCallback, memo, useLayoutEffect } from 'react'
+import { useMemo, useRef, useCallback, useState, memo, useLayoutEffect, type MouseEvent } from 'react'
 import type { TimingMsg, ParticipantsMsg, TimingCar, DriverInfo, AllStatusMsg } from '../types'
 import { useLabels } from '../lib/labels'
 import { tyreCompoundColor } from '../lib/tyreCompounds'
 import type { DensityMode } from '../lib/graphSections'
+import { fmtMs, fmtSector } from '../lib/lapTimeFormat'
+import DriverLapsDialog from './DriverLapsDialog'
 
 interface Props {
   timing: TimingMsg | null
@@ -27,21 +29,6 @@ const RESULT_LABELS: Record<number, string> = {
 function abbrev(name: string): string {
   const parts = name.trim().split(/\s+/)
   return parts[parts.length - 1].slice(0, 3).toUpperCase()
-}
-
-function fmtMs(ms: number): string {
-  if (ms <= 0) return '--:--.---'
-  const m     = Math.floor(ms / 60_000)
-  const s     = Math.floor((ms % 60_000) / 1000)
-  const mills = ms % 1000
-  return `${m}:${String(s).padStart(2, '0')}.${String(mills).padStart(3, '0')}`
-}
-
-function fmtSector(ms: number): string {
-  if (ms <= 0) return '—'
-  const s     = Math.floor(ms / 1000)
-  const mills = ms % 1000
-  return `${s}.${String(mills).padStart(3, '0')}`
 }
 
 function fmtGap(gap_ms: number, position: number): string {
@@ -91,6 +78,7 @@ interface RowProps {
   isSelected: boolean
   isFastest: boolean
   onSelect: (idx: number) => void
+  onOpenLaps: (idx: number) => void
   s1: number
   s2: number
   s3: number
@@ -118,6 +106,7 @@ const TowerRow = memo(function TowerRow({
   isSelected,
   isFastest,
   onSelect,
+  onOpenLaps,
   s1,
   s2,
   s3,
@@ -135,9 +124,17 @@ const TowerRow = memo(function TowerRow({
   const retired = RESULT_LABELS[resultStatus]
   const isInactive = resultStatus <= 1 || position === 0
 
-  const handleClick = useCallback(() => {
+  // A double-click arrives as two clicks first (detail 1, then 2). Only the
+  // first may toggle the selection, and the double-click leaves the row
+  // selected, whatever that first click did.
+  const handleClick = useCallback((event: MouseEvent) => {
+    if (event.detail > 1) return
     onSelect(carIdx)
   }, [onSelect, carIdx])
+  const handleDoubleClick = useCallback(() => {
+    if (!isSelected) onSelect(carIdx)
+    onOpenLaps(carIdx)
+  }, [onOpenLaps, onSelect, carIdx, isSelected])
 
   if (isInactive) return null
 
@@ -145,6 +142,7 @@ const TowerRow = memo(function TowerRow({
     <tr
       data-car-idx={carIdx}
       onClick={handleClick}
+      onDoubleClick={handleDoubleClick}
       className={`border-b border-[var(--border)] transition-colors cursor-pointer ${
         isSelected
           ? 'bg-[var(--bg-selected)]'
@@ -262,6 +260,12 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
   const isCompact = compact === true || compact === 'compact'
   const isSpacious = compact === 'spacious'
   const { tn } = useLabels()
+  const [lapsCarIdx, setLapsCarIdx] = useState<number | null>(null)
+  const closeLaps = useCallback(() => setLapsCarIdx(null), [])
+  const lapsTarget = useMemo(() => lapsCarIdx === null ? null : {
+    carIdx: lapsCarIdx,
+    driver: participants?.drivers.find(d => d.idx === lapsCarIdx),
+  }, [lapsCarIdx, participants])
   // Per-car tracking refs for freeze + S3 computation
   const prevCarsRef     = useRef<Map<number, TimingCar>>(new Map())
   const frozenRef       = useRef<Map<number, { s1: number; s2: number; s3: number; exp: number }>>(new Map())
@@ -482,6 +486,7 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
                 isSelected={car.idx === selectedIdx}
                 isFastest={isFastest}
                 onSelect={onSelectDriver}
+                onOpenLaps={setLapsCarIdx}
                 s1={s1}
                 s2={s2}
                 s3={s3}
@@ -494,6 +499,7 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
             ))}
           </tbody>
         </table>
+        <DriverLapsDialog target={lapsTarget} fastestLapCarIdx={fastestLapCarIdx} onClose={closeLaps} />
       </div>
   )
 })

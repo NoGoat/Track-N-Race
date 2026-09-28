@@ -601,6 +601,8 @@ internal class TelemetryStore {
                             usableLife = set.optInt("usable_life"),
                             lapDeltaMs = set.optInt("lap_delta_ms"),
                             fitted = set.optBoolean("fitted"),
+                            avgWearPerLap = if (set.isNull("avg_wear_per_lap")) null
+                                else set.optDouble("avg_wear_per_lap").toFloat(),
                         )
                     }
                 }.orEmpty()

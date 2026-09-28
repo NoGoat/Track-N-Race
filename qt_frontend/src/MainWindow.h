@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QPointer>
 #include <QSettings>
 #include <QByteArray>
 #include <QHash>
@@ -23,6 +24,7 @@
 class OverviewPage;
 class AnalysisPage;
 class StandingsPage;
+class DriverLapsDialog;
 class SessionPage;
 class StrategyPage;
 class TyresPage;
@@ -313,6 +315,8 @@ private:
     PairServiceState              pairServiceState_;
     void applyEngineLogging();   // push wantRecord/outputDirectory to the engine
     QString recreateEngine();    // stop/create/start using the current persisted host config
+    void setLapHistoryCar(int carIdx);   // subscribe the engine to one car's lap times (-1 = none)
+    QPointer<DriverLapsDialog> lapsDialog_;   // the open lap-times dialog, fed by pushed rows
     void receivePairState(const QByteArray& publicStateJson,
                           const QByteArray& persistedStateJson,
                           const QString& fallbackError = {});

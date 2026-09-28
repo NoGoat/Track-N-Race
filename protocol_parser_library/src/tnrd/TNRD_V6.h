@@ -169,6 +169,12 @@ public:
     size_t peakConcurrentChunkLoads() const override;
 
     void setPlaybackDriver(uint8_t);
+    // A second car whose private status families (ERS, fuel, aero, brake bias,
+    // engine power) are streamed alongside the playback driver's, for a
+    // Standings row the user has selected. Every other car contributes only
+    // its public all-car families. -1 clears it.
+    void setFocusDriver(int);
+    int focusDriver() const;
     void setRequestedTypes(const std::vector<uint8_t>&);
     bool requestedType(uint8_t) const;
     void playbackChunkIndices(V6RowTypeMask, std::vector<size_t>&) const;

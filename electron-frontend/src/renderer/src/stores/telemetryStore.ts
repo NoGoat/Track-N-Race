@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type {
   TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg,
   ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg,
-  LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg,
+  LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg, DriverLapHistory,
   AnalyzeLapData, AnalysisDriverLapCatalog, PlaybackLapDataMsg,
   StrategySnapshotMsg,
 } from '../types'
@@ -137,6 +137,8 @@ export interface TelemetryStoreState {
   participants: ParticipantsMsg | null
   allStatus: AllStatusMsg | null
   fastestLapCarIdx: number | null
+  // Pushed by the engine for the car whose lap-times view is open.
+  driverLapHistory: DriverLapHistory | null
   raceEvents: RaceEventMsg[]
   session: SessionMsg | null
   tyreSets: TyreSetsMsg | null
@@ -197,7 +199,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   telemetry: EMPTY.telemetry, motion: EMPTY.motion, motionEx: EMPTY.motionEx,
   status: null, statusHistory: EMPTY.status, damage: null, damageHistory: EMPTY.damage,
   lap: null, timing: null, participants: null, allStatus: null, strategy: null,
-  fastestLapCarIdx: null, raceEvents: [], session: null, tyreSets: null,
+  fastestLapCarIdx: null, driverLapHistory: null, raceEvents: [], session: null, tyreSets: null,
   latest: null, fastestLapNum: null,
   ...EMPTY_ANALYZE_SLICES, analyzeLapStartTime: 0,
   analyzeLapRevision: 0,
@@ -871,7 +873,8 @@ function resetSession(): void {
     telemetry: EMPTY.telemetry, motion: EMPTY.motion, motionEx: EMPTY.motionEx, latest: null,
     statusHistory: EMPTY.status, damageHistory: EMPTY.damage,
     status: null, damage: null, lap: null, timing: null, allStatus: null,
-    participants: null, session: null, fastestLapCarIdx: null, tyreSets: null, strategy: null,
+    participants: null, session: null, fastestLapCarIdx: null, driverLapHistory: null,
+    tyreSets: null, strategy: null,
     strategyRebuilding: false,
     fastestLapNum: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
     ...EMPTY_ANALYZE_SLICES, analyzeLapStartTime: 0,
@@ -1382,6 +1385,7 @@ function handleMsg(msg: GatewayMsg): void {
       break
     }
     case 'all_status':   set(state => ({ allStatus: mergeCarPatches(state.allStatus, msg as AllStatusMsg) as AllStatusMsg })); break
+    case 'driver_lap_history': set({ driverLapHistory: msg as DriverLapHistory }); break
     case 'fastest_lap':
       set({ fastestLapCarIdx: (msg as any).car_idx })
       fastestLapSet = true

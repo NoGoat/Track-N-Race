@@ -1044,6 +1044,12 @@ export function playerSetDriver(driverIndex: number, useRecordedRows = false): v
     .then(() => target.playerSetDriver(driverIndex, useRecordedRows))
     .catch((error: unknown) => console.error('[bridge] playerSetDriver failed:', error))
 }
+export function playerSetFocusDriver(driverIndex: number): void {
+  if (!engine || !Number.isSafeInteger(driverIndex)) return
+  const target = engine
+  // Ordered behind a pending driver switch, which re-primes the same lanes.
+  afterDriverSwitch(() => target.playerSetFocusDriver(driverIndex))
+}
 export function playerGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): void {
   engine?.playerGetLapData(lapNum, rowTypeMask >>> 0)
 }
@@ -1125,6 +1131,13 @@ export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean;
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+// The car whose lap-times view is open (-1 when closed). The engine then pushes
+// its driver_lap_history row on the ordinary row channel whenever it changes.
+export function setLapHistoryCar(carIdx: number): void {
+  if (!engine || !Number.isSafeInteger(carIdx)) return
+  engine.setLapHistoryCar(carIdx)
 }
 
 export function analysisGetLapData(

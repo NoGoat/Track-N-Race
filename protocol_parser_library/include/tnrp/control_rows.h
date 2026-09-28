@@ -148,6 +148,10 @@ struct TyreSet {
     int  usable_life{};
     int  lap_delta_ms{};
     bool fitted{};
+    // Wear gained per lap since the set was first seen this session, set by
+    // the parser. Laps are the drop in life_span, which the game decrements
+    // once per lap driven on the set. Absent until that has happened.
+    std::optional<double> avg_wear_per_lap;
 };
 
 struct TyreSetsRow {
@@ -188,6 +192,21 @@ struct SessionHistoryFastestRow {
     std::optional<int> latest_lap_time_ms;
     std::vector<SessionHistoryLap> laps;
     std::vector<SessionHistoryTyreStint> tyre_stints;
+};
+
+// ── driver_lap_history (on request) ────────────────────────────────────────
+// One car's completed laps, answering a UI request: live from the car's latest
+// session history, in playback up to the cursor.
+
+struct DriverLapHistoryRow {
+    std::string type{"driver_lap_history"};
+    int car_idx{-1};
+    std::optional<int> best_lap_num;
+    std::vector<SessionHistoryLap> laps;
+    // Fastest valid sector times across every car (0 = none yet).
+    int overall_best_s1_ms{};
+    int overall_best_s2_ms{};
+    int overall_best_s3_ms{};
 };
 
 struct FastestLapRow {

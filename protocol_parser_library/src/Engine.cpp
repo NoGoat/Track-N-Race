@@ -324,6 +324,7 @@ bool Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
         enqueueLiveStrategyWork({StrategyWorkKind::Reset, liveStrategyGeneration_,
                                  2025, config_.strategyMinimumStops, false, {}});
         liveLatestRows_ = {};
+        liveLapHistoryRows_ = {};
         liveHistory_->reset();
         liveHistoryLastSample_.fill(-std::numeric_limits<float>::infinity());
         liveHistoryLastLap_.fill(-1);
@@ -1024,8 +1025,24 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     // forward subscribed families. Recording above remains completely unmasked.
     bool strategyInput = false;
     std::vector<LiveJsonHistoryRow> strategyRows;
+    bool lapHistoryChanged = false;
+    if (r.format != 0 && r.sessionUid != liveLapHistorySessionUid_) {
+        liveLapHistoryRows_ = {};
+        liveLapHistorySessionUid_ = r.sessionUid;
+        lapHistoryChanged = true;
+    }
     for (const auto& row : r.rows) {
         const uint8_t type = rowTypeOf(row);
+        if (type == 14) {
+            // The game resends each car's history continuously; it only
+            // differs when a lap or sector has been completed.
+            const int carIdx = static_cast<int>(scanJsonNumber(row, "\"car_idx\":", -1.0));
+            if (carIdx >= 0 && carIdx < static_cast<int>(liveLapHistoryRows_.size()) &&
+                liveLapHistoryRows_[carIdx] != row) {
+                liveLapHistoryRows_[carIdx] = row;
+                lapHistoryChanged = true;
+            }
+        }
         const bool isStrategyInput = (kStrategyDependencyMask & (1u << type)) != 0;
         strategyInput = strategyInput || isStrategyInput;
         std::shared_ptr<const std::string> retainedRow;
@@ -1083,6 +1100,9 @@ void Engine::onDatagram(const uint8_t* data, int length) {
             }
         }
         if (r.rewindSessionTime || type == 0 || (consumerRowMask_ & (1u << type))) emitRow(row);
+    }
+    if (lapHistoryChanged && lapHistoryCar_ >= 0) {
+        if (std::string row = lapHistoryRowLocked(false); !row.empty()) emitRow(row);
     }
     if (strategyInput) {
         enqueueLiveStrategyWork({StrategyWorkKind::Update, liveStrategyGeneration_,
@@ -1427,6 +1447,8 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
     std::vector<std::pair<uint8_t, std::string>> initPanels;
     StrategyWork strategyWork;
     bool queueStrategyWork = false;
+    std::string fastestLapRow;
+    std::string lapHistoryRow;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         // The selected file may be the recording currently being written.
@@ -1461,6 +1483,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             // a fresh stream on the next session packet.
             writer_.closeActiveStream();
             liveLatestRows_ = {};
+            liveLapHistoryRows_ = {};
             liveHistory_->reset();
             liveHistoryLastSample_.fill(-std::numeric_limits<float>::infinity());
             liveHistoryLastLap_.fill(-1);
@@ -1488,6 +1511,9 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             }
             queueStrategyWork = preparePlaybackStrategyRebuildLocked(
                 reader_.startTime(), strategyWork);
+            fastestLapRow = playbackFastestLapRowLocked(true);
+            nextLapHistoryCheck_ = reader_.v6NextLapEndAfter(currentTime_);
+            lapHistoryRow = lapHistoryRowLocked(true);
         } else {
             playbackPath_.clear();
             lastDriverRestriction_.clear();
@@ -1528,8 +1554,10 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
         if (!restrictionMsg.empty()) emitRow(restrictionMsg);
         for (const auto& row : initState) emitRow(row);
         std::vector<std::string> panelRows;
-        panelRows.reserve(initPanels.size());
+        panelRows.reserve(initPanels.size() + 1);
         for (const auto& [tid, line] : initPanels) panelRows.push_back(line);
+        if (!fastestLapRow.empty()) panelRows.push_back(std::move(fastestLapRow));
+        if (!lapHistoryRow.empty()) panelRows.push_back(std::move(lapHistoryRow));
         emitRows(panelRows);
         if (queueStrategyWork) enqueueLiveStrategyWork(std::move(strategyWork));
         playRun_.store(true);
@@ -1697,6 +1725,12 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         }
         appliedSeekRequestId_ = requestId;
         queueStrategyWork = preparePlaybackStrategyRebuildLocked(target, strategyWork);
+        // A seek can move either way past a fastest lap, so restate it.
+        if (std::string row = playbackFastestLapRowLocked(true); !row.empty())
+            panels.emplace_back(0, std::move(row));
+        nextLapHistoryCheck_ = reader_.v6NextLapEndAfter(target);
+        if (std::string row = lapHistoryRowLocked(true); !row.empty())
+            panels.emplace_back(0, std::move(row));
     }
 
     if (columnarHistory) {
@@ -1735,6 +1769,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         flush.lapNum          = lapNum;
         emitRow(writeJson(flush));
         for (const auto& s : state) emitRow(s);
+        for (const auto& [_, line] : panels) emitRow(line);
     }
     if (!seekRestrictionMsg.empty()) emitRow(seekRestrictionMsg);
     // Queue only after the authoritative flush has crossed the Sink boundary.
@@ -1782,6 +1817,29 @@ void Engine::playerSetDriver(int driverIndex, bool useRecordedRows) {
     emitRows(panelRows);
 }
 
+std::string Engine::playbackFastestLapRowLocked(bool force) {
+    FastestLapRow row;
+    if (!inPlayback_.load() || !reader_.v6FastestLapAt(currentTime_, row)) return {};
+    if (!force && row.car_idx == playbackFastestLapCar_) return {};
+    playbackFastestLapCar_ = row.car_idx;
+    std::string json;
+    (void)glz::write_json(row, json);
+    return json;
+}
+
+void Engine::playerSetFocusDriver(int driverIndex) {
+    std::vector<std::string> rows;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (!inPlayback_.load()) return;
+        reader_.setV6FocusDriver(driverIndex, currentTime_);
+        // The newly selected car's status is shown at once rather than after
+        // its next recorded edge.
+        rows = reader_.v6FocusStatusSnapshot(currentTime_);
+    }
+    emitRows(rows);
+}
+
 void Engine::liveGetFastestLap(uint64_t requestId) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (inPlayback_.load()) return;
@@ -1824,6 +1882,73 @@ std::string Engine::playerGetAnalysisLapData(int lapNum, uint32_t rowTypeMask,
     return inPlayback_.load()
         ? reader_.getLapDataMessage(lapNum, rowTypeMask, driverIndex)
         : std::string{};
+}
+
+DriverLapHistoryRow Engine::driverLapHistoryLocked(int carIdx) const {
+    DriverLapHistoryRow out;
+    out.car_idx = carIdx;
+    {
+        const bool playback = inPlayback_.load();
+        const auto lapsFor = [&](int car) {
+            if (playback) return reader_.driverLapHistory(car, currentTime_).laps;
+            std::vector<SessionHistoryLap> laps;
+            SessionHistoryFastestRow history;
+            if (!liveLapHistoryRows_[car].empty() &&
+                !glz::read<glz::opts{.error_on_unknown_keys = false}>(
+                    history, liveLapHistoryRows_[car])) {
+                for (const auto& lap : history.laps)
+                    if (lap.lap_time_ms > 0) laps.push_back(lap);
+            }
+            return laps;
+        };
+        // Every car's laps, for the session's fastest valid sectors.
+        for (int car = 0; car < static_cast<int>(liveLapHistoryRows_.size()); ++car) {
+            auto laps = lapsFor(car);
+            for (const auto& lap : laps) {
+                const int ms[3] = {lap.s1_ms, lap.s2_ms, lap.s3_ms};
+                const bool valid[3] = {lap.s1_valid, lap.s2_valid, lap.s3_valid};
+                int* best[3] = {&out.overall_best_s1_ms, &out.overall_best_s2_ms,
+                                &out.overall_best_s3_ms};
+                for (int s = 0; s < 3; ++s)
+                    if (ms[s] > 0 && valid[s] && (!*best[s] || ms[s] < *best[s]))
+                        *best[s] = ms[s];
+            }
+            if (car == carIdx) out.laps = std::move(laps);
+        }
+    }
+    int bestMs = 0;
+    for (const auto& lap : out.laps) {
+        if (!lap.lap_valid || lap.lap_time_ms <= 0) continue;
+        if (!bestMs || lap.lap_time_ms < bestMs) {
+            bestMs = lap.lap_time_ms;
+            out.best_lap_num = lap.lap_num;
+        }
+    }
+    return out;
+}
+
+std::string Engine::lapHistoryRowLocked(bool force) {
+    if (lapHistoryCar_ < 0) return {};
+    std::string json;
+    (void)glz::write_json(driverLapHistoryLocked(lapHistoryCar_), json);
+    if (!force && json == lastLapHistoryJson_) return {};
+    lastLapHistoryJson_ = json;
+    return json;
+}
+
+void Engine::setLapHistoryCar(int carIdx) {
+    std::string row;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        lapHistoryCar_ = carIdx >= 0 && carIdx < static_cast<int>(liveLapHistoryRows_.size())
+            ? carIdx : -1;
+        lastLapHistoryJson_.clear();
+        nextLapHistoryCheck_ = inPlayback_.load()
+            ? reader_.v6NextLapEndAfter(currentTime_)
+            : std::numeric_limits<float>::infinity();
+        row = lapHistoryRowLocked(true);
+    }
+    if (!row.empty()) emitRow(row);
 }
 
 bool Engine::playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
@@ -2046,6 +2171,8 @@ void Engine::playbackLoop() {
         binBatch.clear();
         std::string strategyMsg;
         std::string restrictionMsg;
+        std::string fastestLapMsg;
+        std::string lapHistoryMsg;
         uint32_t emitMask = 0;
         uint64_t tickSeekRequestId = 0;
         bool finished = false;
@@ -2136,6 +2263,11 @@ void Engine::playbackLoop() {
                 lastStrategyJson_ = std::move(row);
             }
             emitMask = consumerRowMask_;
+            fastestLapMsg = playbackFastestLapRowLocked(false);
+            if (lapHistoryCar_ >= 0 && currentTime_ >= nextLapHistoryCheck_) {
+                lapHistoryMsg = lapHistoryRowLocked(false);
+                nextLapHistoryCheck_ = reader_.v6NextLapEndAfter(currentTime_);
+            }
 
             if (atEnd) {
                 playing_ = false;
@@ -2168,6 +2300,8 @@ void Engine::playbackLoop() {
         }
         emitRows(outputRows);
         if (!restrictionMsg.empty()) emitRow(restrictionMsg);
+        if (!fastestLapMsg.empty()) emitRow(fastestLapMsg);
+        if (!lapHistoryMsg.empty()) emitRow(lapHistoryMsg);
         if (!strategyMsg.empty()) emitRow(strategyMsg);
         if (!binBatch.empty()) emitBinary(binBatch.data(), binBatch.size());
         emitPlaybackState();

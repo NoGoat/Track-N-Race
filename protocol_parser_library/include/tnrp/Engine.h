@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <limits>
 #include <atomic>
 #include <cstddef>
 #include <condition_variable>
@@ -222,10 +223,19 @@ public:
                     uint32_t rowTypeMask = 0xFFFFFFFFu, float windowSeconds = 0.0f);
     void playerSetSpeed(float mult);
     void playerSetDriver(int driverIndex, bool useRecordedRows = false);
+    // V6 playback: the car selected in Standings, whose private status (ERS,
+    // fuel, aero, brake bias) is read and streamed. The rest of the grid
+    // streams only lap timing and tyre state. -1 clears it; live is unaffected.
+    void playerSetFocusDriver(int driverIndex);
     void playerGetLapData(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu);
     std::string playerGetAnalysisLapData(int lapNum, uint32_t rowTypeMask,
                                          int driverIndex) const;
     void liveGetFastestLap(uint64_t requestId);
+    // The car whose lap-times view is open (-1 when none). While set, the
+    // engine emits that car's driver_lap_history row now and again only when
+    // it changes: a completed lap (live), the cursor passing a lap end or a
+    // seek (playback), or a new recording. Nothing polls for it.
+    void setLapHistoryCar(int carIdx);
     bool playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
                                       int driverIndex = -1) const;
     void playerGetAllLapsData(uint64_t requestId = 0, uint32_t rowTypeMask = 0xFFFFFFFFu);
@@ -302,6 +312,23 @@ private:
     // re-emitted with session_time set to the playhead between native updates.
     std::array<std::string, 16> dupCache_{};
     std::array<std::string, 16> liveLatestRows_{};
+    // V6 playback's derived fastest-lap holder last sent (-2 = none sent).
+    int               playbackFastestLapCar_ = -2;
+    // The fastest_lap row for the cursor when `force` or when the holder has
+    // changed; empty otherwise, and always for non-V6 recordings.
+    std::string playbackFastestLapRowLocked(bool force);
+    // Latest session_history_fastest row per car for the live session, which
+    // carries that car's whole lap list.
+    std::array<std::string, 24> liveLapHistoryRows_{};
+    uint64_t          liveLapHistorySessionUid_ = 0;
+    int               lapHistoryCar_ = -1;
+    std::string       lastLapHistoryJson_;
+    // Playback: the next lap end after the cursor, when the row may change.
+    float             nextLapHistoryCheck_ = std::numeric_limits<float>::infinity();
+    DriverLapHistoryRow driverLapHistoryLocked(int carIdx) const;
+    // The row when `force` or when it differs from the last one sent; empty
+    // when no car is subscribed.
+    std::string lapHistoryRowLocked(bool force);
     std::string lastStrategyJson_;
     struct LiveJsonHistoryRow {
         float sessionTime{};

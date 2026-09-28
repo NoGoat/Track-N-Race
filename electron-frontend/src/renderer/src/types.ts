@@ -266,6 +266,9 @@ export interface TyreSetEntry {
   usable_life: number
   lap_delta_ms: number
   fitted: boolean
+  // Wear per lap on this set in the current session; absent until it has
+  // done a lap this session.
+  avg_wear_per_lap?: number
 }
 
 export interface TyreSetsMsg {
@@ -313,6 +316,31 @@ export interface SessionHistoryFastestMsg {
   best_lap_time_ms: number
   latest_lap_num?: number
   latest_lap_time_ms?: number
+}
+
+export interface DriverLapHistoryLap {
+  lap_num: number
+  lap_time_ms: number
+  s1_ms: number
+  s2_ms: number
+  s3_ms: number
+  lap_valid: boolean
+  s1_valid: boolean
+  s2_valid: boolean
+  s3_valid: boolean
+}
+
+// One car's completed laps: live from its session history, in playback up to
+// the cursor.
+export interface DriverLapHistory {
+  type: 'driver_lap_history'
+  car_idx: number
+  best_lap_num?: number
+  laps: DriverLapHistoryLap[]
+  // Fastest valid sector times across every car (0 = none yet).
+  overall_best_s1_ms: number
+  overall_best_s2_ms: number
+  overall_best_s3_ms: number
 }
 
 export interface RaceEventMsg {
@@ -512,6 +540,7 @@ export type GatewayMsg =
   | AllStatusMsg
   | FastestLapMsg
   | SessionHistoryFastestMsg
+  | DriverLapHistory
   | RaceEventMsg
   | SessionMsg
   | TyreSetsMsg
@@ -679,8 +708,12 @@ declare global {
       seekInstalled: (requestId: number) => void
       setSpeed: (mult: number) => void
       setDriver: (driverIndex: number, useRecordedRows?: boolean) => void
+      setFocusDriver: (driverIndex: number) => void
       getLapData: (lapNum: number, rowTypeMask?: number) => void
       getLiveFastestLap: (requestId: number) => void
+      // The car whose lap-times view is open (-1 when closed); the engine
+      // pushes its driver_lap_history row as it changes.
+      setLapHistoryCar: (carIdx: number) => void
       getAllLapsData: (rowTypeMask?: number) => void
       getWindowData: (windowSeconds: number, rowTypeMask?: number) => void
       close: () => void

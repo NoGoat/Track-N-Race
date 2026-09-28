@@ -14,6 +14,9 @@
 #include "components/OverviewPage.h"
 #include "components/analysis/AnalysisPage.h"
 #include "components/StandingsPage.h"
+#include "components/DriverLapsDialog.h"
+#include <QPointer>
+#include <QThreadPool>
 #include "components/SessionPage.h"
 #include "components/TyresPage.h"
 #include "components/InputPage.h"
@@ -345,12 +348,35 @@ MainWindow::MainWindow(QWidget* parent)
     // A row click changed the selection; re-feed the cached rows immediately
     // (same synchronous rebuild as the old in-page click handler).
     connect(standingsPage_, &StandingsPage::refreshRequested, this, [this] {
+        // V6 playback reads private status (ERS, fuel, DRS, brake bias) only
+        // for the selected car; the rest of the grid streams timing and tyres.
+        if (inPlayback_ && playback_) playback_->setFocusDriver(standingsPage_->selectedCarIdx());
         standingsPage_->updateTimingTable(optPtr(lastTimingData), optPtr(lastParticipantsData),
                                           optPtr(lastAllStatusData));
         standingsPage_->updateRacePanel(optPtr(lastTimingData), optPtr(lastParticipantsData),
                                         optPtr(lastPlayerLapData), optPtr(lastPlayerStatusData),
                                         optPtr(lastAllStatusData), playerStatusDrsAvailable_,
                                         &allStatusDrsAvailable_);
+    });
+    connect(standingsPage_, &StandingsPage::driverLapsRequested, this, [this](int carIdx) {
+        QString name = QStringLiteral("Car %1").arg(carIdx + 1);
+        if (lastParticipantsData) {
+            for (const auto& driver : lastParticipantsData->drivers) {
+                if (driver.idx != carIdx) continue;
+                if (!driver.name.empty()) name = QString::fromStdString(driver.name);
+                break;
+            }
+        }
+        auto* dialog = new DriverLapsDialog(name, carIdx,
+            [page = QPointer<StandingsPage>(standingsPage_), carIdx] {
+                return page && page->fastestLapCarIdx() == carIdx;
+            }, this);
+        lapsDialog_ = dialog;
+        // The engine pushes this car's laps now and whenever they change,
+        // until the dialog closes.
+        connect(dialog, &QObject::destroyed, this, [this] { setLapHistoryCar(-1); });
+        setLapHistoryCar(carIdx);
+        dialog->show();
     });
     stack->addWidget(sessionPage_ = new SessionPage);   // Session
     stack->addWidget(tyresPage_ = new TyresPage(model_));   // Tyres
@@ -403,6 +429,7 @@ MainWindow::MainWindow(QWidget* parent)
         refreshPlaybackDriverSelector();
         if (standingsPage_) standingsPage_->selectDriver(driverIndex);
         playback_->selectPlaybackDriver(driverIndex, driverIndex == original);
+        playback_->setFocusDriver(driverIndex);
     });
 
     // Stack + separator + playback bar stacked vertically as the central widget
@@ -807,6 +834,8 @@ MainWindow::~MainWindow() {
     tnr::diagnostics::setFatalFlushHandler({});
     if (playback_) playback_->shutdown();
     persistPairStateFromEngine();
+    // A lap-times dialog may still be reading the engine on the pool.
+    QThreadPool::globalInstance()->waitForDone();
     // The engine's destructor stops the UDP thread and flushes/closes any active
     // .tnrd stream. Reset explicitly so it tears down before the sink it points at.
     engine_.reset();
@@ -1767,6 +1796,14 @@ void MainWindow::removePairDevice(const QString& id) {
     syncPairStateFromEngine();
 }
 
+// Engine calls take its lock, which playback holds, so they run off the GUI
+// thread. The pool is drained before the engine is destroyed.
+void MainWindow::setLapHistoryCar(int carIdx) {
+    tnrp::Engine* engine = engine_.get();
+    if (!engine) return;
+    QThreadPool::globalInstance()->start([engine, carIdx] { engine->setLapHistoryCar(carIdx); });
+}
+
 QString MainWindow::recreateEngine() {
     lastRaceLeader_.reset();
     // Config owns forwarding targets, so applying a changed target list requires
@@ -1776,6 +1813,8 @@ QString MainWindow::recreateEngine() {
     if (playback_) playback_->setEngine(nullptr);
     if (engine_) engine_->flushRecording();
     persistPairStateFromEngine();
+    // A lap-times subscription call may still be using the engine on the pool.
+    QThreadPool::globalInstance()->waitForDone();
     engine_.reset();
 
     tnrp::Config cfg;
@@ -1961,6 +2000,15 @@ void MainWindow::onEngineRow(const QByteArray& json) {
 
     // Playback seek barrier (see playbackSeekInstalling_). Protocol rows describe
     // the loaded file, not the cursor, and are never held back.
+    // Pushed for the open lap-times dialog; it describes one car, not a panel.
+    if (json.contains("\"type\":\"driver_lap_history\"")) {
+        tnrp::DriverLapHistoryRow history;
+        if (lapsDialog_ && !glz::read<glz::opts{.error_on_unknown_keys = false}>(
+                history, std::string_view(json.constData(), static_cast<size_t>(json.size()))))
+            lapsDialog_->apply(history);
+        return;
+    }
+
     if (inPlayback_ && playbackSeekInstalling_ &&
         !json.contains("\"type\":\"protocol_status\"") &&
         !json.contains("\"type\":\"protocol_warning\"")) {

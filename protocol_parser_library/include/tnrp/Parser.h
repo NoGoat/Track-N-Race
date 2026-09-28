@@ -20,6 +20,16 @@ namespace tnrp {
 // them. This keeps the parser a pure function of its inputs + override state.
 class Parser {
 public:
+    // A tyre set's wear and life_span when it was first seen this session,
+    // per car and set. The versioned parsers derive session wear per lap.
+    struct TyreSetBaseline {
+        bool seen = false;
+        int  compound = 0;
+        int  wear = 0;
+        int  lifeSpan = 0;
+    };
+    using TyreSetBaselines = std::array<std::array<TyreSetBaseline, 20>, 24>;
+
     explicit Parser(Override ovr = Override::Auto,
                     TeamColorOverrides teamColorOverrides = {});
 
@@ -85,6 +95,7 @@ private:
     // Roster/access are parser state, scoped to this session and parser instance.
     std::array<bool, 24> knownCars_{};
     std::array<std::optional<int>, 24> telemetryAccess_{};
+    TyreSetBaselines tyreSetBaselines_{};
     std::optional<uint64_t> rosterSessionUid_;
     uint16_t rosterFormat_{};
 

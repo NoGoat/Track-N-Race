@@ -10,6 +10,12 @@
 #include <unordered_set>
 #include <cmath>
 
+#include "tnrp/Parser.h"
+
+namespace tnrp { struct TyreSetsRow; }
+
+using TyreSetBaselines = tnrp::Parser::TyreSetBaselines;
+
 struct PacketHeader {
     uint16_t packetFormat;
     uint8_t packetId;
@@ -31,6 +37,7 @@ struct HotOut {
     // Owned by Parser; versioned participant parsing updates these in order.
     std::array<bool, 24>* knownCars = nullptr;
     std::array<std::optional<int>, 24>* telemetryAccess = nullptr;
+    TyreSetBaselines* tyreSetBaselines = nullptr;
     bool hasCar(std::size_t index, std::size_t player) const {
         return index == player || (knownCars && index < knownCars->size() && (*knownCars)[index]);
     }
@@ -90,6 +97,9 @@ inline double Round4(double v) {
 }
 
 std::string ReadString(const uint8_t* data, int offset, int length);
+
+// Fills each set's avg_wear_per_lap from the session baselines in `hot`.
+void ApplyTyreSetSessionWear(tnrp::TyreSetsRow& row, HotOut& hot);
 
 extern const std::unordered_map<int, std::string> TRACK_NAMES;
 extern const std::unordered_map<int, std::string> SESSION_NAMES;

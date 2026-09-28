@@ -483,6 +483,16 @@ export default function AppShell() {
     setSelectedIdx(prev => prev === idx ? null : idx)
   }, [])
 
+  // V6 playback reads a car's private status (ERS, fuel, DRS, brake bias) only
+  // for the car selected in Standings; the rest of the grid streams lap timing
+  // and tyres. Re-sent per recording, since a load starts with no focus car.
+  const focusDriverIdx = recordingOpen && tab === 'timing_tower' ? selectedIdx : null
+  const recordingFilename = playback.state?.filename
+  useEffect(() => {
+    if (!recordingFilename) return
+    window.playerBridge.setFocusDriver(focusDriverIdx ?? -1)
+  }, [recordingFilename, focusDriverIdx])
+
   // usePlayback returns a fresh object on every render, so reading it through a
   // ref keeps this handler stable for AppHeader's memo.
   const playbackRef = useRef(playback)

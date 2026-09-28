@@ -2,6 +2,7 @@
 #include "f1_24.h"
 #include "f1_25.h"
 #include "f1_26.h"
+#include "tnrp/control_rows.h"
 #include <cctype>
 
 std::string RecordingFilenamePrefix(uint16_t format) {
@@ -10,6 +11,24 @@ std::string RecordingFilenamePrefix(uint16_t format) {
         case 2025: return F1_25::RecordingFilenamePrefix();
         case 2026: return F1_26::RecordingFilenamePrefix();
         default:   return "f1_unknown";
+    }
+}
+
+void ApplyTyreSetSessionWear(tnrp::TyreSetsRow& row, HotOut& hot) {
+    if (!hot.tyreSetBaselines || row.car_idx < 0 || row.car_idx >= 24) return;
+    auto& baselines = (*hot.tyreSetBaselines)[static_cast<std::size_t>(row.car_idx)];
+    for (auto& set : row.sets) {
+        if (set.idx < 0 || set.idx >= 20) continue;
+        auto& base = baselines[static_cast<std::size_t>(set.idx)];
+        // A flashback or restart can hand back an earlier state of the set, so
+        // the baseline follows it rather than producing a negative rate.
+        if (!base.seen || base.compound != set.actual_compound ||
+            set.wear < base.wear || set.life_span > base.lifeSpan) {
+            base = {true, set.actual_compound, set.wear, set.life_span};
+        }
+        const int laps = base.lifeSpan - set.life_span;
+        if (laps > 0)
+            set.avg_wear_per_lap = Round2(static_cast<double>(set.wear - base.wear) / laps);
     }
 }
 

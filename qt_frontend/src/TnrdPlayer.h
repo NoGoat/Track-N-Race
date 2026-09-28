@@ -70,6 +70,9 @@ public:
     // Selects a TNRD V6 driver and rebuilds the current playback cursor through
     // the same generation-safe seek path used by the scrubber.
     void selectDriver(int driverIndex, bool useRecordedRows);
+    // TNRD V6: the Standings-selected car whose private status is read and
+    // streamed alongside the playback driver's. -1 clears it.
+    void setFocusDriver(int driverIndex);
     void setDataRequirements(uint32_t streamMask, uint32_t historyMask,
                              float windowSeconds,
                              std::vector<uint8_t> v6Types = {},
@@ -110,7 +113,7 @@ signals:
 private:
     enum class WorkKind {
         Load, Seek, Driver, Requirements, LapData, AnalysisLapData,
-        SeekDecode, RequirementsDecode, LapDataDecode, Close
+        SeekDecode, RequirementsDecode, LapDataDecode, Close, Focus
     };
     struct WorkItem { WorkKind kind; std::function<void()> run; };
 

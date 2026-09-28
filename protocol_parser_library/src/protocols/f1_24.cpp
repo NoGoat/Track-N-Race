@@ -580,6 +580,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
                 });
             }
             tsr.fitted_idx = data[230];
+            ApplyTyreSetSessionWear(tsr, hot);
             buf.clear();
             (void)glz::write_json(tsr, buf);
             rows.push_back(std::move(buf));

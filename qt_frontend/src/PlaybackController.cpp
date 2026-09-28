@@ -541,6 +541,10 @@ void PlaybackController::selectPlaybackDriver(int driverIndex, bool useRecordedR
     if (player_) player_->selectDriver(driverIndex, useRecordedRows);
 }
 
+void PlaybackController::setFocusDriver(int driverIndex) {
+    if (player_) player_->setFocusDriver(driverIndex);
+}
+
 void PlaybackController::rebuildCurrentCursor() {
     if (player_) player_->seekToTime(player_->currentTime());
 }

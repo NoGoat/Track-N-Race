@@ -174,11 +174,14 @@ const SetRow = memo(function SetRow({ set, isDark = true, sessionType }: { set: 
         <div className="flex-1 min-w-0">
           <AllocationWearBar pct={set.wear} isDark={isDark} />
         </div>
-        <span className="text-[10px] tabular-nums w-8 text-right shrink-0" style={{ color: colorFn('wear', set.wear) ?? '#888' }}>
+        <span className="text-[10px] tabular-nums w-8 text-center shrink-0" style={{ color: colorFn('wear', set.wear) ?? '#888' }}>
           {set.wear}%
         </span>
       </div>
-      <span className="text-[10px] tabular-nums text-[var(--text-secondary)] w-14 text-right shrink-0">
+      <span className="text-[10px] tabular-nums text-[var(--text-secondary)] w-12 text-center shrink-0">
+        {set.avg_wear_per_lap != null ? `${set.avg_wear_per_lap.toFixed(2)}%` : '—'}
+      </span>
+      <span className="text-[10px] tabular-nums text-[var(--text-secondary)] w-14 text-center shrink-0">
         {set.life_span}/{set.usable_life}L
       </span>
       <span className="text-[10px] text-[var(--text-secondary)] w-8 text-center shrink-0">
@@ -195,9 +198,10 @@ const SetRow = memo(function SetRow({ set, isDark = true, sessionType }: { set: 
 })
 
 const COLUMN_HEADERS = (
-  <div className="flex gap-3 text-[9px] text-[var(--text-secondary)]">
-    <span className="w-8 text-right">Wear</span>
-    <span className="w-14 text-right">Life</span>
+  <div className="flex gap-2 text-[9px] text-[var(--text-secondary)]">
+    <span className="w-8 text-center">Wear</span>
+    <span className="w-12 text-center whitespace-nowrap" title="Average wear per lap on this set in the current session">Wear/Lap</span>
+    <span className="w-14 text-center">Life</span>
     <span className="w-8 text-center">Rec.</span>
     <span className="w-14 text-right">Δ Lap</span>
   </div>

@@ -3,6 +3,7 @@
 #include <QSet>
 #include <QWidget>
 #include <QColor>
+#include <QElapsedTimer>
 #include <QSettings>
 
 #include <tnrp/rows.h>
@@ -43,6 +44,7 @@ public:
     // "session_history_fastest"). The latter returns true when the fastest
     // holder changed — the caller marks the timing table dirty on that.
     void noteFastestLap(int carIdx);
+    int fastestLapCarIdx() const { return fastestLapCarIdx_; }
     bool noteSessionHistoryFastest(int carIdx, int bestMs);
     void resetForNewSession();
     void showLayoutEditor();
@@ -51,6 +53,7 @@ public:
     // Playback driver changes select the same timing row the Electron header
     // selects; -1 restores the ordinary player-following state.
     void selectDriver(int driverIndex);
+    int selectedCarIdx() const { return selectedCarIdx_; }
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -59,6 +62,8 @@ signals:
     // A row click changed the selection; the owner re-feeds the cached rows
     // through the update methods above.
     void refreshRequested();
+    // A row was double-clicked: show that car's lap times.
+    void driverLapsRequested(int carIdx);
 
 private:
     // Electron's sector display: when a car completes a lap its S1/S2 and the
@@ -95,6 +100,7 @@ private:
 
     QTableWidget*    timingTable_    = nullptr;
     int              selectedCarIdx_ = -1;   // -1 = no selection (show player)
+    QElapsedTimer    lastDoubleClick_;       // suppresses the clicks trailing a double-click
     struct RowContrastColors {
         QColor normal;
         QColor highlighted;

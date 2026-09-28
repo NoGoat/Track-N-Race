@@ -231,7 +231,9 @@ const playerBridge = {
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
   setDriver: (driverIndex: number, useRecordedRows = false) =>
     ipcRenderer.send('player:setDriver', driverIndex, useRecordedRows),
+  setFocusDriver: (driverIndex: number) => ipcRenderer.send('player:setFocusDriver', driverIndex),
   getLiveFastestLap: (requestId: number) => ipcRenderer.send('live:getFastestLap', requestId),
+  setLapHistoryCar: (carIdx: number) => ipcRenderer.send('engine:lap-history-car', carIdx),
   getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF) =>
     ipcRenderer.send('player:getLapData', lapNum, rowTypeMask >>> 0),
   getAllLapsData: (rowTypeMask?: number) => ipcRenderer.send('player:getAllLapsData', rowTypeMask),

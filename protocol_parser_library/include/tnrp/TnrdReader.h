@@ -98,6 +98,12 @@ public:
     // The recorded driver keeps the original private/player rows, but the V6
     // all-car payload attached to those rows is stripped before emission.
     void setPlaybackDriver(int driverIndex, bool useRecordedRows, float cursorTime);
+    // V6 only: the Standings-selected car whose private status (ERS, fuel,
+    // aero, brake bias) is read alongside the playback driver's. Every other
+    // car contributes only its lap timing and tyre state. -1 clears it.
+    void setV6FocusDriver(int driverIndex, float cursorTime);
+    // That car's private status at `t`, as all_status patches.
+    std::vector<std::string> v6FocusStatusSnapshot(float t);
     void setCursor(float t);
     // Position the indexed playback lanes and start loading the V5 chunks that
     // contain/follow the target. This is deliberately separate from
@@ -177,6 +183,18 @@ public:
                                   int driverIndex = -1) const;
     bool getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
                                 int driverIndex = -1) const;
+    // One car's completed laps ending at or before `throughTime`. V6 only;
+    // other formats return no laps.
+    DriverLapHistoryRow driverLapHistory(int driver, float throughTime) const;
+    // V6 recordings keep no fastest_lap rows. The holder at `t` is derived
+    // from the lap summaries: the fastest valid completed lap by then. Returns
+    // false for other formats, whose recorded rows already carry it; car_idx
+    // is -1 while nobody has one yet.
+    bool v6FastestLapAt(float t, FastestLapRow& out) const;
+    // The first completed-lap end strictly after `t`, across every car: the
+    // next moment a lap-times view can change. +inf when there is none or
+    // the recording is not V6.
+    float v6NextLapEndAfter(float t) const;
 
     // ── XLSX export (raw data dump, implemented in XlsxExport.cpp) ──────────
     // Walks the whole index in file order and writes one XLSX sheet per row
@@ -251,6 +269,16 @@ private:
     std::vector<size_t> v6SharedOrder_;
     size_t      v6SharedPos_ = 0;
     std::array<std::string, 16> v6ProjectionState_{};
+    // First recorded tyre sets per car, read on first use: the session wear
+    // baseline for rows recorded before the parser added avg_wear_per_lap.
+    mutable std::array<std::optional<std::vector<TyreSet>>, 24> v6FirstTyreSets_{};
+    const std::vector<TyreSet>& firstV6TyreSets(int car) const;
+    // Each time the fastest lap improved: when the lap ended, whose it was and
+    // how long it took. Built from the lap summaries on first use.
+    struct V6FastestLapChange { float time; int car; int lapMs; };
+    mutable std::optional<std::vector<V6FastestLapChange>> v6FastestLapChanges_;
+    mutable std::optional<std::vector<float>> v6LapEnds_;
+    bool v6FocusStatusRows(float t, std::vector<detail::V4TimedRow>& out);
     FileOffset  tempFileSize_ = 0;
     float       startTime_   = 0.0f;
     float       totalTime_   = 0.0f;

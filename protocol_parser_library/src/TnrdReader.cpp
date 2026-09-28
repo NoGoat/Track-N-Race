@@ -57,6 +57,41 @@ struct SessionHistoryScanFields {
 namespace {
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
 
+// Recordings made before the parser filled avg_wear_per_lap carry only the raw
+// sets. Derive it against the car's first recorded sets, the same session
+// baseline the live parser uses, and splice the sets back into `row`.
+void fillRecordedTyreSetWear(std::string& row, std::string_view json,
+                             const std::vector<TyreSet>& baseline) {
+    if (baseline.empty() || json.find("\"avg_wear_per_lap\"") != std::string_view::npos) return;
+    TyreSetsRow parsed;
+    if (glz::read<kPartialRead>(parsed, json)) return;
+    bool filled = false;
+    for (auto& set : parsed.sets) {
+        const auto base = std::find_if(baseline.begin(), baseline.end(),
+            [&](const TyreSet& candidate) { return candidate.idx == set.idx; });
+        if (base == baseline.end() || base->actual_compound != set.actual_compound ||
+            set.wear < base->wear || set.life_span > base->life_span) continue;
+        const int laps = base->life_span - set.life_span;
+        if (laps <= 0) continue;
+        set.avg_wear_per_lap = std::round((set.wear - base->wear) * 100.0 / laps) / 100.0;
+        filled = true;
+    }
+    if (!filled) return;
+    const auto key = row.find("\"sets\":");
+    if (key == std::string::npos) return;
+    const size_t begin = key + 7;
+    if (begin >= row.size() || row[begin] != '[') return;
+    size_t end = begin;
+    for (int depth = 0; end < row.size(); ++end) {
+        if (row[end] == '[') ++depth;
+        else if (row[end] == ']' && --depth == 0) break;
+    }
+    if (end >= row.size()) return;
+    std::string sets;
+    (void)glz::write_json(parsed.sets, sets);
+    if (!sets.empty()) row.replace(begin, end + 1 - begin, sets);
+}
+
 std::vector<uint8_t> v6TypesForRowMask(uint32_t mask) {
     std::vector<uint8_t> out;
     const auto add = [&](std::initializer_list<uint8_t> values) {
@@ -974,6 +1009,9 @@ void TnrdReader::close() {
     v6SharedOrder_.clear();
     v6SharedPos_ = 0;
     v6ProjectionState_ = {};
+    for (auto& first : v6FirstTyreSets_) first.reset();
+    v6FastestLapChanges_.reset();
+    v6LapEnds_.reset();
     playbackRowMask_ = playbackOutputRowMask_;
     std::fprintf(stderr, "[close-trace] resetting indexed archive\n");
     std::fflush(stderr);
@@ -1354,8 +1392,10 @@ std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
             std::vector<uint8_t> multiSources;
             if (requestedMask & detail::v4TypeBit(7)) multiSources.push_back(24);
             if (requestedMask & detail::v4TypeBit(13)) multiSources.push_back(23);
-            if (requestedMask & detail::v4TypeBit(9))
-                multiSources.insert(multiSources.end(), {7,13,15,16,17,18,19,20});
+            // The all-car table shows each car's tyre state; the private
+            // status families describe one car and are read below for the
+            // focus driver only (the playback driver's arrive as its own).
+            if (requestedMask & detail::v4TypeBit(9)) multiSources.push_back(13);
             std::sort(multiSources.begin(), multiSources.end());
             multiSources.erase(std::unique(multiSources.begin(), multiSources.end()), multiSources.end());
             std::erase_if(multiSources, [&](uint8_t type) { return !v6->requestedType(type); });
@@ -1386,6 +1426,12 @@ std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
                 }
                 rows.insert(rows.end(), std::make_move_iterator(multiRows.begin()),
                             std::make_move_iterator(multiRows.end()));
+            }
+            if (requestedMask & detail::v4TypeBit(9)) {
+                std::vector<detail::V4TimedRow> focusRows;
+                if (!v6FocusStatusRows(t, focusRows)) return {};
+                rows.insert(rows.end(), std::make_move_iterator(focusRows.begin()),
+                            std::make_move_iterator(focusRows.end()));
             }
 
             const uint32_t savedOutputMask = playbackOutputRowMask_;
@@ -1921,6 +1967,146 @@ void TnrdReader::setPlaybackV6Types(const std::vector<uint8_t>& streamTypes,
     }
 }
 
+bool TnrdReader::v6FocusStatusRows(float t, std::vector<detail::V4TimedRow>& out) {
+    out.clear();
+    auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+    if (!v6) return true;
+    const int focus = v6->focusDriver();
+    if (focus < 0 || focus == playbackDriverIndex_) return true;
+    std::vector<uint8_t> types;
+    for (const uint8_t type : {7, 15, 16, 17, 18, 19, 20})
+        if (v6->requestedType(type)) types.push_back(type);
+    if (types.empty()) return true;
+    std::string error;
+    if (!v6->readMultiDriverLatest(t, {static_cast<uint8_t>(focus)}, types, out, &error)) {
+        lastError_ = error;
+        return false;
+    }
+    return true;
+}
+
+void TnrdReader::setV6FocusDriver(int driverIndex, float cursorTime) {
+    auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+    if (!v6 || v6->focusDriver() == driverIndex) return;
+    v6->setFocusDriver(driverIndex);
+    // The focus driver's private families join or leave the playback lanes.
+    setCursor(cursorTime);
+}
+
+std::vector<std::string> TnrdReader::v6FocusStatusSnapshot(float t) {
+    std::vector<std::string> out;
+    std::vector<detail::V4TimedRow> rows;
+    if (!v6FocusStatusRows(t, rows)) return out;
+    const uint32_t savedOutputMask = playbackOutputRowMask_;
+    playbackOutputRowMask_ = detail::v4TypeBit(9);
+    for (const auto& row : rows) {
+        // Edge-encoded state is restored at the cursor, as a seek does.
+        const float stampTime = detail::stateType(static_cast<detail::V6DataType>(row.rowType))
+            ? t : row.sessionTime;
+        std::vector<std::pair<uint8_t, std::string>> projected;
+        projectV6Row(row.rowType, stampTime, row.json, projected);
+        for (auto& [type, json] : projected)
+            if (type == 9) out.push_back(std::move(json));
+    }
+    playbackOutputRowMask_ = savedOutputMask;
+    return out;
+}
+
+bool TnrdReader::v6FastestLapAt(float t, FastestLapRow& out) const {
+    const auto* v6 = dynamic_cast<const detail::TnrdV6Archive*>(indexedArchive_.get());
+    if (!v6) return false;
+    if (!v6FastestLapChanges_) {
+        struct Completed { float end; int car; int lapMs; };
+        std::vector<Completed> laps;
+        for (const auto& driver : v6->driverHeaders())
+            for (const auto& lap : v6->driverLapSummaries(driver.vehicleIndex))
+                if (lap.phase == detail::V6Phase::Race && lap.isCompleted && lap.isValid &&
+                    lap.lapTimeMs > 0 && lap.lapNumber > 0)
+                    laps.push_back({v6->logicalTime(lap.phase, lap.endSessionTime),
+                                    static_cast<int>(driver.vehicleIndex),
+                                    static_cast<int>(lap.lapTimeMs)});
+        std::stable_sort(laps.begin(), laps.end(),
+            [](const Completed& a, const Completed& b) { return a.end < b.end; });
+        auto& changes = v6FastestLapChanges_.emplace();
+        for (const auto& lap : laps)
+            if (changes.empty() || lap.lapMs < changes.back().lapMs)
+                changes.push_back({lap.end, lap.car, lap.lapMs});
+    }
+    const auto& changes = *v6FastestLapChanges_;
+    const auto after = std::upper_bound(changes.begin(), changes.end(), t,
+        [](float time, const V6FastestLapChange& change) { return time < change.time; });
+    out = {};
+    out.car_idx = -1;
+    if (after != changes.begin()) {
+        const auto& holder = *std::prev(after);
+        out.car_idx = holder.car;
+        out.lap_time_s = static_cast<float>(holder.lapMs) / 1000.0f;
+    }
+    return true;
+}
+
+float TnrdReader::v6NextLapEndAfter(float t) const {
+    const auto* v6 = dynamic_cast<const detail::TnrdV6Archive*>(indexedArchive_.get());
+    if (!v6) return std::numeric_limits<float>::infinity();
+    if (!v6LapEnds_) {
+        auto& ends = v6LapEnds_.emplace();
+        for (const auto& driver : v6->driverHeaders())
+            for (const auto& lap : v6->driverLapSummaries(driver.vehicleIndex))
+                if (lap.phase == detail::V6Phase::Race && lap.isCompleted && lap.lapTimeMs > 0 &&
+                    lap.lapNumber > 0)
+                    ends.push_back(v6->logicalTime(lap.phase, lap.endSessionTime));
+        std::sort(ends.begin(), ends.end());
+    }
+    const auto next = std::upper_bound(v6LapEnds_->begin(), v6LapEnds_->end(), t);
+    return next == v6LapEnds_->end() ? std::numeric_limits<float>::infinity() : *next;
+}
+
+// Read on first use: only the driver whose Tyres page is shown needs one, and
+// only for rows recorded before the parser filled avg_wear_per_lap. Tyre state
+// is edge-encoded, so the opening minutes almost always hold the first sets.
+const std::vector<TyreSet>& TnrdReader::firstV6TyreSets(int car) const {
+    auto& first = v6FirstTyreSets_[static_cast<size_t>(car)];
+    if (first) return *first;
+    first.emplace();
+    auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+    if (!v6) return *first;
+    std::vector<detail::V6TimedRow> rows;
+    std::string ignored;
+    for (const float to : {startTime_ + 600.0f, std::numeric_limits<float>::max()}) {
+        if (!v6->readDriverRangeTypes(static_cast<uint8_t>(car), -std::numeric_limits<float>::max(),
+                                      to, {13}, rows, &ignored)) break;
+        for (const auto& row : rows) {
+            if (row.json.find("\"sets\":") == std::string::npos) continue;
+            TyreSetsRow sets;
+            if (!glz::read<kPartialRead>(sets, row.json) && !sets.sets.empty()) {
+                *first = std::move(sets.sets);
+                return *first;
+            }
+        }
+    }
+    return *first;
+}
+
+DriverLapHistoryRow TnrdReader::driverLapHistory(int driver, float throughTime) const {
+    DriverLapHistoryRow out;
+    out.car_idx = driver;
+    const auto* v6 = dynamic_cast<const detail::TnrdV6Archive*>(indexedArchive_.get());
+    if (!v6 || driver < 0 || driver >= 24) return out;
+    // A garage restart can reuse a lap number; the latest interval wins, as in
+    // the lap catalog.
+    std::map<uint32_t, SessionHistoryLap> byLap;
+    for (const auto& lap : v6->driverLapSummaries(static_cast<uint8_t>(driver))) {
+        if (lap.phase != detail::V6Phase::Race || !lap.isCompleted || lap.lapTimeMs == 0 ||
+            lap.lapNumber == 0 || v6->logicalTime(lap.phase, lap.endSessionTime) > throughTime)
+            continue;
+        byLap[lap.lapNumber] = {static_cast<int>(lap.lapNumber), static_cast<int>(lap.lapTimeMs),
+            static_cast<int>(lap.s1Ms), static_cast<int>(lap.s2Ms), static_cast<int>(lap.s3Ms),
+            lap.isValid, lap.s1Ms > 0, lap.s2Ms > 0, lap.s3Ms > 0};
+    }
+    for (auto& [_, lap] : byLap) out.laps.push_back(lap);
+    return out;
+}
+
 void TnrdReader::projectV6Row(
     uint8_t sourceType, float sessionTime, std::string_view json,
     std::vector<std::pair<uint8_t, std::string>>& out,
@@ -1970,6 +2156,9 @@ void TnrdReader::projectV6Row(
                 row.replace(playerKey, valueEnd - playerKey,
                             "\"car_idx\":" + std::to_string(carIdx));
         }
+        if (carIdx >= 0 && carIdx < static_cast<int>(v6FirstTyreSets_.size()) &&
+            json.find("\"avg_wear_per_lap\"") == std::string_view::npos)
+            fillRecordedTyreSetWear(row, json, firstV6TyreSets(carIdx));
         return row;
     };
     const int selectedDriver = selectedDriverOverride >= 0

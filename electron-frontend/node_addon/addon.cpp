@@ -8,6 +8,7 @@
 #include <tnrp/XlsxExport.h>
 #include <algorithm>
 #include <atomic>
+#include <functional>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -184,6 +185,18 @@ private:
     int driverIndex_;
     bool useRecordedRows_;
     Napi::Promise::Deferred deferred_;
+};
+
+// Runs a short engine call off the JS thread. Engine calls take the engine
+// lock, which playback and seeks also hold, so the main process never waits on
+// it. Any rows the call produces arrive through the usual row callback.
+class EngineCallWorker : public Napi::AsyncWorker {
+public:
+    EngineCallWorker(Napi::Env env, std::function<void()> call)
+        : Napi::AsyncWorker(env), call_(std::move(call)) {}
+    void Execute() override { call_(); }
+private:
+    std::function<void()> call_;
 };
 
 class PlayerHistoryWorker : public Napi::AsyncWorker {
@@ -382,8 +395,10 @@ public:
             InstanceMethod("playerSeek", &TNRPAddon::PlayerSeek),
             InstanceMethod("playerSetSpeed", &TNRPAddon::PlayerSetSpeed),
             InstanceMethod("playerSetDriver", &TNRPAddon::PlayerSetDriver),
+            InstanceMethod("playerSetFocusDriver", &TNRPAddon::PlayerSetFocusDriver),
             InstanceMethod("playerGetLapData", &TNRPAddon::PlayerGetLapData),
             InstanceMethod("liveGetFastestLap", &TNRPAddon::LiveGetFastestLap),
+            InstanceMethod("setLapHistoryCar", &TNRPAddon::SetLapHistoryCar),
             InstanceMethod("playerGetAllLapsData", &TNRPAddon::PlayerGetAllLapsData),
             InstanceMethod("playerGetWindowData", &TNRPAddon::PlayerGetWindowData),
             InstanceMethod("playerClose", &TNRPAddon::PlayerClose),
@@ -671,6 +686,8 @@ public:
             uint32_t rowTypeMask;
             float historyStart;
             bool reportExceptions;
+            std::shared_ptr<FlushState> json;
+            Napi::ThreadSafeFunction jsonTsfn;
         };
         const size_t binaryBytes = binStore && binEnd > binBegin ? binEnd - binBegin : 0;
         const size_t retainedBytes = binaryBytes + coldJson.capacity();
@@ -682,7 +699,12 @@ public:
                                 seekFlushBytes_, retainedBytes,
                                 currentLapStart, lapNum, allHistory, requestId,
                                 authoritativeSeek, rowTypeMask, historyStart,
-                                nativeExceptionReporting_->load(std::memory_order_relaxed) };
+                                nativeExceptionReporting_->load(std::memory_order_relaxed),
+                                flush_, tsfn };
+        {
+            std::lock_guard<std::mutex> lk(flush_->mutex);
+            ++flush_->seekHolds;
+        }
         auto status = tsfnSeek.NonBlockingCall(
             d, [](Napi::Env env, Napi::Function cb, SeekData* d) {
                 std::exception_ptr unreportedException;
@@ -763,11 +785,15 @@ public:
                     }
                 }
                 d->retainedCounter->fetch_sub(d->retainedBytes, std::memory_order_relaxed);
+                // The flush has reached JavaScript: rows describing its cursor
+                // may follow it now.
+                releaseSeekHold(d->json, d->jsonTsfn);
                 delete d;
                 if (unreportedException) std::rethrow_exception(unreportedException);
             });
         if (status != napi_ok) {
             d->retainedCounter->fetch_sub(d->retainedBytes, std::memory_order_relaxed);
+            releaseSeekHold(d->json, d->jsonTsfn);
             delete d;
         }
     }
@@ -812,6 +838,12 @@ private:
         std::string pending;    // newline-delimited JSON awaiting delivery
         std::string draining;   // batch currently being handed to JS (reused storage)
         bool        scheduled = false;
+        // Rows emitted after a seek flush was handed to its own TSFN describe
+        // the new cursor, but the JSON TSFN can run first, while the bridge is
+        // still discarding old-cursor rows as it waits for that flush. They are
+        // held until the flush callback has run, then delivered.
+        std::string held;
+        int         seekHolds = 0;
         uint64_t    rowsEnqueued{};
         uint64_t    payloadBytesEnqueued{};
         uint64_t    scheduleAttempts{};
@@ -829,12 +861,14 @@ private:
         bool schedule = false;
         {
             std::lock_guard<std::mutex> lk(fs->mutex);
+            std::string& target = fs->seekHolds > 0 ? fs->held : fs->pending;
             for (size_t index = 0; index < count; ++index) {
-                fs->pending += rows[index];
-                fs->pending += '\n';
+                target += rows[index];
+                target += '\n';
                 ++fs->rowsEnqueued;
                 fs->payloadBytesEnqueued += rows[index].size() + 1;
             }
+            if (fs->seekHolds > 0) return;
             fs->peakPendingUsedBytes = std::max(fs->peakPendingUsedBytes, fs->pending.size());
             fs->peakPendingCapacityBytes = std::max(
                 fs->peakPendingCapacityBytes, fs->pending.capacity());
@@ -844,9 +878,31 @@ private:
                 schedule = true;
             }
         }
-        if (!schedule) return;
+        if (schedule) scheduleJsonFlush(fs, tsfn);
+    }
 
-        const auto status = tsfn.NonBlockingCall([fs](Napi::Env env, Napi::Function cb) {
+    // Releases one seek hold; the last release delivers the held rows.
+    static void releaseSeekHold(const std::shared_ptr<FlushState>& fs,
+                                Napi::ThreadSafeFunction jsonTsfn) {
+        bool schedule = false;
+        {
+            std::lock_guard<std::mutex> lk(fs->mutex);
+            if (fs->seekHolds > 0) --fs->seekHolds;
+            if (fs->seekHolds > 0 || fs->held.empty()) return;
+            fs->pending += fs->held;
+            fs->held.clear();
+            if (!fs->scheduled) {
+                fs->scheduled = true;
+                ++fs->scheduleAttempts;
+                schedule = true;
+            }
+        }
+        if (schedule) scheduleJsonFlush(fs, jsonTsfn);
+    }
+
+    static void scheduleJsonFlush(const std::shared_ptr<FlushState>& fs,
+                                  Napi::ThreadSafeFunction& jsonTsfn) {
+        const auto status = jsonTsfn.NonBlockingCall([fs](Napi::Env env, Napi::Function cb) {
             {
                 std::lock_guard<std::mutex> lk(fs->mutex);
                 fs->draining.swap(fs->pending);  // grab the batch; pending keeps reusable storage
@@ -1559,6 +1615,30 @@ private:
     Napi::Value LiveGetFastestLap(const Napi::CallbackInfo& info) {
         if (engine && info.Length() >= 1 && info[0].IsNumber())
             engine->liveGetFastestLap(static_cast<uint64_t>(info[0].As<Napi::Number>().Int64Value()));
+        return info.Env().Undefined();
+    }
+
+    // The car whose lap-times view is open (-1 closes it). The engine pushes
+    // driver_lap_history rows for it as they change.
+    Napi::Value SetLapHistoryCar(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1 && info[0].IsNumber()) {
+            const int carIdx = info[0].As<Napi::Number>().Int32Value();
+            auto target = engine;
+            (new EngineCallWorker(info.Env(), [target, carIdx] {
+                target->setLapHistoryCar(carIdx);
+            }))->Queue();
+        }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value PlayerSetFocusDriver(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1 && info[0].IsNumber()) {
+            const int driverIndex = info[0].As<Napi::Number>().Int32Value();
+            auto target = engine;
+            (new EngineCallWorker(info.Env(), [target, driverIndex] {
+                target->playerSetFocusDriver(driverIndex);
+            }))->Queue();
+        }
         return info.Env().Undefined();
     }
 

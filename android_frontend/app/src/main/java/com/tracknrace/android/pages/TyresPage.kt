@@ -36,7 +36,7 @@ import com.tracknrace.android.DashboardColdState
 import com.tracknrace.android.TyreSetEntry
 import kotlin.math.roundToInt
 
-private enum class TyreColumn { SET, COMPOUND, STATUS, WEAR, LIFE, RECOMMENDED, DELTA }
+private enum class TyreColumn { SET, COMPOUND, STATUS, WEAR, WEAR_PER_LAP, LIFE, RECOMMENDED, DELTA }
 
 @Composable
 internal fun TyresScreen(cold: DashboardColdState) {
@@ -152,6 +152,7 @@ private fun TyreTableHeader() {
         TyreTableText("Tyre", tyreColumnModifier(TyreColumn.COMPOUND), header = true)
         TyreTableText("Status", tyreColumnModifier(TyreColumn.STATUS), header = true)
         TyreTableText("Wear", tyreColumnModifier(TyreColumn.WEAR), header = true)
+        TyreTableText("Wear/lap", tyreColumnModifier(TyreColumn.WEAR_PER_LAP), header = true)
         TyreTableText("Life", tyreColumnModifier(TyreColumn.LIFE), header = true)
         TyreTableText("Rec", tyreColumnModifier(TyreColumn.RECOMMENDED), header = true)
         TyreTableText("Δ lap", tyreColumnModifier(TyreColumn.DELTA), header = true, align = TextAlign.End)
@@ -207,7 +208,11 @@ private fun CompactTyreRow(set: TyreSetEntry, cold: DashboardColdState) {
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Wear", color = secondaryText, style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        "Wear  ·  ${avgWearPerLap(set)} per lap",
+                        color = secondaryText,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                     Spacer(Modifier.weight(1f))
                     Text(
                         "${set.wear.roundToInt()}%",
@@ -271,6 +276,7 @@ private fun TyreTableRow(set: TyreSetEntry, cold: DashboardColdState) {
                     textAlign = TextAlign.End,
                 )
             }
+            TyreTableText(avgWearPerLap(set), tyreColumnModifier(TyreColumn.WEAR_PER_LAP), color = rowTextColor)
             TyreTableText("${set.lifeSpan}/${set.usableLife} L", tyreColumnModifier(TyreColumn.LIFE), color = rowTextColor)
             TyreTableText(sessionLabel(set.recommendedSession), tyreColumnModifier(TyreColumn.RECOMMENDED), color = rowTextColor)
             TyreTableText(
@@ -369,6 +375,7 @@ private fun RowScope.tyreColumnModifier(column: TyreColumn): Modifier {
         TyreColumn.COMPOUND -> Modifier.width(50.dp)
         TyreColumn.STATUS -> Modifier.width(104.dp)
         TyreColumn.WEAR -> Modifier.weight(1f)
+        TyreColumn.WEAR_PER_LAP -> Modifier.width(72.dp)
         TyreColumn.LIFE -> Modifier.width(72.dp)
         TyreColumn.RECOMMENDED -> Modifier.width(58.dp)
         TyreColumn.DELTA -> Modifier.width(84.dp)
@@ -437,6 +444,9 @@ private fun sessionOrder(sessionType: Int) = when {
 private fun sessionLabel(session: Int) = when (session) {
     1 -> "FP1"; 2 -> "FP2"; 3 -> "FP3"; 4 -> "Q1"; 5 -> "Q2"; 6 -> "Q3"; 7 -> "Race"; else -> "—"
 }
+
+private fun avgWearPerLap(set: TyreSetEntry): String =
+    set.avgWearPerLap?.let { "%.2f%%".format(it) } ?: "—"
 
 private fun lapDelta(set: TyreSetEntry): String {
     if (set.fitted || !set.available || set.lapDeltaMs == 0) return "—"

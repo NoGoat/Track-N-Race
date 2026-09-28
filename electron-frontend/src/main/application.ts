@@ -35,8 +35,10 @@ import {
   playerSeekInstalled,
   playerSetSpeed,
   playerSetDriver,
+  playerSetFocusDriver,
   playerGetLapData,
   liveGetFastestLap,
+  setLapHistoryCar,
   playerGetAllLapsData,
   playerGetWindowData,
   playerSetDataRequirements,
@@ -306,10 +308,12 @@ ipcMain.on('player:seek-installed', (_event, requestId: number) =>
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
 ipcMain.on('player:setDriver', (_event, driverIndex: number, useRecordedRows?: boolean) =>
   playerSetDriver(driverIndex, useRecordedRows === true))
+ipcMain.on('player:setFocusDriver', (_event, driverIndex: number) => playerSetFocusDriver(driverIndex))
 ipcMain.on('player:getLapData', (_event, lapNum: number, rowTypeMask?: number) => playerGetLapData(lapNum, rowTypeMask))
 ipcMain.on('live:getFastestLap', (_event, requestId: number) => {
   if (Number.isSafeInteger(requestId) && requestId > 0) liveGetFastestLap(requestId)
 })
+ipcMain.on('engine:lap-history-car', (_event, carIdx: number) => setLapHistoryCar(carIdx))
 ipcMain.on('player:getAllLapsData', (_event, rowTypeMask?: number) => playerGetAllLapsData(rowTypeMask))
 ipcMain.on('player:getWindowData', (_event, windowSeconds: number, rowTypeMask?: number) => playerGetWindowData(windowSeconds, rowTypeMask))
 ipcMain.on('player:setDataRequirements', (_event, streamMask: number, historyMask: number,

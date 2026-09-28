@@ -152,6 +152,8 @@ set(SOURCES
     src/components/StrategyPage.cpp
     src/components/StandingsPage.h
     src/components/StandingsPage.cpp
+    src/components/DriverLapsDialog.h
+    src/components/DriverLapsDialog.cpp
     src/components/SessionPage.h
     src/components/SessionPage.cpp
     src/components/InputPage.h

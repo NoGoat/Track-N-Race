@@ -713,6 +713,17 @@ void TnrdPlayer::selectDriver(int driverIndex, bool useRecordedRows) {
     }, true);
 }
 
+void TnrdPlayer::setFocusDriver(int driverIndex) {
+    tnrp::Engine* engine = engine_.load(std::memory_order_acquire);
+    if (!engine || !loaded_) return;
+    // Queued behind any seek or driver change, which re-prime the same lanes;
+    // only the newest selection matters.
+    post(WorkKind::Focus, [this, driverIndex] {
+        if (auto* current = engine_.load(std::memory_order_acquire))
+            current->playerSetFocusDriver(driverIndex);
+    }, true);
+}
+
 void TnrdPlayer::setDataRequirements(uint32_t streamMask, uint32_t historyMask,
                                      float windowSeconds,
                                      std::vector<uint8_t> v6Types,
