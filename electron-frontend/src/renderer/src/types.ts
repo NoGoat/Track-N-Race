@@ -340,6 +340,8 @@ export interface WeatherForecastSample {
   time_offset: number
   weather: number
   rain_percentage: number
+  /** The session this sample forecasts; absent in older recordings. */
+  session_type?: number
 }
 
 export interface MarshalZoneInfo {

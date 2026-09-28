@@ -772,10 +772,12 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
     // current weather (the current weather is already judged by pace). Offsets
     // are minutes from the packet; m_weather sets the category, while
     // m_rainPercentage is only the chance of rain and scales confidence.
-    if(!session_->weather_forecast_samples.empty()||switchSet){
+    // Only this session's forecast: the packet also carries other sessions'
+    // blocks, whose rain would otherwise be called for this race.
+    const std::vector<WeatherSample> forecast=currentSessionForecast(*session_);
+    if(!forecast.empty()||switchSet){
         const int nowCategory=weatherCategory(session_->weather);
-        const int nowRain=session_->weather_forecast_samples.empty()?0:
-            session_->weather_forecast_samples.front().rain_percentage;
+        const int nowRain=forecast.empty()?0:forecast.front().rain_percentage;
         StrategyWeatherDecision weather;
         weather.recommendation=fittedCategory==kSlick?"stay_dry":"stay_wet";
         weather.target_compound=categoryCompound(fittedCategory);
@@ -797,7 +799,7 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
             weather.crossover_lap=out.lap_num;
             describeSet(switchSet);
         }else{
-            for(const auto&sample:session_->weather_forecast_samples){
+            for(const auto&sample:forecast){
                 if(sample.time_offset<=0||sample.time_offset>60)continue;
                 const int target=weatherCategory(sample.weather);
                 if(target==fittedCategory||target==nowCategory)continue;

@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QHash>
+#include <QStringList>
 #include <QVector>
 #include "OverviewLayout.h"
 
@@ -15,6 +16,8 @@ class QSlider;
 class QSpinBox;
 class QLineEdit;
 class QFormLayout;
+class QListWidget;
+class QStackedWidget;
 class QWidget;
 class QTableWidget;
 class QPushButton;
@@ -28,34 +31,57 @@ struct TeamColorPresetSetting {
     QString group;
 };
 
-// Modal Settings dialog, opened from its own toolbar icon. Underline tabs
-// matching the main toolbar's page switcher group the controls into category
-// tabs (Recording, Appearance, …), each tab a label/control form. Most controls
-// apply immediately; Network keeps a draft until its own Apply & Restart action.
+// Settings, laid out like KDE's configuration dialogs:
+//
+//  ┌──────────────────┬──────────────────────────────────────────────┐
+//  │ 🔍 Search         │  Page Title                                   │
+//  │ ▣ Appearance      │  One-line description of what the page does. │
+//  │ ▣ Team Colours    │                                              │
+//  │ ▣ Density         │  SECTION                                     │
+//  │ ▣ Layout          │           Label:  [control]                  │
+//  │ ▣ Graphs          │                   muted hint                 │
+//  │ …                 │                                              │
+//  ├──────────────────┴──────────────────────────────────────────────┤
+//  │ [About]                                               [Close]    │
+//  └─────────────────────────────────────────────────────────────────┘
+//
+// Every page is one aligned form of titled sections. Most controls apply
+// immediately; the Connection page keeps a draft until Apply & Restart.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 
 public:
     explicit SettingsDialog(MainWindow* mainWindow, QWidget* parent = nullptr);
 
+protected:
+    void done(int result) override;
+
 private:
-    // Each builds and returns a self-contained settings tab page.
-    QWidget* buildProtocolPage();
-    QWidget* buildRecordingPage();
+    // Each builds and returns a page body (the frame adds its title).
     QWidget* buildAppearancePage();
     QWidget* buildTeamColorsPage();
     QWidget* buildCompactPage();
+    QWidget* buildLayoutPage();
     QWidget* buildGraphsPage();
     QWidget* buildYAxisPage();
-    QWidget* buildNotificationsPage();
-    QWidget* buildOverviewPage();
+    QWidget* buildRenderingPage();
     QWidget* buildTrackMapPage();
+    QWidget* buildRecordingPage();
+    QWidget* buildNotificationsPage();
+    QWidget* buildProtocolPage();
     QWidget* buildPairingPage();
     QWidget* buildDebugPage();
     QWidget* buildAboutPage();
 
-    // Shared page scaffold: a page whose body form is returned via formOut.
+    // Shared page body: one right-aligned label/control form, returned via
+    // formOut, so label columns line up across all of a page's sections.
     QWidget* makePage(QFormLayout*& formOut);
+    // Wraps a body with the page's title and description; `scrolls` wraps the
+    // body in a scroll area (pages with their own scrolling pass false).
+    QWidget* pageFrame(const QString& title, const QString& description, QWidget* body,
+                       bool scrolls);
+    // Shows only the categories whose pages mention every word of `query`.
+    void filterPages(const QString& query);
 
     // Open the standalone About modal (reached from the footer's About button),
     // which hosts the buildAboutPage() content.
@@ -81,6 +107,11 @@ private:
     enum class UdpApplyState { Idle, Applying, Ok, Error };
 
     MainWindow*   mainWindow_;
+    QLineEdit*    search_                = nullptr;
+    QListWidget*  nav_                   = nullptr;
+    QStackedWidget* pages_               = nullptr;
+    QLabel*       noMatches_             = nullptr;
+    QStringList   pageKeywords_;          // lower-cased searchable text per page
     QComboBox*    protocolCombo_         = nullptr;
     QLabel*       detectedProtocolLabel_ = nullptr;
     QSpinBox*     udpPortSpin_           = nullptr;

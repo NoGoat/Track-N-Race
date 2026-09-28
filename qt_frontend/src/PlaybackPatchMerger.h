@@ -31,6 +31,9 @@ public:
     // (with _v6_type) returns the merged state of its row type and sets
     // *sparse; any other row is returned unchanged.
     QJsonObject mergeObject(const QJsonObject& row, bool* sparse);
+    // Folds a V6 patch into its row type's state without producing a decoded
+    // row. Used for latest-state patches superseded later in the same batch.
+    void mergeOnly(const QByteArray& json);
     void clear() { states_.clear(); }
 
 private:
@@ -44,3 +47,8 @@ std::vector<const char*> playbackPatchFields(int v6Type);
 bool playbackFieldAvailable(const QJsonObject* object, const char* field);
 bool playbackCarFieldAvailable(const QJsonObject* object, int carIndex,
                                const char* field);
+// The merged object's cars keyed by idx; build once when checking many cars.
+QHash<int, QJsonObject> playbackCarsByIndex(const QJsonObject& object);
+// "all_status", "timing" or "positions" when `json` is a V6 patch of a row
+// type that only ever publishes its latest state (no chart history), else null.
+QByteArray playbackLatestStatePatchType(const QByteArray& json);

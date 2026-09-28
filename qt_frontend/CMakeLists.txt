@@ -132,10 +132,14 @@ set(SOURCES
     src/components/analysis/AnalysisRecording.cpp
     src/components/analysis/AnalysisSeriesModel.h
     src/components/analysis/AnalysisSeriesModel.cpp
+    src/components/analysis/AnalysisSplitter.h
+    src/components/analysis/AnalysisSplitter.cpp
     src/components/analysis/AnalysisWidgets.h
     src/components/analysis/AnalysisWidgets.cpp
     src/components/SettingsDialog.h
     src/components/SettingsDialog.cpp
+    src/components/UnderlineTabBar.h
+    src/components/UnderlineTabBar.cpp
     src/components/PairingQrCode.h
     src/components/PairingQrCode.cpp
     src/components/TyresPage.h

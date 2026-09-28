@@ -526,6 +526,7 @@ MainWindow::MainWindow(QWidget* parent)
         allStatusDrsAvailable_.clear();
         playbackDriverRestricted_ = false;
         playbackSparseRebuildPending_ = false;
+        strategyRebuilding_ = false;
         resetPlaybackDriverSelection();
         // Resolve labels against the recorded clip's Formula-gated presentation
         // format (DRS vs Straight Line Mode, etc.) for playback.
@@ -589,6 +590,11 @@ MainWindow::MainWindow(QWidget* parent)
         playbackSeekInstalling_ = true;   // waiting-flush: drop old-cursor rows
         playbackSeekGeneration_ = generation;
         playbackPatchMerger_.clear();
+        // Strategy rebuilds asynchronously after the seek installs; keep the
+        // old snapshot visible with the plans marked as recalculating.
+        strategyRebuilding_ = true;
+        dirtyStrategy_ = true; scheduleUiRefresh();
+        qInfo("[strategy-trace] seekStarted id=%llu", static_cast<unsigned long long>(generation));   // TEMP
     });
     connect(playback_, &PlaybackController::historyInstalled, this, [this](uint64_t generation) {
         if (!playbackSeekInstalling_ || generation != playbackSeekGeneration_) return;
@@ -596,6 +602,13 @@ MainWindow::MainWindow(QWidget* parent)
         // new cursor's rows held since the flush are released in engine order.
         QVector<SeekReplayItem> replay;
         replay.swap(playbackSeekReplay_);
+        {   // TEMP strategy trace
+            int strategyRows = 0;
+            for (const SeekReplayItem& item : replay)
+                if (!item.binary) strategyRows += int(item.data.count("\"type\":\"strategy\""));
+            qInfo("[strategy-trace] historyInstalled id=%llu replay=%lld strategyRowsInReplay=%d",
+                  static_cast<unsigned long long>(generation), static_cast<long long>(replay.size()), strategyRows);
+        }
         resetSeekGate();
         for (const SeekReplayItem& item : replay) {
             if (item.binary) onEngineBinary(item.data);
@@ -651,6 +664,8 @@ MainWindow::MainWindow(QWidget* parent)
         allStatusDrsAvailable_.clear();
         playbackDriverRestricted_ = false;
         playbackSparseRebuildPending_ = false;
+        strategyRebuilding_ = false;
+        dirtyStrategy_ = true;
         setWindowTitle("Track N Race Background Recorder");
     });
 
@@ -669,6 +684,10 @@ MainWindow::MainWindow(QWidget* parent)
         if (flush && flush->authoritativeSeek && playbackSeekInstalling_ &&
             flush->requestId == playbackSeekGeneration_)
             playbackSeekFlushReceived_ = true;
+        if (flush) qInfo("[strategy-trace] seekFlush id=%llu authoritative=%d installing=%d expected=%llu received=%d",   // TEMP
+                         static_cast<unsigned long long>(flush->requestId), int(flush->authoritativeSeek),
+                         int(playbackSeekInstalling_), static_cast<unsigned long long>(playbackSeekGeneration_),
+                         int(playbackSeekFlushReceived_));
         if (playback_) playback_->handleSeekFlush(flush);
     });
     connect(engineSink_, &EngineSink::pairStateReady, this,
@@ -1893,12 +1912,39 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     // EngineSink coalesces cold/control traffic into JSONL. Process each row in
     // order while retaining only one GUI callback for the whole producer burst.
     if (json.contains('\n')) {
+        QList<QByteArray> rows;
         qsizetype offset = 0;
         while (offset < json.size()) {
             qsizetype end = json.indexOf('\n', offset);
             if (end < 0) end = json.size();
-            if (end > offset) onEngineRow(json.mid(offset, end - offset));
+            if (end > offset) rows.push_back(json.mid(offset, end - offset));
             offset = end + 1;
+        }
+        // V6 all_status/timing/positions patches feed only latest-state
+        // tables and the map. When the GUI falls behind, a burst carries many
+        // of them (one per driver per field group); decoding and routing each
+        // re-serialises the whole 22-car state, which froze Standings. Fold
+        // superseded patches into the merger's state and fully decode only
+        // the last patch of each type in the burst.
+        QList<QByteArray> latestType(rows.size());
+        QHash<QByteArray, qsizetype> lastOfType;
+        if (inPlayback_) {
+            for (qsizetype i = 0; i < rows.size(); ++i) {
+                latestType[i] = playbackLatestStatePatchType(rows[i]);
+                if (!latestType[i].isNull()) lastOfType.insert(latestType[i], i);
+            }
+        }
+        for (qsizetype i = 0; i < rows.size(); ++i) {
+            if (!latestType[i].isNull() && lastOfType.value(latestType[i]) != i &&
+                inPlayback_ && !playbackSeekInstalling_) {
+                if (additionalLoggingEnabled()) {
+                    ++diagnosticJsonRows_;
+                    diagnosticJsonBytes_ += static_cast<quint64>(rows[i].size());
+                }
+                playbackPatchMerger_.mergeOnly(rows[i]);
+                continue;
+            }
+            onEngineRow(rows[i]);
         }
         return;
     }
@@ -1918,6 +1964,9 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     if (inPlayback_ && playbackSeekInstalling_ &&
         !json.contains("\"type\":\"protocol_status\"") &&
         !json.contains("\"type\":\"protocol_warning\"")) {
+        if (json.contains("\"type\":\"strategy\""))   // TEMP strategy trace
+            qInfo("[strategy-trace] strategy row at seek gate: %s",
+                  playbackSeekFlushReceived_ ? "buffered" : "DROPPED (before flush)");
         if (playbackSeekFlushReceived_) bufferSeekReplay(json, false);
         return;
     }
@@ -2115,7 +2164,9 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row,
         if (ev->code == "SSTA") {
             if (sessionPage_) sessionPage_->clearEvents();
             if (standingsPage_) standingsPage_->resetForNewSession();
-            if (strategyPage_) strategyPage_->resetForNewSession();
+            // Electron keeps Strategy across SSTA; in playback the engine's
+            // rebuilt snapshot is what replaces it.
+            if (strategyPage_ && !inPlayback_) strategyPage_->resetForNewSession();
             lastSafetyCarStatus_ = 0;
             lastRaceLeader_.reset();
         }
@@ -2151,13 +2202,19 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row,
         dirtyTiming_ = true; dirtyTrackMapParticipants_ = true; scheduleUiRefresh();
     } else if (const auto* as = std::get_if<AllStatusRow>(&row)) {
         allStatusDrsAvailable_.clear();
+        const QHash<int, QJsonObject> sparseCars =
+            sparseObject ? playbackCarsByIndex(*sparseObject) : QHash<int, QJsonObject>{};
         for (const AllStatusCar& car : as->cars)
-            if (playbackCarFieldAvailable(sparseObject, car.idx, "drs_allowed"))
+            if (!sparseObject ||
+                sparseCars.value(car.idx).contains(QLatin1String("drs_allowed")))
                 allStatusDrsAvailable_.insert(car.idx);
         lastAllStatusData = *as;
         dirtyTiming_ = true; scheduleUiRefresh();
     } else if (const auto* strategy = std::get_if<tnrp::StrategySnapshotRow>(&row)) {
         lastStrategyData = *strategy;
+        if (strategyRebuilding_)   // TEMP strategy trace
+            qInfo("[strategy-trace] strategy row received state=%s lap=%d", strategy->state.c_str(), strategy->lap_num);
+        strategyRebuilding_ = false;
         dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (const auto* fl = std::get_if<tnrp::FastestLapRow>(&row)) {
         if (standingsPage_) standingsPage_->noteFastestLap(fl->car_idx);
@@ -2227,7 +2284,8 @@ QWidget* MainWindow::buildStrategyPage() {
 
 void MainWindow::updateStrategyPage() {
     if (!strategyPage_) return;
-    strategyPage_->update(playbackDriverRestricted_ ? nullptr : optPtr(lastStrategyData));
+    strategyPage_->update(playbackDriverRestricted_ ? nullptr : optPtr(lastStrategyData),
+                          strategyRebuilding_);
 }
 
 // The Overview and Tyres pages show the same per-corner tyre cards, refreshed

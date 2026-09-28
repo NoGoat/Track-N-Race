@@ -4,9 +4,12 @@
 #include "AnalysisMapView.h"
 #include "AnalysisMetricPicker.h"
 #include "AnalysisSeriesModel.h"
+#include "AnalysisSplitter.h"
 #include "AnalysisWidgets.h"
 
 #include "../AnalyzeChart.h"
+#include "../PageUiHelpers.h"
+#include "../UnderlineTabBar.h"
 #include "../TyreHelpers.h"
 #include "../../AnalysisFileReader.h"
 #include "../../IconUtils.h"
@@ -35,7 +38,6 @@
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStyle>
-#include <QTabBar>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -108,7 +110,8 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
     chart_->setModel(model_);
     map_ = new AnalysisMapView(this);
 
-    contentSplitter_ = new QSplitter(Qt::Horizontal, this);
+    // Split view: graphs | map, kept as a percentage of the width (default 50 / 50).
+    contentSplitter_ = new AnalysisSplitter(this);
     contentSplitter_->setChildrenCollapsible(false);
     contentSplitter_->addWidget(chart_);
     contentSplitter_->addWidget(map_);
@@ -126,6 +129,7 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
     root->addWidget(toolBar_);
+    root->addWidget(tnrui::hline());   // separates the page tool bar from its content
     root->addWidget(splitter_, 1);
 
     loadSettings();
@@ -144,7 +148,7 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
     connect(seriesView_->selectionModel(), &QItemSelectionModel::currentChanged, this,
             &AnalysisPage::refreshMetricActions);
 
-    connect(modeTabs_, &QTabBar::currentChanged, this, [this](int index) {
+    connect(modeTabs_, &UnderlineTabBar::tabClicked, this, [this](int index) {
         showSlotPage(index);
         applyState();
     });
@@ -189,7 +193,9 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
     connect(chart_, &ChartView::inspectionRequested, this, &AnalysisPage::inspectMap);
     connect(map_, &AnalysisMapView::cursorElapsedChanged, chart_, &AnalyzeChart::setMapCursorElapsed);
     connect(splitter_, &QSplitter::splitterMoved, this, &AnalysisPage::saveSettings);
-    connect(contentSplitter_, &QSplitter::splitterMoved, this, &AnalysisPage::saveSettings);
+    connect(contentSplitter_, &AnalysisSplitter::ratioChanged, this, [this](double ratio) {
+        settings_.setValue("analyze/splitRatio", ratio);
+    });
     connect(model_, &SessionModel::lapsChanged, this, &AnalysisPage::refreshLapChoices);
     connect(model_, &SessionModel::chartConfigurationChanged, this, &AnalysisPage::applyState);
 
@@ -407,10 +413,10 @@ QWidget* AnalysisPage::buildLapGroup() {
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(6);
 
-    modeTabs_ = new QTabBar(group);
-    modeTabs_->setDocumentMode(true);
-    modeTabs_->setExpanding(true);
-    modeTabs_->setDrawBase(false);
+    // The same underline tabs as the Settings dialog.
+    modeTabs_ = new UnderlineTabBar(group);
+    modeTabs_->setBottomBorder(true);
+    modeTabs_->setTinted(false);
     modeTabs_->addTab(QStringLiteral("Follow Playback"));
     modeTabs_->addTab(QStringLiteral("Fixed Laps"));
     modeTabs_->setTabToolTip(kPlaybackTab,
@@ -487,9 +493,6 @@ QWidget* AnalysisPage::buildMetricGroup() {
     allYAxesAction_->setCheckable(true);
 
     picker_ = new AnalysisMetricPicker(seriesModel_, this);
-    addMetricsAction_ = new QAction(themed(this, {"list-add"}, QStyle::SP_FileDialogNewFolder),
-                                    QStringLiteral("Add Metrics…"), this);
-    addMetricsAction_->setToolTip(QStringLiteral("Choose the metrics to chart"));
 
     auto* buttons = new QHBoxLayout;
     buttons->setSpacing(2);
@@ -499,7 +502,6 @@ QWidget* AnalysisPage::buildMetricGroup() {
     add->setToolTip(QStringLiteral("Choose the metrics to chart"));
     add->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     connect(add, &QToolButton::clicked, this, [this, add] { picker_->popup(add); });
-    connect(addMetricsAction_, &QAction::triggered, this, [this] { picker_->popup(seriesView_); });
     buttons->addWidget(add);
     buttons->addStretch(1);
     for (QAction* action : {moveUpAction_, moveDownAction_, changeColorAction_, removeMetricAction_}) {
@@ -572,7 +574,6 @@ QWidget* AnalysisPage::buildMetricGroup() {
             menu.addSeparator();
         }
         menu.addAction(allYAxesAction_);
-        menu.addAction(addMetricsAction_);
         menu.exec(seriesView_->viewport()->mapToGlobal(pos));
     });
     return group;
@@ -699,7 +700,6 @@ void AnalysisPage::saveSettings() {
     settings_.setValue("analyze/series", QJsonDocument(series).toJson(QJsonDocument::Compact));
 
     if (splitter_) settings_.setValue("analyze/splitter", splitter_->saveState());
-    if (contentSplitter_) settings_.setValue("analyze/contentSplitter", contentSplitter_->saveState());
     if (auto* sections = sidebar_->findChild<QSplitter*>(QStringLiteral("analysisSidebarSections")))
         settings_.setValue("analyze/sidebarSections", sections->saveState());
 }
@@ -707,7 +707,7 @@ void AnalysisPage::saveSettings() {
 void AnalysisPage::restoreLayout() {
     if (!splitter_->restoreState(settings_.value("analyze/splitter").toByteArray()))
         splitter_->setSizes({320, 960});
-    contentSplitter_->restoreState(settings_.value("analyze/contentSplitter").toByteArray());
+    contentSplitter_->setRatio(settings_.value("analyze/splitRatio", AnalysisSplitter::kDefaultRatio).toDouble());
     if (auto* sections = sidebar_->findChild<QSplitter*>(QStringLiteral("analysisSidebarSections"))) {
         connect(sections, &QSplitter::splitterMoved, this, &AnalysisPage::saveSettings);
         if (!sections->restoreState(settings_.value("analyze/sidebarSections").toByteArray()))
@@ -955,6 +955,7 @@ void AnalysisPage::applyState() {
     map_->setCurrentTime(currentTime_);
     chart_->setVisible(showChart);
     map_->setVisible(showMap);
+    contentSplitter_->applyRatio();   // Split view opens at the saved percentage
 
     refreshDelta();
     emit navigationEnabledChanged(showChart && fixed && lapA.isValid());

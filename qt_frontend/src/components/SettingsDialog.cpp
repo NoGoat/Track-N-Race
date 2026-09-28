@@ -52,10 +52,16 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QTimer>
 #include <QUrl>
+#include <QAbstractButton>
+#include <algorithm>
+#include <initializer_list>
 #include <iterator>
+#include <memory>
+#include <utility>
 
 static QFrame* horizontalSeparator() {
     QFrame* f = new QFrame;
@@ -97,6 +103,70 @@ protected:
         p.drawControl(QStyle::CE_PushButton, opt);
     }
 };
+
+// An exclusive row of SegmentButtons; ids are the given values.
+QWidget* segmented(QButtonGroup*& groupOut, std::initializer_list<std::pair<const char*, int>> options) {
+    auto* row = new QWidget;
+    auto* layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    auto* group = new QButtonGroup(row);
+    group->setExclusive(true);
+    for (const auto& option : options) {
+        auto* button = new SegmentButton(row);
+        button->setText(QString::fromUtf8(option.first));
+        button->setCheckable(true);
+        button->setAutoRaise(true);
+        group->addButton(button, option.second);
+        layout->addWidget(button);
+    }
+    groupOut = group;
+    return row;
+}
+
+// Muted, wrapping explanation shown under a control.
+QLabel* hint(const QString& text) {
+    auto* label = new QLabel(text);
+    label->setWordWrap(true);
+    label->setForegroundRole(QPalette::PlaceholderText);
+    QFont font = label->font();
+    font.setPointSizeF(qMax(7.0, font.pointSizeF() * 0.92));
+    label->setFont(font);
+    return label;
+}
+
+// A bold section title spanning the form. Sections after the first get room
+// above them, so a page reads as a few clear groups rather than one long list.
+void addSection(QFormLayout* form, const QString& title) {
+    if (form->rowCount() > 0) form->addItem(new QSpacerItem(0, 14, QSizePolicy::Minimum, QSizePolicy::Fixed));
+    auto* heading = new QLabel(title);
+    QFont font = heading->font();
+    font.setBold(true);
+    heading->setFont(font);
+    form->addRow(heading);
+}
+
+// Lower-cased text of everything a page shows, for the settings search.
+QString searchableText(const QWidget* page) {
+    QStringList parts;
+    for (const QLabel* label : page->findChildren<QLabel*>()) parts << label->text();
+    for (const QAbstractButton* button : page->findChildren<QAbstractButton*>()) parts << button->text();
+    for (const QGroupBox* box : page->findChildren<QGroupBox*>()) parts << box->title();
+    for (const QComboBox* combo : page->findChildren<QComboBox*>())
+        for (int i = 0; i < combo->count(); ++i) parts << combo->itemText(i);
+    return parts.join(QLatin1Char(' ')).toLower();
+}
+
+QIcon categoryIcon(const QWidget* widget, std::initializer_list<const char*> names,
+                   QStyle::StandardPixmap fallback) {
+    QIcon icon;
+    for (const char* name : names) {
+        icon = QIcon::fromTheme(QString::fromLatin1(name));
+        if (!icon.isNull()) break;
+    }
+    return adaptThemeIcon(icon, widget->palette().color(QPalette::WindowText),
+                          widget->style()->standardIcon(fallback));
+}
 } // namespace
 
 // Bold label spanning both form columns, for a sub-section header inside a page.
@@ -122,105 +192,123 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     : QDialog(parent), mainWindow_(mainWindow)
 {
     setWindowTitle("Settings");
-    // Qt::Dialog gives the plain dialog frame (no minimize/maximize buttons)
-    // without the bitwise flag-stripping the old code needed for that. Modal +
-    // parented to MainWindow (see the call site) is what actually keeps this
+    // Qt::Dialog gives the plain dialog frame (no minimize/maximize buttons).
+    // Modal + parented to MainWindow (see the call site) is what keeps this
     // above MainWindow and blocks it — the window-type flag alone doesn't.
     setWindowFlags(Qt::Dialog);
     setWindowModality(Qt::ApplicationModal);
+    setMinimumSize(880, 560);
 
-    QVBoxLayout* main = new QVBoxLayout(this);
-    // A fixed-size top-level layout makes Qt drop the resize handles and the
-    // maximize button (same trick as EditOverviewLayoutDialog) — this should
-    // behave like a plain modal child dialog, not a maximizable window.
-    main->setSizeConstraint(QLayout::SetFixedSize);
+    auto* main = new QVBoxLayout(this);
     main->setContentsMargins(0, 0, 0, 0);
     main->setSpacing(0);
 
-    // ── Category tabs over a shared content pane ──────────────────
-    // Underline tabs matching the main toolbar's page switcher (see the page
-    // tabs in MainWindow.cpp): a row of checkable QToolButtons in an exclusive
-    // group, each reserving the same border-bottom width (transparent unless
-    // checked) so the accent underline only changes colour, never shifts the
-    // text. A QStackedWidget holds the page bodies so the shared Close button
-    // can live inside the same bordered pane below.
-    QStackedWidget* stack = new QStackedWidget;
-
-    struct Page { const char* title; QWidget* widget; };
+    // ── Categories ────────────────────────────────────────────────────────
+    struct Page {
+        const char* title;
+        const char* description;
+        const char* icon;          // theme icon, with an alternative name
+        const char* altIcon;
+        QStyle::StandardPixmap fallback;
+        QWidget* body;
+        bool scrolls;
+    };
     const Page pages[] = {
-        { "Appearance",    buildAppearancePage()    },
-        { "Team Colors",   buildTeamColorsPage()    },
-        { "Compact",       buildCompactPage()       },
-        { "Graphs",        buildGraphsPage()        },
-        { "Y Axis Behavior", buildYAxisPage()       },
-        { "Recording",     buildRecordingPage()     },
-        { "Overview",      buildOverviewPage()      },
-        { "Track Map",     buildTrackMapPage()      },
-        { "Notifications", buildNotificationsPage() },
-        { "Protocol",      buildProtocolPage()      },
-        { "Paired Devices", buildPairingPage()      },
-        { "Debug",         buildDebugPage()         },
+        {"Appearance", "Theme, widget style, tyre display, toolbar and motion.",
+         "preferences-desktop-theme", "preferences-desktop-color", QStyle::SP_DesktopIcon,
+         buildAppearancePage(), true},
+        {"Team Colours", "Colours used for each team's drivers throughout the app.",
+         "preferences-desktop-color", "color-management", QStyle::SP_DesktopIcon,
+         buildTeamColorsPage(), false},
+        {"Layout", "How each page arranges its charts, and the shared tooltip's crosshair.",
+         "view-grid", "view-list-icons", QStyle::SP_FileDialogListView,
+         buildLayoutPage(), true},
+        {"Graphs", "Show each graph as its chart or as a table of the samples behind it.",
+         "office-chart-line", "labplot-xy-curve", QStyle::SP_FileDialogContentsView,
+         buildGraphsPage(), true},
+        {"Y Axis Behavior", "Keep each graph's value axis at its fixed range, or let it follow the values.",
+         "transform-move-vertical", "distribute-vertical", QStyle::SP_ArrowUp,
+         buildYAxisPage(), true},
+        {"Density", "How tightly each part of the interface is packed.",
+         "zoom-fit-best", "view-list-details", QStyle::SP_FileDialogDetailedView,
+         buildCompactPage(), true},
+        {"Rendering", "The graphics API, anti-aliasing and frame rates of the telemetry graphs.",
+         "video-display", "preferences-desktop-display", QStyle::SP_ComputerIcon,
+         buildRenderingPage(), true},
+        {"Track Map", "Driver markers and the look of the circuit outline.",
+         "map-flat", "globe", QStyle::SP_DriveNetIcon,
+         buildTrackMapPage(), true},
+        {"Recording", "Saving sessions to disk as they are driven.",
+         "media-record", "document-save", QStyle::SP_DialogSaveButton,
+         buildRecordingPage(), true},
+        {"Notifications", "Pop-up event messages and update checks.",
+         "preferences-desktop-notification", "notifications", QStyle::SP_MessageBoxInformation,
+         buildNotificationsPage(), true},
+        {"Connection", "The telemetry format and how the game's UDP data is received and forwarded.",
+         "network-wired", "preferences-system-network", QStyle::SP_DriveNetIcon,
+         buildProtocolPage(), true},
+        {"Paired Devices", "Android displays that receive telemetry from this computer.",
+         "smartphone", "phone", QStyle::SP_ComputerIcon,
+         buildPairingPage(), true},
+        {"Diagnostics", "Extra logging for troubleshooting.",
+         "tools-report-bug", "debug-run", QStyle::SP_MessageBoxWarning,
+         buildDebugPage(), true},
     };
 
-    QWidget*     tabBar = new QWidget;
-    // Tint the bar a shade lighter than the window (Midlight) so it reads as a
-    // distinct surface, separated from the bordered content pane below.
-    tabBar->setBackgroundRole(QPalette::Button);
-    tabBar->setAutoFillBackground(true);
-    QHBoxLayout* tabLay = new QHBoxLayout(tabBar);
-    tabLay->setContentsMargins(8, 0, 8, 0);
-    tabLay->setSpacing(4);
-    QButtonGroup* tabGroup = new QButtonGroup(this);
-    tabGroup->setExclusive(true);
+    // Left: search over a category list.
+    auto* navColumn = new QWidget;
+    navColumn->setFixedWidth(220);
+    auto* navLayout = new QVBoxLayout(navColumn);
+    navLayout->setContentsMargins(10, 10, 10, 10);
+    navLayout->setSpacing(8);
+    search_ = new QLineEdit;
+    search_->setPlaceholderText("Search settings");
+    search_->setClearButtonEnabled(true);
+    search_->addAction(categoryIcon(this, {"edit-find"}, QStyle::SP_FileDialogContentsView),
+                       QLineEdit::LeadingPosition);
+    navLayout->addWidget(search_);
+    nav_ = new QListWidget;
+    nav_->setFrameShape(QFrame::NoFrame);
+    nav_->setIconSize(QSize(22, 22));
+    nav_->setUniformItemSizes(true);
+    nav_->setSpacing(1);
+    nav_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    nav_->viewport()->setAutoFillBackground(false);
+    navLayout->addWidget(nav_, 1);
+    noMatches_ = hint("No settings match your search.");
+    noMatches_->setAlignment(Qt::AlignHCenter);
+    noMatches_->hide();
+    navLayout->addWidget(noMatches_);
 
-    static constexpr int kUnderlineWidth = 2;
-    const QString accent = QApplication::palette().color(QPalette::Highlight).name();
-    const QString tabBtnStyle = QString(
-        "QToolButton { padding: 8px 14px; border: none; background: transparent;"
-        " border-bottom: %1px solid transparent; }"
-        "QToolButton:checked { border-bottom: %1px solid %2; }"
-    ).arg(kUnderlineWidth).arg(accent);
-
-    int tabIndex = 0;
-    for (const Page& p : pages) {
-        QToolButton* b = new QToolButton;
-        b->setText(p.title);
-        b->setCheckable(true);
-        b->setAutoRaise(true);
-        b->setStyleSheet(tabBtnStyle);
-        tabGroup->addButton(b, tabIndex++);
-        tabLay->addWidget(b);
-        stack->addWidget(p.widget);
+    // Right: the selected page.
+    pages_ = new QStackedWidget;
+    for (const Page& page : pages) {
+        auto* item = new QListWidgetItem(categoryIcon(this, {page.icon, page.altIcon}, page.fallback),
+                                         QString::fromUtf8(page.title), nav_);
+        item->setSizeHint(QSize(0, 34));
+        item->setToolTip(QString::fromUtf8(page.description));
+        pageKeywords_ << (QString::fromUtf8(page.title) + QLatin1Char(' ') +
+                          QString::fromUtf8(page.description) + QLatin1Char(' ') +
+                          searchableText(page.body)).toLower();
+        pages_->addWidget(pageFrame(QString::fromUtf8(page.title),
+                                    QString::fromUtf8(page.description), page.body,
+                                    page.scrolls));
     }
-    tabLay->addStretch(1);
-    connect(tabGroup, &QButtonGroup::idClicked, stack, &QStackedWidget::setCurrentIndex);
-    static_cast<QToolButton*>(tabGroup->button(0))->setChecked(true);
-    stack->setCurrentIndex(0);
+    connect(nav_, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (row >= 0) pages_->setCurrentIndex(row);
+    });
+    connect(search_, &QLineEdit::textChanged, this, &SettingsDialog::filterPages);
 
-    // Pane holding the page stack + the Close button row. A single top border
-    // separates it from the tab bar above; the colour is mixed toward the text
-    // colour so it actually contrasts with the background (the palette's
-    // Mid/Sunken etch is nearly identical to Window in this dark theme, which is
-    // why earlier borders were invisible). Scoped by object name so it doesn't
-    // bleed onto children.
-    QFrame* pane = new QFrame;
-    pane->setObjectName("settingsPane");
-    const QColor  win = QApplication::palette().color(QPalette::Window);
-    const QColor  txt = QApplication::palette().color(QPalette::WindowText);
-    // ~30% of the way from the window colour to the text colour: a clearly
-    // visible hairline in both light and dark themes.
-    const QColor  borderCol((win.red()   * 7 + txt.red()   * 3) / 10,
-                            (win.green() * 7 + txt.green() * 3) / 10,
-                            (win.blue()  * 7 + txt.blue()  * 3) / 10);
-    pane->setStyleSheet(QString(
-        "QFrame#settingsPane { background-color: %1; border-top: 1px solid %2; }")
-        .arg(win.name(), borderCol.name()));
-    QVBoxLayout* paneLay = new QVBoxLayout(pane);
-    paneLay->setContentsMargins(0, 0, 0, 0);
-    paneLay->setSpacing(0);
-    paneLay->addWidget(stack, 1);
-    paneLay->addWidget(horizontalSeparator());
+    auto* body = new QHBoxLayout;
+    body->setContentsMargins(0, 0, 0, 0);
+    body->setSpacing(0);
+    body->addWidget(navColumn);
+    body->addWidget(verticalSeparator());
+    body->addWidget(pages_, 1);
+    main->addLayout(body, 1);
 
+    // ── Footer ────────────────────────────────────────────────────────────
+    main->addWidget(horizontalSeparator());
     QHBoxLayout* bottom = new QHBoxLayout;
     bottom->setContentsMargins(12, 8, 12, 12);
     QPushButton* aboutBtn = new QPushButton("About");
@@ -239,24 +327,90 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
         style()->standardIcon(QStyle::SP_DialogCloseButton)));
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
     bottom->addWidget(closeBtn);
-    paneLay->addLayout(bottom);
+    main->addLayout(bottom);
 
-    main->addWidget(tabBar);
-    main->addWidget(pane);
+    // Reopen at the last size and page.
+    const QSettings settings("TrackNRace", "NativeRecorder");
+    if (!restoreGeometry(settings.value("settingsDialog/geometry").toByteArray()))
+        resize(1040, 700);
+    const int lastPage = settings.value("settingsDialog/page", 0).toInt();
+    nav_->setCurrentRow(qBound(0, lastPage, nav_->count() - 1));
 }
 
-// Page scaffold: a right-aligned label/control form (the tab supplies the title).
+void SettingsDialog::done(int result) {
+    QSettings settings("TrackNRace", "NativeRecorder");
+    settings.setValue("settingsDialog/geometry", saveGeometry());
+    settings.setValue("settingsDialog/page", nav_->currentRow());
+    QDialog::done(result);
+}
+
+QWidget* SettingsDialog::pageFrame(const QString& title, const QString& description,
+                                   QWidget* body, bool scrolls) {
+    auto* frame = new QWidget;
+    auto* layout = new QVBoxLayout(frame);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    auto* header = new QWidget(frame);
+    auto* headerLayout = new QVBoxLayout(header);
+    headerLayout->setContentsMargins(24, 18, 24, 14);
+    headerLayout->setSpacing(4);
+    auto* heading = new QLabel(title, header);
+    QFont headingFont = heading->font();
+    headingFont.setPointSizeF(headingFont.pointSizeF() * 1.4);
+    headingFont.setBold(true);
+    heading->setFont(headingFont);
+    headerLayout->addWidget(heading);
+    auto* summary = hint(description);
+    summary->setFont(font());
+    headerLayout->addWidget(summary);
+    layout->addWidget(header);
+
+    if (scrolls) {
+        auto* scroll = new QScrollArea(frame);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidgetResizable(true);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidget(body);
+        scroll->viewport()->setAutoFillBackground(false);
+        body->setAutoFillBackground(false);
+        layout->addWidget(scroll, 1);
+    } else {
+        layout->addWidget(body, 1);
+    }
+    return frame;
+}
+
+void SettingsDialog::filterPages(const QString& query) {
+    const QStringList words = query.toLower().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    int firstVisible = -1;
+    for (int row = 0; row < nav_->count(); ++row) {
+        const QString& text = pageKeywords_.value(row);
+        const bool match = std::all_of(words.cbegin(), words.cend(),
+                                       [&](const QString& word) { return text.contains(word); });
+        nav_->item(row)->setHidden(!match);
+        if (match && firstVisible < 0) firstVisible = row;
+    }
+    noMatches_->setVisible(firstVisible < 0);
+    if (firstVisible >= 0 && nav_->item(nav_->currentRow()) &&
+        nav_->item(nav_->currentRow())->isHidden())
+        nav_->setCurrentRow(firstVisible);
+}
+
+// Page body: one right-aligned label/control form for all of a page's sections.
 QWidget* SettingsDialog::makePage(QFormLayout*& formOut) {
     QWidget* page = new QWidget;
     QVBoxLayout* v = new QVBoxLayout(page);
-    v->setContentsMargins(8, 12, 8, 8);
-    v->setSpacing(12);
+    v->setContentsMargins(24, 4, 24, 20);
+    v->setSpacing(0);
 
     QFormLayout* form = new QFormLayout;
-    form->setLabelAlignment(Qt::AlignRight);
+    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
-    form->setHorizontalSpacing(18);
-    form->setVerticalSpacing(10);
+    form->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
+    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+    form->setHorizontalSpacing(12);
+    form->setVerticalSpacing(8);
     v->addLayout(form);
     v->addStretch(1);
 
@@ -264,10 +418,666 @@ QWidget* SettingsDialog::makePage(QFormLayout*& formOut) {
     return page;
 }
 
+QWidget* SettingsDialog::buildAppearancePage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
+
+    addSection(form, "Look");
+    QWidget* themeRow = new QWidget;
+    QHBoxLayout* themeLay = new QHBoxLayout(themeRow);
+    themeLay->setContentsMargins(0, 0, 0, 0);
+    themeLay->setSpacing(14);
+    themeSystem_ = new QRadioButton("System default");
+    themeLight_  = new QRadioButton("Light");
+    themeDark_   = new QRadioButton("Dark");
+    themeLay->addWidget(themeSystem_);
+    themeLay->addWidget(themeLight_);
+    themeLay->addWidget(themeDark_);
+    const QString theme = mainWindow_->currentTheme();
+    if (theme == "light")     themeLight_->setChecked(true);
+    else if (theme == "dark") themeDark_->setChecked(true);
+    else                      themeSystem_->setChecked(true);
+    form->addRow("Theme:", themeRow);
+
+    // Lists the QStyles actually available at runtime, so a bundled "Breeze"
+    // only appears once its plugin has loaded. Each item's userData is the
+    // lowercased QStyleFactory key (what setStyleName stores); "system" is special.
+    styleCombo_ = new QComboBox;
+    styleCombo_->addItem("System default", "system");
+    const QString curStyle = mainWindow_->currentStyleName();
+    for (const QString& key : QStyleFactory::keys()) {
+        styleCombo_->addItem(key, key.toLower());
+        if (key.compare(curStyle, Qt::CaseInsensitive) == 0)
+            styleCombo_->setCurrentIndex(styleCombo_->count() - 1);
+    }
+    // Connected after populating so the initial selection doesn't re-apply.
+    connect(styleCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setStyleName(styleCombo_->currentData().toString());
+    });
+    form->addRow("Widget style:", styleCombo_);
+
+    addSection(form, "Tyres");
+    tyreViewCombo_ = new QComboBox;
+    tyreViewCombo_->addItem("Cards",  (int)OverviewLayout::TyreCards);
+    tyreViewCombo_->addItem("Graphs", (int)OverviewLayout::TyreCharts);
+    tyreViewCombo_->setCurrentIndex(mainWindow_->currentTyreView() == OverviewLayout::TyreCharts ? 1 : 0);
+    connect(tyreViewCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setTyreView(tyreViewCombo_->currentData().toInt() == (int)OverviewLayout::TyreCharts
+                                     ? OverviewLayout::TyreCharts : OverviewLayout::TyreCards);
+    });
+    form->addRow("Tyre view:", tyreViewCombo_);
+    form->addRow(QString(), hint("How tyre data is displayed in the Overview tab."));
+    // Whether the tyre graph shows remaining life (100 - wear) or accumulated wear.
+    tyreWearModeCombo_ = new QComboBox;
+    tyreWearModeCombo_->addItem("Tyre life", true);
+    tyreWearModeCombo_->addItem("Tyre wear", false);
+    tyreWearModeCombo_->setCurrentIndex(mainWindow_->tyreGraphLifeMode() ? 0 : 1);
+    connect(tyreWearModeCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setTyreGraphLifeMode(tyreWearModeCombo_->currentData().toBool());
+    });
+    form->addRow("Tyre wear graph:", tyreWearModeCombo_);
+    form->addRow(QString(), hint("Whether graphs show remaining tyre life or accumulated wear."));
+
+    addSection(form, "Toolbar");
+    toolbarLabelsCheck_ = new QCheckBox("Show text beside toolbar icons");
+    toolbarLabelsCheck_->setChecked(mainWindow_->toolbarLabelsEnabled());
+    form->addRow("Button labels:", toolbarLabelsCheck_);
+
+    auto* deltaUpdates = new QComboBox;
+    deltaUpdates->addItem("Realtime", 0);
+    deltaUpdates->addItem("Every 250 ms", 250);
+    deltaUpdates->addItem("Every 500 ms", 500);
+    deltaUpdates->addItem("Every second", 1000);
+    const int deltaIndex = deltaUpdates->findData(mainWindow_->deltaUpdateInterval());
+    deltaUpdates->setCurrentIndex(deltaIndex >= 0 ? deltaIndex : 0);
+    connect(deltaUpdates, &QComboBox::currentIndexChanged, this,
+            [this, deltaUpdates] { mainWindow_->setDeltaUpdateInterval(
+                deltaUpdates->currentData().toInt()); });
+    form->addRow("Lap delta refresh:", deltaUpdates);
+    form->addRow(QString(), hint("How often the toolbar's lap-comparison delta updates."));
+
+    addSection(form, "Motion & Accessibility");
+    auto* reduceAnimations = new QCheckBox("Reduce animations");
+    reduceAnimations->setChecked(mainWindow_->reduceAnimations());
+    connect(reduceAnimations, &QCheckBox::toggled,
+            mainWindow_, &MainWindow::setReduceAnimations);
+    form->addRow("Motion:", reduceAnimations);
+    form->addRow(QString(), hint("Turns off toast fades and track-map interpolation. "
+                                 "Live data is not affected."));
+
+    QWidget* contrastRow = new QWidget;
+    QHBoxLayout* contrastLayout = new QHBoxLayout(contrastRow);
+    contrastLayout->setContentsMargins(0, 0, 0, 0);
+    QSlider* contrastSlider = new QSlider(Qt::Horizontal);
+    contrastSlider->setRange(100, 2100);
+    contrastSlider->setValue((int)(mainWindow_->contrastThreshold() * 100.0f));
+    contrastSlider->setMinimumWidth(260);
+    QLabel* contrastVal = new QLabel(QString::number(mainWindow_->contrastThreshold(), 'f', 2));
+    contrastVal->setMinimumWidth(40);
+    contrastLayout->addWidget(contrastSlider, 1);
+    contrastLayout->addWidget(contrastVal);
+    form->addRow("Contrast threshold:", contrastRow);
+
+    auto applyTheme = [this](bool) {
+        QString val = "system";
+        if (themeLight_->isChecked())     val = "light";
+        else if (themeDark_->isChecked()) val = "dark";
+        mainWindow_->setTheme(val);
+    };
+    connect(themeSystem_, &QRadioButton::toggled, this, applyTheme);
+    connect(themeLight_,  &QRadioButton::toggled, this, applyTheme);
+    connect(themeDark_,   &QRadioButton::toggled, this, applyTheme);
+    connect(toolbarLabelsCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        mainWindow_->setToolbarLabels(on);
+    });
+    connect(contrastSlider, &QSlider::valueChanged, this, [this, contrastVal](int val) {
+        const float f = val / 100.0f;
+        contrastVal->setText(QString::number(f, 'f', 2));
+        mainWindow_->setContrastThreshold(f);
+    });
+    return page;
+}
+
+QWidget* SettingsDialog::buildCompactPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
+
+    // Every section's segmented control, so the "Set all" buttons can update
+    // both the persisted state and what is shown.
+    struct Ctl { tnr::CompactSection s; QButtonGroup* group; };
+    auto controls = std::make_shared<QList<Ctl>>();
+
+    // Ordinary sections expose Compact / Normal / Spacious; the three Electron
+    // integer controls keep their exact specialised levels.
+    auto makeControl = [this, controls](tnr::CompactSection s) -> QWidget* {
+        QButtonGroup* group = nullptr;
+        QWidget* control = nullptr;
+        if (s == tnr::CompactSection::OverviewTyres) {
+            control = segmented(group, {{"Spacious", 6}, {"Normal", 0}, {"Compact 1", 1},
+                                        {"Compact 2", 2}, {"Compact 3", 3}, {"Compact 4", 4},
+                                        {"Compact 5", 5}});
+            group->button(mainWindow_->tyresCompactLevel())->setChecked(true);
+            connect(group, &QButtonGroup::idClicked, this,
+                    [this](int level) { mainWindow_->setTyresCompactLevel(level); });
+        } else if (s == tnr::CompactSection::SessionWeather) {
+            control = segmented(group, {{"Spacious", 4}, {"Normal", 0}, {"Compact 1", 1},
+                                        {"Compact 2", 2}, {"Compact 3", 3}});
+            group->button(mainWindow_->weatherCompactLevel())->setChecked(true);
+            connect(group, &QButtonGroup::idClicked, this,
+                    [this](int level) { mainWindow_->setWeatherCompactLevel(level); });
+        } else if (s == tnr::CompactSection::SessionHeader) {
+            control = segmented(group, {{"Spacious", 3}, {"Normal", 0}, {"Compact 1", 1},
+                                        {"Compact 2", 2}});
+            group->button(mainWindow_->headerCompactLevel())->setChecked(true);
+            connect(group, &QButtonGroup::idClicked, this,
+                    [this](int level) { mainWindow_->setHeaderCompactLevel(level); });
+        } else {
+            control = segmented(group, {{"Compact", static_cast<int>(tnr::DensityMode::Compact)},
+                                        {"Normal", static_cast<int>(tnr::DensityMode::Normal)},
+                                        {"Spacious", static_cast<int>(tnr::DensityMode::Spacious)}});
+            group->button(static_cast<int>(mainWindow_->densitySection(s)))->setChecked(true);
+            connect(group, &QButtonGroup::idClicked, this,
+                    [this, s](int mode) { mainWindow_->setDensitySection(
+                        s, static_cast<tnr::DensityMode>(mode)); });
+        }
+        controls->push_back({s, group});
+        return control;
+    };
+
+    // Bulk actions first, so the common case is one click.
+    addSection(form, "All Sections");
+    auto* bulk = new QWidget;
+    auto* bulkLayout = new QHBoxLayout(bulk);
+    bulkLayout->setContentsMargins(0, 0, 0, 0);
+    bulkLayout->setSpacing(6);
+    const struct { const char* label; tnr::DensityMode mode; } bulkActions[] = {
+        {"Compact", tnr::DensityMode::Compact},
+        {"Normal", tnr::DensityMode::Normal},
+        {"Spacious", tnr::DensityMode::Spacious},
+    };
+    auto setAll = [this, controls](tnr::DensityMode mode) {
+        for (const Ctl& c : *controls) {
+            if (c.s == tnr::CompactSection::OverviewTyres) {
+                const int lvl = mode == tnr::DensityMode::Spacious ? 6
+                    : mode == tnr::DensityMode::Compact ? 1 : 0;
+                mainWindow_->setTyresCompactLevel(lvl);
+                c.group->button(lvl)->setChecked(true);
+            } else if (c.s == tnr::CompactSection::SessionWeather) {
+                const int lvl = mode == tnr::DensityMode::Spacious ? 4
+                    : mode == tnr::DensityMode::Compact ? 1 : 0;
+                mainWindow_->setWeatherCompactLevel(lvl);
+                c.group->button(lvl)->setChecked(true);
+            } else if (c.s == tnr::CompactSection::SessionHeader) {
+                const int lvl = mode == tnr::DensityMode::Spacious ? 3
+                    : mode == tnr::DensityMode::Compact ? 1 : 0;
+                mainWindow_->setHeaderCompactLevel(lvl);
+                c.group->button(lvl)->setChecked(true);
+            } else {
+                mainWindow_->setDensitySection(c.s, mode);
+                c.group->button(static_cast<int>(mode))->setChecked(true);
+            }
+        }
+    };
+    for (const auto& action : bulkActions) {
+        auto* button = new QPushButton(action.label);
+        connect(button, &QPushButton::clicked, this, [setAll, mode = action.mode] { setAll(mode); });
+        bulkLayout->addWidget(button);
+    }
+    form->addRow("Set all to:", bulk);
+
+    struct Row { tnr::CompactSection s; const char* group; const char* label; };
+    static const Row rows[] = {
+        { tnr::CompactSection::OverviewStats,     "Overview",  "Stats row:" },
+        { tnr::CompactSection::OverviewDamage,    "Overview",  "Damage cards:" },
+        { tnr::CompactSection::OverviewTyres,     "Overview",  "Tyre cards:" },
+        { tnr::CompactSection::StandingsTable,    "Standings", "Timing tower:" },
+        { tnr::CompactSection::StandingsTiming,   "Standings", "Timing card:" },
+        { tnr::CompactSection::StandingsErs,      "Standings", "Energy recovery card:" },
+        { tnr::CompactSection::StandingsStrategy, "Standings", "Strategy card:" },
+        { tnr::CompactSection::SessionCards,      "Session",   "Info cards:" },
+        { tnr::CompactSection::SessionProximity,  "Session",   "Proximity:" },
+        { tnr::CompactSection::SessionEvents,     "Session",   "Events:" },
+        { tnr::CompactSection::SessionWeather,    "Session",   "Weather strip:" },
+        { tnr::CompactSection::SessionHeader,     "Session",   "Header:" },
+        { tnr::CompactSection::PowerCards,        "Power",     "Power cards:" },
+        { tnr::CompactSection::StrategySummary,   "Strategy",  "Summary header:" },
+        { tnr::CompactSection::PlaybackBar,       "Playback",  "Playback bar:" },
+    };
+    QString lastGroup;
+    for (const Row& row : rows) {
+        if (lastGroup != QLatin1String(row.group)) {
+            addSection(form, row.group);
+            lastGroup = row.group;
+        }
+        form->addRow(row.label, makeControl(row.s));
+    }
+    return page;
+}
+
+QWidget* SettingsDialog::buildRenderingPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
+
+    addSection(form, "Rendering");
+    chartBackendCombo_ = new QComboBox;
+    chartBackendCombo_->addItem(
+        QString("Automatic (currently %1)").arg(tnr::graphics::activeBackendLabel()), "auto");
+    for (const tnr::graphics::BackendInfo& backend : tnr::graphics::supportedBackends())
+        chartBackendCombo_->addItem(backend.label, backend.key);
+    const int backendIndex = chartBackendCombo_->findData(mainWindow_->chartGraphicsBackend());
+    chartBackendCombo_->setCurrentIndex(backendIndex >= 0 ? backendIndex : 0);
+    connect(chartBackendCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setChartGraphicsBackend(chartBackendCombo_->currentData().toString());
+    });
+    form->addRow("Graphics API:", chartBackendCombo_);
+    form->addRow(QString(), hint("Takes effect after restarting the app."));
+
+    // Portable QRhi multisampling: higher values smooth lines but increase fill cost.
+    chartMsaaCombo_ = new QComboBox;
+    chartMsaaCombo_->addItem("Off", 0);
+    for (int s : { 4, 8, 16 })
+        chartMsaaCombo_->addItem(QString("%1×").arg(s), s);
+    const int msaaIdx = chartMsaaCombo_->findData(mainWindow_->chartMsaaSamples());
+    chartMsaaCombo_->setCurrentIndex(msaaIdx >= 0 ? msaaIdx : chartMsaaCombo_->findData(4));
+    connect(chartMsaaCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setChartMsaaSamples(chartMsaaCombo_->currentData().toInt());
+    });
+    form->addRow("Anti-aliasing:", chartMsaaCombo_);
+
+    auto populateFrameRates = [](QComboBox* combo) {
+        combo->addItem("Paused", 0);
+        combo->addItem("1 FPS", 1);
+        combo->addItem("10 FPS", 10);
+        combo->addItem("30 FPS", 30);
+        combo->addItem("60 FPS", 60);
+        combo->addItem("120 FPS", 120);
+        combo->addItem("Match display", PresentationScheduler::MatchDisplay);
+    };
+    chartFpsInFocusCombo_ = new QComboBox;
+    populateFrameRates(chartFpsInFocusCombo_);
+    int fpsIdx = chartFpsInFocusCombo_->findData(mainWindow_->chartFpsInFocus());
+    chartFpsInFocusCombo_->setCurrentIndex(
+        fpsIdx >= 0 ? fpsIdx : chartFpsInFocusCombo_->findData(PresentationScheduler::MatchDisplay));
+    connect(chartFpsInFocusCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setChartFpsInFocus(chartFpsInFocusCombo_->currentData().toInt());
+    });
+    form->addRow("Frame rate, focused:", chartFpsInFocusCombo_);
+
+    chartFpsOutOfFocusCombo_ = new QComboBox;
+    populateFrameRates(chartFpsOutOfFocusCombo_);
+    fpsIdx = chartFpsOutOfFocusCombo_->findData(mainWindow_->chartFpsOutOfFocus());
+    chartFpsOutOfFocusCombo_->setCurrentIndex(
+        fpsIdx >= 0 ? fpsIdx : chartFpsOutOfFocusCombo_->findData(30));
+    connect(chartFpsOutOfFocusCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setChartFpsOutOfFocus(chartFpsOutOfFocusCombo_->currentData().toInt());
+    });
+    form->addRow("Frame rate, in background:", chartFpsOutOfFocusCombo_);
+    form->addRow(QString(), hint("Maximum graph frame rates while the window is focused and "
+                                 "while it is not."));
+
+    return page;
+}
+
+// Layout: how each app page arranges its charts (Electron's "Layout" category).
+QWidget* SettingsDialog::buildLayoutPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
+
+    auto layoutCombo = [this](MainWindow::Page target) {
+        auto* arrangement = new QComboBox;
+        arrangement->addItem("Grid", false);
+        arrangement->addItem("Vertical", true);
+        arrangement->setCurrentIndex(mainWindow_->verticalChartLayout(target) ? 1 : 0);
+        connect(arrangement, &QComboBox::currentIndexChanged, this, [this, target, arrangement](int) {
+            mainWindow_->setVerticalChartLayout(target, arrangement->currentData().toBool());
+        });
+        return arrangement;
+    };
+
+    addSection(form, "Inputs");
+    form->addRow("Chart layout:", layoutCombo(MainWindow::Input));
+    form->addRow(QString(), hint("Arrange the Input page as a grid or a vertical stack. Every chart "
+                                 "keeps its own selectable horizontal axis."));
+    auto* pedals = new QComboBox;
+    pedals->addItem("Combined", "combined");
+    pedals->addItem("Combined 2", "combined2");
+    pedals->addItem("Split", "split");
+    pedals->setCurrentIndex(qMax(0, pedals->findData(mainWindow_->inputPedalLayout())));
+    connect(pedals, &QComboBox::currentIndexChanged, this, [this, pedals](int) {
+        mainWindow_->setInputPedalLayout(pedals->currentData().toString());
+    });
+    form->addRow("Pedal charts:", pedals);
+    form->addRow(QString(), hint("Combined uses a signed centre line; Combined 2 overlays both inputs "
+                                 "from 0–100%; Split uses two independent charts."));
+
+    addSection(form, "Misc");
+    for (bool gForce : {true, false}) {
+        auto* mode = new QComboBox;
+        mode->addItem("Combined", false);
+        mode->addItem("Split", true);
+        mode->setCurrentIndex(mainWindow_->miscSplitLayout(gForce) ? 1 : 0);
+        connect(mode, &QComboBox::currentIndexChanged, this, [this, gForce, mode](int) {
+            mainWindow_->setMiscSplitLayout(gForce, mode->currentData().toBool());
+        });
+        form->addRow(gForce ? "G-force charts:" : "Ride height charts:", mode);
+        form->addRow(QString(), hint(gForce
+            ? "Show lateral and longitudinal G-force together or as two aligned charts."
+            : "Show front and rear ride height together or as two aligned charts."));
+    }
+
+    addSection(form, "Power");
+    form->addRow("Chart layout:", layoutCombo(MainWindow::Power));
+    form->addRow(QString(), hint("Arrange the Power charts as a 2×2 grid or an aligned vertical stack."));
+
+    addSection(form, "Tyres");
+    form->addRow("Chart layout:", layoutCombo(MainWindow::Tyres));
+    form->addRow(QString(), hint("Arrange the Tyres charts as a 2×2 grid or an aligned vertical stack."));
+
+    addSection(form, "Shared Tooltip");
+    auto* vertical = new QCheckBox("Secondary vertical crosshair");
+    auto* horizontal = new QCheckBox("Secondary horizontal crosshair");
+    vertical->setChecked(mainWindow_->chartSecondaryVerticalCrosshair());
+    horizontal->setChecked(mainWindow_->chartSecondaryHorizontalCrosshair());
+    connect(vertical, &QCheckBox::toggled, this, [this, horizontal](bool on) {
+        mainWindow_->setChartSecondaryCrosshairs(on, horizontal->isChecked());
+    });
+    connect(horizontal, &QCheckBox::toggled, this, [this, vertical](bool on) {
+        mainWindow_->setChartSecondaryCrosshairs(vertical->isChecked(), on);
+    });
+    form->addRow("Show:", vertical);
+    form->addRow(QString(), horizontal);
+    form->addRow(QString(), hint("Draw the cursor lines on synchronized secondary charts. The hovered "
+                                 "chart always keeps its normal crosshair."));
+    return page;
+}
+
+// Graphs: each graph as its chart (or card) or as a table of its samples
+// (Electron's "Graphs" category).
+QWidget* SettingsDialog::buildGraphsPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
+
+    struct Ctl { tnr::GraphSection s; QButtonGroup* group; };
+    auto controls = std::make_shared<QList<Ctl>>();
+
+    // One button whose label is the action it performs: "Set All Table" while
+    // any graph is a chart, otherwise "Set All Chart".
+    auto* setAll = new QPushButton;
+    auto anyChart = [this, controls] {
+        for (const Ctl& c : *controls)
+            if (!mainWindow_->graphView(c.s)) return true;
+        return false;
+    };
+    auto refreshSetAll = [setAll, anyChart] { setAll->setText(anyChart() ? "Set All Table" : "Set All Chart"); };
+    form->addRow(QString(), setAll);
+
+    struct Row { tnr::GraphSection s; const char* label; bool card; };
+    struct Group { const char* title; QVector<Row> rows; };
+    const Group groups[] = {
+        {"Overview", {
+            { tnr::GraphSection::OverviewTelemetry,   "Speed / RPM / ERS:", false },
+            { tnr::GraphSection::OverviewTyreSurface, "Tyre surface temp:", false },
+            { tnr::GraphSection::OverviewTyreInner,   "Tyre inner temp:", false },
+            { tnr::GraphSection::OverviewTyreBrake,   "Brake temp:", false },
+            { tnr::GraphSection::OverviewTyreWear,    "Tyre wear / life:", false },
+            { tnr::GraphSection::OverviewTyreCardFL,  "Tyre card FL:", true },
+            { tnr::GraphSection::OverviewTyreCardFR,  "Tyre card FR:", true },
+            { tnr::GraphSection::OverviewTyreCardRL,  "Tyre card RL:", true },
+            { tnr::GraphSection::OverviewTyreCardRR,  "Tyre card RR:", true }}},
+        {"Tyres", {
+            { tnr::GraphSection::TyreSurface, "Tyre surface temp:", false },
+            { tnr::GraphSection::TyreInner,   "Tyre inner temp:", false },
+            { tnr::GraphSection::TyreBrake,   "Brake temp:", false },
+            { tnr::GraphSection::TyreWear,    "Tyre wear / life:", false },
+            { tnr::GraphSection::TyreCardFL,  "Tyre card FL:", true },
+            { tnr::GraphSection::TyreCardFR,  "Tyre card FR:", true },
+            { tnr::GraphSection::TyreCardRL,  "Tyre card RL:", true },
+            { tnr::GraphSection::TyreCardRR,  "Tyre card RR:", true }}},
+        {"Input", {
+            { tnr::GraphSection::InputGear,                 "Gear:", false },
+            { tnr::GraphSection::InputThrottleBrake,        "Accelerator / brake:", false },
+            { tnr::GraphSection::InputThrottleBrakeOverlay, "Accelerator / brake (Combined 2):", false },
+            { tnr::GraphSection::InputAccelerator,          "Accelerator (Split):", false },
+            { tnr::GraphSection::InputBrake,                "Brake (Split):", false },
+            { tnr::GraphSection::InputSteering,             "Steering:", false }}},
+        {"Power", {
+            { tnr::GraphSection::PowerSplit,   "Power:", false },
+            { tnr::GraphSection::PowerHarvest, "ERS harvest:", false },
+            { tnr::GraphSection::PowerStore,   "ERS store:", false },
+            { tnr::GraphSection::PowerFuel,    "Fuel history:", false }}},
+        {"Misc", {
+            { tnr::GraphSection::MiscGForce,        "G-force:", false },
+            { tnr::GraphSection::MiscGLateral,      "G-force — lateral (Split):", false },
+            { tnr::GraphSection::MiscGLongitudinal, "G-force — longitudinal (Split):", false },
+            { tnr::GraphSection::MiscRideHeight,    "Ride height:", false },
+            { tnr::GraphSection::MiscRideFront,     "Ride height — front (Split):", false },
+            { tnr::GraphSection::MiscRideRear,      "Ride height — rear (Split):", false }}},
+    };
+    for (const Group& group : groups) {
+        addSection(form, group.title);
+        for (const Row& row : group.rows) {
+            QButtonGroup* view = nullptr;
+            form->addRow(row.label, segmented(view, {{row.card ? "Card" : "Chart", 0}, {"Table", 1}}));
+            view->button(mainWindow_->graphView(row.s) ? 1 : 0)->setChecked(true);
+            connect(view, &QButtonGroup::idClicked, this, [this, s = row.s, refreshSetAll](int id) {
+                mainWindow_->setGraphView(s, id == 1);
+                refreshSetAll();
+            });
+            controls->push_back({row.s, view});
+        }
+    }
+    connect(setAll, &QPushButton::clicked, this, [this, controls, anyChart, refreshSetAll] {
+        const bool table = anyChart();
+        for (const Ctl& c : *controls) {
+            mainWindow_->setGraphView(c.s, table);
+            c.group->button(table ? 1 : 0)->setChecked(true);
+        }
+        refreshSetAll();
+    });
+    refreshSetAll();
+    return page;
+}
+
+// Y Axis Behavior: whether a graph's value axis keeps its fixed range or
+// follows the values on screen (Electron's "Y Axis Behavior" category).
+QWidget* SettingsDialog::buildYAxisPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
+
+    struct Ctl { tnr::GraphSection s; QButtonGroup* group; };
+    auto controls = std::make_shared<QList<Ctl>>();
+
+    auto* setAll = new QPushButton;
+    auto anyDynamic = [this, controls] {
+        for (const Ctl& c : *controls)
+            if (mainWindow_->chartDynamicYAxis(c.s)) return true;
+        return false;
+    };
+    auto refreshSetAll = [setAll, anyDynamic] { setAll->setText(anyDynamic() ? "Set All Fixed" : "Set All Dynamic"); };
+    form->addRow(QString(), setAll);
+
+    struct Row { tnr::GraphSection s; const char* label; const char* fixedRange; };
+    struct Group { const char* title; QVector<Row> rows; };
+    const char* tyreTemp = "0–125°C; expands above 125°C when needed";
+    const char* brakeTemp = "0–1250°C; expands above 1250°C when needed";
+    const char* wear = "Always 0–100%";
+    const Group groups[] = {
+        {"Overview", {
+            { tnr::GraphSection::OverviewTyreSurface, "Surface temp:", tyreTemp },
+            { tnr::GraphSection::OverviewTyreInner,   "Inner temp:", tyreTemp },
+            { tnr::GraphSection::OverviewTyreBrake,   "Brake temp:", brakeTemp },
+            { tnr::GraphSection::OverviewTyreWear,    "Tyre wear / life:", wear }}},
+        {"Tyres", {
+            { tnr::GraphSection::TyreSurface, "Surface temp:", tyreTemp },
+            { tnr::GraphSection::TyreInner,   "Inner temp:", tyreTemp },
+            { tnr::GraphSection::TyreBrake,   "Brake temp:", brakeTemp },
+            { tnr::GraphSection::TyreWear,    "Tyre wear / life:", wear }}},
+        {"Power", {
+            { tnr::GraphSection::PowerHarvest, "ERS harvest:",
+              "0–4000/8000 kJ by Formula; expands above when needed" }}},
+    };
+    for (const Group& group : groups) {
+        addSection(form, group.title);
+        for (const Row& row : group.rows) {
+            QButtonGroup* axis = nullptr;
+            form->addRow(row.label, segmented(axis, {{"Fixed", 0}, {"Dynamic", 1}}));
+            form->addRow(QString(), hint(QStringLiteral("Fixed: %1").arg(QString::fromUtf8(row.fixedRange))));
+            axis->button(mainWindow_->chartDynamicYAxis(row.s) ? 1 : 0)->setChecked(true);
+            connect(axis, &QButtonGroup::idClicked, this, [this, s = row.s, refreshSetAll](int id) {
+                mainWindow_->setChartDynamicYAxis(s, id == 1);
+                refreshSetAll();
+            });
+            controls->push_back({row.s, axis});
+        }
+    }
+    connect(setAll, &QPushButton::clicked, this, [this, controls, anyDynamic, refreshSetAll] {
+        const bool dynamic = !anyDynamic();
+        for (const Ctl& c : *controls) {
+            mainWindow_->setChartDynamicYAxis(c.s, dynamic);
+            c.group->button(dynamic ? 1 : 0)->setChecked(true);
+        }
+        refreshSetAll();
+    });
+    refreshSetAll();
+    return page;
+}
+
+QWidget* SettingsDialog::buildTrackMapPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
+
+    addSection(form, "Drivers");
+    trackMapLabelsCombo_ = new QComboBox;
+    trackMapLabelsCombo_->addItem("Dots and labels", 0);
+    trackMapLabelsCombo_->addItem("Dots only", 1);
+    trackMapLabelsCombo_->addItem("Labels only", 2);
+    trackMapLabelsCombo_->setCurrentIndex(mainWindow_->trackMapLabelMode());
+    connect(trackMapLabelsCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setTrackMapLabelMode(trackMapLabelsCombo_->currentData().toInt());
+    });
+    form->addRow("Markers:", trackMapLabelsCombo_);
+
+    // Hide drivers idle for longer than the selected duration (0 = never).
+    trackMapIdleCombo_ = new QComboBox;
+    trackMapIdleCombo_->addItem("Never", 0);
+    for (int s : { 3, 5, 10, 15, 30 })
+        trackMapIdleCombo_->addItem(QString("After %1 s").arg(s), s);
+    const int idleIdx = trackMapIdleCombo_->findData(mainWindow_->trackMapIdleTimeout());
+    trackMapIdleCombo_->setCurrentIndex(idleIdx >= 0 ? idleIdx : 0);
+    connect(trackMapIdleCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setTrackMapIdleTimeout(trackMapIdleCombo_->currentData().toInt());
+    });
+    form->addRow("Hide stationary drivers:", trackMapIdleCombo_);
+
+    addSection(form, "Circuit");
+    trackMapSectorColorsCheck_ = new QCheckBox("Colour each sector");
+    trackMapSectorColorsCheck_->setChecked(mainWindow_->trackMapSectorColors());
+    connect(trackMapSectorColorsCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        mainWindow_->setTrackMapSectorColors(on);
+    });
+    form->addRow("Outline:", trackMapSectorColorsCheck_);
+
+    // Track-outline opacity (20–100%); driver dots/labels stay full strength.
+    auto* opacityRow = new QWidget;
+    auto* opacityLayout = new QHBoxLayout(opacityRow);
+    opacityLayout->setContentsMargins(0, 0, 0, 0);
+    trackMapOpacitySlider_ = new QSlider(Qt::Horizontal);
+    trackMapOpacitySlider_->setRange(20, 100);
+    trackMapOpacitySlider_->setMinimumWidth(260);
+    trackMapOpacitySlider_->setValue(mainWindow_->trackMapOpacity());
+    auto* opacityValue = new QLabel(QStringLiteral("%1%").arg(mainWindow_->trackMapOpacity()));
+    opacityValue->setMinimumWidth(40);
+    opacityLayout->addWidget(trackMapOpacitySlider_, 1);
+    opacityLayout->addWidget(opacityValue);
+    connect(trackMapOpacitySlider_, &QSlider::valueChanged, this, [this, opacityValue](int v) {
+        opacityValue->setText(QStringLiteral("%1%").arg(v));
+        mainWindow_->setTrackMapOpacity(v);
+    });
+    form->addRow("Outline opacity:", opacityRow);
+    form->addRow(QString(), hint("Driver markers always stay fully opaque."));
+    return page;
+}
+
+QWidget* SettingsDialog::buildRecordingPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
+
+    addSection(form, "Recording");
+    recordCheck_ = new QCheckBox("Start recording when a session starts");
+    recordCheck_->setChecked(mainWindow_->autoRecordEnabled());
+    form->addRow("Automatic:", recordCheck_);
+
+    QWidget* dirRow = new QWidget;
+    QHBoxLayout* dirLay = new QHBoxLayout(dirRow);
+    dirLay->setContentsMargins(0, 0, 0, 0);
+    const QString dir = mainWindow_->currentOutputDirectory();
+    dirLabel_ = new QLabel(dir.isEmpty() ? "No folder selected" : dir);
+    dirLabel_->setWordWrap(true);
+    dirLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    dirLabel_->setMinimumWidth(260);
+    dirLabel_->setMaximumWidth(420);
+    QPushButton* browseBtn = new QPushButton("Change…");
+    browseBtn->setIcon(adaptThemeIcon(QIcon::fromTheme("document-open-folder"),
+                                      palette().color(QPalette::WindowText),
+                                      style()->standardIcon(QStyle::SP_DirOpenIcon)));
+    dirLay->addWidget(dirLabel_, 1);
+    dirLay->addWidget(browseBtn);
+    form->addRow("Save to:", dirRow);
+
+    connect(recordCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        mainWindow_->setAutoRecord(on);
+    });
+    connect(browseBtn, &QPushButton::clicked, this, [this] {
+        const QString dir = QFileDialog::getExistingDirectory(
+            this, "Select Output Directory", mainWindow_->lastDialogDirectory());
+        if (!dir.isEmpty()) {
+            mainWindow_->rememberDialogDirectory(dir, true);
+            mainWindow_->setOutputDirectory(dir);
+            dirLabel_->setText(dir);
+        }
+    });
+    return page;
+}
+
+QWidget* SettingsDialog::buildNotificationsPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
+
+    addSection(form, "Event Notifications");
+    toastsCheck_ = new QCheckBox("Show pop-ups for penalties, flags, fastest laps…");
+    toastsCheck_->setChecked(mainWindow_->toastsEnabled());
+    form->addRow("Pop-ups:", toastsCheck_);
+
+    toastDurationCombo_ = new QComboBox;
+    for (int s : { 2, 3, 5, 8, 10 })
+        toastDurationCombo_->addItem(QString("%1 seconds").arg(s), s);
+    const int cur = toastDurationCombo_->findData(mainWindow_->toastDurationSecs());
+    toastDurationCombo_->setCurrentIndex(cur >= 0 ? cur : 1);   // default 3s
+    toastDurationCombo_->setEnabled(toastsCheck_->isChecked());
+    form->addRow("Keep visible for:", toastDurationCombo_);
+
+    connect(toastsCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        mainWindow_->setToastsEnabled(on);
+        toastDurationCombo_->setEnabled(on);
+    });
+    connect(toastDurationCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setToastDurationSecs(toastDurationCombo_->currentData().toInt());
+    });
+
+    addSection(form, "Updates");
+    auto* updates = new QCheckBox("Check GitHub for a new version at startup");
+    updates->setChecked(mainWindow_->updateChecksEnabled());
+    connect(updates, &QCheckBox::toggled,
+            mainWindow_, &MainWindow::setUpdateChecksEnabled);
+    form->addRow("Updates:", updates);
+    form->addRow(QString(), hint("Checks at most once every 24 hours."));
+    return page;
+}
+
 QWidget* SettingsDialog::buildPairingPage() {
     QWidget* page = new QWidget;
     auto* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(20, 16, 20, 16);
+    layout->setContentsMargins(24, 4, 24, 20);
     layout->setSpacing(12);
 
     pairingEnabledCheck_ = new QCheckBox("Enable paired mode", page);
@@ -437,13 +1247,14 @@ void SettingsDialog::refreshPairingUi() {
 QWidget* SettingsDialog::buildProtocolPage() {
     QFormLayout* form;
     QWidget* page = makePage(form);
+    addSection(form, "Telemetry Format");
 
     // Read-only: the format most recently detected from incoming UDP packets,
     // cached by MainWindow::onEngineRow() from protocol_status rows. Shows
     // "—" until the first packet after the engine starts.
     const int detected = mainWindow_->lastDetectedProtocolFormat();
     detectedProtocolLabel_ = new QLabel(detected > 0 ? QString::number(detected) : QStringLiteral("—"));
-    form->addRow("Detected Protocol:", detectedProtocolLabel_);
+    form->addRow("Detected format:", detectedProtocolLabel_);
 
     protocolCombo_ = new QComboBox;
     protocolCombo_->addItem("Auto", "auto");
@@ -455,7 +1266,7 @@ QWidget* SettingsDialog::buildProtocolPage() {
     connect(protocolCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         mainWindow_->setProtocolOverride(protocolCombo_->currentData().toString());
     });
-    form->addRow("Protocol Version Override:", protocolCombo_);
+    form->addRow("Use format:", protocolCombo_);
 
     protocolWarningLabel_ = new QLabel;
     protocolWarningLabel_->setWordWrap(true);
@@ -469,8 +1280,7 @@ QWidget* SettingsDialog::buildProtocolPage() {
     connect(mainWindow_, &MainWindow::protocolWarningChanged,
             this, &SettingsDialog::updateProtocolWarning);
 
-    form->addRow(horizontalSeparator());
-    form->addRow(subHeading("Network"));
+    addSection(form, "Network");
 
     // Network controls are a local draft. Nothing is persisted or restarted
     // until Apply & Restart is pressed.
@@ -478,18 +1288,18 @@ QWidget* SettingsDialog::buildProtocolPage() {
     udpPortSpin_->setRange(1, 65535);
     udpPortSpin_->setGroupSeparatorShown(false);   // a port is not a thousands-grouped number
     udpPortSpin_->setValue(mainWindow_->udpPort());
-    form->addRow("UDP Port:", udpPortSpin_);
+    form->addRow("UDP port:", udpPortSpin_);
 
     udpBindAddressEdit_ = new QLineEdit(mainWindow_->udpBindAddress());
     udpBindAddressEdit_->setPlaceholderText(QStringLiteral("0.0.0.0"));
     udpBindAddressEdit_->setToolTip(
         "Which local network interface to receive telemetry on. "
         "0.0.0.0 listens on all interfaces.");
-    form->addRow("Bind Address:", udpBindAddressEdit_);
+    form->addRow("Listen on:", udpBindAddressEdit_);
 
     udpForwardingCheck_ = new QCheckBox("Forward every received packet unchanged");
     udpForwardingCheck_->setChecked(mainWindow_->udpForwardingEnabled());
-    form->addRow("UDP Forward Mode:", udpForwardingCheck_);
+    form->addRow("Forwarding:", udpForwardingCheck_);
 
     udpForwardEditor_ = new QWidget;
     auto* forwardLayout = new QVBoxLayout(udpForwardEditor_);
@@ -733,237 +1543,15 @@ void SettingsDialog::applyNetworkDraft() {
     });
 }
 
-QWidget* SettingsDialog::buildRecordingPage() {
-    QFormLayout* form;
-    QWidget* page = makePage(form);
-
-    recordCheck_ = new QCheckBox("Auto-record when a session starts");
-    recordCheck_->setChecked(mainWindow_->autoRecordEnabled());
-    form->addRow(QString(), recordCheck_);
-
-    QWidget* dirRow = new QWidget;
-    QHBoxLayout* dirLay = new QHBoxLayout(dirRow);
-    dirLay->setContentsMargins(0, 0, 0, 0);
-    const QString dir = mainWindow_->currentOutputDirectory();
-    dirLabel_ = new QLabel(dir.isEmpty() ? "No directory selected." : dir);
-    dirLabel_->setWordWrap(true);
-    dirLabel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    dirLabel_->setMaximumWidth(280);
-    QPushButton* browseBtn = new QPushButton("Browse…");
-    browseBtn->setFixedWidth(90);
-    dirLay->addWidget(dirLabel_);
-    dirLay->addWidget(browseBtn);
-    form->addRow("Save to:", dirRow);
-
-    connect(recordCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        mainWindow_->setAutoRecord(on);
-    });
-    connect(browseBtn, &QPushButton::clicked, this, [this] {
-        const QString dir = QFileDialog::getExistingDirectory(
-            this, "Select Output Directory", mainWindow_->lastDialogDirectory());
-        if (!dir.isEmpty()) {
-            mainWindow_->rememberDialogDirectory(dir, true);
-            mainWindow_->setOutputDirectory(dir);
-            dirLabel_->setText(dir);
-        }
-    });
-    return page;
-}
-
-QWidget* SettingsDialog::buildAppearancePage() {
-    QFormLayout* form;
-    QWidget* page = makePage(form);
-
-    QWidget* themeRow = new QWidget;
-    QHBoxLayout* themeLay = new QHBoxLayout(themeRow);
-    themeLay->setContentsMargins(0, 0, 0, 0);
-    themeLay->setSpacing(14);
-    themeSystem_ = new QRadioButton("System default");
-    themeLight_  = new QRadioButton("Light");
-    themeDark_   = new QRadioButton("Dark");
-    themeLay->addWidget(themeSystem_);
-    themeLay->addWidget(themeLight_);
-    themeLay->addWidget(themeDark_);
-
-    const QString theme = mainWindow_->currentTheme();
-    if (theme == "light")     themeLight_->setChecked(true);
-    else if (theme == "dark") themeDark_->setChecked(true);
-    else                      themeSystem_->setChecked(true);
-
-    form->addRow("Theme:", themeRow);
-
-    // Style selector — lists the QStyles actually available at runtime, so a
-    // bundled "Breeze" only appears once its plugin has loaded. "System default"
-    // restores Qt's native platform style. Each item's userData is the lowercased
-    // QStyleFactory key (what setStyleName/QSettings store); "system" is special.
-    styleCombo_ = new QComboBox;
-    styleCombo_->addItem("System default", "system");
-    const QString curStyle = mainWindow_->currentStyleName();
-    for (const QString& key : QStyleFactory::keys()) {
-        styleCombo_->addItem(key, key.toLower());
-        if (key.compare(curStyle, Qt::CaseInsensitive) == 0)
-            styleCombo_->setCurrentIndex(styleCombo_->count() - 1);
-    }
-    // Connect after populating so the initial setCurrentIndex above doesn't
-    // re-trigger an apply during construction.
-    connect(styleCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
-        mainWindow_->setStyleName(styleCombo_->currentData().toString());
-    });
-    form->addRow("Style:", styleCombo_);
-
-    toolbarLabelsCheck_ = new QCheckBox("Show button labels in toolbar");
-    toolbarLabelsCheck_->setChecked(mainWindow_->toolbarLabelsEnabled());
-    form->addRow("Toolbar:", toolbarLabelsCheck_);
-
-    auto* deltaUpdates = new QComboBox;
-    deltaUpdates->addItem("Realtime", 0);
-    deltaUpdates->addItem("250 ms", 250);
-    deltaUpdates->addItem("500 ms", 500);
-    deltaUpdates->addItem("1 second", 1000);
-    int deltaIndex = deltaUpdates->findData(mainWindow_->deltaUpdateInterval());
-    deltaUpdates->setCurrentIndex(deltaIndex >= 0 ? deltaIndex : 0);
-    deltaUpdates->setToolTip("How often the toolbar lap-comparison delta refreshes.");
-    connect(deltaUpdates, &QComboBox::currentIndexChanged, this,
-            [this, deltaUpdates] { mainWindow_->setDeltaUpdateInterval(
-                deltaUpdates->currentData().toInt()); });
-    form->addRow("Delta Updates:", deltaUpdates);
-
-    auto* reduceAnimations = new QCheckBox("Disable decorative motion effects");
-    reduceAnimations->setChecked(mainWindow_->reduceAnimations());
-    reduceAnimations->setToolTip(
-        "Disables toast fades and track-map interpolation without pausing live data.");
-    connect(reduceAnimations, &QCheckBox::toggled,
-            mainWindow_, &MainWindow::setReduceAnimations);
-    form->addRow("Reduce Animations:", reduceAnimations);
-
-    form->addRow(horizontalSeparator());
-    form->addRow(subHeading("Graphs"));
-
-    chartBackendCombo_ = new QComboBox;
-    chartBackendCombo_->addItem(
-        QString("Automatic (currently %1)").arg(tnr::graphics::activeBackendLabel()), "auto");
-    for (const tnr::graphics::BackendInfo& backend : tnr::graphics::supportedBackends())
-        chartBackendCombo_->addItem(backend.label, backend.key);
-    int backendIndex = chartBackendCombo_->findData(mainWindow_->chartGraphicsBackend());
-    chartBackendCombo_->setCurrentIndex(backendIndex >= 0 ? backendIndex : 0);
-    chartBackendCombo_->setToolTip(
-        "Graphics API used by the telemetry charts. A restart is required after changing it.");
-    connect(chartBackendCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
-        mainWindow_->setChartGraphicsBackend(chartBackendCombo_->currentData().toString());
-    });
-    QWidget* backendRow = new QWidget;
-    auto* backendLayout = new QHBoxLayout(backendRow);
-    backendLayout->setContentsMargins(0, 0, 0, 0);
-    backendLayout->setSpacing(10);
-    backendLayout->addWidget(chartBackendCombo_);
-    auto* restartNote = new QLabel("Restart required after changing the graphics API.");
-    backendLayout->addWidget(restartNote);
-    backendLayout->addStretch(1);
-    form->addRow("Graphics API:", backendRow);
-
-    // Portable QRhi multisampling: higher values smooth lines but increase fill cost.
-    chartMsaaCombo_ = new QComboBox;
-    chartMsaaCombo_->addItem("Off", 0);
-    for (int s : { 4, 8, 16 })
-        chartMsaaCombo_->addItem(QString("%1x").arg(s), s);
-    const int curMsaa = mainWindow_->chartMsaaSamples();
-    const int msaaIdx = chartMsaaCombo_->findData(curMsaa);
-    chartMsaaCombo_->setCurrentIndex(msaaIdx >= 0 ? msaaIdx : chartMsaaCombo_->findData(4));
-    // Connect after selecting so the initial index set above doesn't apply.
-    connect(chartMsaaCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
-        mainWindow_->setChartMsaaSamples(chartMsaaCombo_->currentData().toInt());
-    });
-    form->addRow("Anti-aliasing:", chartMsaaCombo_);
-
-    auto populateFrameRates = [](QComboBox* combo) {
-        combo->addItem("Pause", 0);
-        combo->addItem("1 FPS", 1);
-        combo->addItem("10 FPS", 10);
-        combo->addItem("30 FPS", 30);
-        combo->addItem("60 FPS", 60);
-        combo->addItem("120 FPS", 120);
-        combo->addItem("Match display", PresentationScheduler::MatchDisplay);
-    };
-
-    chartFpsInFocusCombo_ = new QComboBox;
-    populateFrameRates(chartFpsInFocusCombo_);
-    int fpsIdx = chartFpsInFocusCombo_->findData(mainWindow_->chartFpsInFocus());
-    chartFpsInFocusCombo_->setCurrentIndex(
-        fpsIdx >= 0 ? fpsIdx : chartFpsInFocusCombo_->findData(PresentationScheduler::MatchDisplay));
-    chartFpsInFocusCombo_->setToolTip(
-        "Maximum chart frame rate while the application window is focused.");
-    connect(chartFpsInFocusCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
-        mainWindow_->setChartFpsInFocus(chartFpsInFocusCombo_->currentData().toInt());
-    });
-    form->addRow("FPS in focus:", chartFpsInFocusCombo_);
-
-    chartFpsOutOfFocusCombo_ = new QComboBox;
-    populateFrameRates(chartFpsOutOfFocusCombo_);
-    fpsIdx = chartFpsOutOfFocusCombo_->findData(mainWindow_->chartFpsOutOfFocus());
-    chartFpsOutOfFocusCombo_->setCurrentIndex(
-        fpsIdx >= 0 ? fpsIdx : chartFpsOutOfFocusCombo_->findData(30));
-    chartFpsOutOfFocusCombo_->setToolTip(
-        "Maximum chart frame rate while the application window is not focused.");
-    connect(chartFpsOutOfFocusCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
-        mainWindow_->setChartFpsOutOfFocus(chartFpsOutOfFocusCombo_->currentData().toInt());
-    });
-    form->addRow("FPS out of focus:", chartFpsOutOfFocusCombo_);
-
-    form->addRow(horizontalSeparator());
-    form->addRow(subHeading("Accessibility"));
-
-    QWidget* contrastRow = new QWidget;
-    QHBoxLayout* ch = new QHBoxLayout(contrastRow);
-    ch->setContentsMargins(0, 0, 0, 0);
-    QSlider* contrastSlider = new QSlider(Qt::Horizontal);
-    contrastSlider->setRange(100, 2100);
-    contrastSlider->setValue((int)(mainWindow_->contrastThreshold() * 100.0f));
-    QLabel* contrastVal = new QLabel(QString::number(mainWindow_->contrastThreshold(), 'f', 2));
-    contrastVal->setFixedWidth(40);
-    ch->addWidget(contrastSlider);
-    ch->addWidget(contrastVal);
-    form->addRow("Contrast Threshold:", contrastRow);
-
-    auto applyTheme = [this](bool) {
-        QString val = "system";
-        if (themeLight_->isChecked())     val = "light";
-        else if (themeDark_->isChecked()) val = "dark";
-        mainWindow_->setTheme(val);
-    };
-    connect(themeSystem_, &QRadioButton::toggled, this, applyTheme);
-    connect(themeLight_,  &QRadioButton::toggled, this, applyTheme);
-    connect(themeDark_,   &QRadioButton::toggled, this, applyTheme);
-    connect(toolbarLabelsCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        mainWindow_->setToolbarLabels(on);
-    });
-    connect(contrastSlider, &QSlider::valueChanged, this, [this, contrastVal](int val) {
-        float f = val / 100.0f;
-        contrastVal->setText(QString::number(f, 'f', 2));
-        mainWindow_->setContrastThreshold(f);
-    });
-    return page;
-}
-
 QWidget* SettingsDialog::buildTeamColorsPage() {
     auto* page = new QWidget;
     auto* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(16, 12, 16, 12);
+    layout->setContentsMargins(24, 4, 24, 16);
     layout->setSpacing(10);
 
     auto* headingRow = new QHBoxLayout;
-    auto* headingText = new QWidget(page);
-    auto* headingLayout = new QVBoxLayout(headingText);
-    headingLayout->setContentsMargins(0, 0, 0, 0);
-    headingLayout->setSpacing(2);
-    auto* heading = subHeading(QStringLiteral("Team Colors"));
-    auto* description = new QLabel(
-        QStringLiteral("Choose constructor presets, custom fixed colors, or game "
-                       "livery colors for supported formats."), headingText);
-    description->setStyleSheet(QStringLiteral("color:palette(placeholder-text);"));
-    headingLayout->addWidget(heading);
-    headingLayout->addWidget(description);
-    headingRow->addWidget(headingText, 1);
-
+    auto* formatLabel = new QLabel(QStringLiteral("Game:"), page);
+    headingRow->addWidget(formatLabel);
     auto* formatControl = new QWidget(page);
     auto* formatLayout = new QHBoxLayout(formatControl);
     formatLayout->setContentsMargins(0, 0, 0, 0);
@@ -985,12 +1573,13 @@ QWidget* SettingsDialog::buildTeamColorsPage() {
         refreshTeamColorRows();
     });
     headingRow->addWidget(formatControl);
+    headingRow->addStretch(1);
     layout->addLayout(headingRow);
 
     auto* scroll = new QScrollArea(page);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setMinimumSize(810, 460);
+    scroll->setMinimumHeight(280);
     teamColorRows_ = new QWidget(scroll);
     teamColorRowsLayout_ = new QVBoxLayout(teamColorRows_);
     teamColorRowsLayout_->setContentsMargins(0, 0, 6, 0);
@@ -1241,652 +1830,10 @@ void SettingsDialog::refreshTeamColorRows() {
     teamColorRowsLayout_->addStretch(1);
 }
 
-QWidget* SettingsDialog::buildCompactPage() {
-    // Sidebar (group list) on the left, a stack of per-group control pages on
-    // the right — same layout as the Graphs page.
-    QWidget* page = new QWidget;
-    QHBoxLayout* h = new QHBoxLayout(page);
-    h->setContentsMargins(0, 0, 0, 0);
-    h->setSpacing(0);
-
-    // Registry of every section's segmented group so the three set-all actions
-    // can update both persisted state and the visible control.
-    struct Ctl { tnr::CompactSection s; QButtonGroup* group; };
-    QList<Ctl> controls;
-
-    // One control = a label on the left and a density segmented control on the
-    // right, exactly like the toolbar's window-size row: an exclusive
-    // edge-to-edge row of checkable buttons, the active one wearing the native
-    // default-button outline. Ordinary sections expose Compact/Normal/Spacious;
-    // the three Electron integer controls retain their exact specialised levels.
-    auto makeControl = [this, &controls](const char* label, tnr::CompactSection s) -> QWidget* {
-        QWidget* w = new QWidget;
-        QHBoxLayout* cv = new QHBoxLayout(w);
-        cv->setContentsMargins(0, 0, 0, 0);
-        cv->setSpacing(12);
-        QLabel* cap = new QLabel(label);
-
-        QWidget* seg = new QWidget;
-        QHBoxLayout* segLay = new QHBoxLayout(seg);
-        segLay->setContentsMargins(0, 0, 0, 0);
-        segLay->setSpacing(0);
-        QButtonGroup* group = new QButtonGroup(w);
-        group->setExclusive(true);
-        int idc = 0;
-        auto addSeg = [&](const char* text, int explicitId = -1) {
-            SegmentButton* b = new SegmentButton;
-            b->setText(text);
-            b->setCheckable(true);
-            b->setAutoRaise(true);
-            const int id = explicitId >= 0 ? explicitId : idc;
-            group->addButton(b, id);
-            idc = qMax(idc, id + 1);
-            segLay->addWidget(b);
-        };
-
-        if (s == tnr::CompactSection::OverviewTyres) {
-            addSeg("Spacious", 6); addSeg("Normal", 0); addSeg("Compact 1", 1);
-            addSeg("Compact 2", 2); addSeg("Compact 3", 3);
-            addSeg("Compact 4", 4); addSeg("Compact 5", 5);
-            group->button(mainWindow_->tyresCompactLevel())->setChecked(true);
-            connect(group, &QButtonGroup::idClicked, this,
-                    [this](int idx) { mainWindow_->setTyresCompactLevel(idx); });
-        } else if (s == tnr::CompactSection::SessionWeather) {
-            addSeg("Spacious", 4); addSeg("Normal", 0); addSeg("Compact 1", 1);
-            addSeg("Compact 2", 2); addSeg("Compact 3", 3);
-            group->button(mainWindow_->weatherCompactLevel())->setChecked(true);
-            connect(group, &QButtonGroup::idClicked, this,
-                    [this](int idx) { mainWindow_->setWeatherCompactLevel(idx); });
-        } else if (s == tnr::CompactSection::SessionHeader) {
-            addSeg("Spacious", 3); addSeg("Normal", 0);
-            addSeg("Compact 1", 1); addSeg("Compact 2", 2);
-            group->button(mainWindow_->headerCompactLevel())->setChecked(true);
-            connect(group, &QButtonGroup::idClicked, this,
-                    [this](int idx) { mainWindow_->setHeaderCompactLevel(idx); });
-        } else {
-            addSeg("Compact", static_cast<int>(tnr::DensityMode::Compact));
-            addSeg("Normal", static_cast<int>(tnr::DensityMode::Normal));
-            addSeg("Spacious", static_cast<int>(tnr::DensityMode::Spacious));
-            group->button(static_cast<int>(mainWindow_->densitySection(s)))->setChecked(true);
-            connect(group, &QButtonGroup::idClicked, this,
-                    [this, s](int idx) { mainWindow_->setDensitySection(
-                        s, static_cast<tnr::DensityMode>(idx)); });
-        }
-        controls.push_back({ s, group });
-
-        cv->addWidget(cap);
-        cv->addStretch(1);
-        cv->addWidget(seg);
-        return w;
-    };
-
-    struct Row { tnr::CompactSection s; const char* group; const char* label; };
-    static const Row rows[] = {
-        { tnr::CompactSection::OverviewStats,   "Overview", "Stats row" },
-        { tnr::CompactSection::OverviewDamage,  "Overview", "Damage cards" },
-        { tnr::CompactSection::OverviewTyres,   "Overview", "Tyre cards" },
-        { tnr::CompactSection::StandingsTable,  "Standings", "Timing Tower" },
-        { tnr::CompactSection::StandingsTiming, "Standings", "Timing Card" },
-        { tnr::CompactSection::StandingsErs,    "Standings", "Energy Recovery Card" },
-        { tnr::CompactSection::StandingsStrategy, "Standings", "Strategy Card" },
-        { tnr::CompactSection::SessionCards,    "Session",  "Info cards" },
-        { tnr::CompactSection::SessionProximity, "Session", "Proximity" },
-        { tnr::CompactSection::SessionEvents,   "Session",  "Events" },
-        { tnr::CompactSection::SessionWeather,  "Session",  "Weather strip" },
-        { tnr::CompactSection::SessionHeader,   "Session",  "Header" },
-        { tnr::CompactSection::PowerCards,      "Power",    "Power Cards" },
-        { tnr::CompactSection::StrategySummary, "Strategy", "Summary Header" },
-        { tnr::CompactSection::PlaybackBar,     "Playback", "Playback Bar" },
-    };
-
-    // Left nav column listing the groups. Tinted a shade lighter than the
-    // window (Button role) so it reads as a distinct surface, matching the top
-    // tab bar; the selected row uses the accent highlight.
-    QListWidget* sidebar = new QListWidget;
-    sidebar->setFrameShape(QFrame::NoFrame);
-    sidebar->setMinimumWidth(130);
-    sidebar->setMaximumWidth(160);
-    sidebar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-    const QString sidebarBg = QApplication::palette().color(QPalette::Button).name();
-    sidebar->setStyleSheet(QString(
-        "QListWidget { background: %1; border: none; outline: none; }"
-        "QListWidget::item { padding: 8px 14px; }"
-    ).arg(sidebarBg));
-
-    QStackedWidget* stack = new QStackedWidget;
-
-    // rows are grouped consecutively, so each time the group changes we start a
-    // fresh sidebar entry + stack page and stack the group's controls into it,
-    // one Label/segment row per section.
-    QString lastGroup;
-    QVBoxLayout* colLay = nullptr;
-    for (const Row& r : rows) {
-        if (r.group != lastGroup) {
-            sidebar->addItem(r.group);
-
-            QWidget* groupPage = new QWidget;
-            QVBoxLayout* gv = new QVBoxLayout(groupPage);
-            gv->setContentsMargins(16, 12, 16, 8);
-            gv->setSpacing(10);
-            gv->addWidget(subHeading(r.group));
-
-            QWidget* colW = new QWidget;
-            colLay = new QVBoxLayout(colW);
-            colLay->setContentsMargins(0, 0, 0, 0);
-            colLay->setSpacing(8);
-            gv->addWidget(colW);
-            gv->addStretch(1);
-
-            stack->addWidget(groupPage);
-            lastGroup = r.group;
-        }
-        colLay->addWidget(makeControl(r.label, r.s));
-    }
-
-    connect(sidebar, &QListWidget::currentRowChanged,
-            stack, &QStackedWidget::setCurrentIndex);
-    sidebar->setCurrentRow(0);
-
-    // Pinned to the bottom of the sidebar, matching Electron's three explicit
-    // bulk actions. Special controls map each broad mode to their declared level.
-    auto setAll = [this, controls](tnr::DensityMode mode) {
-        for (const Ctl& c : controls) {
-            if (c.s == tnr::CompactSection::OverviewTyres) {
-                const int lvl = mode == tnr::DensityMode::Spacious ? 6
-                    : mode == tnr::DensityMode::Compact ? 1 : 0;
-                mainWindow_->setTyresCompactLevel(lvl);
-                c.group->button(lvl)->setChecked(true);
-            } else if (c.s == tnr::CompactSection::SessionWeather) {
-                const int lvl = mode == tnr::DensityMode::Spacious ? 4
-                    : mode == tnr::DensityMode::Compact ? 1 : 0;
-                mainWindow_->setWeatherCompactLevel(lvl);
-                c.group->button(lvl)->setChecked(true);
-            } else if (c.s == tnr::CompactSection::SessionHeader) {
-                const int lvl = mode == tnr::DensityMode::Spacious ? 3
-                    : mode == tnr::DensityMode::Compact ? 1 : 0;
-                mainWindow_->setHeaderCompactLevel(lvl);
-                c.group->button(lvl)->setChecked(true);
-            } else {
-                mainWindow_->setDensitySection(c.s, mode);
-                c.group->button(static_cast<int>(mode))->setChecked(true);
-            }
-        }
-    };
-
-    QWidget* sideCol = new QWidget;
-    sideCol->setAutoFillBackground(true);
-    sideCol->setBackgroundRole(QPalette::Button);
-    QVBoxLayout* sideColLay = new QVBoxLayout(sideCol);
-    sideColLay->setContentsMargins(0, 0, 0, 0);
-    sideColLay->setSpacing(0);
-    sideColLay->addWidget(sidebar, 1);
-    QWidget* btnWrap = new QWidget;
-    QVBoxLayout* btnWrapLay = new QVBoxLayout(btnWrap);
-    btnWrapLay->setContentsMargins(8, 8, 8, 8);
-    const struct { const char* label; tnr::DensityMode mode; } bulk[] = {
-        {"Set All Compact", tnr::DensityMode::Compact},
-        {"Set All Normal", tnr::DensityMode::Normal},
-        {"Set All Spacious", tnr::DensityMode::Spacious},
-    };
-    for (const auto& action : bulk) {
-        auto* button = new QToolButton;
-        button->setText(action.label);
-        button->setAutoRaise(true);
-        button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        connect(button, &QToolButton::clicked, this,
-                [setAll, mode = action.mode] { setAll(mode); });
-        btnWrapLay->addWidget(button);
-    }
-    sideColLay->addWidget(btnWrap);
-
-    h->addWidget(sideCol);
-    h->addWidget(verticalSeparator());
-    h->addWidget(stack, 1);
-    return page;
-}
-
-QWidget* SettingsDialog::buildGraphsPage() {
-    // Sidebar (group list) on the left, a stack of per-group control pages on
-    // the right. Each sidebar row maps 1:1 to a stack page; there are far more
-    // graphs than fit comfortably in one flat list, so grouping them behind a
-    // navigation column keeps each pane short.
-    QWidget* page = new QWidget;
-    QHBoxLayout* h = new QHBoxLayout(page);
-    h->setContentsMargins(0, 0, 0, 0);
-    h->setSpacing(0);
-
-    // Registry of every graph's segmented group, so the "Set Chart/Table" button
-    // below the sidebar can both flip the setting and re-check the right segment.
-    struct Ctl { tnr::GraphSection s; QButtonGroup* group; };
-    QList<Ctl> controls;
-
-    // One control = a label on the left and a Chart/Table segmented control on
-    // the right, exactly like the toolbar's window-size row: an exclusive
-    // edge-to-edge pair of checkable buttons, the active one wearing the native
-    // default-button outline. Each graph can independently show as its chart or
-    // as a table of the raw sample values behind it (see GraphTable / the charts
-    // widgets).
-    auto makeControl = [this, &controls](const char* label, tnr::GraphSection s) -> QWidget* {
-        QWidget* w = new QWidget;
-        QHBoxLayout* cv = new QHBoxLayout(w);
-        cv->setContentsMargins(0, 0, 0, 0);
-        cv->setSpacing(12);
-        QLabel* cap = new QLabel(label);
-
-        QWidget* seg = new QWidget;
-        QHBoxLayout* segLay = new QHBoxLayout(seg);
-        segLay->setContentsMargins(0, 0, 0, 0);
-        segLay->setSpacing(0);
-        QButtonGroup* group = new QButtonGroup(w);
-        group->setExclusive(true);
-        // Tyre cards toggle Card ⇄ Table; every other graph toggles Chart ⇄ Table.
-        const bool isCard =
-               s == tnr::GraphSection::TyreCardFL || s == tnr::GraphSection::TyreCardFR
-            || s == tnr::GraphSection::TyreCardRL || s == tnr::GraphSection::TyreCardRR
-            || s == tnr::GraphSection::OverviewTyreCardFL || s == tnr::GraphSection::OverviewTyreCardFR
-            || s == tnr::GraphSection::OverviewTyreCardRL || s == tnr::GraphSection::OverviewTyreCardRR;
-        const char* const opts[] = { isCard ? "Card" : "Chart", "Table" };
-        for (int i = 0; i < 2; ++i) {
-            SegmentButton* b = new SegmentButton;
-            b->setText(opts[i]);
-            b->setCheckable(true);
-            b->setAutoRaise(true);
-            group->addButton(b, i);
-            segLay->addWidget(b);
-        }
-        group->button(mainWindow_->graphView(s) ? 1 : 0)->setChecked(true);
-        connect(group, &QButtonGroup::idClicked, this,
-                [this, s](int idx) { mainWindow_->setGraphView(s, idx == 1); });
-        controls.push_back({ s, group });
-
-        cv->addWidget(cap);
-        cv->addStretch(1);
-        cv->addWidget(seg);
-        return w;
-    };
-
-    struct Row { tnr::GraphSection s; const char* group; const char* label; };
-    static const Row rows[] = {
-        { tnr::GraphSection::OverviewTelemetry,   "Overview", "Speed / RPM / ERS" },
-        { tnr::GraphSection::OverviewTyreSurface, "Overview", "Tyre surface temp" },
-        { tnr::GraphSection::OverviewTyreInner,   "Overview", "Tyre inner temp" },
-        { tnr::GraphSection::OverviewTyreBrake,   "Overview", "Tyre brake temp" },
-        { tnr::GraphSection::OverviewTyreWear,    "Overview", "Tyre wear / life" },
-        { tnr::GraphSection::OverviewTyreCardFL,  "Overview", "Tyre card FL" },
-        { tnr::GraphSection::OverviewTyreCardFR,  "Overview", "Tyre card FR" },
-        { tnr::GraphSection::OverviewTyreCardRL,  "Overview", "Tyre card RL" },
-        { tnr::GraphSection::OverviewTyreCardRR,  "Overview", "Tyre card RR" },
-        { tnr::GraphSection::TyreSurface,        "Tyres",    "Surface temp" },
-        { tnr::GraphSection::TyreInner,          "Tyres",    "Inner temp" },
-        { tnr::GraphSection::TyreBrake,          "Tyres",    "Brake temp" },
-        { tnr::GraphSection::TyreWear,           "Tyres",    "Wear / life" },
-        { tnr::GraphSection::TyreCardFL,         "Tyres",    "Front-left card" },
-        { tnr::GraphSection::TyreCardFR,         "Tyres",    "Front-right card" },
-        { tnr::GraphSection::TyreCardRL,         "Tyres",    "Rear-left card" },
-        { tnr::GraphSection::TyreCardRR,         "Tyres",    "Rear-right card" },
-        { tnr::GraphSection::InputGear,          "Input",    "Gear" },
-        { tnr::GraphSection::InputThrottleBrake, "Input",    "Throttle / brake" },
-        { tnr::GraphSection::InputThrottleBrakeOverlay, "Input", "Accelerator / brake (Combined 2)" },
-        { tnr::GraphSection::InputAccelerator,   "Input",    "Accelerator (Split)" },
-        { tnr::GraphSection::InputBrake,         "Input",    "Brake (Split)" },
-        { tnr::GraphSection::InputSteering,      "Input",    "Steering" },
-        { tnr::GraphSection::PowerSplit,         "Power",    "Power" },
-        { tnr::GraphSection::PowerHarvest,       "Power",    "ERS harvest" },
-        { tnr::GraphSection::PowerStore,         "Power",    "ERS store" },
-        { tnr::GraphSection::PowerFuel,          "Power",    "Fuel" },
-        { tnr::GraphSection::MiscGForce,         "Misc",     "G-force" },
-        { tnr::GraphSection::MiscGLateral,       "Misc",     "G-force — Lateral (Split)" },
-        { tnr::GraphSection::MiscGLongitudinal,  "Misc",     "G-force — Longitudinal (Split)" },
-        { tnr::GraphSection::MiscRideHeight,     "Misc",     "Ride height" },
-        { tnr::GraphSection::MiscRideFront,      "Misc",     "Ride height — Front (Split)" },
-        { tnr::GraphSection::MiscRideRear,       "Misc",     "Ride height — Rear (Split)" },
-    };
-
-    // Left nav column listing the groups. Tinted a shade lighter than the
-    // window (Button role) so it reads as a distinct surface, matching the top
-    // tab bar; the selected row uses the accent highlight.
-    QListWidget* sidebar = new QListWidget;
-    sidebar->setFrameShape(QFrame::NoFrame);
-    sidebar->setMinimumWidth(130);
-    sidebar->setMaximumWidth(160);
-    sidebar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-    const QString sidebarBg = QApplication::palette().color(QPalette::Button).name();
-    sidebar->setStyleSheet(QString(
-        "QListWidget { background: %1; border: none; outline: none; }"
-        "QListWidget::item { padding: 8px 14px; }"
-    ).arg(sidebarBg));
-
-    QStackedWidget* stack = new QStackedWidget;
-
-    // rows are grouped consecutively, so each time the group changes we start a
-    // fresh sidebar entry + stack page and stack the group's controls into it,
-    // one Label/toggle row per graph.
-    QString lastGroup;
-    QVBoxLayout* colLay = nullptr;
-    for (const Row& r : rows) {
-        if (r.group != lastGroup) {
-            sidebar->addItem(r.group);
-
-            QWidget* groupPage = new QWidget;
-            QVBoxLayout* gv = new QVBoxLayout(groupPage);
-            gv->setContentsMargins(16, 12, 16, 8);
-            gv->setSpacing(10);
-            gv->addWidget(subHeading(r.group));
-
-            if (QString::fromLatin1(r.group) == "Overview") {
-                auto* vertical = new QCheckBox("Secondary Vertical Crosshair");
-                auto* horizontal = new QCheckBox("Secondary Horizontal Crosshair");
-                vertical->setChecked(mainWindow_->chartSecondaryVerticalCrosshair());
-                horizontal->setChecked(mainWindow_->chartSecondaryHorizontalCrosshair());
-                gv->addWidget(vertical);
-                gv->addWidget(horizontal);
-                connect(vertical, &QCheckBox::toggled, this, [this, horizontal](bool on) {
-                    mainWindow_->setChartSecondaryCrosshairs(on, horizontal->isChecked());
-                });
-                connect(horizontal, &QCheckBox::toggled, this, [this, vertical](bool on) {
-                    mainWindow_->setChartSecondaryCrosshairs(vertical->isChecked(), on);
-                });
-            }
-
-            const QString group = QString::fromLatin1(r.group);
-            if (group == "Input") {
-                auto* form = new QFormLayout;
-                auto* arrangement = new QComboBox;
-                arrangement->addItem("Grid", false);
-                arrangement->addItem("Vertical", true);
-                arrangement->setCurrentIndex(mainWindow_->verticalChartLayout(MainWindow::Input) ? 1 : 0);
-                form->addRow("Chart Layout:", arrangement);
-                auto* pedals = new QComboBox;
-                pedals->addItem("Combined", "combined");
-                pedals->addItem("Combined 2", "combined2");
-                pedals->addItem("Split", "split");
-                pedals->setCurrentIndex(qMax(0, pedals->findData(mainWindow_->inputPedalLayout())));
-                form->addRow("Pedal Charts:", pedals);
-                gv->addLayout(form);
-                connect(arrangement, &QComboBox::currentIndexChanged, this,
-                        [this, arrangement](int) {
-                    mainWindow_->setVerticalChartLayout(MainWindow::Input,
-                                                        arrangement->currentData().toBool());
-                });
-                connect(pedals, &QComboBox::currentIndexChanged, this,
-                        [this, pedals](int) {
-                    mainWindow_->setInputPedalLayout(pedals->currentData().toString());
-                });
-            }
-            if (group == "Misc") {
-                auto* form = new QFormLayout;
-                for (bool gForce : {true, false}) {
-                    auto* mode = new QComboBox;
-                    mode->addItem("Combined", false);
-                    mode->addItem("Split", true);
-                    mode->setCurrentIndex(mainWindow_->miscSplitLayout(gForce) ? 1 : 0);
-                    form->addRow(gForce ? "G-Force Charts:" : "Ride Height Charts:", mode);
-                    connect(mode, &QComboBox::currentIndexChanged, this, [this, gForce, mode](int) {
-                        mainWindow_->setMiscSplitLayout(gForce, mode->currentData().toBool());
-                    });
-                }
-                gv->addLayout(form);
-            }
-            if (group == "Power" || group == "Tyres") {
-                const auto target = group == "Power" ? MainWindow::Power : MainWindow::Tyres;
-                auto* arrangement = new QComboBox;
-                arrangement->addItem("Grid", false);
-                arrangement->addItem("Vertical", true);
-                arrangement->setCurrentIndex(mainWindow_->verticalChartLayout(target) ? 1 : 0);
-                auto* layoutRow = new QFormLayout;
-                layoutRow->addRow("Chart Layout:", arrangement);
-                gv->addLayout(layoutRow);
-                connect(arrangement, &QComboBox::currentIndexChanged, this,
-                        [this, target, arrangement](int) {
-                    mainWindow_->setVerticalChartLayout(target, arrangement->currentData().toBool());
-                });
-            }
-
-            QWidget* colW = new QWidget;
-            colLay = new QVBoxLayout(colW);
-            colLay->setContentsMargins(0, 0, 0, 0);
-            colLay->setSpacing(8);
-            gv->addWidget(colW);
-            gv->addStretch(1);
-
-            stack->addWidget(groupPage);
-            lastGroup = r.group;
-        }
-        colLay->addWidget(makeControl(r.label, r.s));
-    }
-
-    connect(sidebar, &QListWidget::currentRowChanged,
-            stack, &QStackedWidget::setCurrentIndex);
-    sidebar->setCurrentRow(0);
-
-    // Pinned to the bottom of the sidebar column. If any graph is already a
-    // Table the click resets everything to Chart; otherwise it makes everything
-    // a Table. The label shows the action the next click will perform.
-    // Programmatic setChecked() doesn't emit idClicked, so re-checking the
-    // segments here doesn't re-fire the per-control handlers — we push each
-    // setting directly.
-    QToolButton* setAllBtn = new QToolButton;
-    setAllBtn->setAutoRaise(true);
-    setAllBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    setAllBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-
-    auto anyTable = [this, controls]() {
-        for (const Ctl& c : controls)
-            if (mainWindow_->graphView(c.s)) return true;
-        return false;
-    };
-    auto refreshLabel = [anyTable, setAllBtn]() {
-        setAllBtn->setText(anyTable() ? "Set Chart" : "Set Table");
-    };
-    refreshLabel();
-
-    connect(setAllBtn, &QToolButton::clicked, this,
-            [this, controls, anyTable, refreshLabel]() {
-        const bool makeTable = !anyTable();   // all Chart → table; else → Chart
-        for (const Ctl& c : controls) {
-            mainWindow_->setGraphView(c.s, makeTable);
-            c.group->button(makeTable ? 1 : 0)->setChecked(true);
-        }
-        refreshLabel();
-    });
-    // Keep the label current when individual graphs are changed directly.
-    for (const Ctl& c : controls)
-        connect(c.group, &QButtonGroup::idClicked, this, [refreshLabel](int) { refreshLabel(); });
-
-    QWidget* sideCol = new QWidget;
-    sideCol->setAutoFillBackground(true);
-    sideCol->setBackgroundRole(QPalette::Button);
-    QVBoxLayout* sideColLay = new QVBoxLayout(sideCol);
-    sideColLay->setContentsMargins(0, 0, 0, 0);
-    sideColLay->setSpacing(0);
-    sideColLay->addWidget(sidebar, 1);
-    QWidget* btnWrap = new QWidget;
-    QVBoxLayout* btnWrapLay = new QVBoxLayout(btnWrap);
-    btnWrapLay->setContentsMargins(8, 8, 8, 8);
-    btnWrapLay->addWidget(setAllBtn);
-    sideColLay->addWidget(btnWrap);
-
-    h->addWidget(sideCol);
-    h->addWidget(verticalSeparator());
-    h->addWidget(stack, 1);
-    return page;
-}
-
-QWidget* SettingsDialog::buildYAxisPage() {
-    // Electron keeps Fixed/Dynamic behavior in its own category instead of
-    // nesting it underneath the Chart/Table choice. Mirror that separation so
-    // changing a graph's presentation never looks coupled to its axis policy.
-    QWidget* page = new QWidget;
-    auto* outer = new QHBoxLayout(page);
-    outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(0);
-
-    struct YCtl { tnr::GraphSection section; QButtonGroup* group; };
-    QList<YCtl> controls;
-
-    auto makeControl = [this, &controls](const char* label,
-                                         tnr::GraphSection section) -> QWidget* {
-        QWidget* row = new QWidget;
-        auto* layout = new QHBoxLayout(row);
-        layout->setContentsMargins(0, 0, 0, 0);
-        layout->setSpacing(12);
-        layout->addWidget(new QLabel(label));
-        layout->addStretch(1);
-
-        auto* group = new QButtonGroup(row);
-        group->setExclusive(true);
-        for (int i = 0; i < 2; ++i) {
-            auto* button = new SegmentButton;
-            button->setText(i == 0 ? "Fixed" : "Dynamic");
-            button->setCheckable(true);
-            button->setAutoRaise(true);
-            group->addButton(button, i);
-            layout->addWidget(button);
-        }
-        group->button(mainWindow_->chartDynamicYAxis(section) ? 1 : 0)->setChecked(true);
-        connect(group, &QButtonGroup::idClicked, this,
-                [this, section](int id) {
-                    mainWindow_->setChartDynamicYAxis(section, id == 1);
-                });
-        controls.push_back({ section, group });
-        return row;
-    };
-
-    struct Row { tnr::GraphSection section; const char* group; const char* label; };
-    static const Row rows[] = {
-        { tnr::GraphSection::OverviewTyreSurface, "Overview", "Tyre surface temp" },
-        { tnr::GraphSection::OverviewTyreInner,   "Overview", "Tyre inner temp" },
-        { tnr::GraphSection::OverviewTyreBrake,   "Overview", "Tyre brake temp" },
-        { tnr::GraphSection::OverviewTyreWear,    "Overview", "Tyre wear / life" },
-        { tnr::GraphSection::TyreSurface,         "Tyres",    "Surface temp" },
-        { tnr::GraphSection::TyreInner,           "Tyres",    "Inner temp" },
-        { tnr::GraphSection::TyreBrake,           "Tyres",    "Brake temp" },
-        { tnr::GraphSection::TyreWear,            "Tyres",    "Wear / life" },
-        { tnr::GraphSection::PowerHarvest,        "Power",    "ERS harvest" },
-    };
-
-    auto* sidebar = new QListWidget;
-    sidebar->setFrameShape(QFrame::NoFrame);
-    sidebar->setMinimumWidth(130);
-    sidebar->setMaximumWidth(160);
-    sidebar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-    const QString sidebarBg = QApplication::palette().color(QPalette::Button).name();
-    sidebar->setStyleSheet(QString(
-        "QListWidget { background: %1; border: none; outline: none; }"
-        "QListWidget::item { padding: 8px 14px; }"
-    ).arg(sidebarBg));
-
-    auto* stack = new QStackedWidget;
-    QString lastGroup;
-    QVBoxLayout* groupLayout = nullptr;
-    for (const Row& row : rows) {
-        if (row.group != lastGroup) {
-            sidebar->addItem(row.group);
-            QWidget* groupPage = new QWidget;
-            auto* pageLayout = new QVBoxLayout(groupPage);
-            pageLayout->setContentsMargins(16, 12, 16, 8);
-            pageLayout->setSpacing(10);
-            pageLayout->addWidget(subHeading(row.group));
-            QWidget* groupBody = new QWidget;
-            groupLayout = new QVBoxLayout(groupBody);
-            groupLayout->setContentsMargins(0, 0, 0, 0);
-            groupLayout->setSpacing(8);
-            pageLayout->addWidget(groupBody);
-            pageLayout->addStretch(1);
-            stack->addWidget(groupPage);
-            lastGroup = row.group;
-        }
-        groupLayout->addWidget(makeControl(row.label, row.section));
-    }
-
-    connect(sidebar, &QListWidget::currentRowChanged,
-            stack, &QStackedWidget::setCurrentIndex);
-    sidebar->setCurrentRow(0);
-
-    auto* setAllButton = new QToolButton;
-    setAllButton->setAutoRaise(true);
-    setAllButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    setAllButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    auto anyDynamic = [this, controls] {
-        for (const YCtl& control : controls)
-            if (mainWindow_->chartDynamicYAxis(control.section)) return true;
-        return false;
-    };
-    auto refreshLabel = [anyDynamic, setAllButton] {
-        setAllButton->setText(anyDynamic() ? "Set All Fixed" : "Set All Dynamic");
-    };
-    refreshLabel();
-    connect(setAllButton, &QToolButton::clicked, this,
-            [this, controls, anyDynamic, refreshLabel] {
-                const bool makeDynamic = !anyDynamic();
-                for (const YCtl& control : controls) {
-                    mainWindow_->setChartDynamicYAxis(control.section, makeDynamic);
-                    control.group->button(makeDynamic ? 1 : 0)->setChecked(true);
-                }
-                refreshLabel();
-            });
-    for (const YCtl& control : controls)
-        connect(control.group, &QButtonGroup::idClicked, this,
-                [refreshLabel](int) { refreshLabel(); });
-
-    QWidget* sideColumn = new QWidget;
-    sideColumn->setAutoFillBackground(true);
-    sideColumn->setBackgroundRole(QPalette::Button);
-    auto* sideLayout = new QVBoxLayout(sideColumn);
-    sideLayout->setContentsMargins(0, 0, 0, 0);
-    sideLayout->setSpacing(0);
-    sideLayout->addWidget(sidebar, 1);
-    QWidget* buttonWrap = new QWidget;
-    auto* buttonLayout = new QVBoxLayout(buttonWrap);
-    buttonLayout->setContentsMargins(8, 8, 8, 8);
-    buttonLayout->addWidget(setAllButton);
-    sideLayout->addWidget(buttonWrap);
-
-    outer->addWidget(sideColumn);
-    outer->addWidget(verticalSeparator());
-    outer->addWidget(stack, 1);
-    return page;
-}
-
-QWidget* SettingsDialog::buildNotificationsPage() {
-    QFormLayout* form;
-    QWidget* page = makePage(form);
-
-    toastsCheck_ = new QCheckBox("Show event toasts (penalties, flags, fastest lap…)");
-    toastsCheck_->setChecked(mainWindow_->toastsEnabled());
-    form->addRow(QString(), toastsCheck_);
-
-    toastDurationCombo_ = new QComboBox;
-    for (int s : { 2, 3, 5, 8, 10 })
-        toastDurationCombo_->addItem(QString("%1s").arg(s), s);
-    const int cur = toastDurationCombo_->findData(mainWindow_->toastDurationSecs());
-    toastDurationCombo_->setCurrentIndex(cur >= 0 ? cur : 1);   // default 3s
-    toastDurationCombo_->setEnabled(toastsCheck_->isChecked());
-    form->addRow("Toast duration:", toastDurationCombo_);
-
-    connect(toastsCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        mainWindow_->setToastsEnabled(on);
-        toastDurationCombo_->setEnabled(on);
-    });
-    connect(toastDurationCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        mainWindow_->setToastDurationSecs(toastDurationCombo_->currentData().toInt());
-    });
-
-    form->addRow(horizontalSeparator());
-    auto* updates = new QCheckBox("Check GitHub for updates at startup");
-    updates->setChecked(mainWindow_->updateChecksEnabled());
-    updates->setToolTip("Checks for a newer release at most once every 24 hours.");
-    connect(updates, &QCheckBox::toggled,
-            mainWindow_, &MainWindow::setUpdateChecksEnabled);
-    form->addRow("Check for Updates:", updates);
-    return page;
-}
-
 QWidget* SettingsDialog::buildDebugPage() {
     QWidget* page = new QWidget;
     auto* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(20, 16, 20, 16);
+    layout->setContentsMargins(24, 4, 24, 20);
     layout->setSpacing(16);
 
     const auto addDiagnosticToggle = [this, layout](
@@ -1937,80 +1884,6 @@ QWidget* SettingsDialog::buildDebugPage() {
         QString(), mainWindow_->memoryLogEnabled(),
         [this](bool enabled) { mainWindow_->setMemoryLogEnabled(enabled); });
     layout->addStretch(1);
-    return page;
-}
-
-QWidget* SettingsDialog::buildOverviewPage() {
-    QFormLayout* form;
-    QWidget* page = makePage(form);
-
-    tyreViewCombo_ = new QComboBox;
-    tyreViewCombo_->addItem("Cards",  (int)OverviewLayout::TyreCards);
-    tyreViewCombo_->addItem("Charts", (int)OverviewLayout::TyreCharts);
-    tyreViewCombo_->setCurrentIndex(
-        mainWindow_->currentTyreView() == OverviewLayout::TyreCharts ? 1 : 0);
-    connect(tyreViewCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        mainWindow_->setTyreView(
-            tyreViewCombo_->currentData().toInt() == (int)OverviewLayout::TyreCharts
-                ? OverviewLayout::TyreCharts : OverviewLayout::TyreCards);
-    });
-    form->addRow("Tyre view:", tyreViewCombo_);
-
-    // Whether the tyre graph shows remaining life (100 - wear) or accumulated wear.
-    tyreWearModeCombo_ = new QComboBox;
-    tyreWearModeCombo_->addItem("Tyre Life", true);
-    tyreWearModeCombo_->addItem("Tyre Wear", false);
-    tyreWearModeCombo_->setCurrentIndex(mainWindow_->tyreGraphLifeMode() ? 0 : 1);
-    connect(tyreWearModeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        mainWindow_->setTyreGraphLifeMode(tyreWearModeCombo_->currentData().toBool());
-    });
-    form->addRow("Tyre wear graph:", tyreWearModeCombo_);
-    return page;
-}
-
-QWidget* SettingsDialog::buildTrackMapPage() {
-    QFormLayout* form;
-    QWidget* page = makePage(form);
-
-    trackMapLabelsCombo_ = new QComboBox;
-    trackMapLabelsCombo_->addItem("Dots & Labels", 0);
-    trackMapLabelsCombo_->addItem("Dots Only", 1);
-    trackMapLabelsCombo_->addItem("Labels Only", 2);
-    trackMapLabelsCombo_->setCurrentIndex(mainWindow_->trackMapLabelMode());
-
-    connect(trackMapLabelsCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        mainWindow_->setTrackMapLabelMode(trackMapLabelsCombo_->currentData().toInt());
-    });
-    form->addRow("Labels:", trackMapLabelsCombo_);
-
-    // Hide drivers idle for longer than the selected duration (0 = never).
-    trackMapIdleCombo_ = new QComboBox;
-    trackMapIdleCombo_->addItem("Off", 0);
-    for (int s : { 3, 5, 10, 15, 30 })
-        trackMapIdleCombo_->addItem(QString("%1s").arg(s), s);
-    const int idleIdx = trackMapIdleCombo_->findData(mainWindow_->trackMapIdleTimeout());
-    trackMapIdleCombo_->setCurrentIndex(idleIdx >= 0 ? idleIdx : 0);
-    connect(trackMapIdleCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        mainWindow_->setTrackMapIdleTimeout(trackMapIdleCombo_->currentData().toInt());
-    });
-    form->addRow("Hide static drivers:", trackMapIdleCombo_);
-
-    // Per-sector colours vs plain white/black lines.
-    trackMapSectorColorsCheck_ = new QCheckBox;
-    trackMapSectorColorsCheck_->setChecked(mainWindow_->trackMapSectorColors());
-    connect(trackMapSectorColorsCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        mainWindow_->setTrackMapSectorColors(on);
-    });
-    form->addRow("Sector colors:", trackMapSectorColorsCheck_);
-
-    // Track-outline opacity (20–100%); driver dots/labels stay full strength.
-    trackMapOpacitySlider_ = new QSlider(Qt::Horizontal);
-    trackMapOpacitySlider_->setRange(20, 100);
-    trackMapOpacitySlider_->setValue(mainWindow_->trackMapOpacity());
-    connect(trackMapOpacitySlider_, &QSlider::valueChanged, this, [this](int v) {
-        mainWindow_->setTrackMapOpacity(v);
-    });
-    form->addRow("Map opacity:", trackMapOpacitySlider_);
     return page;
 }
 

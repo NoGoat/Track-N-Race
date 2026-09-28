@@ -292,6 +292,13 @@ std::vector<const char*> playbackPatchFields(int v6Type) {
     return fields;
 }
 
+void PlaybackPatchMerger::mergeOnly(const QByteArray& json) {
+    const QJsonDocument document = QJsonDocument::fromJson(json);
+    if (!document.isObject()) return;
+    bool sparse = false;
+    mergeObject(document.object(), &sparse);
+}
+
 QJsonObject PlaybackPatchMerger::mergeObject(const QJsonObject& row, bool* sparse) {
     const QJsonValue typeValue = row.value(QStringLiteral("_v6_type"));
     const double rawType = typeValue.toDouble(-1.0);
@@ -316,4 +323,16 @@ bool playbackCarFieldAvailable(const QJsonObject* object, int carIndex,
     const auto cars = carsByIndex(*object);
     const auto it = cars.constFind(carIndex);
     return it != cars.constEnd() && it->contains(QLatin1String(field));
+}
+
+QHash<int, QJsonObject> playbackCarsByIndex(const QJsonObject& object) {
+    return carsByIndex(object);
+}
+
+QByteArray playbackLatestStatePatchType(const QByteArray& json) {
+    if (!json.contains("\"_v6_type\":")) return {};
+    for (const char* type : {"all_status", "timing", "positions"}) {
+        if (json.contains(QByteArray("\"type\":\"") + type + '"')) return QByteArray(type);
+    }
+    return {};
 }

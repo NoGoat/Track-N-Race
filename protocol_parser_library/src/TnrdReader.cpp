@@ -2393,17 +2393,55 @@ bool TnrdReader::getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
     return true;
 }
 
+namespace {
+// Row type and decode order of a playback-lane chunk. Chunk queries on a V6
+// archive (playbackChunkIndices, chunkIndicesForLap, chunkTimeBounds,
+// prefetchChunk, rowsForChunks) all use indices into its full chunk directory,
+// which spans every session phase; chunks() lists only the race-phase chunks in
+// V4 form, so V6 indices must be resolved against v6Chunks(). Older generations
+// index chunks() directly. An out-of-range index resolves to nothing rather
+// than reading past the directory.
+class PlaybackChunkLookup {
+public:
+    explicit PlaybackChunkLookup(const detail::TnrdIndexedArchive& archive)
+        : v6_(dynamic_cast<const detail::TnrdV6Archive*>(&archive)), chunks_(archive.chunks()) {}
+
+    bool rowType(size_t index, uint16_t& out) const {
+        if (v6_) {
+            const auto& all = v6_->v6Chunks();
+            if (index >= all.size()) return false;
+            out = all[index].typeId;
+            return true;
+        }
+        if (index >= chunks_.size()) return false;
+        out = chunks_[index].rowType;
+        return true;
+    }
+    uint64_t sequence(size_t index) const {
+        if (v6_) {
+            const auto& all = v6_->v6Chunks();
+            return index < all.size() ? all[index].sequence : 0;
+        }
+        return index < chunks_.size() ? chunks_[index].sequence : 0;
+    }
+
+private:
+    const detail::TnrdV6Archive* v6_ = nullptr;
+    const std::vector<detail::V4ChunkInfo>& chunks_;
+};
+} // namespace
+
 void TnrdReader::prepareV4PlaybackLap() {
     const float inf=std::numeric_limits<float>::infinity();
     const bool exactIndex=hasExactTnrdIndex(loadedFormat_);
     for(auto& lane:v4PlaybackLanes_){lane.chunks.clear();lane.nextChunk=0;lane.nextPrefetched=false;lane.rows.clear();lane.rowPos=0;lane.maxDecodedTime=-inf;lane.safeThrough=inf;}
     if(!indexedArchive_||!indexedArchive_->isOpen()||v4PlaybackLap_<0){v4PlaybackPrepared_=true;return;}
-    const auto& chunks=indexedArchive_->chunks();std::vector<size_t> selected;
+    const PlaybackChunkLookup lookup(*indexedArchive_);std::vector<size_t> selected;
     if (auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get()))
         v6->playbackChunkIndices(playbackRowMask_, selected);
     else
         indexedArchive_->chunkIndicesForLap((uint32_t)v4PlaybackLap_,playbackRowMask_,selected);
-    for(size_t i:selected){const auto& chunk=chunks[i];if(chunk.rowType<v4PlaybackLanes_.size())v4PlaybackLanes_[chunk.rowType].chunks.push_back(i);}
+    for(size_t i:selected){uint16_t rowType=0;if(lookup.rowType(i,rowType)&&rowType<v4PlaybackLanes_.size())v4PlaybackLanes_[rowType].chunks.push_back(i);}
     for(auto& lane:v4PlaybackLanes_){
         // Range/latest-at-time extraction performed by a seek records exact
         // bounds for every chunk it inspected. Chunks wholly at/before the new
@@ -2431,9 +2469,9 @@ void TnrdReader::prepareV4PlaybackLap() {
 bool TnrdReader::loadV4PlaybackFrontier(float throughTime) {
     struct PendingChunk{size_t lane;size_t index;uint64_t sequence;};
     const bool exactIndex=hasExactTnrdIndex(loadedFormat_);
-    std::vector<PendingChunk> pending;const auto& chunks=indexedArchive_->chunks();float priority=std::numeric_limits<float>::infinity();
+    std::vector<PendingChunk> pending;const PlaybackChunkLookup lookup(*indexedArchive_);float priority=std::numeric_limits<float>::infinity();
     for(const auto& lane:v4PlaybackLanes_)if(lane.nextChunk<lane.chunks.size()&&lane.safeThrough<=throughTime)priority=std::min(priority,lane.safeThrough);
-    for(size_t i=0;i<v4PlaybackLanes_.size();++i){const auto& lane=v4PlaybackLanes_[i];if(lane.nextChunk<lane.chunks.size()&&lane.safeThrough==priority){const size_t index=lane.chunks[lane.nextChunk];pending.push_back({i,index,chunks[index].sequence});}}
+    for(size_t i=0;i<v4PlaybackLanes_.size();++i){const auto& lane=v4PlaybackLanes_[i];if(lane.nextChunk<lane.chunks.size()&&lane.safeThrough==priority){const size_t index=lane.chunks[lane.nextChunk];pending.push_back({i,index,lookup.sequence(index)});}}
     if(pending.empty())return false;
     std::sort(pending.begin(),pending.end(),[](const auto&a,const auto&b){return a.sequence<b.sequence;});
     std::vector<size_t> indices;indices.reserve(pending.size());for(const auto& item:pending)indices.push_back(item.index);
@@ -2473,8 +2511,8 @@ bool TnrdReader::loadV4PlaybackFrontier(float throughTime) {
 }
 
 void TnrdReader::prefetchV4PlaybackChunk() {
-    if(!indexedArchive_)return;const auto& chunks=indexedArchive_->chunks();const size_t limit=hasExactTnrdIndex(loadedFormat_)?4u:1u;size_t outstanding=0;for(const auto& lane:v4PlaybackLanes_)if(lane.nextPrefetched)++outstanding;if(outstanding>=limit){v4PlaybackPrefetchOutstanding_=true;return;}
-    std::vector<size_t> candidates;for(size_t i=0;i<v4PlaybackLanes_.size();++i){const auto& lane=v4PlaybackLanes_[i];if(!lane.nextPrefetched&&lane.nextChunk<lane.chunks.size())candidates.push_back(i);}std::stable_sort(candidates.begin(),candidates.end(),[&](size_t a,size_t b){const auto& left=v4PlaybackLanes_[a];const auto& right=v4PlaybackLanes_[b];if(left.safeThrough!=right.safeThrough)return left.safeThrough<right.safeThrough;return chunks[left.chunks[left.nextChunk]].sequence<chunks[right.chunks[right.nextChunk]].sequence;});
+    if(!indexedArchive_)return;const PlaybackChunkLookup lookup(*indexedArchive_);const size_t limit=hasExactTnrdIndex(loadedFormat_)?4u:1u;size_t outstanding=0;for(const auto& lane:v4PlaybackLanes_)if(lane.nextPrefetched)++outstanding;if(outstanding>=limit){v4PlaybackPrefetchOutstanding_=true;return;}
+    std::vector<size_t> candidates;for(size_t i=0;i<v4PlaybackLanes_.size();++i){const auto& lane=v4PlaybackLanes_[i];if(!lane.nextPrefetched&&lane.nextChunk<lane.chunks.size())candidates.push_back(i);}std::stable_sort(candidates.begin(),candidates.end(),[&](size_t a,size_t b){const auto& left=v4PlaybackLanes_[a];const auto& right=v4PlaybackLanes_[b];if(left.safeThrough!=right.safeThrough)return left.safeThrough<right.safeThrough;return lookup.sequence(left.chunks[left.nextChunk])<lookup.sequence(right.chunks[right.nextChunk]);});
     for(size_t laneIndex:candidates){if(outstanding>=limit)break;auto& lane=v4PlaybackLanes_[laneIndex];lane.nextPrefetched=true;++outstanding;indexedArchive_->prefetchChunk(lane.chunks[lane.nextChunk]);}v4PlaybackPrefetchOutstanding_=outstanding!=0;
 }
 

@@ -1000,9 +1000,11 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
 
     {
         // Electron drops the time_offset == 0 sample (that is "Now") and shows
-        // the next five.
+        // the next five of this session's forecast (the same block Strategy
+        // plans with).
+        const auto forecast = currentSessionForecast(*session);
         std::vector<const tnrp::WeatherSample*> fc;
-        for (const auto& sample : session->weather_forecast_samples)
+        for (const auto& sample : forecast)
             if (sample.time_offset > 0 && fc.size() < 5) fc.push_back(&sample);
         const int count = (int)fc.size();
         for (int i = 0; i < 5; ++i) {

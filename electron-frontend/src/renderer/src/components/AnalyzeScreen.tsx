@@ -28,6 +28,7 @@ import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTim
 import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
 import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
 import AnalyzeMetricPicker from './AnalyzeMetricPicker'
+import AnalysisSplitHandle from './AnalysisSplitHandle'
 import SyncedTooltipIcon from '../app/components/SyncedTooltipIcon'
 import ColorPicker from './ColorPicker'
 
@@ -836,6 +837,10 @@ export default function AnalyzeScreen({
     secondaryFile.trackId !== null && primaryTrackId !== secondaryFile.trackId
   const primaryView = !playbackFilename || mismatchedFiles ? 'graph' : config.view
   const splitView = primaryView === 'split'
+  // Live ratio while the divider is dragged; persisted to config on release.
+  const [draftSplitRatio, setDraftSplitRatio] = useState<number | null>(null)
+  const splitRatio = draftSplitRatio ?? config.splitRatio
+  const splitContainerRef = useRef<HTMLDivElement>(null)
   const chartsVisible = primaryView !== 'map'
   const mapVisible = primaryView !== 'graph'
   const analysisView = primaryView === 'map' ? 'map' : config.individualGraphs ? 'charts' : 'graph'
@@ -1923,9 +1928,10 @@ export default function AnalyzeScreen({
             </button>
           </div>
         </div>
-        <div className="flex-1 min-h-0 relative flex">
+        <div ref={splitContainerRef} className="flex-1 min-h-0 relative flex">
           <div
-            className={`analysis-view-surface ${splitView ? 'relative basis-1/2 min-w-0 overflow-hidden border-r border-[var(--border)]' : 'absolute inset-0'} ${chartsVisible ? 'analysis-view-surface--visible' : ''}`}
+            className={`analysis-view-surface ${splitView ? 'relative shrink-0 grow-0 min-w-0 overflow-hidden' : 'absolute inset-0'} ${chartsVisible ? 'analysis-view-surface--visible' : ''}`}
+            style={splitView ? { flexBasis: `${splitRatio * 100}%` } : undefined}
             data-analysis-active={chartsVisible}
             aria-hidden={!chartsVisible}
             inert={!chartsVisible}
@@ -1952,8 +1958,17 @@ export default function AnalyzeScreen({
               mapComparisonColor={config.mapComparisonColor}
             />
           </div>
+          {splitView && <AnalysisSplitHandle
+            ratio={splitRatio}
+            containerRef={splitContainerRef}
+            onPreview={setDraftSplitRatio}
+            onCommit={ratio => {
+              setDraftSplitRatio(null)
+              if (ratio !== config.splitRatio) save({ ...config, splitRatio: ratio })
+            }}
+          />}
           {mapPresence.mounted && <div
-            className={`analysis-view-surface ${splitView ? 'relative basis-1/2 min-w-0 overflow-hidden' : 'absolute inset-0'} ${mapPresence.visible ? 'analysis-view-surface--visible' : ''}`}
+            className={`analysis-view-surface ${splitView ? 'relative flex-1 min-w-0 overflow-hidden' : 'absolute inset-0'} ${mapPresence.visible ? 'analysis-view-surface--visible' : ''}`}
             data-analysis-active={mapVisible}
             aria-hidden={!mapPresence.visible}
             inert={!mapPresence.visible}

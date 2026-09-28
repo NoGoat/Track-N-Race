@@ -96,7 +96,8 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             for (int i = 0; i < (int)data[155] && i < 64; ++i) {
                 int o = 156 + i * 8;
                 sr.weather_forecast_samples.push_back({
-                    ReadUInt8(data, o + 1), ReadUInt8(data, o + 2), ReadUInt8(data, o + 7)
+                    ReadUInt8(data, o + 1), ReadUInt8(data, o + 2), ReadUInt8(data, o + 7),
+                    ReadUInt8(data, o + 0)
                 });
             }
 

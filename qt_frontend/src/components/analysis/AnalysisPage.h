@@ -17,6 +17,8 @@ class AnalysisMapView;
 class AnalysisMetricPicker;
 class AnalysisSeriesDelegate;
 class AnalysisSeriesModel;
+class AnalysisSplitter;
+class UnderlineTabBar;
 class AnalyzeChart;
 class SessionModel;
 class QAction;
@@ -28,7 +30,6 @@ class QListView;
 class QMenu;
 class QScrollArea;
 class QSplitter;
-class QTabBar;
 class QToolBar;
 class QToolButton;
 struct AnalysisFileCatalog;
@@ -117,7 +118,7 @@ private:
     QToolButton* removeSecondary_ = nullptr;
     QFrame* messageBar_ = nullptr;
     QLabel* messageText_ = nullptr;
-    QTabBar* modeTabs_ = nullptr;
+    UnderlineTabBar* modeTabs_ = nullptr;
     QVector<QWidget*> slotPages_;   // Follow Playback, Fixed Laps
     AnalysisLapSlot* currentSlot_ = nullptr;
     AnalysisLapSlot* compareSlot_ = nullptr;
@@ -127,7 +128,6 @@ private:
     AnalysisSeriesDelegate* seriesDelegate_ = nullptr;
     QListView* seriesView_ = nullptr;
     AnalysisMetricPicker* picker_ = nullptr;
-    QAction* addMetricsAction_ = nullptr;
     QAction* removeMetricAction_ = nullptr;
     QAction* moveUpAction_ = nullptr;
     QAction* moveDownAction_ = nullptr;
@@ -137,7 +137,7 @@ private:
     QAction* allYAxesAction_ = nullptr;
 
     // ── Content ──
-    QSplitter* contentSplitter_ = nullptr;
+    AnalysisSplitter* contentSplitter_ = nullptr;
     AnalyzeChart* chart_ = nullptr;
     AnalysisMapView* map_ = nullptr;
 

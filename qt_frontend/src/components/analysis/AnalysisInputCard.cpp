@@ -1,6 +1,5 @@
 #include "AnalysisInputCard.h"
 
-#include <QFontDatabase>
 #include <QHelpEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -39,8 +38,9 @@ QColor mix(const QColor& base, const QColor& over, double amount) {
                             base.blueF() + (over.blueF() - base.blueF()) * amount);
 }
 
-QFont cardFont(int pixelSize, QFont::Weight weight = QFont::Normal) {
-    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+// The application's UI font, at the card's compact sizes.
+QFont cardFont(const QFont& base, int pixelSize, QFont::Weight weight = QFont::Normal) {
+    QFont font = base;
     font.setPixelSize(pixelSize);
     font.setWeight(weight);
     return font;
@@ -195,7 +195,7 @@ void AnalysisInputCard::paintEvent(QPaintEvent*) {
         for (int row = -1; row <= 1; ++row)
             painter.drawEllipse(QPointF(12.5 + column * 4, headerMid + row * 4), 1.0, 1.0);
 
-    QFont header = cardFont(9, QFont::DemiBold);
+    QFont header = cardFont(font(), 9, QFont::DemiBold);
     header.setLetterSpacing(QFont::AbsoluteSpacing, 0.72);
     painter.setFont(header);
     painter.setPen(dragging_ ? text : secondary);
@@ -223,10 +223,10 @@ void AnalysisInputCard::paintEvent(QPaintEvent*) {
     painter.setPen(QPen(border, 1));
     painter.drawLine(QPointF(0.5, kHeader + 0.5), QPointF(width() - 0.5, kHeader + 0.5));
 
-    const QFont labelFont = cardFont(11);
-    const QFont valueFont = cardFont(11, QFont::DemiBold);
-    const QFont unitFont = cardFont(9);
-    const QFont missingFont = cardFont(8);
+    const QFont labelFont = cardFont(font(), 11);
+    const QFont valueFont = cardFont(font(), 11, QFont::DemiBold);
+    const QFont unitFont = cardFont(font(), 9);
+    const QFont missingFont = cardFont(font(), 8);
 
     for (int row = 0; row < kRows; ++row) {
         const QRect full = rowRect(row);

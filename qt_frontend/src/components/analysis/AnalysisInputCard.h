@@ -13,7 +13,8 @@
 // inputs at the map cursor — steering, brake, throttle and ERS as paired lanes
 // in one gauge, speed and gear as values in each lap's colour.
 //
-// The card is drawn as one widget so it stays compact and crisp at any scale.
+// The card is drawn as one widget, in the application font, so it stays
+// compact and crisp at any scale.
 // Drag it by its header (or focus it and use the arrow keys, Shift for fine
 // steps); its position is kept relative to the map and persisted. Return or
 // the header button collapses it to the header.

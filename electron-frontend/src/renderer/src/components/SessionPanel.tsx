@@ -2,6 +2,7 @@ import { useRef, useState, memo } from 'react'
 import { flushSync } from 'react-dom'
 import { Sun, CloudSun, Cloud, CloudDrizzle, CloudRain, CloudLightning, type LucideIcon } from 'lucide-react'
 import type { SessionMsg, RaceEventMsg, TimingMsg, ParticipantsMsg, TimingCar } from '../types'
+import { currentSessionForecast } from '../lib/weatherForecast'
 import TrackMap from './TrackMap'
 import { useColorFn } from '../lib/cards'
 import { useLabels } from '../lib/labels'
@@ -399,7 +400,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
     ? `P${session.pit_stop_rejoin_position}` : '—'
 
   const forecast = session
-    ? session.weather_forecast_samples.filter(s => s.time_offset > 0).slice(0, 5)
+    ? currentSessionForecast(session).filter(s => s.time_offset > 0).slice(0, 5)
     : []
 
   const visibleEvents = raceEvents

@@ -392,6 +392,9 @@ private:
     bool dirtyTyres_     = false;
     bool dirtyTyreSets_  = false;
     bool dirtyStrategy_  = false;
+    // Electron's strategyRebuilding: set by a playback seek, cleared by the
+    // next Strategy row (the engine's rebuilt snapshot for the new cursor).
+    bool strategyRebuilding_ = false;
     bool dirtySession_   = false;
     bool dirtyEvents_    = false;
     bool dirtyProximity_ = false;

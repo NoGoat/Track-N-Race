@@ -37,6 +37,8 @@ export interface AnalyzeConfig {
   collapsed: boolean
   view: 'graph' | 'split' | 'map'
   individualGraphs: boolean
+  /** Split view: the graphs' share of the width, 0.2–0.8 (the map takes the rest). */
+  splitRatio: number
   syncedTooltip: boolean
   sectorBoundaries: boolean
   sectorDelta: boolean
@@ -50,6 +52,14 @@ export interface AnalyzeConfig {
 }
 
 export const DEFAULT_MAP_CURRENT_COLOR = '#5794F2'
+export const DEFAULT_SPLIT_RATIO = 0.5
+export const MIN_SPLIT_RATIO = 0.2
+export const MAX_SPLIT_RATIO = 0.8
+
+/** A split ratio kept inside the range where both panes stay usable. */
+export function clampSplitRatio(value: number): number {
+  return Math.min(MAX_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, value))
+}
 export const DEFAULT_MAP_COMPARISON_COLOR = '#C4162A'
 
 export const DEFAULT_DELTA_POSITIVE_COLOR = '#C4162A'
@@ -217,6 +227,7 @@ export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
   collapsed: false,
   view: 'graph',
   individualGraphs: false,
+  splitRatio: DEFAULT_SPLIT_RATIO,
   syncedTooltip: false,
   sectorBoundaries: false,
   sectorDelta: false,
@@ -286,6 +297,9 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
     individualGraphs: typeof value?.individualGraphs === 'boolean'
       ? value.individualGraphs
       : value?.view === 'charts',
+    splitRatio: typeof value?.splitRatio === 'number' && Number.isFinite(value.splitRatio)
+      ? clampSplitRatio(value.splitRatio)
+      : DEFAULT_SPLIT_RATIO,
     syncedTooltip: value?.syncedTooltip === true,
     sectorBoundaries,
     sectorDelta: value?.sectorDelta === true,

@@ -418,6 +418,17 @@ void StandingsPage::showLayoutEditor() {
 }
 
 QWidget* StandingsPage::buildRacePanel() {
+    // A rebuild (density change) deletes the previous panel's labels. Forget
+    // them all first, so a row the new layout omits — Harvested exists only at
+    // Spacious — reads as absent (setLabelText skips null) instead of pointing
+    // at a deleted label that the next telemetry update would write to.
+    rp_driverName = rp_lapNum = rp_position = rp_pitStatus = nullptr;
+    rp_currentLap = rp_lastLap = rp_s1 = rp_s2 = rp_s3 = nullptr;
+    rp_ersBar = nullptr;
+    rp_ersPct = rp_ersStore = rp_ersMode = rp_ersDeployed = rp_ersHarvested = nullptr;
+    rp_drsLabel = rp_drs = nullptr;
+    rp_fuelKg = rp_fuelLaps = rp_fuelMix = rp_tyre = rp_tyreAge = rp_brakeBias = nullptr;
+
     QScrollArea* scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);

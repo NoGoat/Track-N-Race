@@ -57,6 +57,9 @@ struct WeatherSample {
     int time_offset{};
     int weather{};
     int rain_percentage{};
+    // The session this sample forecasts (m_sessionType); absent in older
+    // recordings.
+    std::optional<int> session_type;
 };
 
 struct SessionRow {
@@ -91,6 +94,24 @@ struct SessionRow {
     // (F1 24/25). Selects which SLM zone set the map draws (dry vs wet).
     int active_aero_track_status{-1};
 };
+
+// The packet carries forecasts for several sessions (e.g. qualifying and the
+// race), each a block of samples starting again at offset 0. Returns the
+// block for the session being driven: matched by session_type when samples
+// carry it, otherwise (older recordings) the first block.
+inline std::vector<WeatherSample> currentSessionForecast(const SessionRow& session) {
+    std::vector<WeatherSample> out;
+    const auto& samples = session.weather_forecast_samples;
+    for (const WeatherSample& sample : samples)
+        if (sample.session_type && *sample.session_type == session.session_type)
+            out.push_back(sample);
+    if (!out.empty()) return out;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        if (i > 0 && samples[i].time_offset <= samples[i - 1].time_offset) break;
+        out.push_back(samples[i]);
+    }
+    return out;
+}
 
 // ── participants (rare) ────────────────────────────────────────────────────
 
