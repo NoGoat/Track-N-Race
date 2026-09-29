@@ -496,6 +496,12 @@ body.modal-open {
     transform: translateY(0);
 }
 
+/* <picture> only selects the AVIF source; keep it out of layout */
+.img-zoom-wrapper > picture,
+.card-img-wrapper > picture {
+    display: contents;
+}
+
 /* ==========================================================================
    Features Showcase Section (Carousel)
    ========================================================================== */

@@ -7,7 +7,6 @@
 
     <!-- Primary Meta Tags -->
     <title>Track N Race — Free F1 Telemetry & Lap Analysis</title>
-    <meta name="title" content="Track N Race — Free F1 Telemetry & Lap Analysis">
     <meta name="description"
         content="Track N Race records and analyzes F1 24, F1 25, and 2026 DLC telemetry. Compare laps, driver inputs, tyre wear, ERS, fuel, and delta times for free.">
     <meta name="keywords"
@@ -28,18 +27,18 @@
     <meta property="og:description"
         content="Record and analyze F1 24, F1 25, and 2026 DLC telemetry. Compare laps, driver inputs, tyre wear, ERS, fuel, and delta times for free.">
     <meta property="og:image" content="https://track-n-race.com/assets/screenshots/overview.webp">
-    <meta property="og:image:width" content="1920">
-    <meta property="og:image:height" content="1080">
+    <meta property="og:image:width" content="3150">
+    <meta property="og:image:height" content="1752">
     <meta property="og:image:alt" content="Track N Race F1 Game telemetry and Lap Performance Analysis Dashboard">
 
     <!-- Twitter -->
-    <meta property="twitter:card" content="summary_large_image">
-    <meta property="twitter:url" content="https://track-n-race.com/">
-    <meta property="twitter:title" content="Track N Race — Free F1 Telemetry & Lap Analysis">
-    <meta property="twitter:description"
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://track-n-race.com/">
+    <meta name="twitter:title" content="Track N Race — Free F1 Telemetry & Lap Analysis">
+    <meta name="twitter:description"
         content="Record and analyze F1 24, F1 25, and 2026 DLC telemetry. Compare laps, driver inputs, tyre wear, ERS, fuel, and delta times for free.">
-    <meta property="twitter:image" content="https://track-n-race.com/assets/screenshots/overview.webp">
-    <meta property="twitter:image:alt" content="Track N Race F1 Game telemetry and Lap Performance Analysis Dashboard">
+    <meta name="twitter:image" content="https://track-n-race.com/assets/screenshots/overview.webp">
+    <meta name="twitter:image:alt" content="Track N Race F1 Game telemetry and Lap Performance Analysis Dashboard">
 
     <!-- Canonical URL -->
     <link rel="canonical" href="https://track-n-race.com/">
@@ -64,23 +63,26 @@
           ],
           "description": "Free, open-source telemetry recording and lap performance analysis tool for F1 24, F1 25, and 2026 DLC.",
           "inLanguage": "en-US",
-          "publisher": {
-            "@type": "Organization",
-            "@id": "https://track-n-race.com/#organization",
-            "name": "NoGoat",
-            "url": "https://github.com/NoGoat"
-          }
+          "publisher": { "@id": "https://track-n-race.com/#author" }
+        },
+        {
+          "@type": "Person",
+          "@id": "https://track-n-race.com/#author",
+          "name": "NoGoat",
+          "url": "https://github.com/NoGoat",
+          "sameAs": ["https://nogoat.in"]
         },
         {
           "@type": "SoftwareApplication",
           "@id": "https://track-n-race.com/#software",
           "name": "Track N Race",
           "alternateName": ["Track-N-Race", "Track N Race F1 Game telemetry"],
-          "applicationCategory": "GameApplication, UtilitiesApplication, SportsApplication",
+          "applicationCategory": "UtilitiesApplication",
           "operatingSystem": "Windows, macOS, Linux",
           "url": "https://track-n-race.com/",
           "downloadUrl": "https://github.com/NoGoat/Track-N-Race/releases/latest",
-          "softwareVersion": "1.0",
+          "sameAs": ["https://github.com/NoGoat/Track-N-Race"],
+          "image": "https://track-n-race.com/assets/icons/icon_transparent_512.png",
           "license": "https://www.gnu.org/licenses/gpl-3.0.html",
           "description": "Comprehensive F1 Game telemetry recording and lap performance analysis software. Analyze throttle, brake, steering inputs, tyre degradation, power/ERS, and track delta times for F1 24, F1 25, and 2026 DLC.",
           "screenshot": "https://track-n-race.com/assets/screenshots/overview.webp",
@@ -99,11 +101,7 @@
             "Lightweight background minimal recorder mode",
             "Customizable dashboard layout editor"
           ],
-          "author": {
-            "@type": "Organization",
-            "name": "NoGoat",
-            "url": "https://github.com/NoGoat"
-          }
+          "author": { "@id": "https://track-n-race.com/#author" }
         }
       ]
     }
@@ -118,7 +116,9 @@
     <link rel="manifest" href="site.webmanifest">
 
     <!-- Preload Hero Image -->
-    <link rel="preload" as="image" href="assets/screenshots/overview.webp" fetchpriority="high">
+    <link rel="preload" as="image" type="image/avif"
+        imagesrcset="assets/screenshots/overview-1280.avif 1280w, assets/screenshots/overview-1920.avif 1920w, assets/screenshots/overview-3150.avif 3150w"
+        imagesizes="(max-width: 860px) 100vw, (max-width: 1200px) 55vw, 620px" fetchpriority="high">
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -136,8 +136,8 @@
         <div class="nav-container">
             <a href="/" class="brand-link" aria-label="Track N Race Home">
                 <div class="brand">
-                    <img src="assets/icons/icon_transparent.webp" alt="Track N Race Logo" class="brand-logo-img"
-                        width="512" height="512" loading="lazy">
+                    <img src="assets/icons/icon_transparent-78.webp" alt="Track N Race Logo" class="brand-logo-img"
+                        width="78" height="64">
                     <span class="brand-text"><span class="brand-accent">Track</span> N Race</span>
                 </div>
             </a>
@@ -199,9 +199,13 @@
                 <div class="hero-visual">
                     <div class="app-window">
                         <div class="img-zoom-wrapper">
-                            <img src="assets/screenshots/overview.webp"
-                                alt="Track N Race F1 Game telemetry Overview screen" class="mockup-img" width="1920"
-                                height="1080" fetchpriority="high">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/overview-1280.avif 1280w, assets/screenshots/overview-1920.avif 1920w, assets/screenshots/overview-3150.avif 3150w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 55vw, 620px">
+                                <img src="assets/screenshots/overview.webp"
+                                    alt="Track N Race overview screen with speed, RPM and ERS traces from a lap of Bahrain, plus live tyre temperatures and damage readouts"
+                                    class="mockup-img" width="3150" height="1752" fetchpriority="high">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -229,8 +233,8 @@
                             <div class="carousel-slide active">
                                 <div class="feature-container">
                                     <div class="feature-text">
-                                        <h3 class="feature-title">Track almost <span
-                                                class="highlight-green">Everything</span></h3>
+                                        <h2 class="feature-title">Track almost <span
+                                                class="highlight-green">Everything</span></h2>
                                         <p class="section-desc">
                                             Track N Race tries to track as much information as possible from the apps.
                                             Everything from tyres to ride heights can be tracked.
@@ -246,9 +250,13 @@
                                     <div class="feature-visual">
                                         <div class="app-window">
                                             <div class="img-zoom-wrapper">
-                                                <img src="assets/screenshots/session.webp"
-                                                    alt="Track N Race F1 Game telemetry Session page with a track map"
-                                                    class="mockup-img" width="1920" height="1080" loading="lazy">
+                                                <picture>
+                                                    <source type="image/avif" srcset="assets/screenshots/session-1280.avif 1280w, assets/screenshots/session-1920.avif 1920w, assets/screenshots/session-3282.avif 3282w"
+                                                        sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
+                                                    <img src="assets/screenshots/session.webp"
+                                                        alt="Session view with a live map of Bahrain showing every car's position, race details and an events feed"
+                                                        class="mockup-img" width="3282" height="1884" loading="lazy">
+                                                </picture>
                                                 <div class="zoom-badge">
                                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                                                         stroke="currentColor" stroke-width="2">
@@ -269,8 +277,8 @@
                             <div class="carousel-slide">
                                 <div class="feature-container">
                                     <div class="feature-text">
-                                        <h3 class="feature-title">Deep <span class="highlight-purple">Analysis</span>
-                                        </h3>
+                                        <h2 class="feature-title">Deep <span class="highlight-purple">Analysis</span>
+                                        </h2>
                                         <p class="section-desc">
                                             Dive deep into your race data. Compare any data of your choosing against
                                             other of your own laps to find what's costing you lap time.
@@ -284,9 +292,13 @@
                                     <div class="feature-visual">
                                         <div class="app-window">
                                             <div class="img-zoom-wrapper">
-                                                <img src="assets/screenshots/analyze.webp"
-                                                    alt="Track N Race F1 Game telemetry Analysis page comparing two laps against each other"
-                                                    class="mockup-img" width="1920" height="1080" loading="lazy">
+                                                <picture>
+                                                    <source type="image/avif" srcset="assets/screenshots/analyze-1280.avif 1280w, assets/screenshots/analyze-1920.avif 1920w, assets/screenshots/analyze-3282.avif 3282w"
+                                                        sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
+                                                    <img src="assets/screenshots/analyze.webp"
+                                                        alt="Analysis view overlaying throttle, speed, RPM, gear and MGU-K power traces for two laps"
+                                                        class="mockup-img" width="3282" height="1884" loading="lazy">
+                                                </picture>
                                                 <div class="zoom-badge">
                                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                                                         stroke="currentColor" stroke-width="2">
@@ -307,8 +319,8 @@
                             <div class="carousel-slide">
                                 <div class="feature-container">
                                     <div class="feature-text">
-                                        <h3 class="feature-title">Minimal <span class="highlight-blue">Recorder</span>
-                                        </h3>
+                                        <h2 class="feature-title">Minimal <span class="highlight-blue">Recorder</span>
+                                        </h2>
                                         <p class="section-desc">
                                             Worried about performance penalties from running the app while playing the
                                             game?
@@ -323,9 +335,13 @@
                                     <div class="feature-visual">
                                         <div class="app-window">
                                             <div class="img-zoom-wrapper">
-                                                <img src="assets/screenshots/minimal_recorder.webp"
-                                                    alt="Track N Race Lightweight Background Telemetry Recorder for F1 Games"
-                                                    class="mockup-img" width="1162" height="648" loading="lazy">
+                                                <picture>
+                                                    <source type="image/avif" srcset="assets/screenshots/minimal_recorder-1464.avif 1464w"
+                                                        sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
+                                                    <img src="assets/screenshots/minimal_recorder.webp"
+                                                        alt="Track N Race Minimal Recorder window showing the recording folder, UDP port and recording status"
+                                                        class="mockup-img" width="1464" height="852" loading="lazy">
+                                                </picture>
                                                 <div class="zoom-badge">
                                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                                                         stroke="currentColor" stroke-width="2">
@@ -371,8 +387,13 @@
                 <div class="features-grid">
                     <div class="feature-card">
                         <div class="card-img-wrapper">
-                            <img src="assets/screenshots/editor.webp" alt="Track N Race F1 Game telemetry layout editor"
-                                class="card-img" width="1920" height="1080" loading="lazy">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/editor-1280.avif 1280w, assets/screenshots/editor-1920.avif 1920w, assets/screenshots/editor-3282.avif 3282w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="assets/screenshots/editor.webp"
+                                    alt="Layout editor for choosing which sections appear on the overview screen"
+                                    class="card-img" width="3282" height="1884" loading="lazy">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -385,16 +406,20 @@
                             </div>
                         </div>
                         <div class="card-content">
-                            <h4 class="card-title">Layout Editor</h4>
+                            <h3 class="card-title">Layout Editor</h3>
                             <p class="card-desc">Enable or disable cards based on your needs.</p>
                         </div>
                     </div>
 
                     <div class="feature-card">
                         <div class="card-img-wrapper">
-                            <img src="assets/screenshots/inputs.webp"
-                                alt="Track N Race F1 Game telemetry Throttle, Brake, Steering, and Gear Telemetry Driver Inputs"
-                                class="card-img" width="1920" height="1080" loading="lazy">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/inputs-1280.avif 1280w, assets/screenshots/inputs-1920.avif 1920w, assets/screenshots/inputs-3282.avif 3282w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="assets/screenshots/inputs.webp"
+                                    alt="Gear, throttle and brake, and steering input charts over a lap"
+                                    class="card-img" width="3282" height="1884" loading="lazy">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -407,16 +432,20 @@
                             </div>
                         </div>
                         <div class="card-content">
-                            <h4 class="card-title">Inputs</h4>
+                            <h3 class="card-title">Inputs</h3>
                             <p class="card-desc">Track your acceleration, brake, gear and steering inputs. Duh.</p>
                         </div>
                     </div>
 
                     <div class="feature-card">
                         <div class="card-img-wrapper">
-                            <img src="assets/screenshots/analyze.webp"
-                                alt="Track N Race F1 Game telemetry Lap Time Overlay Comparison and Telemetry Data Analysis"
-                                class="card-img" width="1920" height="1080" loading="lazy">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/analyze-1280.avif 1280w, assets/screenshots/analyze-1920.avif 1920w, assets/screenshots/analyze-3282.avif 3282w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="assets/screenshots/analyze.webp"
+                                    alt="Two laps overlaid on one chart to compare throttle, speed and RPM corner by corner"
+                                    class="card-img" width="3282" height="1884" loading="lazy">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -429,16 +458,20 @@
                             </div>
                         </div>
                         <div class="card-content">
-                            <h4 class="card-title">Deep Analysis</h4>
+                            <h3 class="card-title">Deep Analysis</h3>
                             <p class="card-desc">Compare your laps to identify time gains and losses.</p>
                         </div>
                     </div>
 
                     <div class="feature-card">
                         <div class="card-img-wrapper">
-                            <img src="assets/screenshots/power.webp"
-                                alt="Track N Race F1 Game telemetry Engine Power, ERS Energy Deployment, and Fuel Status Telemetry"
-                                class="card-img" width="1920" height="1080" loading="lazy">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/power-1280.avif 1280w, assets/screenshots/power-1920.avif 1920w, assets/screenshots/power-3282.avif 3282w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="assets/screenshots/power.webp"
+                                    alt="Power screen with ICE and MGU-K power split, ERS harvest, ERS store and fuel charts"
+                                    class="card-img" width="3282" height="1884" loading="lazy">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -451,16 +484,20 @@
                             </div>
                         </div>
                         <div class="card-content">
-                            <h4 class="card-title">Power</h4>
+                            <h3 class="card-title">Power</h3>
                             <p class="card-desc">Track engine and fuel status.</p>
                         </div>
                     </div>
 
                     <div class="feature-card">
                         <div class="card-img-wrapper">
-                            <img src="assets/screenshots/tyres.webp"
-                                alt="Track N Race F1 Game Telemetry Tyre Compound Availability and Wear Monitor"
-                                class="card-img" width="1920" height="1080" loading="lazy">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/tyres-1280.avif 1280w, assets/screenshots/tyres-1920.avif 1920w, assets/screenshots/tyres-3282.avif 3282w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="assets/screenshots/tyres.webp"
+                                    alt="Tyre allocation listing every dry and wet set with wear, remaining life and lap-time delta, next to live tyre and brake temperatures"
+                                    class="card-img" width="3282" height="1884" loading="lazy">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -473,16 +510,20 @@
                             </div>
                         </div>
                         <div class="card-content">
-                            <h4 class="card-title">Tyres</h4>
+                            <h3 class="card-title">Tyres</h3>
                             <p class="card-desc">Get a list of all the available compounds for the weekend</p>
                         </div>
                     </div>
 
                     <div class="feature-card">
                         <div class="card-img-wrapper">
-                            <img src="assets/screenshots/tyres_charts.webp"
-                                alt="Track N Race F1 Game Telemetry Tyre Degradation, Surface, and Carcass Temperature Telemetry Graphs"
-                                class="card-img" width="1920" height="1080" loading="lazy">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/tyres_charts-1280.avif 1280w, assets/screenshots/tyres_charts-1920.avif 1920w, assets/screenshots/tyres_charts-3282.avif 3282w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="assets/screenshots/tyres_charts.webp"
+                                    alt="Surface, inner and brake temperature charts plus tyre life for all four tyres"
+                                    class="card-img" width="3282" height="1884" loading="lazy">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -495,7 +536,7 @@
                             </div>
                         </div>
                         <div class="card-content">
-                            <h4 class="card-title">Tyre Graphs</h4>
+                            <h3 class="card-title">Tyre Graphs</h3>
                             <p class="card-desc">Monitor compound degradation, surface, and inner carcass temperatures.
                             </p>
                         </div>
@@ -503,9 +544,13 @@
 
                     <div class="feature-card">
                         <div class="card-img-wrapper">
-                            <img src="assets/screenshots/strategy.webp"
-                                alt="Track N Race F1 Game Telemetry Pit Stop Strategy and Tyre Degradation Analytics"
-                                class="card-img" width="1920" height="1080" loading="lazy">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/strategy-1280.avif 1280w, assets/screenshots/strategy-1920.avif 1920w, assets/screenshots/strategy-3282.avif 3282w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="assets/screenshots/strategy.webp"
+                                    alt="Strategy screen comparing a conservative and an aggressive plan with target lap times for each stint"
+                                    class="card-img" width="3282" height="1884" loading="lazy">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -518,7 +563,7 @@
                             </div>
                         </div>
                         <div class="card-content">
-                            <h4 class="card-title">Race Strategy</h4>
+                            <h3 class="card-title">Race Strategy</h3>
                             <p class="card-desc">This is a work in progress so expect the module to recreate Monaco
                                 2022.
                             </p>
@@ -527,9 +572,13 @@
 
                     <div class="feature-card">
                         <div class="card-img-wrapper">
-                            <img src="assets/screenshots/session.webp"
-                                alt="Track N Race F1 Game Telemetry Session Information and Live Track Map View"
-                                class="card-img" width="1920" height="1080" loading="lazy">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/session-1280.avif 1280w, assets/screenshots/session-1920.avif 1920w, assets/screenshots/session-3282.avif 3282w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="assets/screenshots/session.webp"
+                                    alt="Live track map of Bahrain with car positions and session details"
+                                    class="card-img" width="3282" height="1884" loading="lazy">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -542,16 +591,20 @@
                             </div>
                         </div>
                         <div class="card-content">
-                            <h4 class="card-title">Session</h4>
+                            <h3 class="card-title">Session</h3>
                             <p class="card-desc">Track info about your current session with a map of the circuit.</p>
                         </div>
                     </div>
 
                     <div class="feature-card">
                         <div class="card-img-wrapper">
-                            <img src="assets/screenshots/standings.webp"
-                                alt="Track N Race F1 Game Telemetry Race Timing Tower and Leaderboard Standings"
-                                class="card-img" width="1920" height="1080" loading="lazy">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/standings-1280.avif 1280w, assets/screenshots/standings-1920.avif 1920w, assets/screenshots/standings-3282.avif 3282w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="assets/screenshots/standings.webp"
+                                    alt="Timing tower with positions, last lap, gaps and sector times for all 22 cars, plus the player's ERS, fuel and tyre info"
+                                    class="card-img" width="3282" height="1884" loading="lazy">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -564,16 +617,20 @@
                             </div>
                         </div>
                         <div class="card-content">
-                            <h4 class="card-title">Standings</h4>
+                            <h3 class="card-title">Standings</h3>
                             <p class="card-desc">If you are looking for telemetry software, you know what a timing tower is. I am not explaining that.</p>
                         </div>
                     </div>
 
                     <div class="feature-card">
                         <div class="card-img-wrapper">
-                            <img src="assets/screenshots/overview_table.webp"
-                                alt="Track N Race F1 Game Telemetry showing tables instead of charts" class="card-img"
-                                width="1920" height="1080" loading="lazy">
+                            <picture>
+                                <source type="image/avif" srcset="assets/screenshots/overview_table-1280.avif 1280w, assets/screenshots/overview_table-1920.avif 1920w, assets/screenshots/overview_table-3282.avif 3282w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="assets/screenshots/overview_table.webp"
+                                    alt="Overview screen with the charts swapped for data tables of speed, RPM, ERS and tyre temperatures"
+                                    class="card-img" width="3282" height="1884" loading="lazy">
+                            </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -586,7 +643,7 @@
                             </div>
                         </div>
                         <div class="card-content">
-                            <h4 class="card-title">Data Tables</h4>
+                            <h3 class="card-title">Data Tables</h3>
                             <p class="card-desc">If you don't want graphs, you can swap them out for tables.</p>
                         </div>
                     </div>
@@ -624,7 +681,7 @@
         </button>
         <div class="lightbox-scroll" id="lightboxScroll">
             <div class="lightbox-centerer" id="lightboxCenterer">
-                <img src="" alt="Enlarged view" loading="lazy">
+                <img alt="Enlarged view" loading="lazy">
             </div>
         </div>
     </div>

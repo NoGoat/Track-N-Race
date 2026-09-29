@@ -227,7 +227,13 @@ document.addEventListener('DOMContentLoaded', () => {
             wrapper.addEventListener('click', () => {
                 const img = wrapper.tagName === 'IMG' ? wrapper : wrapper.querySelector('img');
                 if (img && img.src) {
-                    openLightbox(img.src);
+                    // If the browser picked the AVIF source, open its largest (full-size) candidate;
+                    // otherwise fall back to the full-size WebP in <img src>.
+                    const avifSource = img.closest('picture')?.querySelector('source[type="image/avif"]');
+                    const fullAvif = avifSource && img.currentSrc.endsWith('.avif')
+                        ? avifSource.srcset.split(',').pop().trim().split(' ')[0]
+                        : null;
+                    openLightbox(fullAvif || img.src);
                 }
             });
         });
@@ -458,7 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.body.style.overflow = 'hidden';
 
                 try {
-                    const response = await fetch(`assets/licenses/${licenseFile}`);
+                    const response = await fetch(`/assets/licenses/${licenseFile}`);
                     if (!response.ok) throw new Error('Failed to load license');
                     const text = await response.text();
                     licenseTextContent.textContent = text;
