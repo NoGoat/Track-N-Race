@@ -108,16 +108,16 @@
     </script>
 
     <!-- Favicon & App Icons -->
-    <link rel="icon" type="image/x-icon" href="favicon.ico">
-    <link rel="icon" type="image/png" sizes="48x48" href="assets/icons/favicon-48x48.png">
-    <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32x32.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="assets/icons/favicon-16x16.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png">
-    <link rel="manifest" href="site.webmanifest">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="48x48" href="/assets/icons/favicon-48x48.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/icons/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/assets/icons/favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/apple-touch-icon.png">
+    <link rel="manifest" href="/site.webmanifest">
 
     <!-- Preload Hero Image -->
     <link rel="preload" as="image" type="image/avif"
-        imagesrcset="assets/screenshots/overview-1280.avif 1280w, assets/screenshots/overview-1920.avif 1920w, assets/screenshots/overview-3150.avif 3150w"
+        imagesrcset="/assets/screenshots/overview-1280.avif 1280w, /assets/screenshots/overview-1920.avif 1920w, /assets/screenshots/overview-3150.avif 3150w"
         imagesizes="(max-width: 860px) 100vw, (max-width: 1200px) 55vw, 620px" fetchpriority="high">
 
     <!-- Fonts -->
@@ -128,7 +128,7 @@
         rel="stylesheet">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="/styles.css">
 </head>
 
 <body>
@@ -136,15 +136,15 @@
         <div class="nav-container">
             <a href="/" class="brand-link" aria-label="Track N Race Home">
                 <div class="brand">
-                    <img src="assets/icons/icon_transparent-78.webp" alt="Track N Race Logo" class="brand-logo-img"
+                    <img src="/assets/icons/icon_transparent-78.webp" alt="Track N Race Logo" class="brand-logo-img"
                         width="78" height="64">
                     <span class="brand-text"><span class="brand-accent">Track</span> N Race</span>
                 </div>
             </a>
             <nav class="nav-menu">
                 <a href="/" class="nav-btn active">Home</a>
-                <a href="setup" class="nav-btn">Setup</a>
-                <a href="credits" class="nav-btn">Credits</a>
+                <a href="/setup" class="nav-btn">Setup</a>
+                <a href="/credits" class="nav-btn">Credits</a>
             </nav>
             <div class="nav-actions">
                 <a href="https://github.com/NoGoat/Track-N-Race" target="_blank" class="github-link-btn"
@@ -200,9 +200,9 @@
                     <div class="app-window">
                         <div class="img-zoom-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/overview-1280.avif 1280w, assets/screenshots/overview-1920.avif 1920w, assets/screenshots/overview-3150.avif 3150w"
+                                <source type="image/avif" srcset="/assets/screenshots/overview-1280.avif 1280w, /assets/screenshots/overview-1920.avif 1920w, /assets/screenshots/overview-3150.avif 3150w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 55vw, 620px">
-                                <img src="assets/screenshots/overview.webp"
+                                <img src="/assets/screenshots/overview.webp"
                                     alt="Track N Race overview screen with speed, RPM and ERS traces from a lap of Bahrain, plus live tyre temperatures and damage readouts"
                                     class="mockup-img" width="3150" height="1752" fetchpriority="high">
                             </picture>
@@ -251,9 +251,9 @@
                                         <div class="app-window">
                                             <div class="img-zoom-wrapper">
                                                 <picture>
-                                                    <source type="image/avif" srcset="assets/screenshots/session-1280.avif 1280w, assets/screenshots/session-1920.avif 1920w, assets/screenshots/session-3282.avif 3282w"
+                                                    <source type="image/avif" srcset="/assets/screenshots/session-1280.avif 1280w, /assets/screenshots/session-1920.avif 1920w, /assets/screenshots/session-3282.avif 3282w"
                                                         sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
-                                                    <img src="assets/screenshots/session.webp"
+                                                    <img src="/assets/screenshots/session.webp"
                                                         alt="Session view with a live map of Bahrain showing every car's position, race details and an events feed"
                                                         class="mockup-img" width="3282" height="1884" loading="lazy">
                                                 </picture>
@@ -293,9 +293,9 @@
                                         <div class="app-window">
                                             <div class="img-zoom-wrapper">
                                                 <picture>
-                                                    <source type="image/avif" srcset="assets/screenshots/analyze-1280.avif 1280w, assets/screenshots/analyze-1920.avif 1920w, assets/screenshots/analyze-3282.avif 3282w"
+                                                    <source type="image/avif" srcset="/assets/screenshots/analyze-1280.avif 1280w, /assets/screenshots/analyze-1920.avif 1920w, /assets/screenshots/analyze-3282.avif 3282w"
                                                         sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
-                                                    <img src="assets/screenshots/analyze.webp"
+                                                    <img src="/assets/screenshots/analyze.webp"
                                                         alt="Analysis view overlaying throttle, speed, RPM, gear and MGU-K power traces for two laps"
                                                         class="mockup-img" width="3282" height="1884" loading="lazy">
                                                 </picture>
@@ -336,9 +336,9 @@
                                         <div class="app-window">
                                             <div class="img-zoom-wrapper">
                                                 <picture>
-                                                    <source type="image/avif" srcset="assets/screenshots/minimal_recorder-1464.avif 1464w"
+                                                    <source type="image/avif" srcset="/assets/screenshots/minimal_recorder-1464.avif 1464w"
                                                         sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
-                                                    <img src="assets/screenshots/minimal_recorder.webp"
+                                                    <img src="/assets/screenshots/minimal_recorder.webp"
                                                         alt="Track N Race Minimal Recorder window showing the recording folder, UDP port and recording status"
                                                         class="mockup-img" width="1464" height="852" loading="lazy">
                                                 </picture>
@@ -388,9 +388,9 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/editor-1280.avif 1280w, assets/screenshots/editor-1920.avif 1920w, assets/screenshots/editor-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/editor-1280.avif 1280w, /assets/screenshots/editor-1920.avif 1920w, /assets/screenshots/editor-3282.avif 3282w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
-                                <img src="assets/screenshots/editor.webp"
+                                <img src="/assets/screenshots/editor.webp"
                                     alt="Layout editor for choosing which sections appear on the overview screen"
                                     class="card-img" width="3282" height="1884" loading="lazy">
                             </picture>
@@ -414,9 +414,9 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/inputs-1280.avif 1280w, assets/screenshots/inputs-1920.avif 1920w, assets/screenshots/inputs-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/inputs-1280.avif 1280w, /assets/screenshots/inputs-1920.avif 1920w, /assets/screenshots/inputs-3282.avif 3282w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
-                                <img src="assets/screenshots/inputs.webp"
+                                <img src="/assets/screenshots/inputs.webp"
                                     alt="Gear, throttle and brake, and steering input charts over a lap"
                                     class="card-img" width="3282" height="1884" loading="lazy">
                             </picture>
@@ -440,9 +440,9 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/analyze-1280.avif 1280w, assets/screenshots/analyze-1920.avif 1920w, assets/screenshots/analyze-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/analyze-1280.avif 1280w, /assets/screenshots/analyze-1920.avif 1920w, /assets/screenshots/analyze-3282.avif 3282w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
-                                <img src="assets/screenshots/analyze.webp"
+                                <img src="/assets/screenshots/analyze.webp"
                                     alt="Two laps overlaid on one chart to compare throttle, speed and RPM corner by corner"
                                     class="card-img" width="3282" height="1884" loading="lazy">
                             </picture>
@@ -466,9 +466,9 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/power-1280.avif 1280w, assets/screenshots/power-1920.avif 1920w, assets/screenshots/power-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/power-1280.avif 1280w, /assets/screenshots/power-1920.avif 1920w, /assets/screenshots/power-3282.avif 3282w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
-                                <img src="assets/screenshots/power.webp"
+                                <img src="/assets/screenshots/power.webp"
                                     alt="Power screen with ICE and MGU-K power split, ERS harvest, ERS store and fuel charts"
                                     class="card-img" width="3282" height="1884" loading="lazy">
                             </picture>
@@ -492,9 +492,9 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/tyres-1280.avif 1280w, assets/screenshots/tyres-1920.avif 1920w, assets/screenshots/tyres-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/tyres-1280.avif 1280w, /assets/screenshots/tyres-1920.avif 1920w, /assets/screenshots/tyres-3282.avif 3282w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
-                                <img src="assets/screenshots/tyres.webp"
+                                <img src="/assets/screenshots/tyres.webp"
                                     alt="Tyre allocation listing every dry and wet set with wear, remaining life and lap-time delta, next to live tyre and brake temperatures"
                                     class="card-img" width="3282" height="1884" loading="lazy">
                             </picture>
@@ -518,9 +518,9 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/tyres_charts-1280.avif 1280w, assets/screenshots/tyres_charts-1920.avif 1920w, assets/screenshots/tyres_charts-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/tyres_charts-1280.avif 1280w, /assets/screenshots/tyres_charts-1920.avif 1920w, /assets/screenshots/tyres_charts-3282.avif 3282w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
-                                <img src="assets/screenshots/tyres_charts.webp"
+                                <img src="/assets/screenshots/tyres_charts.webp"
                                     alt="Surface, inner and brake temperature charts plus tyre life for all four tyres"
                                     class="card-img" width="3282" height="1884" loading="lazy">
                             </picture>
@@ -545,9 +545,9 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/strategy-1280.avif 1280w, assets/screenshots/strategy-1920.avif 1920w, assets/screenshots/strategy-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/strategy-1280.avif 1280w, /assets/screenshots/strategy-1920.avif 1920w, /assets/screenshots/strategy-3282.avif 3282w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
-                                <img src="assets/screenshots/strategy.webp"
+                                <img src="/assets/screenshots/strategy.webp"
                                     alt="Strategy screen comparing a conservative and an aggressive plan with target lap times for each stint"
                                     class="card-img" width="3282" height="1884" loading="lazy">
                             </picture>
@@ -573,9 +573,9 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/session-1280.avif 1280w, assets/screenshots/session-1920.avif 1920w, assets/screenshots/session-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/session-1280.avif 1280w, /assets/screenshots/session-1920.avif 1920w, /assets/screenshots/session-3282.avif 3282w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
-                                <img src="assets/screenshots/session.webp"
+                                <img src="/assets/screenshots/session.webp"
                                     alt="Live track map of Bahrain with car positions and session details"
                                     class="card-img" width="3282" height="1884" loading="lazy">
                             </picture>
@@ -599,9 +599,9 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/standings-1280.avif 1280w, assets/screenshots/standings-1920.avif 1920w, assets/screenshots/standings-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/standings-1280.avif 1280w, /assets/screenshots/standings-1920.avif 1920w, /assets/screenshots/standings-3282.avif 3282w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
-                                <img src="assets/screenshots/standings.webp"
+                                <img src="/assets/screenshots/standings.webp"
                                     alt="Timing tower with positions, last lap, gaps and sector times for all 22 cars, plus the player's ERS, fuel and tyre info"
                                     class="card-img" width="3282" height="1884" loading="lazy">
                             </picture>
@@ -625,9 +625,9 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="assets/screenshots/overview_table-1280.avif 1280w, assets/screenshots/overview_table-1920.avif 1920w, assets/screenshots/overview_table-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/overview_table-1280.avif 1280w, /assets/screenshots/overview_table-1920.avif 1920w, /assets/screenshots/overview_table-3282.avif 3282w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
-                                <img src="assets/screenshots/overview_table.webp"
+                                <img src="/assets/screenshots/overview_table.webp"
                                     alt="Overview screen with the charts swapped for data tables of speed, RPM, ERS and tyre temperatures"
                                     class="card-img" width="3282" height="1884" loading="lazy">
                             </picture>
@@ -705,7 +705,7 @@
         </div>
     </div>
 
-    <script src="script.js" defer></script>
+    <script src="/script.js" defer></script>
 </body>
 
 </html>
