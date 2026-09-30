@@ -631,8 +631,14 @@ body.modal-open {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--accent-primary);
+    background: var(--bullet-color, var(--accent-primary));
 }
+
+/* Match list dots to the slide heading's highlight color */
+.feature-text:has(.highlight-blue) { --bullet-color: var(--accent-primary); }
+.feature-text:has(.highlight-green) { --bullet-color: var(--accent-green); }
+.feature-text:has(.highlight-purple) { --bullet-color: var(--accent-purple); }
+.feature-text:has(.highlight-yellow) { --bullet-color: var(--accent-yellow); }
 
 .post-script {
     display: block;
@@ -709,11 +715,15 @@ body.modal-open {
    ========================================================================== */
 .features-grid-wrapper {
     margin-top: 1.5rem;
+    /* Break out of the 1200px section: 300px wider than the content above it */
+    --grid-width: min(100vw - 3rem, 1200px - 3rem + 300px);
+    width: var(--grid-width);
+    margin-left: calc((100% - var(--grid-width)) / 2);
 }
 
 .features-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 1.5rem;
 }
 
@@ -1700,6 +1710,15 @@ kbd {
 
     .feature-container {
         gap: 2rem;
+    }
+
+    .features-grid-wrapper {
+        width: auto;
+        margin-left: 0;
+    }
+
+    .features-grid {
+        grid-template-columns: repeat(2, 1fr);
     }
 }
 

@@ -197,8 +197,22 @@ document.addEventListener('DOMContentLoaded', () => {
             translateY = Math.min(maxPanY, Math.max(-maxPanY, translateY));
         };
 
-        const openLightbox = (src) => {
-            lightboxImg.src = src;
+        let lightboxLoadId = 0;
+
+        const openLightbox = (src, previewSrc) => {
+            // Show the already-loaded card image instantly so the previous image never flashes,
+            // then swap in the full-size file once it has downloaded and decoded.
+            const loadId = ++lightboxLoadId;
+            lightboxImg.src = previewSrc || src;
+            if (previewSrc && previewSrc !== src) {
+                const full = new Image();
+                full.src = src;
+                full.decode()
+                    .catch(() => {})
+                    .then(() => {
+                        if (loadId === lightboxLoadId) lightboxImg.src = src;
+                    });
+            }
             currentScale = 1;
             translateX = 0;
             translateY = 0;
@@ -212,6 +226,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         const closeLightbox = () => {
+            lightboxLoadId++;
             lightbox.classList.remove('active', 'is-zoomed', 'is-dragging');
             currentScale = 1;
             translateX = 0;
@@ -233,7 +248,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const fullAvif = avifSource && img.currentSrc.endsWith('.avif')
                         ? avifSource.srcset.split(',').pop().trim().split(' ')[0]
                         : null;
-                    openLightbox(fullAvif || img.src);
+                    openLightbox(fullAvif || img.src, img.currentSrc || img.src);
                 }
             });
         });
