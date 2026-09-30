@@ -43,8 +43,10 @@ export default function GraphTable<T extends { session_time: number }>({ columns
   getLiveValues?: (rows: ColumnView<T>, i: number) => readonly number[]
   allLapsDataMask?: number
   // How far (in rem) the table should break out of its container's padding on the
-  // left/right/bottom so it sits flush against the panel edge/border instead of
-  // floating with a gap — matches the parent's own p-* padding (defaults to p-4's 1rem).
+  // right/bottom so it sits flush against the panel edge/border instead of
+  // floating with a gap — matches the parent's own padding (defaults to 1rem).
+  // The left edge never breaks out: .chart-panel has no left padding, so a
+  // negative left offset would push the first column outside the panel.
   edgePadRem?: number
   // Omit the top border — for callers whose container already has a border/divider
   // immediately above the table, where the default border-t would double up.
@@ -167,7 +169,7 @@ export default function GraphTable<T extends { session_time: number }>({ columns
 
   return (
     <div
-      style={{ top: 0, left: `-${edgePadRem}rem`, right: `-${edgePadRem}rem`, bottom: `-${edgePadRem}rem` }}
+      style={{ top: 0, left: 0, right: `-${edgePadRem}rem`, bottom: `-${edgePadRem}rem` }}
       className={`absolute flex flex-col bg-[var(--bg-panel)] overflow-hidden ${noBorderTop ? '' : 'border-t border-[var(--border)]'}`}
     >
       <div className="overflow-x-auto flex-1 min-h-0 flex flex-col">
