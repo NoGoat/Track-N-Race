@@ -492,45 +492,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Fetch latest release version for Download button
-    const downloadBtn = document.getElementById('downloadBtn');
-    if (downloadBtn) {
-        const getCookie = (name) => {
-            const value = `; ${document.cookie}`;
-            const parts = value.split(`; ${name}=`);
-            if (parts.length === 2) return parts.pop().split(';').shift();
-            return null;
-        };
-
-        const cachedVersion = getCookie('tnr_latest_version');
-
-        const btnSpan = downloadBtn.querySelector('span');
-
-        const updateBtnText = (version) => {
-            if (btnSpan) {
-                btnSpan.textContent = `Download ${version}`;
-            } else {
-                downloadBtn.textContent = `Download ${version}`;
-            }
-        };
-
-        if (cachedVersion) {
-            updateBtnText(cachedVersion);
-        } else {
-            fetch('https://api.github.com/repos/NoGoat/Track-N-Race/releases/latest')
-                .then(response => response.json())
-                .then(data => {
-                    if (data && data.tag_name) {
-                        updateBtnText(data.tag_name);
-                        document.cookie = `tnr_latest_version=${data.tag_name}; max-age=3600; path=/; SameSite=Lax`;
-                    }
-                })
-                .catch(error => {
-                    console.error('Error fetching latest release:', error);
-                });
-        }
-    }
-
     // Setup Page Scenario Selector (Single PC vs Dual System)
     const scenarioSingleBtn = document.getElementById('scenarioSingleBtn');
     const scenarioDualBtn = document.getElementById('scenarioDualBtn');

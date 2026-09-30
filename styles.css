@@ -38,6 +38,8 @@
     --accent-amber: #f59e0b;
     --accent-amber-subtle: rgba(245, 158, 11, 0.12);
 
+    --accent-yellow: #facc15;
+
     --accent-purple: #a855f7;
     --accent-purple-subtle: rgba(168, 85, 247, 0.12);
 
@@ -357,6 +359,11 @@ body.modal-open {
     font-weight: 600;
 }
 
+.highlight-yellow {
+    color: var(--accent-yellow);
+    font-weight: 600;
+}
+
 /* ==========================================================================
    Buttons & CTA
    ========================================================================== */
@@ -455,11 +462,26 @@ body.modal-open {
     border-radius: var(--radius-md);
 }
 
+.hero-img {
+    position: relative;
+    cursor: pointer;
+    overflow: hidden;
+    width: 100%;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-md);
+}
+
 .mockup-img {
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
+}
+
+/* Portrait screenshots: show the whole image inside the 16:9 frame instead of cropping */
+.mockup-img.fit-contain {
+    object-fit: contain;
 }
 
 .zoom-badge {
@@ -709,7 +731,6 @@ body.modal-open {
 .card-img-wrapper {
     position: relative;
     width: 100%;
-    aspect-ratio: 16 / 9;
     overflow: hidden;
     cursor: pointer;
     background: transparent;

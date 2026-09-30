@@ -27,8 +27,8 @@
     <meta property="og:description"
         content="Record and analyze F1 24, F1 25, and 2026 DLC telemetry. Compare laps, driver inputs, tyre wear, ERS, fuel, and delta times for free.">
     <meta property="og:image" content="https://track-n-race.com/assets/screenshots/overview.webp">
-    <meta property="og:image:width" content="3150">
-    <meta property="og:image:height" content="1752">
+    <meta property="og:image:width" content="2492">
+    <meta property="og:image:height" content="1492">
     <meta property="og:image:alt" content="Track N Race F1 Game telemetry and Lap Performance Analysis Dashboard">
 
     <!-- Twitter -->
@@ -78,6 +78,7 @@
           "name": "Track N Race",
           "alternateName": ["Track-N-Race", "Track N Race F1 Game telemetry"],
           "applicationCategory": "UtilitiesApplication",
+          "softwareVersion": "1.6.0",
           "operatingSystem": "Windows, macOS, Linux",
           "url": "https://track-n-race.com/",
           "downloadUrl": "https://github.com/NoGoat/Track-N-Race/releases/latest",
@@ -117,7 +118,7 @@
 
     <!-- Preload Hero Image -->
     <link rel="preload" as="image" type="image/avif"
-        imagesrcset="/assets/screenshots/overview-1280.avif 1280w, /assets/screenshots/overview-1920.avif 1920w, /assets/screenshots/overview-3150.avif 3150w"
+        imagesrcset="/assets/screenshots/overview-1280.avif 1280w, /assets/screenshots/overview-1920.avif 1920w, /assets/screenshots/overview-2492.avif 2492w"
         imagesizes="(max-width: 860px) 100vw, (max-width: 1200px) 55vw, 620px" fetchpriority="high">
 
     <!-- Fonts -->
@@ -191,20 +192,20 @@
                                 <polyline points="7 10 12 15 17 10"></polyline>
                                 <line x1="12" y1="15" x2="12" y2="3"></line>
                             </svg>
-                            <span>Download</span>
+                            <span>Download 1.6.0</span>
                         </a>
                     </div>
                 </div>
 
                 <div class="hero-visual">
                     <div class="app-window">
-                        <div class="img-zoom-wrapper">
+                        <div class="hero-img">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/overview-1280.avif 1280w, /assets/screenshots/overview-1920.avif 1920w, /assets/screenshots/overview-3150.avif 3150w"
+                                <source type="image/avif" srcset="/assets/screenshots/overview-1280.avif 1280w, /assets/screenshots/overview-1920.avif 1920w, /assets/screenshots/overview-2492.avif 2492w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 55vw, 620px">
                                 <img src="/assets/screenshots/overview.webp"
                                     alt="Track N Race overview screen with speed, RPM and ERS traces from a lap of Bahrain, plus live tyre temperatures and damage readouts"
-                                    class="mockup-img" width="3150" height="1752" fetchpriority="high">
+                                    class="mockup-img" width="2492" height="1492" fetchpriority="high">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -229,8 +230,93 @@
                 <div class="carousel-card">
                     <div class="carousel-viewport">
                         <div class="carousel-track">
-                            <!-- Slide 1: Session -->
+                            <!-- Slide 1: Analyze -->
                             <div class="carousel-slide active">
+                                <div class="feature-container">
+                                    <div class="feature-text">
+                                        <h2 class="feature-title">Deep <span class="highlight-blue">Analysis</span>
+                                        </h2>
+                                        <p class="section-desc">
+                                            Dive deep into your race data. Compare any data of your choosing either your own laps or against rivals or laps from an older session to find out what's costing you time.
+                                        </p>
+                                        <ul class="feature-list">
+                                            <li>Trace charts for almost any data</li>
+                                            <li>Compare against other drivers</li>
+                                            <li>Lap overlay comparisons</li>
+                                            <li>Customizable colors and chart hierarchy</li>
+                                            <li>Visualize your position on the map</li>
+                                        </ul>
+                                    </div>
+                                    <div class="feature-visual">
+                                        <div class="app-window">
+                                            <div class="img-zoom-wrapper">
+                                                <picture>
+                                                    <source type="image/avif" srcset="/assets/screenshots/analyze-1280.avif 1280w, /assets/screenshots/analyze-1920.avif 1920w, /assets/screenshots/analyze-2624.avif 2624w"
+                                                        sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
+                                                    <img src="/assets/screenshots/analyze.webp"
+                                                        alt="Analysis view overlaying throttle, speed, RPM, gear and MGU-K power traces for two laps"
+                                                        class="mockup-img" width="2624" height="1624" loading="lazy">
+                                                </picture>
+                                                <div class="zoom-badge">
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                                        stroke="currentColor" stroke-width="2">
+                                                        <circle cx="11" cy="11" r="8"></circle>
+                                                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                                        <line x1="11" y1="8" x2="11" y2="14"></line>
+                                                        <line x1="8" y1="11" x2="14" y2="11"></line>
+                                                    </svg>
+                                                    <span>Expand Image</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Slide 2: Driver Selector -->
+                            <div class="carousel-slide">
+                                <div class="feature-container">
+                                    <div class="feature-text">
+                                        <h2 class="feature-title">Driver <span class="highlight-yellow">Selector</span>
+                                        </h2>
+                                        <p class="section-desc">
+                                            View every other driver's data and compare almost* every data channel to your own.
+                                        </p>
+                                        <ul class="feature-list">
+                                            <li>Select any driver in the session</li>
+                                            <li>Compare their data^ against your own</li>
+                                            <span class="post-script">*The game does not expose ride height data for other drivers. Ride height will be unavialble for other drivers.</span>
+                                            <span class="post-script">^Some data channels will be unavilable if the other driver has set their telemetry to restricted during online play.</span>
+                                        </ul>
+                                    </div>
+                                    <div class="feature-visual">
+                                        <div class="app-window">
+                                            <div class="img-zoom-wrapper">
+                                                <picture>
+                                                    <source type="image/avif" srcset="/assets/screenshots/driver_switcher-632.avif 632w"
+                                                        sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
+                                                    <img src="/assets/screenshots/driver_switcher.webp"
+                                                        alt="Driver switcher dropdown in the top bar listing every driver in the session, from Pérez and Verstappen to Hamilton and Leclerc"
+                                                        class="mockup-img fit-contain" width="632" height="732" loading="lazy">
+                                                </picture>
+                                                <div class="zoom-badge">
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                                        stroke="currentColor" stroke-width="2">
+                                                        <circle cx="11" cy="11" r="8"></circle>
+                                                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                                        <line x1="11" y1="8" x2="11" y2="14"></line>
+                                                        <line x1="8" y1="11" x2="14" y2="11"></line>
+                                                    </svg>
+                                                    <span>Expand Image</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Slide 3: Session -->
+                            <div class="carousel-slide">
                                 <div class="feature-container">
                                     <div class="feature-text">
                                         <h2 class="feature-title">Track almost <span
@@ -251,11 +337,11 @@
                                         <div class="app-window">
                                             <div class="img-zoom-wrapper">
                                                 <picture>
-                                                    <source type="image/avif" srcset="/assets/screenshots/session-1280.avif 1280w, /assets/screenshots/session-1920.avif 1920w, /assets/screenshots/session-3282.avif 3282w"
+                                                    <source type="image/avif" srcset="/assets/screenshots/session-1280.avif 1280w, /assets/screenshots/session-1920.avif 1920w, /assets/screenshots/session-2624.avif 2624w"
                                                         sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
                                                     <img src="/assets/screenshots/session.webp"
                                                         alt="Session view with a live map of Bahrain showing every car's position, race details and an events feed"
-                                                        class="mockup-img" width="3282" height="1884" loading="lazy">
+                                                        class="mockup-img" width="2624" height="1624" loading="lazy">
                                                 </picture>
                                                 <div class="zoom-badge">
                                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
@@ -273,53 +359,11 @@
                                 </div>
                             </div>
 
-                            <!-- Slide 2: Analyze -->
+                            <!-- Slide 4: Minimal -->
                             <div class="carousel-slide">
                                 <div class="feature-container">
                                     <div class="feature-text">
-                                        <h2 class="feature-title">Deep <span class="highlight-purple">Analysis</span>
-                                        </h2>
-                                        <p class="section-desc">
-                                            Dive deep into your race data. Compare any data of your choosing against
-                                            other of your own laps to find what's costing you lap time.
-                                        </p>
-                                        <ul class="feature-list">
-                                            <li>Trace charts for almost any data</li>
-                                            <li>Lap overlay comparisons</li>
-                                            <li>Customizable colors and chart hierarchy</li>
-                                        </ul>
-                                    </div>
-                                    <div class="feature-visual">
-                                        <div class="app-window">
-                                            <div class="img-zoom-wrapper">
-                                                <picture>
-                                                    <source type="image/avif" srcset="/assets/screenshots/analyze-1280.avif 1280w, /assets/screenshots/analyze-1920.avif 1920w, /assets/screenshots/analyze-3282.avif 3282w"
-                                                        sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
-                                                    <img src="/assets/screenshots/analyze.webp"
-                                                        alt="Analysis view overlaying throttle, speed, RPM, gear and MGU-K power traces for two laps"
-                                                        class="mockup-img" width="3282" height="1884" loading="lazy">
-                                                </picture>
-                                                <div class="zoom-badge">
-                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                                                        stroke="currentColor" stroke-width="2">
-                                                        <circle cx="11" cy="11" r="8"></circle>
-                                                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                                                        <line x1="11" y1="8" x2="11" y2="14"></line>
-                                                        <line x1="8" y1="11" x2="14" y2="11"></line>
-                                                    </svg>
-                                                    <span>Expand Image</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Slide 3: Minimal -->
-                            <div class="carousel-slide">
-                                <div class="feature-container">
-                                    <div class="feature-text">
-                                        <h2 class="feature-title">Minimal <span class="highlight-blue">Recorder</span>
+                                        <h2 class="feature-title">Minimal <span class="highlight-purple">Recorder</span>
                                         </h2>
                                         <p class="section-desc">
                                             Worried about performance penalties from running the app while playing the
@@ -329,7 +373,8 @@
                                         </p>
                                         <ul class="feature-list">
                                             <li>Full data logging</li>
-                                            <li>No additional features to reduce overhead</li>
+                                            <li>Supports UDP forwarding</li>
+                                            <li>Minimal performance overhead</li>
                                         </ul>
                                     </div>
                                     <div class="feature-visual">
@@ -340,7 +385,7 @@
                                                         sizes="(max-width: 860px) 100vw, (max-width: 1200px) 50vw, 600px">
                                                     <img src="/assets/screenshots/minimal_recorder.webp"
                                                         alt="Track N Race Minimal Recorder window showing the recording folder, UDP port and recording status"
-                                                        class="mockup-img" width="1464" height="852" loading="lazy">
+                                                        class="mockup-img" width="1464" height="932" loading="lazy">
                                                 </picture>
                                                 <div class="zoom-badge">
                                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
@@ -372,6 +417,7 @@
                         <span class="dot active" data-slide="0"></span>
                         <span class="dot" data-slide="1"></span>
                         <span class="dot" data-slide="2"></span>
+                        <span class="dot" data-slide="3"></span>
                     </div>
                     <button class="carousel-btn next" aria-label="Next slide">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -388,11 +434,37 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/editor-1280.avif 1280w, /assets/screenshots/editor-1920.avif 1920w, /assets/screenshots/editor-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/other_drivers-1280.avif 1280w, /assets/screenshots/other_drivers-1920.avif 1920w, /assets/screenshots/other_drivers-2624.avif 2624w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="/assets/screenshots/other_drivers.webp"
+                                    alt="Overview screen switched to Albon's car, showing his speed, RPM and ERS traces, fuel and position"
+                                    class="card-img" width="2624" height="1624" loading="lazy">
+                            </picture>
+                            <div class="zoom-badge">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <circle cx="11" cy="11" r="8"></circle>
+                                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                    <line x1="11" y1="8" x2="11" y2="14"></line>
+                                    <line x1="8" y1="11" x2="14" y2="11"></line>
+                                </svg>
+                                <span>Expand Image</span>
+                            </div>
+                        </div>
+                        <div class="card-content">
+                            <h3 class="card-title">View Other Drivers</h3>
+                            <p class="card-desc">View telemetry for other drivers. Looks like Albon is doing a fine job here.</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="card-img-wrapper">
+                            <picture>
+                                <source type="image/avif" srcset="/assets/screenshots/editor-1280.avif 1280w, /assets/screenshots/editor-1920.avif 1920w, /assets/screenshots/editor-2624.avif 2624w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
                                 <img src="/assets/screenshots/editor.webp"
                                     alt="Layout editor for choosing which sections appear on the overview screen"
-                                    class="card-img" width="3282" height="1884" loading="lazy">
+                                    class="card-img" width="2624" height="1624" loading="lazy">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -414,11 +486,11 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/inputs-1280.avif 1280w, /assets/screenshots/inputs-1920.avif 1920w, /assets/screenshots/inputs-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/inputs-1280.avif 1280w, /assets/screenshots/inputs-1920.avif 1920w, /assets/screenshots/inputs-2624.avif 2624w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
                                 <img src="/assets/screenshots/inputs.webp"
                                     alt="Gear, throttle and brake, and steering input charts over a lap"
-                                    class="card-img" width="3282" height="1884" loading="lazy">
+                                    class="card-img" width="2624" height="1624" loading="lazy">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -440,11 +512,11 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/analyze-1280.avif 1280w, /assets/screenshots/analyze-1920.avif 1920w, /assets/screenshots/analyze-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/analyze-1280.avif 1280w, /assets/screenshots/analyze-1920.avif 1920w, /assets/screenshots/analyze-2624.avif 2624w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
                                 <img src="/assets/screenshots/analyze.webp"
                                     alt="Two laps overlaid on one chart to compare throttle, speed and RPM corner by corner"
-                                    class="card-img" width="3282" height="1884" loading="lazy">
+                                    class="card-img" width="2624" height="1624" loading="lazy">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -466,11 +538,11 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/power-1280.avif 1280w, /assets/screenshots/power-1920.avif 1920w, /assets/screenshots/power-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/power-1280.avif 1280w, /assets/screenshots/power-1920.avif 1920w, /assets/screenshots/power-2624.avif 2624w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
                                 <img src="/assets/screenshots/power.webp"
                                     alt="Power screen with ICE and MGU-K power split, ERS harvest, ERS store and fuel charts"
-                                    class="card-img" width="3282" height="1884" loading="lazy">
+                                    class="card-img" width="2624" height="1624" loading="lazy">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -492,11 +564,11 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/tyres-1280.avif 1280w, /assets/screenshots/tyres-1920.avif 1920w, /assets/screenshots/tyres-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/tyres-1280.avif 1280w, /assets/screenshots/tyres-1920.avif 1920w, /assets/screenshots/tyres-2624.avif 2624w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
                                 <img src="/assets/screenshots/tyres.webp"
                                     alt="Tyre allocation listing every dry and wet set with wear, remaining life and lap-time delta, next to live tyre and brake temperatures"
-                                    class="card-img" width="3282" height="1884" loading="lazy">
+                                    class="card-img" width="2624" height="1624" loading="lazy">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -518,11 +590,11 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/tyres_charts-1280.avif 1280w, /assets/screenshots/tyres_charts-1920.avif 1920w, /assets/screenshots/tyres_charts-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/tyres_charts-1280.avif 1280w, /assets/screenshots/tyres_charts-1920.avif 1920w, /assets/screenshots/tyres_charts-2624.avif 2624w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
                                 <img src="/assets/screenshots/tyres_charts.webp"
                                     alt="Surface, inner and brake temperature charts plus tyre life for all four tyres"
-                                    class="card-img" width="3282" height="1884" loading="lazy">
+                                    class="card-img" width="2624" height="1624" loading="lazy">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -545,11 +617,11 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/strategy-1280.avif 1280w, /assets/screenshots/strategy-1920.avif 1920w, /assets/screenshots/strategy-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/strategy-1280.avif 1280w, /assets/screenshots/strategy-1920.avif 1920w, /assets/screenshots/strategy-2624.avif 2624w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
                                 <img src="/assets/screenshots/strategy.webp"
                                     alt="Strategy screen comparing a conservative and an aggressive plan with target lap times for each stint"
-                                    class="card-img" width="3282" height="1884" loading="lazy">
+                                    class="card-img" width="2624" height="1624" loading="lazy">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -573,11 +645,11 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/session-1280.avif 1280w, /assets/screenshots/session-1920.avif 1920w, /assets/screenshots/session-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/session-1280.avif 1280w, /assets/screenshots/session-1920.avif 1920w, /assets/screenshots/session-2624.avif 2624w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
                                 <img src="/assets/screenshots/session.webp"
                                     alt="Live track map of Bahrain with car positions and session details"
-                                    class="card-img" width="3282" height="1884" loading="lazy">
+                                    class="card-img" width="2624" height="1624" loading="lazy">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -599,11 +671,11 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/standings-1280.avif 1280w, /assets/screenshots/standings-1920.avif 1920w, /assets/screenshots/standings-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/standings-1280.avif 1280w, /assets/screenshots/standings-1920.avif 1920w, /assets/screenshots/standings-2624.avif 2624w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
                                 <img src="/assets/screenshots/standings.webp"
                                     alt="Timing tower with positions, last lap, gaps and sector times for all 22 cars, plus the player's ERS, fuel and tyre info"
-                                    class="card-img" width="3282" height="1884" loading="lazy">
+                                    class="card-img" width="2624" height="1624" loading="lazy">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -625,11 +697,37 @@
                     <div class="feature-card">
                         <div class="card-img-wrapper">
                             <picture>
-                                <source type="image/avif" srcset="/assets/screenshots/overview_table-1280.avif 1280w, /assets/screenshots/overview_table-1920.avif 1920w, /assets/screenshots/overview_table-3282.avif 3282w"
+                                <source type="image/avif" srcset="/assets/screenshots/previous_lap_times-1280.avif 1280w, /assets/screenshots/previous_lap_times-1920.avif 1920w, /assets/screenshots/previous_lap_times-2624.avif 2624w"
+                                    sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
+                                <img src="/assets/screenshots/previous_lap_times.webp"
+                                    alt="Lap times popup from the standings, listing every lap with sector splits and the fastest lap and sectors highlighted"
+                                    class="card-img" width="2624" height="1624" loading="lazy">
+                            </picture>
+                            <div class="zoom-badge">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <circle cx="11" cy="11" r="8"></circle>
+                                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                    <line x1="11" y1="8" x2="11" y2="14"></line>
+                                    <line x1="8" y1="11" x2="14" y2="11"></line>
+                                </svg>
+                                <span>Expand Image</span>
+                            </div>
+                        </div>
+                        <div class="card-content">
+                            <h3 class="card-title">View Previous Times</h3>
+                            <p class="card-desc">View previous lap and sector times for all drivers.</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="card-img-wrapper">
+                            <picture>
+                                <source type="image/avif" srcset="/assets/screenshots/overview_table-1280.avif 1280w, /assets/screenshots/overview_table-1920.avif 1920w, /assets/screenshots/overview_table-2624.avif 2624w"
                                     sizes="(max-width: 860px) 100vw, (max-width: 1200px) 48vw, 564px">
                                 <img src="/assets/screenshots/overview_table.webp"
                                     alt="Overview screen with the charts swapped for data tables of speed, RPM, ERS and tyre temperatures"
-                                    class="card-img" width="3282" height="1884" loading="lazy">
+                                    class="card-img" width="2624" height="1624" loading="lazy">
                             </picture>
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
