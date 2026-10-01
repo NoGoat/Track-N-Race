@@ -39,6 +39,8 @@ export interface AnalyzeConfig {
   individualGraphs: boolean
   /** Split view: the graphs' share of the width, 0.2–0.8 (the map takes the rest). */
   splitRatio: number
+  /** Split view: draw each car's current map position as a line on the graphs. */
+  splitCursors: boolean
   syncedTooltip: boolean
   sectorBoundaries: boolean
   sectorDelta: boolean
@@ -228,6 +230,7 @@ export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
   view: 'graph',
   individualGraphs: false,
   splitRatio: DEFAULT_SPLIT_RATIO,
+  splitCursors: true,
   syncedTooltip: false,
   sectorBoundaries: false,
   sectorDelta: false,
@@ -300,6 +303,7 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
     splitRatio: typeof value?.splitRatio === 'number' && Number.isFinite(value.splitRatio)
       ? clampSplitRatio(value.splitRatio)
       : DEFAULT_SPLIT_RATIO,
+    splitCursors: value?.splitCursors !== false,
     syncedTooltip: value?.syncedTooltip === true,
     sectorBoundaries,
     sectorDelta: value?.sectorDelta === true,

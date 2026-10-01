@@ -961,6 +961,15 @@ export default function AnalyzeTimeChart({
     let stackedLayoutSignature = ''
     let stackedMembership = ''
     let exitingItems: AnalyzeSeriesConfig[] = []
+    // Series options animating out with a panel that no longer owns any of
+    // them in the target layout. Hidden once that exit animation completes.
+    const exitingOptions = new Set<TimeChartSeriesOptions>()
+    // Options a series card draws, comparison first so the current lap paints on top.
+    const optionsFor = (item: AnalyzeSeriesConfig): TimeChartSeriesOptions[] => {
+      if (item.metricId === 'delta') return deltaSeries ? [deltaSeries.positive, deltaSeries.negative] : []
+      return analyzeSeriesMemberIds(item).flatMap(id => [records.comparison.get(id), records.current.get(id)])
+        .filter((option): option is TimeChartSeriesOptions => !!option)
+    }
     if (stackedMode) {
       const selectedById = new Map(selected.map(item => [item.metricId, item]))
       const targetViewportById = new Map<string, StackedViewport>(panelItems.map((item, index) => [item.metricId, {
@@ -968,9 +977,17 @@ export default function AnalyzeTimeChart({
         bottom: (index + 1) / panelItems.length,
         gapAfter: index < panelItems.length - 1 ? STACKED_PANEL_GAP : 0,
       }]))
-      const representativeFor = (item: AnalyzeSeriesConfig) => item.metricId === 'delta'
-        ? deltaSeries?.positive
-        : records.current.get(analyzeSeriesMemberIds(item)[0])
+      // Series options are keyed by metric, not by card: a combined tyre card
+      // and its per-corner cards draw the very same options. Swapping one for
+      // the other exits one panel and enters another over shared options, so
+      // the entering panels claim their options before any exit is planned.
+      const claimedOptions = new Set(panelItems.flatMap(optionsFor))
+      // Each panel's own presented geometry, kept current by the animation.
+      // Panels must not infer it from a series, which another panel may own.
+      const panelStates = stackedAxisPanelsRef.current
+      const viewportOf = (panel: StackedAxisPanel): StackedViewport => ({
+        top: panel.top, bottom: panel.bottom, gapAfter: panel.gapAfter ?? 0,
+      })
       stackedLayoutSignature = panelItems.map(item => item.metricId).join('|')
       // A combined card gaining or losing a corner keeps the panel list but
       // still has to place that corner's line, so it counts as a layout change.
@@ -1004,18 +1021,17 @@ export default function AnalyzeTimeChart({
       ].filter(([id]) => selectedById.has(id) || stackedExitingMetricIdsRef.current.has(id)))
       panelItems.forEach((item, index) => {
         const viewport = targetViewportById.get(item.metricId)!
-        const representative = representativeFor(item)
-        const prior = representative?.viewport
+        const prior = panelStates.get(item.metricId)
         let entryBoundary: number | null = null
         if (!prior) {
           for (let sibling = index - 1; sibling >= 0; sibling--) {
-            const siblingViewport = representativeFor(panelItems[sibling])?.viewport
-            if (siblingViewport) { entryBoundary = siblingViewport.bottom; break }
+            const siblingState = panelStates.get(panelItems[sibling].metricId)
+            if (siblingState) { entryBoundary = siblingState.bottom; break }
           }
           if (entryBoundary === null) {
             for (let sibling = index + 1; sibling < panelItems.length; sibling++) {
-              const siblingViewport = representativeFor(panelItems[sibling])?.viewport
-              if (siblingViewport) { entryBoundary = siblingViewport.top; break }
+              const siblingState = panelStates.get(panelItems[sibling].metricId)
+              if (siblingState) { entryBoundary = siblingState.top; break }
             }
           }
         }
@@ -1023,48 +1039,31 @@ export default function AnalyzeTimeChart({
           ? { ...viewport }
           : collapsedViewportAt(entryBoundary)
         panelViewportAnimation.set(item.metricId, {
-          from: prior
-            ? { top: prior.top, bottom: prior.bottom, gapAfter: prior.gapAfter ?? 0 }
-            : enteringFrom,
+          from: prior ? viewportOf(prior) : enteringFrom,
           to: { ...viewport },
-          fromOpacity: prior ? representative?.opacity ?? 1 : 0,
+          fromOpacity: prior ? prior.opacity ?? 1 : 0,
           toOpacity: 1,
         })
-        const applyViewport = (option: TimeChartSeriesOptions | undefined) => {
-          if (!option) return
-          const prior = option.viewport
-          const from = prior
-            ? { top: prior.top, bottom: prior.bottom, gapAfter: prior.gapAfter ?? 0 }
+        // An option that already has a viewport is placed (in this panel, or
+        // in the panel it is moving from) and slides; anything else fades in.
+        for (const option of optionsFor(item)) {
+          const optionPrior = option.viewport
+          const from = optionPrior
+            ? { top: optionPrior.top, bottom: optionPrior.bottom, gapAfter: optionPrior.gapAfter ?? 0 }
             : enteringFrom
           const to = { ...viewport }
-          const fromOpacity = prior ? option.opacity ?? 1 : 0
+          const fromOpacity = optionPrior ? option.opacity ?? 1 : 0
           viewportAnimation.set(option, { from, to, fromOpacity, toOpacity: 1 })
           if (layoutChanged) {
             option.viewport = animateStackedLayout ? { ...from } : { ...to }
             option.opacity = animateStackedLayout ? fromOpacity : 1
           }
         }
-        if (item.metricId === 'delta') {
-          if (deltaSeries) {
-            applyViewport(deltaSeries.positive)
-            applyViewport(deltaSeries.negative)
-          }
-          return
-        }
-        for (const id of analyzeSeriesMemberIds(item)) {
-          applyViewport(records.current.get(id))
-          applyViewport(records.comparison.get(id))
-        }
       })
       for (const item of exitingItems) {
-        const representative = representativeFor(item)
-        const prior = representative?.viewport
+        const prior = panelStates.get(item.metricId)
         if (!prior) continue
-        const from: StackedViewport = {
-          top: prior.top,
-          bottom: prior.bottom,
-          gapAfter: prior.gapAfter ?? 0,
-        }
+        const from = viewportOf(prior)
         const previousIndex = previousPanelIds.indexOf(item.metricId)
         let exitBoundary: number | null = null
         if (previousIndex >= 0) {
@@ -1084,55 +1083,56 @@ export default function AnalyzeTimeChart({
         panelViewportAnimation.set(item.metricId, {
           from,
           to,
-          fromOpacity: representative?.opacity ?? 1,
+          fromOpacity: prior.opacity ?? 1,
           toOpacity: 0,
         })
-        const applyExitViewport = (option: TimeChartSeriesOptions | undefined) => {
-          if (!option) return
+        for (const option of optionsFor(item)) {
+          // Claimed options now belong to an entering panel and move with it.
+          if (claimedOptions.has(option)) continue
           const optionPrior = option.viewport
           const optionFrom: StackedViewport = optionPrior
             ? { top: optionPrior.top, bottom: optionPrior.bottom, gapAfter: optionPrior.gapAfter ?? 0 }
             : from
           const fromOpacity = option.opacity ?? 1
           viewportAnimation.set(option, { from: optionFrom, to, fromOpacity, toOpacity: 0 })
+          exitingOptions.add(option)
+          // Series options belong to the ref-held chart (see the viewport reset above).
+          // eslint-disable-next-line react-hooks/immutability
           option.viewport = { ...optionFrom }
           option.opacity = fromOpacity
           option.visible = item.metricId === 'delta' || option.name.startsWith('current:') || !!comparison
         }
-        if (item.metricId === 'delta') {
-          // Series options belong to the ref-held chart (see the viewport reset above).
-          // eslint-disable-next-line react-hooks/immutability
-          applyExitViewport(deltaSeries?.positive)
-          applyExitViewport(deltaSeries?.negative)
-        } else {
-          for (const id of analyzeSeriesMemberIds(item)) {
-            applyExitViewport(records.current.get(id))
-            applyExitViewport(records.comparison.get(id))
-          }
+      }
+      if (layoutChanged) {
+        // Options no panel draws are hidden. Drop their stale placement so a
+        // later re-entry fades in from its new panel instead of jumping there.
+        for (const option of chart.options.series) {
+          if (claimedOptions.has(option) || exitingOptions.has(option)) continue
+          option.viewport = undefined
+          option.opacity = 1
         }
       }
     }
-    const drawOrder = [...selected].reverse().flatMap(item => {
-      if (!item.visible) return []
-      if (item.metricId === 'delta') return showDelta && deltaSeries ? [deltaSeries.positive, deltaSeries.negative] : []
-      return analyzeSeriesMemberIds(item).flatMap(id => {
-        const currentOption = records.current.get(id)
-        const comparisonOption = records.comparison.get(id)
-        const options = comparisonOption && comparison ? [comparisonOption, currentOption] : [currentOption]
-        return options.filter((option): option is TimeChartSeriesOptions => !!option)
-      })
-    })
-    for (const item of [...exitingItems].reverse()) {
+    // A combined card and its corner cards can share options; queue each once.
+    const drawOrder: TimeChartSeriesOptions[] = []
+    const queued = new Set<TimeChartSeriesOptions>()
+    const queue = (option: TimeChartSeriesOptions) => {
+      if (queued.has(option)) return
+      queued.add(option)
+      drawOrder.push(option)
+    }
+    for (const item of [...selected].reverse()) {
+      if (!item.visible) continue
       if (item.metricId === 'delta') {
-        if (deltaSeries) drawOrder.push(deltaSeries.positive, deltaSeries.negative)
+        if (showDelta) optionsFor(item).forEach(queue)
         continue
       }
-      for (const id of analyzeSeriesMemberIds(item)) {
-        const currentOption = records.current.get(id)
-        const comparisonOption = records.comparison.get(id)
-        if (comparisonOption && comparison) drawOrder.push(comparisonOption)
-        if (currentOption) drawOrder.push(currentOption)
+      for (const option of optionsFor(item)) {
+        if (option.name.startsWith('current:') || comparison) queue(option)
       }
+    }
+    for (const item of [...exitingItems].reverse()) {
+      for (const option of optionsFor(item)) if (exitingOptions.has(option)) queue(option)
     }
     const visibleOptions = new Set(drawOrder)
     const hidden = chart.options.series.filter(option => {
@@ -1224,18 +1224,12 @@ export default function AnalyzeTimeChart({
           if (progress < 1) stackedViewportAnimationRef.current = requestAnimationFrame(animate)
           else {
             stackedViewportAnimationRef.current = 0
-            for (const item of exitingItems) {
-              const options = item.metricId === 'delta'
-                ? [deltaSeries?.positive, deltaSeries?.negative]
-                : analyzeSeriesMemberIds(item).flatMap(id => [records.current.get(id), records.comparison.get(id)])
-              for (const option of options) {
-                if (!option) continue
-                option.visible = false
-                option.viewport = undefined
-                option.opacity = 1
-              }
-              stackedAxisPanelsRef.current.delete(item.metricId)
+            for (const option of exitingOptions) {
+              option.visible = false
+              option.viewport = undefined
+              option.opacity = 1
             }
+            for (const item of exitingItems) stackedAxisPanelsRef.current.delete(item.metricId)
             stackedExitingMetricIdsRef.current.clear()
             stackedPanelConfigsRef.current = new Map(selected.map(item => [item.metricId, item]))
             axisHolder.current.panels = panelItems

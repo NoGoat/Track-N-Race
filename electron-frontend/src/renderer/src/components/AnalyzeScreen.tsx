@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal, flushSync } from 'react-dom'
 import { type GroupBase, type SingleValue } from 'react-select'
 import Select from '../lib/AnimatedSelect'
-import { AlertTriangle, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Eye, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Eye, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, SeparatorVertical, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_COMBINED_BY_ID, ANALYZE_METRIC_BY_ID, ANALYZE_TYRE_CORNERS, ANALYZE_TYRE_ROWS, DEFAULT_ANALYZE_CONFIG,
@@ -1754,6 +1754,12 @@ export default function AnalyzeScreen({
                   onClick={() => onFixedLapModeChange({ ...fixedLapMode, enabled: !fixedLapMode.enabled })}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${fixedLapMode.enabled ? 'analyze-toggle-button--active' : ''}`}
                 ><ListChevronsUpDown size={15} /></button>
+                <button
+                  type="button" aria-label="Split Cursors" aria-pressed={config.splitCursors} title="Split Cursors"
+                  disabled={primaryView !== 'split' || !fixedLapMode.enabled}
+                  onClick={() => save({ ...config, splitCursors: !config.splitCursors })}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.splitCursors ? 'analyze-toggle-button--active' : ''}`}
+                ><SeparatorVertical size={15} /></button>
               </div>
               {playbackFilename && blocks && <div className="mb-1 space-y-1">
                 <div className="h-8 flex items-center gap-1 min-w-0">
@@ -2003,7 +2009,7 @@ export default function AnalyzeScreen({
               graphControlsRef={graphControlsRef}
               stackedControlsRef={stackedControlsRef}
               onInspectMap={playbackFilename && !mismatchedFiles ? inspectMapAt : undefined}
-              showMapCursors={splitView && fixedLapMode.enabled}
+              showMapCursors={splitView && fixedLapMode.enabled && config.splitCursors}
               mapCurrentColor={config.mapCurrentColor}
               mapComparisonColor={config.mapComparisonColor}
             />
@@ -2075,6 +2081,7 @@ export default function AnalyzeScreen({
               <AnalysisHelpItem icon={<Columns3 size={15} />} label="Sector Boundaries">Shows Sectors instead of Distance on the X Axis.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<ChartNoAxesCombined size={15} />} label="Sector Delta">Instead of whole lap delta, it splits the delta into sectors.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<ListChevronsUpDown size={15} />} label="Comparison">Compare two laps.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<SeparatorVertical size={15} />} label="Split Cursors">In Split Mode while comparing, shows where both cars are on the lap as lines on the graphs.</AnalysisHelpItem>
             </div>
 
             <div className="mb-2 mt-5 text-[9px] font-bold uppercase tracking-widest text-[var(--text-secondary)]">Chart interactions</div>

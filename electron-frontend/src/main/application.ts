@@ -629,8 +629,8 @@ app.whenReady().then(() => {
   sweepTempFiles()
 
   console.log('[main] calling startBridge()')
-  const bridgeStartupError = startBridge()
-  publishUdpListenerStatus(bridgeStartupError)
+  const { bridgeError: bridgeStartupError, udpError } = startBridge()
+  publishUdpListenerStatus(bridgeStartupError ?? udpError)
   console.log('[main] calling createWindow()')
   createWindow()
   if (bridgeStartupError) {

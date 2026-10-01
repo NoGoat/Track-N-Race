@@ -778,21 +778,31 @@ function pushLogging(): void {
   }
 }
 
-export function startBridge(): string | null {
-  if (engine) return null
+export interface BridgeStartResult {
+  /** The addon or engine failed to load; nothing native is available. */
+  bridgeError: string | null
+  /** The engine is up but the UDP port is not bound. */
+  udpError: string | null
+}
+
+export function startBridge(): BridgeStartResult {
+  if (engine) return { bridgeError: null, udpError: null }
   additionalLoggingEnabled = store.get('debug.additionalLogging', false) === true
 
   try {
     const addon = loadAddon()
     const storedPort = Number(store.get('udp.port', 20777))
-    if (!Number.isInteger(storedPort) || storedPort < 1 || storedPort > 65535) {
-      const error = `Invalid saved UDP port: ${String(store.get('udp.port', 20777))}. Expected an integer from 1 to 65535.`
-      console.error('[udp]', error)
-      return error
+    const validPort = Number.isInteger(storedPort) && storedPort >= 1 && storedPort <= 65535
+    // An invalid port leaves the engine unbound, like a failed bind below.
+    let udpError: string | null = null
+    if (!validPort) {
+      udpError = `Invalid saved UDP port: ${String(store.get('udp.port', 20777))}. Expected an integer from 1 to 65535.`
+      console.error('[udp]', udpError)
     }
     const config = {
       format: store.get('udp.protocol', 'auto'),
-      port: storedPort,
+      // The addon rejects out-of-range ports; leave its default in place.
+      ...(validPort ? { port: storedPort } : {}),
       bindAddress: store.get('udp.bindAddress', '0.0.0.0'),
       forwardTargets: storedForwardTargets(),
       strategyMinimumStops: 1,
@@ -939,15 +949,14 @@ export function startBridge(): string | null {
     engine.setDiagnosticsEnabled?.(additionalLoggingEnabled)
     engine.setNativeExceptionReporting?.(
       store.get('debug.nodeApiExceptions', false) === true)
-    if (!engine.startUdp()) {
-      const error = engine.udpLastError?.() || 'Failed to start the UDP listener.'
-      console.error(`[udp] Listener failed on ${String(config.bindAddress || '0.0.0.0')}:${config.port}: ${error}`)
-      engine.destroy()
-      engine = null
-      return error
+    // A failed bind leaves the engine running unbound: file analysis, playback
+    // and pairing still work, and the error is reported as UDP status only.
+    if (!udpError && !engine.startUdp()) {
+      udpError = engine.udpLastError?.() || 'Failed to start the UDP listener.'
+      console.error(`[udp] Listener failed on ${String(config.bindAddress || '0.0.0.0')}:${config.port}: ${udpError}`)
     }
     configurePairService(engine)
-    if (additionalLoggingEnabled) {
+    if (additionalLoggingEnabled && !udpError) {
       console.info(`[udp] Listener bound on ${String(config.bindAddress || '0.0.0.0')}:${config.port}`)
       startDiagnosticTimer()
       logBridgeHealth('listener-started')
@@ -963,13 +972,13 @@ export function startBridge(): string | null {
         engine?.setNativeExceptionReporting?.(value === true)),
     ]
 
-    return null
+    return { bridgeError: null, udpError }
   } catch (err) {
     console.error('[bridge] Failed to load N-API addon:', err)
-    if (err instanceof Error) {
-      return err.stack || `${err.name}: ${err.message}`
-    }
-    return String(err)
+    const bridgeError = err instanceof Error
+      ? err.stack || `${err.name}: ${err.message}`
+      : String(err)
+    return { bridgeError, udpError: null }
   }
 }
 
@@ -1345,5 +1354,6 @@ export function getProtocolConfig(): {
 export function restartUdp(): string | null {
   // To restart UDP on port changes, we stop and recreate the engine
   stopBridge()
-  return startBridge()
+  const { bridgeError, udpError } = startBridge()
+  return bridgeError ?? udpError
 }

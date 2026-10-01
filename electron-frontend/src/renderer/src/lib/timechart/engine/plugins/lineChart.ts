@@ -627,7 +627,7 @@ export class LineChartRenderer {
         this.syncBuffer();
         this.syncDomain();
         const hasSeriesViewports = this.options.series.some(series => series.visible && series.viewport);
-        if (!hasSeriesViewports) this.uniformBuffer.upload();
+        if (!hasSeriesViewports) this.applyFullViewport();
         const gl = this.gl;
         const renderMin = this.xDomainMin +
             (this.options.renderPaddingLeft - this.xRangeStart) * this.xUnitsPerPixel;
@@ -726,18 +726,28 @@ export class LineChartRenderer {
         this.xUnitsPerPixel = 1 / sx;
     }
 
+    /**
+     * Restore the whole plot area for a series without a panel viewport. Panel
+     * draws overwrite the GL viewport and every projection uniform, so all of
+     * them are reset here rather than relying on state from a resize.
+     */
+    private applyFullViewport() {
+        this.syncViewport();
+        const ratio = this.options.pixelRatio;
+        this.gl.viewport(
+            this.options.renderPaddingLeft * ratio,
+            this.options.renderPaddingBottom * ratio,
+            this.renderWidth * ratio,
+            this.renderHeight * ratio,
+        );
+        this.syncDomain();
+        this.uniformBuffer.upload();
+    }
+
     private applySeriesViewport(series: TimeChartSeriesOptions) {
         const viewport = series.viewport;
         if (!viewport) {
-            const ratio = this.options.pixelRatio;
-            this.gl.viewport(
-                this.options.renderPaddingLeft * ratio,
-                this.options.renderPaddingBottom * ratio,
-                this.renderWidth * ratio,
-                this.renderHeight * ratio,
-            );
-            this.syncDomain();
-            this.uniformBuffer.upload();
+            this.applyFullViewport();
             return;
         }
 
