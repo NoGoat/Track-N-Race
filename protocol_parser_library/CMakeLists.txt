@@ -200,6 +200,10 @@ endif()
 
 # Offline length-prefixed UDP capture converter. Kept out of the default build;
 # tools/udp_capture_to_tnrd/convert_capture.py builds this target explicitly.
-add_executable(udp_capture_to_tnrd EXCLUDE_FROM_ALL
-    ../tools/udp_capture_to_tnrd/UdpCaptureToTnrd.cpp)
-target_link_libraries(udp_capture_to_tnrd PRIVATE tnrp)
+# tools/ is gitignored, so only define the target when the local source exists.
+set(TNR_UDP_CAPTURE_TOOL_SRC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/udp_capture_to_tnrd/UdpCaptureToTnrd.cpp)
+if(EXISTS ${TNR_UDP_CAPTURE_TOOL_SRC})
+    add_executable(udp_capture_to_tnrd EXCLUDE_FROM_ALL ${TNR_UDP_CAPTURE_TOOL_SRC})
+    target_link_libraries(udp_capture_to_tnrd PRIVATE tnrp)
+endif()
