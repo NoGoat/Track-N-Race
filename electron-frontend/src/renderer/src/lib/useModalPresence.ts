@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export const MODAL_EXIT_MS = 180
 
@@ -25,9 +25,11 @@ export function useModalPresence(
   const exitTimerRef = useRef<number | null>(null)
   const transitionTargetRef = useRef<HTMLDivElement>(null)
 
-  useLayoutEffect(() => {
-    if (open) setMounted(true)
-  }, [open])
+  // Adjusted during render so an opening dialog mounts in the same commit and
+  // a closing one starts its exit transition without an extra frame.
+  if (open && !mounted) setMounted(true)
+  if (!open && visible) setVisible(false)
+  if (!open && mounted && animationsAreReduced()) setMounted(false)
 
   useEffect(() => {
     if (exitTimerRef.current !== null) {
@@ -82,13 +84,7 @@ export function useModalPresence(
       }
     }
 
-    setVisible(false)
     if (!mounted) return
-
-    if (animationsAreReduced()) {
-      setMounted(false)
-      return
-    }
 
     exitTimerRef.current = window.setTimeout(() => {
       setMounted(false)
@@ -107,12 +103,13 @@ export function useModalPresence(
 }
 
 export function useModalPresenceValue<T>(value: T | null) {
-  const lastValueRef = useRef<T | null>(value)
+  // The last non-null value keeps the dialog's content on screen while it exits.
+  const [lastValue, setLastValue] = useState<T | null>(value)
   const presence = useModalPresence(value !== null)
-  if (value !== null) lastValueRef.current = value
+  if (value !== null && value !== lastValue) setLastValue(value)
 
   return {
     ...presence,
-    value: lastValueRef.current,
+    value: value ?? lastValue,
   }
 }

@@ -7,7 +7,8 @@ export function useWindowState() {
 
   useEffect(() => window.windowControls.onMaximizeChange(setIsMaximized), [])
   useEffect(() => window.windowControls.onFullscreenChange(setIsFullscreen), [])
-  useEffect(() => { if (!isFullscreen) setHeaderVisible(false) }, [isFullscreen])
+  // The fullscreen-only header hides again when fullscreen ends.
+  if (!isFullscreen && headerVisible) setHeaderVisible(false)
 
   return { headerVisible, isFullscreen, isMaximized, setHeaderVisible }
 }

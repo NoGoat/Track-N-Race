@@ -1,12 +1,10 @@
 import { memo, useMemo, type Dispatch, type SetStateAction } from 'react'
 import Select from '../../lib/AnimatedSelect'
-import { Columns3, Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
+import { Columns3, Pencil, PictureInPicture2, Settings2, Upload, X } from 'lucide-react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { buildSelectStyles } from '../../lib/selectStyles'
 import { selectComponents } from '../../lib/selectComponents'
 import { SESSION_TYPES, sessionAccent } from '../../components/SessionPanel'
-import iconTransparent from '../../assets/icon_transparent.png'
-import iconTransparentLight from '../../assets/icon_transparent_light.png'
 import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab, type Theme, type TitlebarUpdateInterval } from '../appConfig'
 import type { BannerItem } from '../bannerHelpers'
 import SessionTimer from './SessionTimer'
@@ -55,9 +53,9 @@ interface AppHeaderProps {
 }
 
 export default memo(function AppHeader({
-  actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen, inputCursorSyncEnabled, sectorBoundariesEnabled,
-  isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, driverOptions, driverSelectorVisible, selectedDriverIdx, setEditOpen,
-  referenceLapNum, referenceLapOptions, setHeaderVisible, setInputCursorSyncEnabled, setSectorBoundariesEnabled, setChartWindow, setSelectedDriverIdx, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
+  actualNativeTitlebar, activeBanner, editOpen, filename, isFullscreen, inputCursorSyncEnabled, sectorBoundariesEnabled,
+  onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, driverOptions, driverSelectorVisible, selectedDriverIdx, setEditOpen,
+  referenceLapNum, referenceLapOptions, setInputCursorSyncEnabled, setSectorBoundariesEnabled, setChartWindow, setSelectedDriverIdx, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
   titlebarUpdateInterval, udpListenerError,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)

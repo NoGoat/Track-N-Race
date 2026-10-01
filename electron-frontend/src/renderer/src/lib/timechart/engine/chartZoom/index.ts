@@ -18,13 +18,13 @@ export const defaultOptions = {
 
 type WithDefaults<T, TDefault> = {x?: T&TDefault, y?: T&TDefault} & typeof defaultOptions;
 
-export function resolveOptions<T, TDefault extends Object>(defaults: TDefault, o?: {x?: T, y?: T}): WithDefaults<T, TDefault> {
+export function resolveOptions<T, TDefault extends object>(defaults: TDefault, o?: {x?: T, y?: T}): WithDefaults<T, TDefault> {
     if (!o)
         o = {}
-    if (!defaultOptions.isPrototypeOf(o))
+    if (!Object.prototype.isPrototypeOf.call(defaultOptions, o))
         Object.setPrototypeOf(o, defaultOptions);
     const resolveAxis = (ao?: T) => {
-        if (ao && !defaults.isPrototypeOf(ao))
+        if (ao && !Object.prototype.isPrototypeOf.call(defaults, ao))
             Object.setPrototypeOf(ao, defaults);
     }
     resolveAxis(o.x);

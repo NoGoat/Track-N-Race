@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPointer>
 #include <QSplitter>
 #include <QSplitterHandle>
 
@@ -40,7 +41,7 @@ private:
     double ratio_ = kDefaultRatio;
     bool hovered_ = false;
     bool dragging_ = false;
-    AnalysisSplitBadge* badge_ = nullptr;   // on the window; created on first hover
+    QPointer<AnalysisSplitBadge> badge_;   // on the window; created on first hover
 
     bool bothVisible() const;
     void onMoved();

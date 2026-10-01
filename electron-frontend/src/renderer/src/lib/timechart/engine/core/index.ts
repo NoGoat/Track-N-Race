@@ -132,7 +132,7 @@ export default class TimeChart<TPlugins extends TimeChartPlugins=NoPlugin> {
         // fix dynamic added series
         for (let i = 0; i < this.options.series.length; i++) {
             const s = this.options.series[i];
-            if (!defaultSeriesOptions.isPrototypeOf(s)) {
+            if (!Object.prototype.isPrototypeOf.call(defaultSeriesOptions, s)) {
                 this.options.series[i] = completeSeriesOptions(s);
             }
         }

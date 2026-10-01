@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import type { AnalyzeLapData, LapRow } from '../../types'
 import type { TitlebarUpdateInterval } from '../appConfig'
 import { DEFAULT_DELTA_NEGATIVE_COLOR, DEFAULT_DELTA_POSITIVE_COLOR } from '../../lib/analyzeMetrics'
@@ -54,8 +54,14 @@ function RealtimeSessionTimer({ comparisonMode, referenceLapNum }: Pick<Props, '
 
 function ThrottledSessionTimer({ comparisonMode, referenceLapNum, updateInterval }: Props) {
   const [snapshot, setSnapshot] = useState(() => readTitlebarSnapshot(comparisonMode, referenceLapNum))
-  useEffect(() => {
+  // Settings changes refresh the snapshot at once instead of on the next tick.
+  const [settings, setSettings] = useState({ comparisonMode, referenceLapNum, updateInterval })
+  if (settings.comparisonMode !== comparisonMode || settings.referenceLapNum !== referenceLapNum ||
+      settings.updateInterval !== updateInterval) {
+    setSettings({ comparisonMode, referenceLapNum, updateInterval })
     setSnapshot(readTitlebarSnapshot(comparisonMode, referenceLapNum))
+  }
+  useEffect(() => {
     const timer = window.setInterval(() => setSnapshot(readTitlebarSnapshot(comparisonMode, referenceLapNum)), updateInterval)
     return () => window.clearInterval(timer)
   }, [comparisonMode, referenceLapNum, updateInterval])
@@ -89,16 +95,19 @@ function SessionTimerDisplay({ comparisonMode, sessionTime, lap, currentLapData,
       : delta < 0
         ? DEFAULT_DELTA_NEGATIVE_COLOR
         : 'var(--text-primary)'
-  const lastDeltaRef = useRef({ text: '+0.000', color: 'var(--text-primary)' })
-  if (delta !== null) lastDeltaRef.current = { text: formattedDelta, color: deltaColor }
+  // The slot fades out on a null delta, so it keeps showing the last value.
+  const [lastDelta, setLastDelta] = useState({ text: '+0.000', color: 'var(--text-primary)' })
+  if (delta !== null && (lastDelta.text !== formattedDelta || lastDelta.color !== deltaColor))
+    setLastDelta({ text: formattedDelta, color: deltaColor })
+  const shownDelta = delta !== null ? { text: formattedDelta, color: deltaColor } : lastDelta
 
   return (
     <div className="flex items-center text-sm font-black tabular-nums shrink-0">
       {formattedTime && <span className="text-[var(--text-primary)]">{formattedTime}</span>}
       <span className={`titlebar-delta-slot ${delta !== null ? 'titlebar-delta-slot--visible' : ''}`}>
         <span>
-          <span className="ml-[13px] whitespace-nowrap" style={{ color: lastDeltaRef.current.color }}>
-            {lastDeltaRef.current.text}
+          <span className="ml-[13px] whitespace-nowrap" style={{ color: shownDelta.color }}>
+            {shownDelta.text}
           </span>
         </span>
       </span>

@@ -166,7 +166,7 @@ export class SelectZoomPlugin implements TimeChartPlugin<SelectZoom> {
     constructor(options?: Partial<SelectZoomOptions>) {
         if (!options)
             options = {};
-        if (!defaultOptions.isPrototypeOf(options))
+        if (!Object.prototype.isPrototypeOf.call(defaultOptions, options))
             Object.setPrototypeOf(options, defaultOptions);
         this.options = options as SelectZoomOptions;
     }

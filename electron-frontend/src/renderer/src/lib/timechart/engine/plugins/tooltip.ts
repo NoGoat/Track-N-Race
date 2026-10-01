@@ -108,7 +108,7 @@ td {
             // display X for the data point that is the closest to the pointer
             let minPointerDistance = Number.POSITIVE_INFINITY;
             let displayingX: number | null = null;
-            for (const [s, d] of chart.nearestPoint.dataPoints) {
+            for (const d of chart.nearestPoint.dataPoints.values()) {
                 const px = chart.model.pxPoint(d);
                 const dx = px.x - p.x;
                 const dy = px.y - p.y;
@@ -126,8 +126,8 @@ td {
                 if (!s.visible)
                     continue;
 
-                let point = chart.nearestPoint.dataPoints.get(s);
-                let item = this.items.get(s);
+                const point = chart.nearestPoint.dataPoints.get(s);
+                const item = this.items.get(s);
                 if (item && point) {
                     item.value.textContent = point.y.toLocaleString();
                     item.item.classList.toggle('x-not-aligned', point.x !== displayingX);
@@ -181,7 +181,7 @@ export class TimeChartTooltipPlugin implements TimeChartPlugin<Tooltip> {
     constructor(options?: Partial<TooltipOptions>) {
         if (!options)
             options = {};
-        if (!defaultOptions.isPrototypeOf(options))
+        if (!Object.prototype.isPrototypeOf.call(defaultOptions, options))
             Object.setPrototypeOf(options, defaultOptions);
         this.options = options as TooltipOptions;
     }

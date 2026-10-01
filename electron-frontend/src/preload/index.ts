@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { PlaybackState } from '../main/bridgeManager'
 
 const storeAPI = {
   get: (key: string, defaultValue: unknown): unknown =>
@@ -241,22 +242,22 @@ const playerBridge = {
   close: () => ipcRenderer.send('player:close'),
   exportXlsx: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:export-xlsx'),
   onExportProgress: (cb: (pct: number, stage: string) => void) => {
-    const handler = (_e: any, pct: number, stage: string) => cb(pct, stage)
+    const handler = (_e: Electron.IpcRendererEvent, pct: number, stage: string) => cb(pct, stage)
     ipcRenderer.on('player:export-progress', handler)
     return () => { ipcRenderer.removeListener('player:export-progress', handler) }
   },
-  onStateChange: (cb: (state: any) => void) => {
-    const handler = (_e: any, state: any) => cb(state)
+  onStateChange: (cb: (state: PlaybackState) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, state: PlaybackState) => cb(state)
     ipcRenderer.on('playback_state', handler)
     return () => { ipcRenderer.removeListener('playback_state', handler) }
   },
   onRequestOpenConfirm: (cb: (filePath: string) => void) => {
-    const handler = (_e: any, filePath: string) => cb(filePath)
+    const handler = (_e: Electron.IpcRendererEvent, filePath: string) => cb(filePath)
     ipcRenderer.on('player:request-open-confirm', handler)
     return () => { ipcRenderer.removeListener('player:request-open-confirm', handler) }
   },
   onLoadFailed: (cb: (reason: string) => void) => {
-    const handler = (_e: any, reason: string) => cb(reason)
+    const handler = (_e: Electron.IpcRendererEvent, reason: string) => cb(reason)
     ipcRenderer.on('player:load-failed', handler)
     return () => { ipcRenderer.removeListener('player:load-failed', handler) }
   }

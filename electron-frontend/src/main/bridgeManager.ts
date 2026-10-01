@@ -9,6 +9,7 @@ import {
   configurePairService,
   pairEngineConfig,
   receivePairServiceState,
+  type NativePairEngine,
 } from './pairHostAdapter'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
@@ -323,7 +324,58 @@ function sendResumeCache(): void {
   }
 }
 
-let engine: any = null
+// The surface of protocol_parser.node (node_addon/addon.cpp) this module uses.
+interface NativeEngine extends NativePairEngine {
+  startUdp(): boolean
+  udpLastError?(): string
+  destroy(): void
+  flushRecording(): void
+  setLogging(enabled: boolean, dir: string): void
+  setDiagnosticsEnabled?(enabled: boolean): void
+  setNativeExceptionReporting?(enabled: boolean): void
+  liveDiagnostics?(): unknown
+  telemetryRetention?(): Record<string, unknown> | null
+  setDataRequirements(streamMask: number, historyMask: number, historyWindow: number, requestId: number,
+    v6Types: number[], v6HistoryTypes: number[]): void
+  liveGetFastestLap(requestId: number): void
+  setLapHistoryCar(carIdx: number): void
+  setOverride(value: ProtocolOverride): void
+  teamColorCatalog(): string
+  setTeamColorOverrides(overrides: TeamColorOverrides): void
+  setStrategyMinimumStops(stops: number): void
+  playerLoad(filePath: string): Promise<PlayerLoadResult>
+  playerClose(): void
+  playerPlay(): void
+  playerPause(): void
+  playerSeek(pct: number, allHistory: boolean, requestId: number, rowTypeMask: number, windowSeconds: number): void
+  playerSetSpeed(mult: number): void
+  playerSetDriver(driverIndex: number, useRecordedRows: boolean): Promise<void> | void
+  playerSetFocusDriver(driverIndex: number): void
+  playerGetLapData(lapNum: number, rowTypeMask: number): void
+  playerGetAllLapsData(requestId: number, rowTypeMask: number): void
+  playerGetWindowData(windowSeconds: number, requestId: number, rowTypeMask: number): void
+  playerExportXlsx(srcPath: string, destPath: string, onProgress: (pct: number, stage: string) => void): Promise<{ ok: boolean; error?: string }>
+  analysisLoadFile(filePath: string): Promise<{ ok: boolean; error?: string; blocksJson: string; trackId?: number; trackName?: string }>
+  analysisGetLapData(lapNum: number, rowTypeMask: number, secondary: boolean, driverIndex: number): string | null
+  analysisCompareLaps(currentLapNum: number, currentSecondary: boolean, currentDriverIndex: number,
+    comparisonLapNum: number, comparisonSecondary: boolean, comparisonDriverIndex: number, sectorDelta: boolean): Promise<string | null>
+  analysisCloseFile(): void
+}
+
+interface NativeAddon {
+  Engine: new (
+    config: Record<string, unknown>,
+    onBatch: (batch: string) => void,
+    onBinaryBatch: (binBatch: Uint8Array) => void,
+    onSeekFlush: (binary: Buffer | null, coldJson: string | null, currentLapStart: number, lapNum: number, allHistory: boolean,
+      requestId: number, authoritativeSeek: boolean, rowTypeMask: number, historyStart: number, nativeError?: string) => void,
+    onPairState: (publicJson: string, persistedJson: string) => void,
+    onPairDiagnostic: (message: string) => void,
+  ) => NativeEngine
+  sweepTempFiles(): void
+}
+
+let engine: NativeEngine | null = null
 let nextDataRequirementsRequestId = 0
 let rendererStreamMask = 0xFFFFFFFF
 let rendererV6Types: number[] = []
@@ -685,8 +737,8 @@ function handleRecordingError(row: Record<string, unknown>): void {
   }
 }
 
-let addonModule: any = null
-function loadAddon(): any {
+let addonModule: NativeAddon | null = null
+function loadAddon(): NativeAddon {
   // Try to load the N-API module
   // Electron's require correctly handles ASAR unpacking for .node files automatically.
   if (addonModule) return addonModule
@@ -706,11 +758,13 @@ function loadAddon(): any {
     }
     console.info('[telemetry-diagnostics][main] loading native addon:', addonFile)
   }
-  addonModule = require(p)
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- a native .node addon only loads through require
+  const loaded = require(p) as NativeAddon
   if (additionalLoggingEnabled) {
-    console.info('[telemetry-diagnostics][main] native addon exports:', Object.keys(addonModule).sort())
+    console.info('[telemetry-diagnostics][main] native addon exports:', Object.keys(loaded).sort())
   }
-  return addonModule
+  addonModule = loaded
+  return loaded
 }
 
 function pushLogging(): void {
@@ -826,7 +880,7 @@ export function startBridge(): string | null {
               }
             } else if (rowStr.includes('"type":"playback_state"') ||
                        rowStr.includes('"type":"playback_close"')) {
-              try { handlePlaybackRow(JSON.parse(rowStr)) } catch (e) {}
+              try { handlePlaybackRow(JSON.parse(rowStr)) } catch { /* malformed row: skip it */ }
             }
           }
           start = end + 1
@@ -978,7 +1032,7 @@ export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
   if (activeFilePath) engine.playerClose()
   activeFilePath = filePath
   emitPlaybackState({ isScanning: true })
-  let result: PlayerLoadResult = { ok: false, error: 'The recording could not be opened.' }
+  let result: PlayerLoadResult
   try {
     result = await engine.playerLoad(filePath)   // async: decompress+index off-thread
   } catch (err) {
@@ -1225,7 +1279,7 @@ export function getTeamColorConfig(): {
 } {
   let catalog = {}
   if (engine) {
-    try { catalog = JSON.parse(engine.teamColorCatalog()) } catch {}
+    try { catalog = JSON.parse(engine.teamColorCatalog()) } catch { /* engine catalog unavailable: overrides only */ }
   }
   return { catalog, overrides: storedTeamColorOverrides() }
 }

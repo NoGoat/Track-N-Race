@@ -23,7 +23,10 @@ import { buildLapProgressMap, findSectorSplits, type LapProgressMap } from '../l
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../lib/playbackCursor'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { emptyView, viewOfRows } from '../lib/columnStore'
-import type { AnalysisDriverLapCatalog, AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData } from '../types'
+import type {
+  AnalysisDriverLapCatalog, AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData,
+  DamageRow, LapRow, MotionExRow, MotionRow, PlayerPositionPoint, StatusRow, TelemetryRow,
+} from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
 import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
 import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
@@ -111,9 +114,19 @@ function easeInOutCubic(progress: number): number {
     : 1 - Math.pow(-2 * progress + 2, 3) / 2
 }
 
+// The engine's analysisLoadFile JSON; each field is checked before use.
+interface AnalysisFilePayload {
+  laps?: Array<{ lapNum: number; lapTimeMs: number }>
+  blocks?: LapBlock[]
+  fastestLapNum?: number
+  lapDistanceAvailable?: boolean
+  deltaAvailable?: boolean
+  analysisDrivers?: AnalysisDriverLapCatalog[]
+}
+
 interface PendingCircuitMismatch {
   filePath: string
-  data: any
+  data: AnalysisFilePayload
   trackId: number | null
   trackName: string
 }
@@ -275,22 +288,20 @@ const AnalysisDeltaReadout = memo(function AnalysisDeltaReadout({ deltaData, cur
   followPlaybackCursor: boolean
   showSectors: boolean
 }) {
-  const selectionRef = useRef({ current, comparison })
-  const retainedDeltaDataRef = useRef<AnalyzeDeltaData | null>(null)
-  const selectionChanged = selectionRef.current.current !== current ||
-    selectionRef.current.comparison !== comparison
-  if (selectionChanged) {
-    selectionRef.current = { current, comparison }
-    retainedDeltaDataRef.current = null
-  }
+  // The delta result last matched to this lap pair; a new pair drops it.
+  const [retained, setRetained] = useState<{
+    lap: AnalyzeLapData | null; comparisonLap: AnalyzeLapData | null; deltaData: AnalyzeDeltaData | null
+  }>({ lap: current, comparisonLap: comparison, deltaData: null })
+  let retainedDeltaData = retained.lap === current && retained.comparisonLap === comparison ? retained.deltaData : null
   // Lap payloads and delta results arrive independently. Accept an already
   // available match in this render, including when the lap payload arrived last.
-  if (!retainedDeltaDataRef.current && deltaData && current && comparison &&
+  if (!retainedDeltaData && deltaData && current && comparison &&
       deltaData.currentLapNum === current.lapNum &&
       deltaData.comparisonLapNum === comparison.lapNum) {
-    retainedDeltaDataRef.current = deltaData
+    retainedDeltaData = deltaData
   }
-  const retainedDeltaData = retainedDeltaDataRef.current
+  if (retained.lap !== current || retained.comparisonLap !== comparison || retained.deltaData !== retainedDeltaData)
+    setRetained({ lap: current, comparisonLap: comparison, deltaData: retainedDeltaData })
   const valueRefs = useRef<Array<HTMLSpanElement | null>>([])
   const currentProgress = useMemo(() => buildLapProgressMap(current), [current])
   const updateValues = useCallback(() => {
@@ -584,7 +595,24 @@ const AnalyzeComparisonGroup = memo(function AnalyzeComparisonGroup({
   </section>
 })
 
-function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
+// Engine JSON for one lap (playback_lap_data); validated below before use.
+interface LapDataPayload {
+  type?: string
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  telemetry?: TelemetryRow[]
+  motionHistory?: MotionRow[]
+  motionExHistory?: MotionExRow[]
+  statusHistory?: StatusRow[]
+  damageHistory?: DamageRow[]
+  lapProgress?: LapRow[]
+  playerPositions?: PlayerPositionPoint[]
+  rowTypeMask: number
+}
+
+function parseAnalyzeLapData(raw: unknown): AnalyzeLapData | null {
+  const payload = raw as LapDataPayload | null | undefined
   if (!payload || payload.type !== 'playback_lap_data' || !Number.isFinite(payload.lapNum)) return null
   return {
     lapNum: payload.lapNum,
@@ -601,7 +629,17 @@ function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
   }
 }
 
-function parseAnalyzeDeltaData(payload: any): AnalyzeDeltaData | null {
+// Engine JSON from analysisCompareLaps; validated below before use.
+interface DeltaDataPayload {
+  currentLapNum: number
+  comparisonLapNum: number
+  sectorDelta?: boolean
+  maxAbsDeltaSeconds: number
+  samples: Array<{ lap_distance_m: number; delta_seconds: number; valid?: boolean } | null>
+}
+
+function parseAnalyzeDeltaData(raw: unknown): AnalyzeDeltaData | null {
+  const payload = raw as DeltaDataPayload | null | undefined
   if (!payload || !Number.isFinite(payload.currentLapNum) ||
       !Number.isFinite(payload.comparisonLapNum) || !Array.isArray(payload.samples)) return null
   return {
@@ -609,8 +647,8 @@ function parseAnalyzeDeltaData(payload: any): AnalyzeDeltaData | null {
     comparisonLapNum: payload.comparisonLapNum,
     sectorDelta: payload.sectorDelta === true,
     maxAbsDeltaSeconds: Number.isFinite(payload.maxAbsDeltaSeconds) ? payload.maxAbsDeltaSeconds : 0,
-    samples: payload.samples.flatMap((sample: any) =>
-      Number.isFinite(sample?.lap_distance_m) && Number.isFinite(sample?.delta_seconds)
+    samples: payload.samples.flatMap(sample =>
+      sample && Number.isFinite(sample.lap_distance_m) && Number.isFinite(sample.delta_seconds)
         ? [{
             lap_distance_m: sample.lap_distance_m,
             delta_seconds: sample.delta_seconds,
@@ -881,10 +919,9 @@ export default function AnalyzeScreen({
   const [secondaryLoading, setSecondaryLoading] = useState(false)
   const [secondaryError, setSecondaryError] = useState<string | null>(null)
   const [controlsHelpOpen, setControlsHelpOpen] = useState(false)
-  const controlsHelpPresence = useModalPresence(controlsHelpOpen)
+  const { mounted: controlsHelpMounted, visible: controlsHelpVisible, transitionTargetRef: controlsHelpTargetRef } = useModalPresence(controlsHelpOpen)
   const [pendingCircuitMismatch, setPendingCircuitMismatch] = useState<PendingCircuitMismatch | null>(null)
-  const circuitMismatchPresence = useModalPresenceValue(pendingCircuitMismatch)
-  const displayedCircuitMismatch = circuitMismatchPresence.value
+  const { mounted: circuitMismatchMounted, visible: circuitMismatchVisible, transitionTargetRef: circuitMismatchTargetRef, value: displayedCircuitMismatch } = useModalPresenceValue(pendingCircuitMismatch)
   const [mapFocus, setMapFocus] = useState<AnalyzeMapFocus | null>(null)
   const mapFocusIdRef = useRef(0)
   const activeAnalysisViewTransitionRef = useRef<AnalysisViewTransition | null>(null)
@@ -1329,14 +1366,23 @@ export default function AnalyzeScreen({
   const deltaComparisonDriverIndex = fixedLapMode.enabled
     ? lapBDriver?.driverIndex ?? -1 : compareDriver?.driverIndex ?? -1
 
+  // A different comparison request drops the previous result while it loads.
+  const deltaRequest = {
+    deltaComparisonDriverIndex, deltaComparisonLapNum, deltaComparisonSource,
+    deltaCurrentDriverIndex, deltaCurrentLapNum, deltaCurrentSource, playbackFilename, secondaryFile,
+    sectorDeltaEnabled, selectedDistanceMode,
+  }
+  const [lastDeltaRequest, setLastDeltaRequest] = useState(deltaRequest)
+  if ((Object.keys(deltaRequest) as (keyof typeof deltaRequest)[]).some(key => deltaRequest[key] !== lastDeltaRequest[key])) {
+    setLastDeltaRequest(deltaRequest)
+    setDeltaData(null)
+  }
   useEffect(() => {
     let cancelled = false
     if (!playbackFilename || !selectedDistanceMode ||
         deltaCurrentLapNum === null || deltaComparisonLapNum === null) {
-      setDeltaData(null)
       return () => { cancelled = true }
     }
-    setDeltaData(null)
     void window.analysisBridge.compareLaps(
       deltaCurrentLapNum,
       deltaCurrentSource,
@@ -1367,7 +1413,7 @@ export default function AnalyzeScreen({
     onFixedLapModeChange({ ...fixedLapMode, lapADriver: null, lapBDriver: null })
   }, [fixedLapMode, onCompareDriverChange, onFixedLapModeChange])
 
-  const applySecondaryFile = useCallback((filePath: string, data: any, trackId: number | null) => {
+  const applySecondaryFile = useCallback((filePath: string, data: AnalysisFilePayload, trackId: number | null) => {
     const times: Record<number, number> = {}
     for (const lap of data?.laps ?? []) {
       if (Number.isFinite(lap.lapNum) && Number.isFinite(lap.lapTimeMs) && lap.lapTimeMs > 0) {
@@ -1378,7 +1424,7 @@ export default function AnalyzeScreen({
       filename: filePath.split(/[\\/]/).pop() ?? filePath,
       trackId,
       blocks: Array.isArray(data?.blocks) ? data.blocks : [],
-      fastestLapNum: Number.isFinite(data?.fastestLapNum) ? data.fastestLapNum : null,
+      fastestLapNum: typeof data.fastestLapNum === 'number' && Number.isFinite(data.fastestLapNum) ? data.fastestLapNum : null,
       lapTimesByNum: times,
       deltaAvailable: data?.lapDistanceAvailable === true || data?.deltaAvailable === true,
       analysisDrivers: Array.isArray(data?.analysisDrivers) ? data.analysisDrivers : [],
@@ -1405,7 +1451,7 @@ export default function AnalyzeScreen({
       setSecondaryError(result.error ?? 'The recording could not be opened.')
       return
     }
-    const data = result.data as any
+    const data = (result.data ?? {}) as AnalysisFilePayload
     if (primaryTrackId !== null && Number.isFinite(result.trackId) && result.trackId !== primaryTrackId) {
       setPendingCircuitMismatch({
         filePath,
@@ -1438,10 +1484,14 @@ export default function AnalyzeScreen({
     }
   }, [compareDriver?.source, fixedLapMode, lapADriver, lapASource, lapBDriver, lapBSource, onCompareDriverChange, onCompareLapChange, onFixedLapModeChange, onSecondaryFileChange])
 
+  const [cacheFilename, setCacheFilename] = useState(playbackFilename)
+  if (cacheFilename !== playbackFilename) {
+    setCacheFilename(playbackFilename)
+    setAnalysisLapCache({})
+  }
   useEffect(() => {
     requestedRef.current.clear()
     analysisRequestedRef.current.clear()
-    setAnalysisLapCache({})
   }, [playbackFilename])
 
   useLayoutEffect(() => {
@@ -1993,9 +2043,9 @@ export default function AnalyzeScreen({
         </div>
       </section>
 
-      {controlsHelpPresence.mounted && createPortal(<div
-        ref={controlsHelpPresence.transitionTargetRef}
-        data-state={controlsHelpPresence.visible ? 'open' : 'closed'}
+      {controlsHelpMounted && createPortal(<div
+        ref={controlsHelpTargetRef}
+        data-state={controlsHelpVisible ? 'open' : 'closed'}
         className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
         role="dialog" aria-modal="true" aria-labelledby="analysis-controls-help-title"
         onMouseDown={event => {
@@ -2042,9 +2092,9 @@ export default function AnalyzeScreen({
         </div>
       </div>, document.body)}
 
-      {circuitMismatchPresence.mounted && displayedCircuitMismatch && <div
-        ref={circuitMismatchPresence.transitionTargetRef}
-        data-state={circuitMismatchPresence.visible ? 'open' : 'closed'}
+      {circuitMismatchMounted && displayedCircuitMismatch && <div
+        ref={circuitMismatchTargetRef}
+        data-state={circuitMismatchVisible ? 'open' : 'closed'}
         className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
         role="dialog" aria-modal="true" aria-labelledby="analysis-circuit-mismatch-title"
       >

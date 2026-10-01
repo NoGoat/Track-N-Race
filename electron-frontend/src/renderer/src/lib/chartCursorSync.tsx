@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef } from 'react'
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { ChartTooltipPortal, useChartTooltip } from '../hooks/useChartTooltip'
 
 export interface ChartCursorSyncParticipant {
@@ -37,9 +37,11 @@ export function ChartCursorSyncProvider({ enabled, secondaryHorizontalCrosshair 
   const participantsRef = useRef(new Map<string, ChartCursorSyncParticipant>())
   const activeSourceRef = useRef<string | null>(null)
   const { tooltipRef, show, hide } = useChartTooltip(boundaryRef)
-  enabledRef.current = enabled
-  secondaryHorizontalCrosshairRef.current = secondaryHorizontalCrosshair
-  secondaryVerticalCrosshairRef.current = secondaryVerticalCrosshair
+  useLayoutEffect(() => {
+    enabledRef.current = enabled
+    secondaryHorizontalCrosshairRef.current = secondaryHorizontalCrosshair
+    secondaryVerticalCrosshairRef.current = secondaryVerticalCrosshair
+  })
 
   const value = useMemo<ChartCursorSyncContextValue>(() => {
     const clearAll = () => {

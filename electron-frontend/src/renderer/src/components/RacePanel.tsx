@@ -1,4 +1,4 @@
-import { useRef, memo } from 'react'
+import { memo, useEffect, useState } from 'react'
 import type { LapRow, StatusRow, TimingCar, DriverInfo, CarStatusEntry } from '../types'
 import { useLabels } from '../lib/labels'
 import { tyreCompoundColor } from '../lib/tyreCompounds'
@@ -37,7 +37,6 @@ function fmtSector(ms: number): string {
   return `${s}.${String(mills).padStart(3, '0')}`
 }
 
-const ERS_COLORS = ['text-[var(--text-secondary)]', 'text-[#5794F2]', 'text-[var(--compound-medium)]', 'text-[#C4162A]']
 const FUEL_MIX   = ['Lean', 'Standard', 'Rich', 'Max power']
 const PIT_STATUS = ['', 'Pitting', 'In pit lane']
 
@@ -546,6 +545,15 @@ const StrategyCard = memo(function StrategyCard({
   )
 })
 
+const SECTOR_FREEZE_MS = 7_000
+
+interface SectorTracking {
+  lapTs: string | null
+  prevLap: LapRow | null
+  s3Snapshot: { s1: number; s2: number; lap: number } | null
+  frozen: { s1: number; s2: number; s3: number } | null
+}
+
 const RacePanel = memo(function RacePanel({
   lap,
   status,
@@ -564,40 +572,40 @@ const RacePanel = memo(function RacePanel({
 
   // Hooks must come before any early return
   const { tn } = useLabels()
-  const prevLapTsRef    = useRef<string | null>(null)
-  const prevLapRef      = useRef<LapRow | null>(null)
-  const frozenRef       = useRef<{ s1: number; s2: number; s3: number; exp: number } | null>(null)
-  const lastS3Ref       = useRef<number>(0)
-  const s3SnapshotRef   = useRef<{ s1: number; s2: number; lap: number } | null>(null)
+  const [sectors, setSectors] = useState<SectorTracking>({ lapTs: null, prevLap: null, s3Snapshot: null, frozen: null })
 
-  // Process new lap data once per message (ts-guard is safe under StrictMode double-invoke)
-  if (lap && lap.ts !== prevLapTsRef.current) {
-    prevLapTsRef.current = lap.ts
-    const prev = prevLapRef.current
-    const now  = Date.now()
+  // Process new lap data once per message
+  if (lap && lap.ts !== sectors.lapTs) {
+    const prev = sectors.prevLap
+    let { s3Snapshot, frozen } = sectors
 
     // Capture s1+s2 when entering sector 3 so we can compute s3 on lap completion
     if (lap.sector === 2 && lap.s1_ms > 0 && lap.s2_ms > 0) {
-      if (!s3SnapshotRef.current || s3SnapshotRef.current.lap !== lap.lap_num)
-        s3SnapshotRef.current = { s1: lap.s1_ms, s2: lap.s2_ms, lap: lap.lap_num }
+      if (!s3Snapshot || s3Snapshot.lap !== lap.lap_num)
+        s3Snapshot = { s1: lap.s1_ms, s2: lap.s2_ms, lap: lap.lap_num }
     }
 
     // Lap just completed: compute s3, freeze previous sector times for 7 s
     if (prev && lap.lap_num > prev.lap_num) {
-      const snap = s3SnapshotRef.current
-      const s3   = (snap && snap.lap === prev.lap_num && lap.last_lap_ms > 0)
-        ? Math.max(0, lap.last_lap_ms - snap.s1 - snap.s2) : 0
-      lastS3Ref.current  = s3
-      frozenRef.current  = { s1: prev.s1_ms, s2: prev.s2_ms, s3, exp: now + 7_000 }
+      const s3 = (s3Snapshot && s3Snapshot.lap === prev.lap_num && lap.last_lap_ms > 0)
+        ? Math.max(0, lap.last_lap_ms - s3Snapshot.s1 - s3Snapshot.s2) : 0
+      frozen = { s1: prev.s1_ms, s2: prev.s2_ms, s3 }
     }
 
-    prevLapRef.current = lap
+    setSectors({ lapTs: lap.ts, prevLap: lap, s3Snapshot, frozen })
   }
 
+  useEffect(() => {
+    if (!sectors.frozen) return
+    const expiring = sectors.frozen
+    const timer = setTimeout(() => setSectors(current =>
+      current.frozen === expiring ? { ...current, frozen: null } : current), SECTOR_FREEZE_MS)
+    return () => clearTimeout(timer)
+  }, [sectors.frozen])
+
   // Determine what sector times to display (player's own data)
-  const now    = Date.now()
-  const frozen = frozenRef.current
-  const useFrozen = !!lap && !!frozen && now < frozen.exp
+  const frozen = sectors.frozen
+  const useFrozen = !!lap && !!frozen
 
   const displayS1  = useFrozen ? frozen!.s1 : (lap?.s1_ms ?? 0)
   const displayS2  = useFrozen ? frozen!.s2 : (lap?.s2_ms ?? 0)

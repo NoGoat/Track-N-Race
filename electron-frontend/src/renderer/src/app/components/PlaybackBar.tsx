@@ -8,6 +8,7 @@ import { fmtLap } from '../bannerHelpers'
 import { PLAYBACK_SPEED_OPTIONS } from '../appConfig'
 import { playbackDebug } from '../../lib/playbackDebug'
 import type { DensityMode } from '../../lib/graphSections'
+import type { PlaybackLapBlock, PlaybackState } from '../../types'
 
 const selectStyles = buildSelectStyles(true)
 
@@ -25,8 +26,8 @@ interface PlaybackBarProps {
   sessionFileStart?: number
   showExport?: boolean
   showLapSelect?: boolean
-  speedRpmBlocks?: any[] | null
-  state: any
+  speedRpmBlocks?: PlaybackLapBlock[] | null
+  state: Pick<PlaybackState, 'currentTime' | 'isPlaying' | 'progressPct' | 'speed' | 'totalTime'>
 }
 
 type LapOption = { value: number; label: string }

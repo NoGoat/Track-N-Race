@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useLayoutEffect } from 'react'
 import { useSize } from '../../hooks/useSize'
 import { ChartTooltipPortal, useChartTooltip, TOOLTIP_STYLE } from '../../hooks/useChartTooltip'
 import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
@@ -90,11 +90,11 @@ function nearestIndex(source: XIndexedData | null, targetX: number): number {
   return index
 }
 
-function lowerBoundSessionTime(rows: ColumnView<any>, value: number): number {
+function lowerBoundSessionTime(rows: ColumnView, value: number): number {
   return rows.lowerBound(value, true)
 }
 
-function nearestRowIndexBySessionTime(rows: ColumnView<any>, value: number): number {
+function nearestRowIndexBySessionTime(rows: ColumnView, value: number): number {
   if (rows.length === 0) return -1
   let index = lowerBoundSessionTime(rows, value)
   if (index === rows.length) index--
@@ -255,17 +255,12 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const axisKindRef = useRef<'time' | 'distance'>(coordinates.distanceMode ? 'distance' : 'time')
   const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode))
   const comparisonKeyRef = useRef('')
-  cursorSyncContextRef.current = cursorSyncContext
-  cursorSyncConfigRef.current = cursorSync
-  rowsRef.current = rows
-  comparisonRowsRef.current = comparisonRows
-  axisKindRef.current = coordinates.distanceMode ? 'distance' : 'time'
   const comparisonLapNum = coordinates.lapData?.lapNum
   const baseComparisonLabel = getChartComparisonLabel(coordinates.mode)
-  comparisonLabelRef.current = coordinates.mode === 'RL' && comparisonLapNum != null
+  const comparisonLabel = coordinates.mode === 'RL' && comparisonLapNum != null
     ? `${baseComparisonLabel} ${comparisonLapNum}`
     : baseComparisonLabel
-  comparisonKeyRef.current = coordinates.mode === 'RL'
+  const comparisonKey = coordinates.mode === 'RL'
     ? `RL:${comparisonLapNum ?? ''}`
     : coordinates.mode ?? ''
   const chartRef = useRef<TChart | null>(null)
@@ -322,9 +317,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
 
   // Latest tooltip formatter for the imperative mousemove handler.
   const tooltipFormatRef = useRef(tooltipFormat)
-  tooltipFormatRef.current = tooltipFormat
   const deltaRevisionRef = useRef('')
-  deltaRevisionRef.current = coordinates.comparisonMode
+  const deltaRevision = coordinates.comparisonMode
     ? `${coordinates.progressRevision}:${coordinates.lapData?.lapNum ?? ''}`
     : ''
 
@@ -344,7 +338,21 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   // Static per-chart bits captured at mount (labels/colors/getY don't change).
   const seriesDefs = useRef(series)
   const getXRef = useRef(effectiveGetX)
-  getXRef.current = effectiveGetX
+
+  // Latest render values for the chart's imperative handlers and plugins.
+  // Declared ahead of every effect below, so each of them sees this render.
+  useLayoutEffect(() => {
+    cursorSyncContextRef.current = cursorSyncContext
+    cursorSyncConfigRef.current = cursorSync
+    rowsRef.current = rows
+    comparisonRowsRef.current = comparisonRows
+    axisKindRef.current = coordinates.distanceMode ? 'distance' : 'time'
+    comparisonLabelRef.current = comparisonLabel
+    comparisonKeyRef.current = comparisonKey
+    tooltipFormatRef.current = tooltipFormat
+    deltaRevisionRef.current = deltaRevision
+    getXRef.current = effectiveGetX
+  })
 
   const blendColor = (hex: string): string => {
     const match = /^#([0-9a-f]{6})$/i.exec(hex)
@@ -746,17 +754,16 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       bridge.clear()
       comparisonLapRef.current = comparisonLap
     }
-    let syncEnd = comparisonRows.length
     let lo = 0, hi = comparisonRows.length
     while (lo < hi) {
       const mid = (lo + hi) >> 1
       if (Number.isFinite(coordinates.getComparisonX(comparisonRows.time(mid)))) lo = mid + 1
       else hi = mid
     }
-    syncEnd = lo
+    const syncEnd = lo
     const { changed } = bridge.sync(comparisonRows, syncEnd)
     if (changed) chart?.model.requestRedraw()
-  }, [comparisonRows, coordinates])
+  }, [comparisonRows, coordinates, debugChartName])
 
   // --- feed new data ---
   const syncRowsRef = useRef<() => void>(() => {})
@@ -769,159 +776,161 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       syncRowsRef.current()
     })
   }
-  syncRowsRef.current = () => {
-    const bridge = bridgeRef.current
-    const chart = chartRef.current
-    if (!bridge) return
-    const lapRevisionChanged = coordinates.distanceMode && lapRevisionRef.current !== coordinates.lapRevision
-    const historyRevisionChanged = historyRevisionRef.current !== coordinates.historyRevision
-    if (lapRevisionChanged || historyRevisionChanged) {
-      playbackDebug('chart-lap-revision', {
-        chart: debugChartName,
-        previousRevision: lapRevisionRef.current,
-        revision: coordinates.lapRevision,
-        mode: coordinates.mode,
-        rows: rows.length,
-        firstSessionTime: rows.length ? rows.time(0) : null,
-        lastSessionTime: rows.length ? rows.time(rows.length - 1) : null,
-        firstX: rows.length ? effectiveGetX(rows, 0) : null,
-        lastX: rows.length ? effectiveGetX(rows, rows.length - 1) : null,
-        bufferRowsBeforeClear: bridge.length,
-      })
-      bridge.clear()
-      lapRevisionRef.current = coordinates.lapRevision
-      historyRevisionRef.current = coordinates.historyRevision
-      autoRef.current = { min: Infinity, max: -Infinity, lastFull: 0 }
-    }
-    let syncEnd = rows.length
-    if (coordinates.distanceMode) {
-      let lo = 0, hi = rows.length
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1
-        if (Number.isFinite(effectiveGetX(rows, mid))) lo = mid + 1
-        else hi = mid
+  useLayoutEffect(() => {
+    syncRowsRef.current = () => {
+      const bridge = bridgeRef.current
+      const chart = chartRef.current
+      if (!bridge) return
+      const lapRevisionChanged = coordinates.distanceMode && lapRevisionRef.current !== coordinates.lapRevision
+      const historyRevisionChanged = historyRevisionRef.current !== coordinates.historyRevision
+      if (lapRevisionChanged || historyRevisionChanged) {
+        playbackDebug('chart-lap-revision', {
+          chart: debugChartName,
+          previousRevision: lapRevisionRef.current,
+          revision: coordinates.lapRevision,
+          mode: coordinates.mode,
+          rows: rows.length,
+          firstSessionTime: rows.length ? rows.time(0) : null,
+          lastSessionTime: rows.length ? rows.time(rows.length - 1) : null,
+          firstX: rows.length ? effectiveGetX(rows, 0) : null,
+          lastX: rows.length ? effectiveGetX(rows, rows.length - 1) : null,
+          bufferRowsBeforeClear: bridge.length,
+        })
+        bridge.clear()
+        lapRevisionRef.current = coordinates.lapRevision
+        historyRevisionRef.current = coordinates.historyRevision
+        autoRef.current = { min: Infinity, max: -Infinity, lastFull: 0 }
       }
-      syncEnd = lo
-    }
-    const syncStart = coordinates.stintLapsMode
-      ? lowerBoundSessionTime(rows, coordinates.historyStartTime)
-      : 0
-    const { changed, syncedFrom } = bridge.sync(rows, syncEnd, syncStart)
-    if (lapRevisionChanged) {
-      playbackDebug('chart-lap-revision-synced', {
-        chart: debugChartName,
-        revision: coordinates.lapRevision,
-        inputRows: rows.length,
-        syncEnd,
-        syncedFrom,
-        changed,
-        bufferRows: bridge.length,
-        bufferFirstX: bridge.length ? bridge.xAt(0) : null,
-        bufferLastX: bridge.length ? bridge.xAt(bridge.length - 1) : null,
-      })
-    }
-    if (changed) {
-      if (syncEnd > syncStart) acceptDataRange(effectiveGetX(rows, syncEnd - 1), effectiveGetX(rows, syncStart))
-      dataDirtyRef.current = true
-      wake()
-    }
-    if (changed && chart && coordinates.distanceMode) {
-      const max = coordinates.trackLengthM > 0 ? coordinates.trackLengthM : (bridge.length ? bridge.xAt(bridge.length - 1) : 1)
-      chart.options.xRange = { min: 0, max: Math.max(max, 1) }
-      chart.model.requestRedraw()
-      dataDirtyRef.current = false
-    }
+      let syncEnd = rows.length
+      if (coordinates.distanceMode) {
+        let lo = 0, hi = rows.length
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1
+          if (Number.isFinite(effectiveGetX(rows, mid))) lo = mid + 1
+          else hi = mid
+        }
+        syncEnd = lo
+      }
+      const syncStart = coordinates.stintLapsMode
+        ? lowerBoundSessionTime(rows, coordinates.historyStartTime)
+        : 0
+      const { changed, syncedFrom } = bridge.sync(rows, syncEnd, syncStart)
+      if (lapRevisionChanged) {
+        playbackDebug('chart-lap-revision-synced', {
+          chart: debugChartName,
+          revision: coordinates.lapRevision,
+          inputRows: rows.length,
+          syncEnd,
+          syncedFrom,
+          changed,
+          bufferRows: bridge.length,
+          bufferFirstX: bridge.length ? bridge.xAt(0) : null,
+          bufferLastX: bridge.length ? bridge.xAt(bridge.length - 1) : null,
+        })
+      }
+      if (changed) {
+        if (syncEnd > syncStart) acceptDataRange(effectiveGetX(rows, syncEnd - 1), effectiveGetX(rows, syncStart))
+        dataDirtyRef.current = true
+        wake()
+      }
+      if (changed && chart && coordinates.distanceMode) {
+        const max = coordinates.trackLengthM > 0 ? coordinates.trackLengthM : (bridge.length ? bridge.xAt(bridge.length - 1) : 1)
+        chart.options.xRange = { min: 0, max: Math.max(max, 1) }
+        chart.model.requestRedraw()
+        dataDirtyRef.current = false
+      }
 
-    // Auto y-range: fit to the visible window like uPlot's auto-range. A full
-    // scan of the buffers is O(window), which at 5-/10-min windows is ~tens of
-    // thousands of points *per publication* and is what made the tyre charts lag
-    // (the Misc charts use fixed/expand ranges and never scan). So:
-    //   - every publication, cheaply expand the range to include the newest
-    //     sample — O(series) — so a rising/spiking trace never clips the frame;
-    //   - only rescan the whole window on a throttle, which is what lets the
-    //     axis *shrink* again once old extremes scroll off.
-    if (changed && chart && yRange.kind === 'auto') {
-      const a = autoRef.current
-      if (coordinates.allLapsMode && syncedFrom !== null) {
-        // Full-lap modes never evict a visible prefix within their active
-        // range, so the range only needs to expand between stint resets.
-        // Scan exactly the newly synchronized chunk (or the complete buffer
-        // after a backfill rebuild) instead of rescanning the whole race.
-        for (let rowIndex = syncedFrom; rowIndex < syncEnd; rowIndex++) {
+      // Auto y-range: fit to the visible window like uPlot's auto-range. A full
+      // scan of the buffers is O(window), which at 5-/10-min windows is ~tens of
+      // thousands of points *per publication* and is what made the tyre charts lag
+      // (the Misc charts use fixed/expand ranges and never scan). So:
+      //   - every publication, cheaply expand the range to include the newest
+      //     sample — O(series) — so a rising/spiking trace never clips the frame;
+      //   - only rescan the whole window on a throttle, which is what lets the
+      //     axis *shrink* again once old extremes scroll off.
+      if (changed && chart && yRange.kind === 'auto') {
+        const a = autoRef.current
+        if (coordinates.allLapsMode && syncedFrom !== null) {
+          // Full-lap modes never evict a visible prefix within their active
+          // range, so the range only needs to expand between stint resets.
+          // Scan exactly the newly synchronized chunk (or the complete buffer
+          // after a backfill rebuild) instead of rescanning the whole race.
+          for (let rowIndex = syncedFrom; rowIndex < syncEnd; rowIndex++) {
+            for (let i = 0; i < seriesDefs.current.length; i++) {
+              if (!visibilityRef.current[i]) continue
+              const v = seriesDefs.current[i].getY(rows, rowIndex)
+              if (v < a.min) a.min = v
+              if (v > a.max) a.max = v
+            }
+          }
+        } else if (syncEnd > 0) {
           for (let i = 0; i < seriesDefs.current.length; i++) {
             if (!visibilityRef.current[i]) continue
-            const v = seriesDefs.current[i].getY(rows, rowIndex)
+            const s = seriesDefs.current[i]
+            const v = s.getY(rows, syncEnd - 1)
             if (v < a.min) a.min = v
             if (v > a.max) a.max = v
           }
         }
-      } else if (syncEnd > 0) {
-        for (let i = 0; i < seriesDefs.current.length; i++) {
-          if (!visibilityRef.current[i]) continue
-          const s = seriesDefs.current[i]
-          const v = s.getY(rows, syncEnd - 1)
-          if (v < a.min) a.min = v
-          if (v > a.max) a.max = v
-        }
-      }
-      const now = performance.now()
-      if (!coordinates.allLapsMode && now - a.lastFull >= AUTO_RANGE_FULL_MS) {
-        a.lastFull = now
-        const currentBuffers = seriesBuffersRef.current
-        const comparisonBuffers = coordinates.comparisonMode ? comparisonBridgeRef.current?.series ?? [] : []
-        const visibleBuffers = [...currentBuffers, ...comparisonBuffers]
-        const b0 = visibleBuffers.find((_, i) => visibilityRef.current[i % currentBuffers.length])
-        if (b0 && b0.length > 0) {
-          let lo = Infinity, hi = -Infinity
-          for (let k = 0; k < visibleBuffers.length; k++) {
-            if (!visibilityRef.current[k % currentBuffers.length]) continue
-            const buf = visibleBuffers[k]
-            const startX = coordinates.distanceMode || coordinates.allLapsMode ? buf.xAt(0) : buf.xAt(buf.length - 1) - windowSeconds
-            const lb = buf.lowerBoundX(startX)
-            for (let i = lb; i < buf.length; i++) {
-              const v = buf.yAt(i)
-              if (v < lo) lo = v
-              if (v > hi) hi = v
+        const now = performance.now()
+        if (!coordinates.allLapsMode && now - a.lastFull >= AUTO_RANGE_FULL_MS) {
+          a.lastFull = now
+          const currentBuffers = seriesBuffersRef.current
+          const comparisonBuffers = coordinates.comparisonMode ? comparisonBridgeRef.current?.series ?? [] : []
+          const visibleBuffers = [...currentBuffers, ...comparisonBuffers]
+          const b0 = visibleBuffers.find((_, i) => visibilityRef.current[i % currentBuffers.length])
+          if (b0 && b0.length > 0) {
+            let lo = Infinity, hi = -Infinity
+            for (let k = 0; k < visibleBuffers.length; k++) {
+              if (!visibilityRef.current[k % currentBuffers.length]) continue
+              const buf = visibleBuffers[k]
+              const startX = coordinates.distanceMode || coordinates.allLapsMode ? buf.xAt(0) : buf.xAt(buf.length - 1) - windowSeconds
+              const lb = buf.lowerBoundX(startX)
+              for (let i = lb; i < buf.length; i++) {
+                const v = buf.yAt(i)
+                if (v < lo) lo = v
+                if (v > hi) hi = v
+              }
             }
+            if (Number.isFinite(lo) && Number.isFinite(hi)) { a.min = lo; a.max = hi }
           }
-          if (Number.isFinite(lo) && Number.isFinite(hi)) { a.min = lo; a.max = hi }
+        }
+        if (Number.isFinite(a.min) && Number.isFinite(a.max)) {
+          const pad = a.max === a.min ? Math.abs(a.max) * 0.05 + 1 : (a.max - a.min) * padFraction
+          chart.options.yRange = {
+            min: yRange.fixedMin ?? a.min - pad,
+            max: a.max + pad,
+          }
+          dataDirtyRef.current = true
         }
       }
-      if (Number.isFinite(a.min) && Number.isFinite(a.max)) {
-        const pad = a.max === a.min ? Math.abs(a.max) * 0.05 + 1 : (a.max - a.min) * padFraction
-        chart.options.yRange = {
-          min: yRange.fixedMin ?? a.min - pad,
-          max: a.max + pad,
-        }
-        dataDirtyRef.current = true
-      }
-    }
 
-    // Expanding ranges normally inspect only newly synchronized source rows.
-    // This remains O(new data) during live use, while also covering playback
-    // seeks that append a whole batch whose peak may be in the middle rather
-    // than at the newest sample.
-    if (changed && chart && yRange.kind === 'expand' && syncedFrom !== null) {
-      let minVal = Infinity
-      let maxVal = -Infinity
-      for (let rowIndex = syncedFrom; rowIndex < syncEnd; rowIndex++) {
-        for (let seriesIndex = 0; seriesIndex < seriesDefs.current.length; seriesIndex++) {
-          if (!visibilityRef.current[seriesIndex]) continue
-          const value = seriesDefs.current[seriesIndex].getY(rows, rowIndex)
-          if (value < minVal) minVal = value
-          if (value > maxVal) maxVal = value
+      // Expanding ranges normally inspect only newly synchronized source rows.
+      // This remains O(new data) during live use, while also covering playback
+      // seeks that append a whole batch whose peak may be in the middle rather
+      // than at the newest sample.
+      if (changed && chart && yRange.kind === 'expand' && syncedFrom !== null) {
+        let minVal = Infinity
+        let maxVal = -Infinity
+        for (let rowIndex = syncedFrom; rowIndex < syncEnd; rowIndex++) {
+          for (let seriesIndex = 0; seriesIndex < seriesDefs.current.length; seriesIndex++) {
+            if (!visibilityRef.current[seriesIndex]) continue
+            const value = seriesDefs.current[seriesIndex].getY(rows, rowIndex)
+            if (value < minVal) minVal = value
+            if (value > maxVal) maxVal = value
+          }
+        }
+        const b = boundsRef.current
+        let rangeChanged = false
+        if (maxVal > b.upper - yRange.upperPad) { b.upper = Math.ceil(maxVal + yRange.upperPad); rangeChanged = true }
+        if (yRange.expandLower !== false && minVal < b.lower + yRange.lowerPad) { b.lower = Math.floor(minVal - yRange.lowerPad); rangeChanged = true }
+        if (rangeChanged) {
+          chart.options.yRange = { min: b.lower, max: b.upper }
+          dataDirtyRef.current = true
         }
       }
-      const b = boundsRef.current
-      let rangeChanged = false
-      if (maxVal > b.upper - yRange.upperPad) { b.upper = Math.ceil(maxVal + yRange.upperPad); rangeChanged = true }
-      if (yRange.expandLower !== false && minVal < b.lower + yRange.lowerPad) { b.lower = Math.floor(minVal - yRange.lowerPad); rangeChanged = true }
-      if (rangeChanged) {
-        chart.options.yRange = { min: b.lower, max: b.upper }
-        dataDirtyRef.current = true
-      }
     }
-  }
+  })
 
   useEffect(() => {
     scheduleRowsSync()

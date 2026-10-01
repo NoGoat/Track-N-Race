@@ -280,7 +280,7 @@ class LiveView<T extends { session_time: number }> implements ColumnView<T> {
 }
 
 const EMPTY_STORAGE = new Storage(0)
-const emptyViews = new Map<string, ColumnView<any>>()
+const emptyViews = new Map<string, ColumnView>()
 export function emptyView<T extends { session_time: number }>(rowType = ''): ColumnView<T> {
   let view = emptyViews.get(rowType)
   if (!view) {
@@ -355,11 +355,12 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
   }
 
   /** Appends a complete row. Fields the row lacks read as absent. */
-  append(row: Record<string, unknown> & { session_time: number }, maxRows = Infinity): void {
+  append(row: { session_time: number }, maxRows = Infinity): void {
     const s = this.reserve()
     const p = s.length
     s.time[p] = row.session_time
-    for (const key in row) s.write(p, key, row[key])
+    const fields = row as Record<string, unknown>
+    for (const key in fields) s.write(p, key, fields[key])
     s.length = p + 1
     this.capRows(maxRows)
   }
@@ -369,12 +370,13 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
    * other field carries forward, and a sample at the newest row's timestamp
    * updates that row. `available:false` clears that type's fields.
    */
-  appendPatch(patch: Record<string, unknown> & { session_time: number }, maxRows = Infinity): void {
-    const v6Type = Number(patch._v6_type)
+  appendPatch(patch: { session_time: number }, maxRows = Infinity): void {
+    const fields = patch as Record<string, unknown>
+    const v6Type = Number(fields._v6_type)
     const s0 = this.storage
     const lastIndex = s0.length - 1
     if (this.length > 0 && s0.time[lastIndex] === patch.session_time) {
-      this.applyPatch(s0, lastIndex, patch, v6Type)
+      this.applyPatch(s0, lastIndex, fields, v6Type)
       return
     }
     const s = this.reserve()
@@ -382,7 +384,7 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
     s.time[p] = patch.session_time
     if (this.length > 0) s.copyRow(p - 1, p)
     s.length = p + 1
-    this.applyPatch(s, p, patch, v6Type)
+    this.applyPatch(s, p, fields, v6Type)
     this.capRows(maxRows)
   }
 
@@ -437,7 +439,7 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
   }
 
   /** Replaces the contents with a copy of `view`'s rows. */
-  replaceWithView(view: ColumnView<any>): void {
+  replaceWithView(view: ColumnView): void {
     this.replace(storageOfView(view))
   }
 
@@ -446,14 +448,14 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
   }
 }
 
-function viewParts(view: ColumnView<any>): { storage: Storage; start: number; end: number } | null {
+function viewParts(view: ColumnView): { storage: Storage; start: number; end: number } | null {
   const frozen = view instanceof LiveView ? view.slice(0) : view
   if (!(frozen instanceof FrozenView)) return null
   const internals = frozen as unknown as { storage: Storage; start: number; end: number }
   return { storage: internals.storage, start: internals.start, end: internals.end }
 }
 
-function storageOfView(view: ColumnView<any>): Storage {
+function storageOfView(view: ColumnView): Storage {
   const parts = viewParts(view)
   const builder = new StorageBuilder(Math.max(256, view.length * 2))
   if (parts) builder.appendRange(parts.storage, parts.start, parts.end)
@@ -467,20 +469,20 @@ export function tableFromView<T extends { session_time: number }>(view: ColumnVi
 /** Builds a table from row objects, merging V6 patches as they stream. */
 export function tableFromRows<T extends { session_time: number }>(
   rowType: string,
-  rows: readonly Record<string, any>[],
+  rows: readonly { session_time: number }[],
   mergePatches: boolean,
 ): ColumnTable<T> {
   const table = new ColumnTable<T>(rowType)
   for (const row of rows) {
-    if (mergePatches && Number.isInteger(Number(row._v6_type))) table.appendPatch(row as T & Record<string, unknown>)
-    else table.append(row as T & Record<string, unknown>)
+    if (mergePatches && Number.isInteger(Number((row as Record<string, unknown>)._v6_type))) table.appendPatch(row)
+    else table.append(row)
   }
   return table
 }
 
 export function viewOfRows<T extends { session_time: number }>(
   rowType: string,
-  rows: readonly Record<string, any>[],
+  rows: readonly { session_time: number }[],
   mergePatches = true,
 ): ColumnView<T> {
   return tableFromRows<T>(rowType, rows, mergePatches).frozen()
@@ -673,7 +675,7 @@ function mergeSortedUnique(a: Float64Array, b: Float64Array): Float64Array {
 
 export interface V6HistoryTables {
   mask: number
-  tables: Partial<Record<HistoryFamily, ColumnTable<any>>>
+  tables: Partial<Record<HistoryFamily, ColumnTable>>
   typeCounts: Record<string, number>
 }
 
@@ -694,7 +696,7 @@ async function decodeV6HistoryInner(bytes: Uint8Array, step: (work: number) => P
   const { mask, blocks } = await parseV6History(bytes, step)
   const typeCounts: Record<string, number> = {}
   for (const block of blocks) typeCounts[String(block.type)] = block.time.length
-  const tables: Partial<Record<HistoryFamily, ColumnTable<any>>> = {}
+  const tables: Partial<Record<HistoryFamily, ColumnTable>> = {}
   for (const family of Object.keys(FAMILY_BIT) as HistoryFamily[]) {
     if (!(mask & FAMILY_BIT[family])) continue
     const tracks = blocks.flatMap(block => {
@@ -759,7 +761,7 @@ async function decodeV6HistoryInner(bytes: Uint8Array, step: (work: number) => P
 // ── Chart helpers ────────────────────────────────────────────────────────────
 
 /** The X accessor of time-axis charts. */
-export function sessionTimeAt(rows: ColumnView<any>, i: number): number {
+export function sessionTimeAt(rows: ColumnView, i: number): number {
   return rows.time(i)
 }
 

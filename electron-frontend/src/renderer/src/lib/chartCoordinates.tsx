@@ -127,23 +127,21 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
   const comparisonPointsRef = useRef<readonly LapProgressPoint[]>([])
   const currentProgressMapRef = useRef<LapProgressMap | null>(null)
   const comparisonProgressMapRef = useRef<LapProgressMap | null>(null)
-  if (enabled) {
-    const progressMap = buildLapProgressMapFromPoints(rawProgress, lapStartTime, lapEndTime)
-    currentProgressMapRef.current = progressMap
-    pointsRef.current = progressMap?.points ?? [{ session_time: lapStartTime, current_lap_ms: 0, lap_distance_m: 0 }]
-  } else {
-    // getX is the time identity outside distance modes; nothing reads these.
-    pointsRef.current = []
-    currentProgressMapRef.current = null
-  }
-  if (comparisonMode && comparisonLapData) {
-    const progressMap = buildLapProgressMap(comparisonLapData)
-    comparisonProgressMapRef.current = progressMap
-    comparisonPointsRef.current = progressMap?.points ?? []
-  } else {
-    comparisonPointsRef.current = []
-    comparisonProgressMapRef.current = null
-  }
+  // getX is the time identity outside distance modes; nothing reads these then.
+  const currentProgressMap = enabled ? buildLapProgressMapFromPoints(rawProgress, lapStartTime, lapEndTime) : null
+  const comparisonProgressMap = comparisonMode && comparisonLapData ? buildLapProgressMap(comparisonLapData) : null
+  // The accessors below keep one identity for the provider's lifetime, because
+  // charts rebuild their buffers whenever getX/getComparisonX change, yet
+  // children call them during this same render. So their data is published
+  // here, during render, instead of an effect that would run after children.
+  /* eslint-disable react-hooks/refs */
+  currentProgressMapRef.current = currentProgressMap
+  pointsRef.current = enabled
+    ? currentProgressMap?.points ?? [{ session_time: lapStartTime, current_lap_ms: 0, lap_distance_m: 0 }]
+    : []
+  comparisonProgressMapRef.current = comparisonProgressMap
+  comparisonPointsRef.current = comparisonProgressMap?.points ?? []
+  /* eslint-enable react-hooks/refs */
   const getX = useCallback((sessionTime: number) => interpolateDistance(pointsRef.current, sessionTime), [])
   const getComparisonX = useCallback((sessionTime: number) => interpolateDistance(comparisonPointsRef.current, sessionTime), [])
   const getDeltaAtDistance = useCallback((distance: number) => {
@@ -164,11 +162,14 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
       : liveLapBoundaries
   const stintStartTime = stintLapsMode ? currentStintStartTime : -Infinity
   const boundaryLabelsRef = useRef(new Map<number, string>())
-  boundaryLabelsRef.current = new Map(lapBoundaries.map(boundary => [boundary.sessionTime, String(boundary.lapNum)]))
   const boundaryValuesRef = useRef<number[]>([])
+  // Published during render for the same reason as the progress maps above.
+  /* eslint-disable react-hooks/refs */
+  boundaryLabelsRef.current = new Map(lapBoundaries.map(boundary => [boundary.sessionTime, String(boundary.lapNum)]))
   boundaryValuesRef.current = lapBoundaries
     .filter(boundary => !stintLapsMode || boundary.sessionTime >= stintStartTime)
     .map(boundary => boundary.sessionTime)
+  /* eslint-enable react-hooks/refs */
   const getAllLapTicks = useCallback((min: number, max: number) => boundaryValuesRef.current
     .filter(time => time >= min && time <= max), [])
   const formatAllLapX = useCallback((x: number) => boundaryLabelsRef.current.get(x) ?? '', [])
@@ -199,11 +200,11 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
   if (sectorBoundaryMode && comparisonMode) {
     for (const split of findSectorSplitsFromProgress(
       comparisonLapData?.lapProgress ?? EMPTY_PROGRESS,
-      comparisonProgressMapRef.current,
+      comparisonProgressMap,
     )) sectorSplitsByNumber.set(split.afterSector, split)
   }
   if (sectorBoundaryMode) {
-    for (const split of findSectorSplitsFromProgress(rawProgress, currentProgressMapRef.current)) {
+    for (const split of findSectorSplitsFromProgress(rawProgress, currentProgressMap)) {
       sectorSplitsByNumber.set(split.afterSector, split)
     }
   }
@@ -213,6 +214,8 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
   })
   const sectorSplitsRef = useRef<SectorSplit[]>([])
   const sectorTickLabelsRef = useRef(new Map<number, string>())
+  // Published during render for the same reason as the progress maps above.
+  // eslint-disable-next-line react-hooks/refs
   sectorSplitsRef.current = sectorSplits
   const getSectorTicks = useCallback((min: number, max: number) => {
     const labels = new Map<number, string>()
@@ -255,7 +258,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
       firstDistance: rawProgress.length ? rawProgress.num('lap_distance_m', 0) : null,
       lastDistance: lastProgress?.lap_distance_m ?? null,
     })
-  }, [comparisonLapData, comparisonLapNum, currentLapNum, currentLapRevision, fastestLapNum,
+  }, [comparisonLapData, comparisonLapNum, currentLapNum, lapRevision, fastestLapNum,
     isPlayback, lapEndTime, lapStartTime, mode, playbackCurrentLap,
     progressRevision, rawProgress, currentProgress.length, lastProgress?.session_time, lastProgress?.lap_distance_m])
   return <Context.Provider value={{

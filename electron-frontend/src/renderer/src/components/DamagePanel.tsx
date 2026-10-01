@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import type { TelemetryRow, DamageRow } from '../types'
+import type { DamageRow } from '../types'
 import type { DensityMode } from '../lib/graphSections'
 
 interface VisibleItems {

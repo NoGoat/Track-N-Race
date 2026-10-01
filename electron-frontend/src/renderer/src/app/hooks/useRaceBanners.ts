@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { subscribeRaceEvent, useTelemetryStore } from '../../stores/telemetryStore'
 import { useLabels } from '../../lib/labels'
 import { buildBanner, buildSafetyCarBanner, lastName, type BannerItem } from '../bannerHelpers'
@@ -21,12 +21,13 @@ export function useRaceBanners(durationSeconds: number) {
   const participantsRef = useRef(participants)
   const labelsRef = useRef(labels)
   const durationRef = useRef(durationSeconds)
-  participantsRef.current = participants
-  labelsRef.current = labels
-  durationRef.current = durationSeconds
+  useLayoutEffect(() => {
+    participantsRef.current = participants
+    labelsRef.current = labels
+    durationRef.current = durationSeconds
+  })
 
-  const dequeueRef = useRef<() => void>(() => {})
-  dequeueRef.current = () => {
+  const dequeue = useCallback(function dequeue() {
     if (queueRef.current.length === 0) {
       setTransientBanner(null)
       showingRef.current = false
@@ -34,13 +35,13 @@ export function useRaceBanners(durationSeconds: number) {
     }
     setTransientBanner(queueRef.current.shift()!)
     showingRef.current = true
-    timerRef.current = setTimeout(() => dequeueRef.current(), durationRef.current * 1000)
-  }
+    timerRef.current = setTimeout(dequeue, durationRef.current * 1000)
+  }, [])
 
   const enqueue = useCallback((item: BannerItem) => {
     queueRef.current.push(item)
-    if (!showingRef.current) dequeueRef.current()
-  }, [])
+    if (!showingRef.current) dequeue()
+  }, [dequeue])
 
   const handleLeaderChange = useCallback((idx: number) => {
     enqueue({ label: 'New Race Leader', sub: lastName(participantsRef.current, idx), color: '#5794F2' })

@@ -1,7 +1,9 @@
-import { components } from 'react-select'
+import { components, type ClearIndicatorProps, type DropdownIndicatorProps, type GroupBase } from 'react-select'
 import { ChevronDown, X } from 'lucide-react'
 
-function DropdownIndicator(props: any) {
+function DropdownIndicator<Option, IsMulti extends boolean, Group extends GroupBase<Option>>(
+  props: DropdownIndicatorProps<Option, IsMulti, Group>,
+) {
   return (
     <components.DropdownIndicator {...props}>
       <ChevronDown size={12} />
@@ -9,7 +11,9 @@ function DropdownIndicator(props: any) {
   )
 }
 
-function ClearIndicator(props: any) {
+function ClearIndicator<Option, IsMulti extends boolean, Group extends GroupBase<Option>>(
+  props: ClearIndicatorProps<Option, IsMulti, Group>,
+) {
   return (
     <components.ClearIndicator {...props}>
       <X size={12} />

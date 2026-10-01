@@ -15,7 +15,7 @@ export interface AnalyzeMetricDefinition {
   unit: string
   lineType?: 'line' | 'step'
   /** Value of sample `i` of this metric's source. */
-  getValue: (rows: ColumnView<any>, i: number) => number
+  getValue: (rows: ColumnView, i: number) => number
   format: (value: number) => string
   axisFormat: (value: number) => string
 }
@@ -113,7 +113,7 @@ const tyreMetrics: AnalyzeMetricDefinition[] = corners.flatMap(corner => [
 ])
 
 // The baseline across all four corners: the mean of whichever corners report.
-function averageWear(rows: ColumnView<any>, i: number): number {
+function averageWear(rows: ColumnView, i: number): number {
   let sum = 0
   let count = 0
   for (const corner of corners) {

@@ -20,7 +20,7 @@ export function useAppConfig<T>(key: string, defaultValue: T): [T, (v: T) => voi
 
   const set = useCallback((v: T) => {
     setValue(v)
-    try { window.electronStore.set(key, v) } catch {}
+    try { window.electronStore.set(key, v) } catch { /* store unavailable: keep in-memory value */ }
   }, [key])
 
   return [value, set]

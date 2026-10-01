@@ -1,6 +1,6 @@
 import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, Tab, TyresLayout } from '../app/appConfig'
 import { ANALYZE_METRIC_BY_ID, analyzeSeriesMemberIds, type AnalyzeSeriesConfig } from './analyzeMetrics'
-import type { GraphSection } from './graphSections'
+import type { GraphSection, GraphViewState } from './graphSections'
 
 // Logical recording row families. These bits are shared with TnrdReader's V4
 // directory and are deliberately not UDP packet ids: one game packet can feed
@@ -106,6 +106,7 @@ export function dataRequirementsForUi(
   isPlayback: boolean,
   analyzeMask = 0,
   pageLayouts?: PageLayouts,
+  graphView?: Partial<GraphViewState>,
 ): DataRequirements {
   const result: DataRequirements = { streamMask: 0, historyMask: 0, v6Types: [], v6HistoryTypes: [] }
   add(result, DATA_CONSUMERS.globalClock)
@@ -121,8 +122,14 @@ export function dataRequirementsForUi(
         if (surfaceTemp || innerTemp || brakeTemp) add(result, DATA_CONSUMERS.tyreTemperatureHistory)
         if (tyreLife) add(result, DATA_CONSUMERS.tyreWearHistory)
       } else if (any(core.thermalCards)) {
-        // Cards use current values only. They stay subscribed to the live row
-        // families, but never trigger indexed history/backfill reads.
+        // Cards use current values only, unless one is switched to its table
+        // view — that lists the temperature history, so it needs backfill.
+        const { fl, fr, rl, rr } = core.thermalCards
+        const tabled = (fl && graphView?.overviewTyreCardFL === 'table') ||
+          (fr && graphView?.overviewTyreCardFR === 'table') ||
+          (rl && graphView?.overviewTyreCardRL === 'table') ||
+          (rr && graphView?.overviewTyreCardRR === 'table')
+        if (tabled) add(result, DATA_CONSUMERS.tyreTemperatureHistory)
         result.streamMask |= DATA_ROW.telemetry
         result.v6Types.push(V6_DATA.tyreSurfaceTemp, V6_DATA.tyreInnerTemp, V6_DATA.brakeTemp)
         add(result, DATA_CONSUMERS.damageCards)
@@ -141,7 +148,9 @@ export function dataRequirementsForUi(
   } else if (tab === 'tyres') {
     add(result, DATA_CONSUMERS.tyrePageState)
     if (tyres.charts.surfaceTemp || tyres.charts.innerTemp ||
-        tyres.charts.brakeTemp)
+        tyres.charts.brakeTemp ||
+        graphView?.tyreCardFL === 'table' || graphView?.tyreCardFR === 'table' ||
+        graphView?.tyreCardRL === 'table' || graphView?.tyreCardRR === 'table')
       add(result, DATA_CONSUMERS.tyreTemperatureHistory)
     if (tyres.charts.tyreLife) add(result, DATA_CONSUMERS.tyreWearHistory)
   } else if (tab === 'strategy') {

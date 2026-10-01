@@ -217,7 +217,11 @@ export default function AppShell() {
     return () => { cancelled = true }
   }, [])
 
-  useEffect(() => {
+  // Opening or closing a recording (and the first render) starts with fresh
+  // comparison and driver selections.
+  const [selectionsFile, setSelectionsFile] = useState<{ filename: string | null | undefined } | null>(null)
+  if (selectionsFile === null || selectionsFile.filename !== playback.state?.filename) {
+    setSelectionsFile({ filename: playback.state?.filename })
     setAnalyzeCompareLapNum(null)
     setAnalyzeCompareDriver(null)
     setAnalyzeSecondaryFile(null)
@@ -225,7 +229,9 @@ export default function AppShell() {
       enabled: false, lapA: null, lapB: null, lapADriver: null, lapBDriver: null,
     })
     setReferenceLapNum(null)
-  }, [playback.state?.filename])
+    setPlaybackDriverIdx(null)
+    setRecordedPlayerIdx(null)
+  }
 
   const handleCloseSettings = useCallback(() => {
     setSettingsOpen(false)
@@ -256,62 +262,49 @@ export default function AppShell() {
   // would otherwise get a new identity several times a second and re-render the
   // whole title bar through AppHeader's memo. Reuse the previous array whenever
   // the rendered options are unchanged.
-  const driverOptionsRef = useRef<Array<{ value: number; label: string; isDisabled: boolean }>>([])
-  const driverOptions = useMemo(() => {
-    const next = (participants?.drivers ?? []).map(driver => {
-      const restricted = driver.idx !== originalPlayerIdx && driver.your_telemetry !== 1
-      return {
-        value: driver.idx,
-        label: restricted ? `${driver.name} · Public data only` : driver.name,
-        isDisabled: false,
-      }
-    })
-    const previous = driverOptionsRef.current
-    if (previous.length === next.length &&
-        previous.every((option, index) => option.value === next[index].value &&
-          option.label === next[index].label && option.isDisabled === next[index].isDisabled)) {
-      return previous
+  const nextDriverOptions = useMemo(() => (participants?.drivers ?? []).map(driver => {
+    const restricted = driver.idx !== originalPlayerIdx && driver.your_telemetry !== 1
+    return {
+      value: driver.idx,
+      label: restricted ? `${driver.name} · Public data only` : driver.name,
+      isDisabled: false,
     }
-    driverOptionsRef.current = next
-    return next
-  }, [participants, originalPlayerIdx])
+  }), [participants, originalPlayerIdx])
+  const [driverOptions, setDriverOptions] = useState(nextDriverOptions)
+  if (nextDriverOptions !== driverOptions && !(driverOptions.length === nextDriverOptions.length &&
+      driverOptions.every((option, index) => option.value === nextDriverOptions[index].value &&
+        option.label === nextDriverOptions[index].label && option.isDisabled === nextDriverOptions[index].isDisabled))) {
+    setDriverOptions(nextDriverOptions)
+  }
+  if (!driverSelectorVisible && playbackDriverIdx !== null) setPlaybackDriverIdx(null)
+  const initialPlayerIdx = playbackDriverIndex ?? timingPlayerIdx
+  if (driverSelectorVisible && recordedPlayerIdx === null && initialPlayerIdx !== null) {
+    setRecordedPlayerIdx(initialPlayerIdx)
+    setPlaybackDriverIdx(initialPlayerIdx)
+  }
+  // recordedPlayerIdx is only ever set right above, once per recording: tell
+  // the engine which driver the recording starts on.
   useEffect(() => {
-    setPlaybackDriverIdx(null)
-    setRecordedPlayerIdx(null)
-  }, [playback.state?.filename])
-  useEffect(() => {
-    if (!driverSelectorVisible) {
-      setPlaybackDriverIdx(null)
-      return
-    }
-    const initialPlayerIdx = playbackDriverIndex ?? timingPlayerIdx
-    if (recordedPlayerIdx === null && initialPlayerIdx !== null) {
-      setRecordedPlayerIdx(initialPlayerIdx)
-      setPlaybackDriverIdx(initialPlayerIdx)
-      window.playerBridge.setDriver(initialPlayerIdx, true)
-    }
-  }, [driverSelectorVisible, playbackDriverIndex, recordedPlayerIdx, timingPlayerIdx])
+    if (recordedPlayerIdx !== null) window.playerBridge.setDriver(recordedPlayerIdx, true)
+  }, [recordedPlayerIdx])
   const availableChartWindows = useMemo(() => new Set(
     getChartWindowOptionGroups(clAvailable, recordingOpen)
       .flatMap(group => group.options)
       .map(option => option.value),
   ), [clAvailable, recordingOpen])
-  useEffect(() => {
-    setChartWindowOverrides(current => {
-      const next = Object.fromEntries(Object.entries(current)
-        .filter(([, value]) => availableChartWindows.has(value))) as ChartWindowOverrides
-      return Object.keys(next).length === Object.keys(current).length ? current : next
-    })
-    setChartReferenceLapOverrides(current => {
-      const next = Object.fromEntries(Object.entries(current)
-        .filter(([section]) => {
-          const graphSection = section as GraphSection
-          const effectiveWindow = chartWindowOverrides[graphSection] ?? chartWindow
-          return effectiveWindow === 'RL' && availableChartWindows.has(effectiveWindow)
-        })) as ChartReferenceLapOverrides
-      return Object.keys(next).length === Object.keys(current).length ? current : next
-    })
-  }, [availableChartWindows, chartWindow, chartWindowOverrides])
+  // Drop overrides for windows the current source can't show.
+  const prunedWindowOverrides = Object.fromEntries(Object.entries(chartWindowOverrides)
+    .filter(([, value]) => availableChartWindows.has(value))) as ChartWindowOverrides
+  if (Object.keys(prunedWindowOverrides).length !== Object.keys(chartWindowOverrides).length)
+    setChartWindowOverrides(prunedWindowOverrides)
+  const prunedReferenceLapOverrides = Object.fromEntries(Object.entries(chartReferenceLapOverrides)
+    .filter(([section]) => {
+      const graphSection = section as GraphSection
+      const effectiveWindow = chartWindowOverrides[graphSection] ?? chartWindow
+      return effectiveWindow === 'RL' && availableChartWindows.has(effectiveWindow)
+    })) as ChartReferenceLapOverrides
+  if (Object.keys(prunedReferenceLapOverrides).length !== Object.keys(chartReferenceLapOverrides).length)
+    setChartReferenceLapOverrides(prunedReferenceLapOverrides)
   const chartCoordinateMode = chartWindow === 'AL' || chartWindow === 'SL'
     ? chartWindow
     : clAvailable && typeof chartWindow !== 'number' && (chartWindow !== 'RL' || recordingOpen)
@@ -326,14 +319,12 @@ export default function AppShell() {
       .map(value => ({ value, label: String(value) }))
   }, [playback.speedRpmBlocks])
 
-  useEffect(() => {
-    // The lap catalog arrives after the playback header. Keep RL on its Lap 1
-    // default while loading instead of clearing it to the dash placeholder.
-    if (referenceLapOptions.length > 0 &&
-        (referenceLapNum === null || !referenceLapOptions.some(option => option.value === referenceLapNum))) {
-      setReferenceLapNum(referenceLapOptions.find(option => option.value === 1)?.value ?? referenceLapOptions[0].value)
-    }
-  }, [referenceLapNum, referenceLapOptions])
+  // The lap catalog arrives after the playback header. Keep RL on its Lap 1
+  // default while loading instead of clearing it to the dash placeholder.
+  if (referenceLapOptions.length > 0 &&
+      (referenceLapNum === null || !referenceLapOptions.some(option => option.value === referenceLapNum))) {
+    setReferenceLapNum(referenceLapOptions.find(option => option.value === 1)?.value ?? referenceLapOptions[0].value)
+  }
   // Publish the visible time window to the store so it computes the right slices.
   const dataRequirements = useMemo(
     () => dataRequirementsForUi(
@@ -341,8 +332,9 @@ export default function AppShell() {
       Boolean(playback.state?.filename),
       analyzeDataMask,
       pageLayouts,
+      graphView,
     ),
-    [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView, playback.state?.filename, analyzeDataMask, pageLayouts],
+    [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView, playback.state?.filename, analyzeDataMask, pageLayouts, graphView],
   )
   const visibleChartSections = useMemo(() => visibleChartSectionsForUi(
     tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView,
@@ -496,7 +488,7 @@ export default function AppShell() {
   // usePlayback returns a fresh object on every render, so reading it through a
   // ref keeps this handler stable for AppHeader's memo.
   const playbackRef = useRef(playback)
-  playbackRef.current = playback
+  useLayoutEffect(() => { playbackRef.current = playback })
   const handlePlaybackDriverChange = useCallback((idx: number) => {
     if (!driverSelectorVisible || idx === playbackDriverIdx) return
     const option = driverOptions.find(candidate => candidate.value === idx)
@@ -518,7 +510,7 @@ export default function AppShell() {
         actualNativeTitlebar={actualNativeTitlebar}
         activeBanner={activeBanner}
         editOpen={editOpen}
-        filename={playback.state?.filename}
+        filename={playback.state?.filename ?? undefined}
         headerVisible={headerVisible}
         isFullscreen={isFullscreen}
         isMaximized={isMaximized}

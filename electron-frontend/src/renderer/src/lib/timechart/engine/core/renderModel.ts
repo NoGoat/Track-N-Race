@@ -1,5 +1,5 @@
 import { scaleLinear } from "d3-scale";
-import { ResolvedCoreOptions, TimeChartSeriesOptions } from '../options';
+import { ResolvedCoreOptions } from '../options';
 import { EventDispatcher } from '../utils';
 import { timeChartFrameScheduler } from './frameScheduler';
 import type { FrameScheduleHandle } from './frameScheduler';

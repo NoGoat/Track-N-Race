@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
 import { ArrowDownUp } from 'lucide-react'
@@ -34,17 +34,17 @@ export default memo(function ColorPicker({
   const open = phase === 'open'
   const mounted = phase !== 'closed' && !disabled
 
-  const cancelClose = () => {
+  const cancelClose = useCallback(() => {
     if (closeTimerRef.current !== null) clearTimeout(closeTimerRef.current)
     closeTimerRef.current = null
-  }
+  }, [])
 
   const openPicker = () => {
     cancelClose()
     setPhase('open')
   }
 
-  const closePicker = () => {
+  const closePicker = useCallback(() => {
     cancelClose()
     if (reduceAnimations()) { setPhase('closed'); return }
     setPhase(current => current === 'open' ? 'closing' : current)
@@ -52,15 +52,15 @@ export default memo(function ColorPicker({
       closeTimerRef.current = null
       setPhase('closed')
     }, SELECT_MENU_ANIMATION_MS)
-  }
+  }, [cancelClose])
 
-  useEffect(() => cancelClose, [])
+  useEffect(() => cancelClose, [cancelClose])
 
+  // Disabling closes the picker outright, without its exit animation.
+  if (disabled && phase !== 'closed') setPhase('closed')
   useEffect(() => {
-    if (!disabled) return
-    cancelClose()
-    setPhase('closed')
-  }, [disabled])
+    if (disabled) cancelClose()
+  }, [cancelClose, disabled])
 
   useLayoutEffect(() => {
     if (!open) return
@@ -105,7 +105,7 @@ export default memo(function ColorPicker({
       document.removeEventListener('pointerdown', closeOutside)
       document.removeEventListener('keydown', closeOnEscape)
     }
-  }, [open])
+  }, [closePicker, open])
 
   const chromeStyle = {
     '--github-background-color': 'var(--bg-menu)',

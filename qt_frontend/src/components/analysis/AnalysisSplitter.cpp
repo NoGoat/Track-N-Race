@@ -57,7 +57,7 @@ AnalysisSplitter::AnalysisSplitter(QWidget* parent) : QSplitter(Qt::Horizontal, 
 }
 
 AnalysisSplitter::~AnalysisSplitter() {
-    delete badge_;   // owned by the window, which may outlive the splitter
+    delete badge_.data();   // owned by the window, which may outlive the splitter
 }
 
 QSplitterHandle* AnalysisSplitter::createHandle() {
@@ -121,9 +121,11 @@ void AnalysisSplitter::refreshBadge() {
     }
     QWidget* host = window();
     if (!badge_ || badge_->parentWidget() != host) {
-        delete badge_;
+        if (badge_) {   // re-parented window: retire the old badge, QPointer drops it
+            badge_->hide();
+            badge_->deleteLater();
+        }
         badge_ = new AnalysisSplitBadge(host);
-        connect(badge_, &QObject::destroyed, this, [this] { badge_ = nullptr; });
     }
     const int graphs = qRound(ratio_ * 100.0);
     badge_->setText(QStringLiteral("%1 / %2").arg(graphs).arg(100 - graphs));

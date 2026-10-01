@@ -4,7 +4,7 @@ import type {
   ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg,
   LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg, DriverLapHistory,
   AnalyzeLapData, AnalysisDriverLapCatalog, PlaybackLapDataMsg,
-  StrategySnapshotMsg,
+  StrategySnapshotMsg, PlaybackLapBlock, FastestLapMsg, PlaybackSeekFlushBinMsg,
 } from '../types'
 import { decodeBinaryBatchRange, forEachDecodedBinaryRow } from '../lib/decodeBinaryBatch'
 import { scheduleCooperativeTask, yieldToMainThread } from '../lib/cooperativeTask'
@@ -46,7 +46,7 @@ function appendRow<T extends { session_time: number }>(table: ColumnTable<T>, ms
   table.append(msg as T & Record<string, unknown>, maxRows)
 }
 
-function reconcileReversal(table: ColumnTable<any>, sessionTime: number): void {
+function reconcileReversal(table: ColumnTable, sessionTime: number): void {
   const last = table.lastTime()
   if (last === undefined || sessionTime >= last) return
   // A rapid seek can leave a few superseded future rows in flight. AL owns the
@@ -56,16 +56,17 @@ function reconcileReversal(table: ColumnTable<any>, sessionTime: number): void {
   else table.retainRange(sessionTime - RETENTION_S, sessionTime)
 }
 
-function mergePlaybackPatch<T extends Record<string, any>>(previous: T | undefined, patch: T): T {
-  const v6Type = Number(patch._v6_type)
+function mergePlaybackPatch<T extends object>(previous: T | undefined, patch: T): T {
+  const fields = patch as Record<string, unknown>
+  const v6Type = Number(fields._v6_type)
   if (!isPlaybackFlag || !Number.isInteger(v6Type)) return patch
-  const merged: Record<string, any> = { ...previous, ...patch }
-  if (patch.available === false) {
+  const merged: Record<string, unknown> = { ...(previous as Record<string, unknown> | undefined), ...fields }
+  if (fields.available === false) {
     const dropped = V6_PATCH_FIELDS[v6Type] ?? []
     playbackDebug('patch-availability-wipe', {
       v6Type,
-      rowType: patch.type ?? null,
-      sessionTime: patch.session_time ?? null,
+      rowType: fields.type ?? null,
+      sessionTime: fields.session_time ?? null,
       droppedFields: dropped,
       hadSlmBefore: merged.slm !== undefined,
     })
@@ -91,13 +92,14 @@ function appendPlaybackPatch<T extends { session_time: number }>(
   }
 }
 
-function mergeCarPatches<T extends { cars: Array<Record<string, any>> }>(previous: T | null, patch: T): T {
-  if (!previous || !Number.isInteger(Number((patch as any)._v6_type))) return patch
-  const v6Type = Number((patch as any)._v6_type)
-  const cars = new Map(previous.cars.map(car => [Number(car.idx), car]))
-  for (const carPatch of patch.cars) {
+type CarFields = Record<string, unknown>
+function mergeCarPatches<T extends { cars: object[] }>(previous: T | null, patch: T): T {
+  const v6Type = Number((patch as Record<string, unknown>)._v6_type)
+  if (!previous || !Number.isInteger(v6Type)) return patch
+  const cars = new Map((previous.cars as CarFields[]).map(car => [Number(car.idx), car]))
+  for (const carPatch of patch.cars as CarFields[]) {
     const prior = cars.get(Number(carPatch.idx))
-    const merged = { ...prior, ...carPatch }
+    const merged: CarFields = { ...prior, ...carPatch }
     if (carPatch.available === false)
       for (const field of V6_PATCH_FIELDS[v6Type] ?? []) delete merged[field]
     delete merged.available
@@ -164,7 +166,7 @@ export interface TelemetryStoreState {
   livePreviousLapData: AnalyzeLapData | null
   liveFastestLapData: AnalyzeLapData | null
   lapTimesByNum: Record<number, number>
-  speedRpmBlocks: any[] | null
+  speedRpmBlocks: PlaybackLapBlock[] | null
   isConnected: boolean
   error: string | null
   protocolStatus: ProtocolStatusMsg | null
@@ -230,7 +232,7 @@ const motExTable = new ColumnTable<MotionExRow>('motion_ex')
 const dmgTable   = new ColumnTable<DamageRow>('damage')
 const stsTable   = new ColumnTable<StatusRow>('status')
 const lapProgressTable = new ColumnTable<LapRow>('lap')
-const TABLE_OF_FAMILY: Record<HistoryFamily, ColumnTable<any>> = {
+const TABLE_OF_FAMILY: Record<HistoryFamily, ColumnTable> = {
   telemetry: telTable, motion: motTable, motion_ex: motExTable,
   status: stsTable, damage: dmgTable, lap: lapProgressTable,
 }
@@ -299,7 +301,7 @@ let isPlaybackFlag = false
 let fuelMaxReceived = -Infinity
 
 let raceEventsArr: RaceEventMsg[] = []
-let speedRpmBlocksVal: any[] | null = null
+let speedRpmBlocksVal: PlaybackLapBlock[] | null = null
 let playbackFastestLapNum = 0
 let playbackEvents: RaceEventMsg[] = []
 let playbackLapTimes: Record<number, number> = {}
@@ -333,7 +335,7 @@ let seekRendererPending = false
 // authoritative flush then replaces it. Each entry holds a full race of
 // columns for the requested families, so only a few drivers are kept.
 const MAX_CACHED_DRIVERS = 3
-type FamilyViews = Record<HistoryFamily, ColumnView<any>>
+type FamilyViews = Record<HistoryFamily, ColumnView>
 const allLapsDriverCache = new Map<number, FamilyViews>()
 // The complete AL history captured at a seek start, before it is cleared.
 let allLapsSnapshot: { driver: number | null; views: FamilyViews } | null = null
@@ -441,7 +443,7 @@ function sumRowEstimates(estimates: readonly RowRetentionEstimate[]): RowRetenti
 }
 
 // Columns are 8 bytes per field per row; one materialised row gives the width.
-function estimateView(view: ColumnView<any>): RowRetentionEstimate {
+function estimateView(view: ColumnView): RowRetentionEstimate {
   if (view.length === 0) {
     return { rows: 0, sampled_rows: 0, estimated_serialized_bytes: 0, estimated_array_reference_bytes: 0 }
   }
@@ -1387,7 +1389,7 @@ function handleMsg(msg: GatewayMsg): void {
     case 'all_status':   set(state => ({ allStatus: mergeCarPatches(state.allStatus, msg as AllStatusMsg) as AllStatusMsg })); break
     case 'driver_lap_history': set({ driverLapHistory: msg as DriverLapHistory }); break
     case 'fastest_lap':
-      set({ fastestLapCarIdx: (msg as any).car_idx })
+      set({ fastestLapCarIdx: (msg as FastestLapMsg).car_idx })
       fastestLapSet = true
       break
     case 'session_history_fastest': {
@@ -1417,7 +1419,7 @@ function handleMsg(msg: GatewayMsg): void {
     // withholds tick snapshots until its rebuild commits, so the first one
     // after a seek is the rebuilt result.
     case 'strategy':     set({ strategy: msg as StrategySnapshotMsg, strategyRebuilding: false }); break
-    case 'race_event':
+    case 'race_event': {
       if ((msg as RaceEventMsg).code === 'FLBK') {
         const target = Number((msg as RaceEventMsg).flashback_session_time)
         if (Number.isFinite(target) && target >= 0) applyLiveRewind(target)
@@ -1440,10 +1442,11 @@ function handleMsg(msg: GatewayMsg): void {
       for (const cb of raceEventListeners) cb(raceEvent)
       raceEventsArr = [...raceEventsArr, raceEvent]
       if (raceEventsArr.length > MAX_RACE_EVENTS) raceEventsArr = raceEventsArr.slice(-MAX_RACE_EVENTS)
-      if ((msg as any).code === 'SEND' && !isPlaybackFlag) {
+      if (raceEvent.code === 'SEND' && !isPlaybackFlag) {
         resetSession()
       }
       break
+    }
     case 'session':
       set({
         session: msg,
@@ -1471,11 +1474,11 @@ function handleMsg(msg: GatewayMsg): void {
       }
       forEachDecodedBinaryRow(Uint8Array.from(msg.binary), row => {
         if (row.type === 'telemetry' || row.type === 'motion' || row.type === 'motion_ex')
-          lapTables[row.type].append(row as any)
+          lapTables[row.type].append(row)
       })
       for (const row of msg.rows) {
         if (row.type === 'status' || row.type === 'damage' || row.type === 'lap')
-          lapTables[row.type].append(row as any)
+          lapTables[row.type].append(row)
       }
       const data: AnalyzeLapData = {
         lapNum: msg.lapNum, startSessionTime: msg.startSessionTime,
@@ -1522,12 +1525,12 @@ function handleMsg(msg: GatewayMsg): void {
       break
     }
     case 'playback_seek_flush_bin': {
-      void processPlaybackSeekFlush(msg as any).catch(error => {
+      void processPlaybackSeekFlush(msg).catch(error => {
         console.error('Failed to decode playback seek flush:', error)
         waitingForAllLapsHistory = false
-        if ((msg as any).authoritativeSeek !== false) setSeekPending(false)
+        if (msg.authoritativeSeek !== false) setSeekPending(false)
         recompute(DirtySlice.All)
-        const requestId = Number((msg as any).requestId)
+        const requestId = Number(msg.requestId)
         if (Number.isFinite(requestId) && requestId > 0)
           window.playerBridge.seekInstalled(requestId)
       })
@@ -1544,8 +1547,9 @@ function handleMsg(msg: GatewayMsg): void {
       cancelFastestRecovery()
       isPlaybackFlag = true
       analyzeLapRevisionVal++
-      const data = msg as any
-      const nextDriver: number | null = Number.isFinite(data.playbackDriverIndex) ? data.playbackDriverIndex : null
+      const data = msg
+      const nextDriver = typeof data.playbackDriverIndex === 'number' && Number.isFinite(data.playbackDriverIndex)
+        ? data.playbackDriverIndex : null
       const driverChanged = nextDriver !== currentPlaybackDriver
       if (driverChanged && currentPlaybackDriver !== null && allLapsSnapshot?.driver === currentPlaybackDriver)
         rememberDriverHistory(currentPlaybackDriver, allLapsSnapshot.views)
@@ -1586,8 +1590,7 @@ function handleMsg(msg: GatewayMsg): void {
         analyzeTrackLengthM: Number.isFinite(trackLengthM) && trackLengthM > 0 ? trackLengthM : 0,
         playbackTnrdVersion: typeof data.tnrdVersion === 'string' ? data.tnrdVersion : null,
         playbackAnalysisDrivers: Array.isArray(data.analysisDrivers) ? data.analysisDrivers : [],
-        playbackDriverIndex: Number.isFinite(data.playbackDriverIndex)
-          ? data.playbackDriverIndex : null,
+        playbackDriverIndex: nextDriver,
       })
       if (allLapsMode && seekRendererPending) {
         // The seek that follows a driver change is already in flight and, in
@@ -1674,7 +1677,7 @@ function recompute(dirty: DirtySlice): void {
   const needsAnalyzeSlices = analyzeLapEnabled || !isPlayback
   let publishAnalyze = needsAnalyzeSlices && lapTrackingActive && !pendingAnalyzeLapReset
   if (needsAnalyzeSlices && pendingAnalyzeLapReset) {
-    const countSince = (table: ColumnTable<any>) => table.length - table.lowerBound(lapStartSessionTime, true)
+    const countSince = (table: ColumnTable) => table.length - table.lowerBound(lapStartSessionTime, true)
     const ready = (bit: number, count: number, minimum: number) =>
       !(historyRowMask & bit) || count >= minimum
     publishAnalyze = ready(HISTORY_ROW.telemetry, countSince(telTable), 2) &&
@@ -1807,11 +1810,11 @@ function dirtySliceForHistoryMask(value: unknown): DirtySlice {
   return dirty
 }
 
-function tableSpan(table: ColumnTable<any>): { rows: number; first: number | null; last: number | null } {
+function tableSpan(table: ColumnTable): { rows: number; first: number | null; last: number | null } {
   return { rows: table.length, first: table.firstTime() ?? null, last: table.lastTime() ?? null }
 }
 
-async function processPlaybackSeekFlush(payload: any): Promise<void> {
+async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promise<void> {
   const allHistory = payload.allHistory === true
   const authoritative = payload.authoritativeSeek !== false
   // Live range backfills are decoded cooperatively. Keep the pre-request list
@@ -1821,7 +1824,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   const generation = authoritative ? ++seekTimelineGeneration : seekTimelineGeneration
   const cancelled = () => generation !== seekTimelineGeneration
   const seekRetention = {
-    binaryBytes: Number(payload.binary?.byteLength ?? payload.binary?.length ?? 0),
+    binaryBytes: Number(payload.binary?.byteLength ?? 0),
     coldJsonChars: typeof payload.coldJson === 'string' ? payload.coldJson.length : 0,
     decodedTelemetryRows: 0,
     decodedMotionRows: 0,
@@ -1848,7 +1851,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
     playbackDebug('seek-flush-received', {
     lapNum: payload.lapNum,
     currentLapStart: payload.currentLapStart,
-    binaryBytes: payload.binary?.byteLength ?? payload.binary?.length ?? null,
+    binaryBytes: payload.binary?.byteLength ?? null,
     coldJsonChars: typeof payload.coldJson === 'string' ? payload.coldJson.length : null,
     fastestLapNum: playbackFastestLapNum || null,
   })
@@ -1880,7 +1883,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
     : binaryInput ? new Uint8Array(binaryInput) : new Uint8Array(0)
   // Families whose rows are V6 patches install as a time-ordered overlay;
   // other additive history fills only the missing prefix.
-  const incoming: Partial<Record<HistoryFamily, ColumnTable<any>>> = {}
+  const incoming: Partial<Record<HistoryFamily, ColumnTable>> = {}
   const overlay = new Set<HistoryFamily>()
   const raceEvents: RaceEventMsg[] = []
   const decodedV6Types: Record<string, number> = {}
@@ -1899,14 +1902,14 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   } else {
     // V1-V5 recordings (and V6 on hosts without columnar history): packed hot
     // rows plus JSON cold rows, appended into temporary tables.
-    const tableFor = (family: HistoryFamily): ColumnTable<any> =>
-      incoming[family] ??= new ColumnTable<any>(family)
-    const add = (family: HistoryFamily, row: Record<string, any>): void => {
-      if (isPlaybackFlag && Number.isInteger(Number(row._v6_type))) {
+    const tableFor = (family: HistoryFamily): ColumnTable =>
+      incoming[family] ??= new ColumnTable(family)
+    const add = (family: HistoryFamily, row: { session_time: number }): void => {
+      if (isPlaybackFlag && Number.isInteger(Number((row as Record<string, unknown>)._v6_type))) {
         overlay.add(family)
-        tableFor(family).appendPatch(row as any)
+        tableFor(family).appendPatch(row)
       } else {
-        tableFor(family).append(row as any)
+        tableFor(family).append(row)
       }
     }
     let binaryOffset = 0
@@ -1932,7 +1935,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
       if (end > start) {
         try {
           const row = JSON.parse(coldJson.slice(start, end)) as GatewayMsg
-          const v6Type = Number((row as any)._v6_type)
+          const v6Type = '_v6_type' in row ? Number(row._v6_type) : NaN
           if (Number.isInteger(v6Type)) {
             const key = String(v6Type)
             decodedV6Types[key] = (decodedV6Types[key] ?? 0) + 1
@@ -1940,7 +1943,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
           if (row.type === 'telemetry' || row.type === 'motion' || row.type === 'motion_ex' ||
               row.type === 'status' || row.type === 'damage' || row.type === 'lap') add(row.type, row)
           else if (row.type === 'race_event') raceEvents.push(row)
-        } catch (e) {}
+        } catch { /* malformed row: skip it */ }
       }
       start = end + 1
       if (++rowsSinceYield >= 512 && start < coldJson.length) {
@@ -2028,7 +2031,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
     installedStatus: tableSpan(stsTable),
     // What the wing card will read once recompute() publishes `latest`.
     wingCard: (() => {
-      const last = telTable.last() as Record<string, any> | null
+      const last = telTable.last() as Record<string, unknown> | null
       return {
         haveLastTelemetryRow: last !== null,
         sessionTime: last?.session_time ?? null,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { MutableRefObject } from 'react'
 import type { TChart } from '../lib/timechart/tc'
 import { timeChartFrameScheduler } from '../lib/timechart/engine/core/frameScheduler'
@@ -99,9 +99,7 @@ export function useTimeChartScroll(
   const chartRef = useRef<TChart | null>(null)
   const registrationRef = useRef<FrameScheduleHandle | null>(null)
   const enabledRef = useRef(enabled)
-  enabledRef.current = enabled
   const configRef = useRef({ windowSeconds, snapS, fastFrames, fullFps, minStallS, accumulateFromStart })
-  configRef.current = { windowSeconds, snapS, fastFrames, fullFps, minStallS, accumulateFromStart }
   const clockRef = useRef<ScrollClock>({
     lastT: NaN, wallAtT: 0, est: NaN, firstT: NaN,
     periodS: NaN, lastMin: NaN, lastMax: NaN, gaps: [], gapIdx: 0,
@@ -109,63 +107,67 @@ export function useTimeChartScroll(
   const lastFullAtRef = useRef(0)
   const frameCallbackRef = useRef<(frameTime: number) => boolean>(() => false)
 
-  frameCallbackRef.current = (frameTime: number) => {
-    const chart = chartRef.current
-    const c = clockRef.current
-    if (!chart || Number.isNaN(c.lastT)) return false
-    const config = configRef.current
+  useLayoutEffect(() => {
+    enabledRef.current = enabled
+    configRef.current = { windowSeconds, snapS, fastFrames, fullFps, minStallS, accumulateFromStart }
+    frameCallbackRef.current = (frameTime: number) => {
+      const chart = chartRef.current
+      const c = clockRef.current
+      if (!chart || Number.isNaN(c.lastT)) return false
+      const config = configRef.current
 
-    if (Number.isNaN(c.est)) c.est = c.lastT
-    const age = Math.max(0, (frameTime - c.wallAtT) / 1000)
-    const stallS = Math.max(Number.isNaN(c.periodS) ? 0 : c.periodS * STALL_PERIODS, config.minStallS)
-    if (playbackHalted) {
-      c.est = c.lastT
-    } else if (age < stallS) {
-      const target = c.lastT + age * playbackRate
-      if (target > c.est || !(c.est - target < config.snapS)) c.est = target
-    }
-
-    let min = config.accumulateFromStart && !Number.isNaN(c.firstT)
-      ? c.firstT
-      : c.est - config.windowSeconds
-    if (!Number.isNaN(c.firstT) && min < c.firstT) min = c.firstT
-    const max = config.accumulateFromStart ? Math.max(c.est, min + 0.001) : min + config.windowSeconds
-
-    const applyDraw = (): void => chart.model.update()
-
-    const applyFastDraw = (): void => {
-      const plugins = chart.plugins as unknown as {
-        lineChart?: { drawFrame: () => void }
+      if (Number.isNaN(c.est)) c.est = c.lastT
+      const age = Math.max(0, (frameTime - c.wallAtT) / 1000)
+      const stallS = Math.max(Number.isNaN(c.periodS) ? 0 : c.periodS * STALL_PERIODS, config.minStallS)
+      if (playbackHalted) {
+        c.est = c.lastT
+      } else if (age < stallS) {
+        const target = c.lastT + age * playbackRate
+        if (target > c.est || !(c.est - target < config.snapS)) c.est = target
       }
-      if (!plugins.lineChart) { applyDraw(); return }
-      chart.canvasLayer.clear()
-      plugins.lineChart.drawFrame()
-      for (const series of chart.options.series) series.data.markSynced()
-    }
 
-    if (min !== c.lastMin || max !== c.lastMax) {
-      c.lastMin = min
-      c.lastMax = max
-      chart.options.xRange = { min, max }
-      const needsFull = !config.fastFrames || lastFullAtRef.current === 0 ||
-        frameTime - lastFullAtRef.current >= 1000 / config.fullFps
-      dataDirtyRef.current = false
-      if (needsFull) {
+      let min = config.accumulateFromStart && !Number.isNaN(c.firstT)
+        ? c.firstT
+        : c.est - config.windowSeconds
+      if (!Number.isNaN(c.firstT) && min < c.firstT) min = c.firstT
+      const max = config.accumulateFromStart ? Math.max(c.est, min + 0.001) : min + config.windowSeconds
+
+      const applyDraw = (): void => chart.model.update()
+
+      const applyFastDraw = (): void => {
+        const plugins = chart.plugins as unknown as {
+          lineChart?: { drawFrame: () => void }
+        }
+        if (!plugins.lineChart) { applyDraw(); return }
+        chart.canvasLayer.clear()
+        plugins.lineChart.drawFrame()
+        for (const series of chart.options.series) series.data.markSynced()
+      }
+
+      if (min !== c.lastMin || max !== c.lastMax) {
+        c.lastMin = min
+        c.lastMax = max
+        chart.options.xRange = { min, max }
+        const needsFull = !config.fastFrames || lastFullAtRef.current === 0 ||
+          frameTime - lastFullAtRef.current >= 1000 / config.fullFps
+        dataDirtyRef.current = false
+        if (needsFull) {
+          lastFullAtRef.current = frameTime
+          applyDraw()
+        } else {
+          chart.model.xScale.domain([min, max])
+          applyFastDraw()
+        }
+      } else if (dataDirtyRef.current) {
+        dataDirtyRef.current = false
+        chart.options.xRange = { min, max }
         lastFullAtRef.current = frameTime
         applyDraw()
-      } else {
-        chart.model.xScale.domain([min, max])
-        applyFastDraw()
       }
-    } else if (dataDirtyRef.current) {
-      dataDirtyRef.current = false
-      chart.options.xRange = { min, max }
-      lastFullAtRef.current = frameTime
-      applyDraw()
-    }
 
-    return !playbackHalted && age < stallS
-  }
+      return !playbackHalted && age < stallS
+    }
+  })
 
   const registerIfReady = useCallback(() => {
     const chart = chartRef.current

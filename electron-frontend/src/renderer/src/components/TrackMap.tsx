@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useMemo, useCallback, memo } from 'react'
+import { useRef, useEffect, useLayoutEffect, useState, useMemo, useCallback, memo } from 'react'
 import { type SingleValue } from 'react-select'
 import Select from '../lib/AnimatedSelect'
 import { buildSelectStyles } from '../lib/selectStyles'
@@ -8,7 +8,7 @@ import { useSize } from '../hooks/useSize'
 import { TRACK_MAPS, type TrackMapData } from '../lib/trackMaps'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 import { useLabels } from '../lib/labels'
-import type { CarPosition, ParticipantsMsg } from '../types'
+import type { CarPosition, ParticipantsMsg, PositionsMsg } from '../types'
 
 type DriverOption = { value: number; label: string }
 type ZoomOption = { value: number; label: string }
@@ -929,17 +929,15 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const aeroModeRef       = useRef<'drs' | 'slm'>(aeroMode)
   const slmTrackStatusRef = useRef<number>(slmTrackStatus)
   const markerSourceRef = useRef(markerSource)
-  markerSourceRef.current = markerSource
+  const reduceAnimationsRef = useRef(reduceAnimations)
   const controlledMarkers = markerSource !== undefined
 
   const [selectedDriverIdx, setSelectedDriverIdx] = useState<number | null>(null)
   const selectedDriverIdxRef = useRef<number | null>(null)
   const camRef = useRef<{ scale: number; ox: number; oy: number } | null>(null)
-  selectedDriverIdxRef.current = selectedDriverIdx
 
   const [zoomLevel, setZoomLevel] = useState<number>(4)
   const zoomLevelRef = useRef<number>(4)
-  zoomLevelRef.current = zoomLevel
 
   const [previewTrackId, setPreviewTrackId] = useState<number | null>(trackId)
   const [previewAeroOverlay, setPreviewAeroOverlay] = useState<AeroOverlay>(() => aeroOverlayFromTelemetry(aeroMode, slmTrackStatus))
@@ -951,15 +949,33 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const effectiveAeroMode = previewAeroOverlay === 'drs' ? 'drs' : 'slm'
   const effectiveSlmTrackStatus = previewAeroOverlay === 'slm-wet' ? 1 : 0
 
-  useEffect(() => {
-    setPreviewTrackId(trackId)
-  }, [trackId])
+  // A new session track or aero state replaces whatever the test controls previewed.
+  const [previewSource, setPreviewSource] = useState({ trackId, aeroMode, slmTrackStatus })
+  if (previewSource.trackId !== trackId || previewSource.aeroMode !== aeroMode ||
+      previewSource.slmTrackStatus !== slmTrackStatus) {
+    if (previewSource.trackId !== trackId) setPreviewTrackId(trackId)
+    if (previewSource.aeroMode !== aeroMode || previewSource.slmTrackStatus !== slmTrackStatus)
+      setPreviewAeroOverlay(aeroOverlayFromTelemetry(aeroMode, slmTrackStatus))
+    setPreviewSource({ trackId, aeroMode, slmTrackStatus })
+  }
 
-  useEffect(() => {
-    setPreviewAeroOverlay(aeroOverlayFromTelemetry(aeroMode, slmTrackStatus))
-  }, [aeroMode, slmTrackStatus])
-
-  participantsRef.current = participants
+  const mapTimeoutRef = useRef<number>(mapTimeout)
+  // The draw loop and position subscription read these each frame. Declared
+  // ahead of every other effect so they see this render's values.
+  useLayoutEffect(() => {
+    markerSourceRef.current     = markerSource
+    selectedDriverIdxRef.current = selectedDriverIdx
+    zoomLevelRef.current        = zoomLevel
+    participantsRef.current     = participants
+    isDarkRef.current           = isDark
+    sectorColorsRef.current     = sectorColors
+    driversModeRef.current      = driversMode
+    mapDimmedRef.current        = mapDimmed
+    aeroModeRef.current         = effectiveAeroMode
+    slmTrackStatusRef.current   = effectiveSlmTrackStatus
+    mapTimeoutRef.current       = mapTimeout
+    reduceAnimationsRef.current = reduceAnimations
+  })
 
   // Precompute rotated geometry whenever the map changes
   useEffect(() => {
@@ -968,19 +984,18 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   }, [map])
 
   const lastPosRef = useRef<Record<number, { x: number; z: number; lastMovedTime: number }>>({})
-  const mapTimeoutRef = useRef<number>(mapTimeout)
-  mapTimeoutRef.current = mapTimeout
 
   // Subscribe to position updates directly — bypasses React state to avoid 60 Hz re-renders
   useEffect(() => {
     if (controlledMarkers) return
-    const handleMsg = (msg: any) => {
-      if (msg.type === 'positions' && msg.cars) {
+    const handleMsg = (raw: unknown) => {
+      const msg = raw as Partial<PositionsMsg> | null
+      if (msg?.type === 'positions' && msg.cars) {
         const now = Date.now()
         const timeoutMs = mapTimeoutRef.current * 1000
         const playerIdx = msg.player_idx ?? 0
 
-        const patchedCars = new Map((_cachedCars ?? []).map((car: any) => [car.idx, car]))
+        const patchedCars = new Map((_cachedCars ?? []).map(car => [car.idx, car]))
         for (const car of msg.cars) {
           if (car.idx === playerIdx) {
             patchedCars.set(car.idx, car)
@@ -1037,7 +1052,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     const unsubBinary = window.telemetryBridge.onBinary((batch) => {
       try {
         const rows = decodeBinaryBatch(batch)
-        let lastPositions: any = null
+        let lastPositions: PositionsMsg | null = null
         for (const row of rows) {
           if (row.type === 'positions') lastPositions = row
         }
@@ -1054,15 +1069,6 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     }
   }, [controlledMarkers])
 
-  isDarkRef.current            = isDark
-  sectorColorsRef.current      = sectorColors
-  driversModeRef.current       = driversMode
-  mapDimmedRef.current         = mapDimmed
-  aeroModeRef.current          = effectiveAeroMode
-  slmTrackStatusRef.current    = effectiveSlmTrackStatus
-  mapTimeoutRef.current        = mapTimeout
-  const reduceAnimationsRef    = useRef(reduceAnimations)
-  reduceAnimationsRef.current  = reduceAnimations
 
   // Track geometry lives on a separate Canvas 2D layer. In overview mode it is
   // redrawn only when its inputs change; the foreground cars and labels remain

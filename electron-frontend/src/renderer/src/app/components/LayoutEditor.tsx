@@ -31,7 +31,7 @@ export default function LayoutEditor(props: LayoutEditorProps) {
     setEditOpen, setInputLayout, setMiscLayout, setPowerLayout, setSessionLayout, setStandingsLayout, setTyresLayout,
     tab, tyreView, tyreWearMode, tyresLayout } = props
   const editableTab = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower'
-  const modalPresence = useModalPresence(editOpen && editableTab)
+  const { mounted, visible, transitionTargetRef } = useModalPresence(editOpen && editableTab)
 
   const sessionMainAreaRef = useRef<HTMLDivElement>(null)
   const standingsMainAreaRef = useRef<HTMLDivElement>(null)
@@ -96,10 +96,10 @@ export default function LayoutEditor(props: LayoutEditorProps) {
   return (
     <>
       {/* Edit modal — centered overlay */}
-      {modalPresence.mounted && (
+      {mounted && (
         <div
-          ref={modalPresence.transitionTargetRef}
-          data-state={modalPresence.visible ? 'open' : 'closed'}
+          ref={transitionTargetRef}
+          data-state={visible ? 'open' : 'closed'}
           className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
         >
           <div

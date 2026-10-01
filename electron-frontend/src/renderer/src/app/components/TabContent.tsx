@@ -77,10 +77,10 @@ interface TabContentProps {
 }
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
-  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, inputLayout, inputCursorSyncEnabled, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, pageLayouts, miscLayout,
+  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, inputLayout, inputCursorSyncEnabled, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, pageLayouts,
   graphView, compact, chartYAxis, tyreView, tyreWearMode,
   selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
-  mapDimmed, currentPlaybackLapNum,
+  mapDimmed,
 }: TabContentProps) {
   const coordinates = useChartCoordinates()
   const splitPedals = pageLayouts.inputPedals === 'split'

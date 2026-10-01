@@ -18,8 +18,7 @@ interface Props {
 }
 
 export default function DriverLapsDialog({ target, fastestLapCarIdx, onClose }: Props) {
-  const modalPresence = useModalPresenceValue(target)
-  const shown = modalPresence.value
+  const { mounted, visible, transitionTargetRef, value: shown } = useModalPresenceValue(target)
   const carIdx = target?.carIdx ?? null
   // Tell the engine which car's laps are wanted while open. It pushes them
   // now and again only when they change; nothing here polls.
@@ -31,7 +30,7 @@ export default function DriverLapsDialog({ target, fastestLapCarIdx, onClose }: 
     return () => window.playerBridge.setLapHistoryCar(-1)
   }, [carIdx])
   const pushed = useTelemetryStore(s => s.driverLapHistory)
-  const shownCar = modalPresence.value?.carIdx ?? null
+  const shownCar = shown?.carIdx ?? null
   const history = pushed && pushed.car_idx === shownCar ? pushed : null
   const loaded = history !== null
 
@@ -42,7 +41,7 @@ export default function DriverLapsDialog({ target, fastestLapCarIdx, onClose }: 
     return () => window.removeEventListener('keydown', onKey)
   }, [carIdx, onClose])
 
-  if (!modalPresence.mounted || !shown) return null
+  if (!mounted || !shown) return null
 
   const laps = history?.laps ?? []
   const bestLapNum = history?.best_lap_num ?? null
@@ -69,8 +68,8 @@ export default function DriverLapsDialog({ target, fastestLapCarIdx, onClose }: 
 
   return (
     <div
-      ref={modalPresence.transitionTargetRef}
-      data-state={modalPresence.visible ? 'open' : 'closed'}
+      ref={transitionTargetRef}
+      data-state={visible ? 'open' : 'closed'}
       className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"

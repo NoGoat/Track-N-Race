@@ -10,15 +10,13 @@ interface PlaybackDialogsProps {
 }
 
 export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playbackLoadError, setConfirmOpenFilePath, setLoadError: setPlaybackLoadError }: PlaybackDialogsProps) {
-  const confirmPresence = useModalPresenceValue(confirmOpenFilePath)
-  const errorPresence = useModalPresenceValue(playbackLoadError)
-  const displayedFilePath = confirmPresence.value
-  const displayedLoadError = errorPresence.value
+  const { mounted: confirmMounted, visible: confirmVisible, transitionTargetRef: confirmTargetRef, value: displayedFilePath } = useModalPresenceValue(confirmOpenFilePath)
+  const { mounted: errorMounted, visible: errorVisible, transitionTargetRef: errorTargetRef, value: displayedLoadError } = useModalPresenceValue(playbackLoadError)
 
   return (
     <>
-      {confirmPresence.mounted && displayedFilePath && (
-        <div ref={confirmPresence.transitionTargetRef} data-state={confirmPresence.visible ? 'open' : 'closed'} className="modal-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]">
+      {confirmMounted && displayedFilePath && (
+        <div ref={confirmTargetRef} data-state={confirmVisible ? 'open' : 'closed'} className="modal-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]">
           <div className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[480px] flex flex-col overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0 select-none">
@@ -81,10 +79,10 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
         </div>
       )}
 
-      {errorPresence.mounted && displayedLoadError && (
+      {errorMounted && displayedLoadError && (
         <div
-          ref={errorPresence.transitionTargetRef}
-          data-state={errorPresence.visible ? 'open' : 'closed'}
+          ref={errorTargetRef}
+          data-state={errorVisible ? 'open' : 'closed'}
           className="modal-backdrop fixed inset-0 z-[110] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
           role="dialog"
           aria-modal="true"

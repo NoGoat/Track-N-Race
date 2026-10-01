@@ -2,7 +2,7 @@ import { useRef, useState, useLayoutEffect, useCallback, useEffect } from 'react
 import { ChevronDown } from 'lucide-react'
 import type { AlignedTable } from '../types'
 import { BUTTON_CLASS } from '../lib/buttonStyles'
-import { useChartCoordinates } from '../lib/chartCoordinates'
+import { formatChartDistance, useChartCoordinates } from '../lib/chartCoordinates'
 import { subscribeAllLapsData } from '../stores/telemetryStore'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 import type { ColumnView } from '../lib/columnStore'
@@ -53,23 +53,22 @@ export default function GraphTable<T extends { session_time: number }>({ columns
   noBorderTop?: boolean
 }) {
   const coordinates = useChartCoordinates()
-  const lapRevisionRef = useRef(coordinates.lapRevision)
-  const historyRevisionRef = useRef(coordinates.historyRevision)
   const scrollRef   = useRef<HTMLDivElement>(null)
-  const pinnedRef   = useRef(true)              // are we pinned to the live edge?
-  const frozenNRef  = useRef<number | null>(null) // row count snapshot while scrolled away
+  const pinnedRef   = useRef(true)              // mirrors `pinned` for subscription callbacks
   const [scrollTop, setScrollTop] = useState(0)
   const [viewH, setViewH]         = useState(0)
-  const [pinned, setPinned]       = useState(true) // mirrors pinnedRef; drives the "scroll to bottom" button
+  const [pinned, setPinned]       = useState(true) // are we pinned to the live edge?
+  const [frozenN, setFrozenN]     = useState<number | null>(null) // row count snapshot while scrolled away
   const [, forceLiveRender]       = useState(0)
+  const [revisions, setRevisions] = useState({ lap: coordinates.lapRevision, history: coordinates.historyRevision })
 
-  if ((coordinates.distanceMode && lapRevisionRef.current !== coordinates.lapRevision) ||
-      historyRevisionRef.current !== coordinates.historyRevision) {
-    lapRevisionRef.current = coordinates.lapRevision
-    historyRevisionRef.current = coordinates.historyRevision
-    pinnedRef.current = true
-    frozenNRef.current = null
+  if ((coordinates.distanceMode && revisions.lap !== coordinates.lapRevision) ||
+      revisions.history !== coordinates.historyRevision) {
+    setRevisions({ lap: coordinates.lapRevision, history: coordinates.historyRevision })
+    setPinned(true)
+    setFrozenN(null)
   }
+  useLayoutEffect(() => { pinnedRef.current = pinned }, [pinned])
 
   useEffect(() => {
     if (!coordinates.allLapsMode || !liveRows || !getLiveValues) return
@@ -96,7 +95,7 @@ export default function GraphTable<T extends { session_time: number }>({ columns
   // While scrolled away from the bottom, freeze the rendered row count at the
   // snapshot taken when the user scrolled off — new samples keep landing in `data`
   // in the background, but the table itself doesn't grow/shift under the user.
-  const n = pinnedRef.current ? liveN : (frozenNRef.current ?? liveN)
+  const n = pinned ? liveN : (frozenN ?? liveN)
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -110,8 +109,8 @@ export default function GraphTable<T extends { session_time: number }>({ columns
   // Keep the newest row in view as data streams in, unless the user scrolled up.
   useLayoutEffect(() => {
     const el = scrollRef.current
-    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
-  }, [n, viewH])
+    if (el && pinned) el.scrollTop = el.scrollHeight
+  }, [n, viewH, pinned])
 
   const onScroll = useCallback(() => {
     const el = scrollRef.current
@@ -121,7 +120,7 @@ export default function GraphTable<T extends { session_time: number }>({ columns
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW_H * 1.5
     if (!atBottom && pinnedRef.current) {
       pinnedRef.current = false
-      frozenNRef.current = liveN
+      setFrozenN(liveN)
       setPinned(false)
     }
     setScrollTop(el.scrollTop)
@@ -129,7 +128,7 @@ export default function GraphTable<T extends { session_time: number }>({ columns
 
   const scrollToBottom = useCallback(() => {
     pinnedRef.current = true
-    frozenNRef.current = null
+    setFrozenN(null)
     setPinned(true)
     // Wait for the re-render (with the live row count) to size the scroller before jumping.
     requestAnimationFrame(() => {
@@ -157,7 +156,7 @@ export default function GraphTable<T extends { session_time: number }>({ columns
         style={{ position: 'absolute', top: i * ROW_H, height: ROW_H, left: 0, right: 0, gridTemplateColumns: gridCols }}
         className={`grid items-center hover:bg-[var(--bg-hover)] ${i < n - 1 ? 'border-b border-[var(--border)]' : ''}`}
       >
-        <span className="px-3 text-[13px] tabular-nums text-[var(--text-secondary)]">{coordinates.distanceMode ? coordinates.formatX(coordinates.getX(rowTime)) : fmtTime(rowTime)}</span>
+        <span className="px-3 text-[13px] tabular-nums text-[var(--text-secondary)]">{coordinates.distanceMode ? formatChartDistance(coordinates.getX(rowTime)) : fmtTime(rowTime)}</span>
         {columns.map((c, ci) => (
           <span key={ci} className="px-3 text-[13px] font-medium tabular-nums truncate" style={{ color: c.color }}>
             {c.format(liveValues?.[ci] ?? (data[ci + 1] as Float64Array)[i])}

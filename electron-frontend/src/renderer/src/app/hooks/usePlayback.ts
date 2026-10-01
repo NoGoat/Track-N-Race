@@ -2,18 +2,24 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { playbackDebug } from '../../lib/playbackDebug'
 import { setPlaybackCursorTime } from '../../lib/playbackCursor'
+import type { PlaybackLapBlock, PlaybackState } from '../../types'
+
+const IDLE_PLAYBACK: PlaybackState = {
+  isPlaying: false, speed: 1, progressPct: 0, currentTime: 0, totalTime: 0, filename: null, isScanning: false,
+}
 
 export function usePlayback(onClose: () => void) {
   const speedRpmBlocks = useTelemetryStore(state => state.speedRpmBlocks)
-  const [state, setState] = useState<any>(null)
-  const stateRef = useRef<any>(null)
+  const [state, setState] = useState<PlaybackState | null>(null)
+  const stateRef = useRef<PlaybackState | null>(null)
   const uiLastRef = useRef(0)
   const uiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const uiPendingRef = useRef<any>(null)
-  const sessionFileStartRef = useRef(0)
-  const capturedBlocksRef = useRef<any[] | null>(null)
-  const blocksRef = useRef<any[] | null>(null)
+  const uiPendingRef = useRef<PlaybackState | null>(null)
+  const [sessionFileStart, setSessionFileStart] = useState(0)
+  const [capturedBlocks, setCapturedBlocks] = useState(speedRpmBlocks)
+  const blocksRef = useRef<PlaybackLapBlock[] | null>(speedRpmBlocks)
   const currentLapRef = useRef<number | null>(null)
+  const [lapFilename, setLapFilename] = useState(state?.filename)
   const [currentLapNum, setCurrentLapNum] = useState<number | null>(null)
   const [confirmOpenFilePath, setConfirmOpenFilePath] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -22,14 +28,20 @@ export function usePlayback(onClose: () => void) {
   const [exportProgress, setExportProgress] = useState(0)
   const [exportStage, setExportStage] = useState('')
 
-  blocksRef.current = speedRpmBlocks
-  if (speedRpmBlocks !== capturedBlocksRef.current) {
-    capturedBlocksRef.current = speedRpmBlocks
-    if (speedRpmBlocks && stateRef.current) {
-      const current = stateRef.current
-      sessionFileStartRef.current = current.currentTime - current.progressPct * current.totalTime
-    }
+  // New lap blocks mean a newly loaded file: capture where its session starts.
+  // currentTime - progressPct * totalTime is the file's start time, which the
+  // throttled state already carries for the current file.
+  if (speedRpmBlocks !== capturedBlocks) {
+    setCapturedBlocks(speedRpmBlocks)
+    if (speedRpmBlocks && state) setSessionFileStart(state.currentTime - state.progressPct * state.totalTime)
   }
+  useEffect(() => { blocksRef.current = speedRpmBlocks }, [speedRpmBlocks])
+
+  if (state?.filename !== lapFilename) {
+    setLapFilename(state?.filename)
+    setCurrentLapNum(null)
+  }
+  useEffect(() => { currentLapRef.current = null }, [state?.filename])
 
   useEffect(() => window.playerBridge.onRequestOpenConfirm(setConfirmOpenFilePath), [])
   useEffect(() => window.playerBridge.onLoadFailed(reason => setLoadError(reason || 'The file could not be read.')), [])
@@ -39,7 +51,7 @@ export function usePlayback(onClose: () => void) {
   }), [])
 
   useEffect(() => {
-    const publish = (next: any) => {
+    const publish = (next: PlaybackState) => {
       uiLastRef.current = performance.now()
       uiPendingRef.current = null
       uiTimerRef.current = null
@@ -72,7 +84,7 @@ export function usePlayback(onClose: () => void) {
         // Adjacent lap blocks share their boundary timestamp. Select the block
         // with the latest start so an exact lap-start seek belongs to the new
         // lap instead of leaving the paused selector on the previous one.
-        let currentBlock: any = null
+        let currentBlock: PlaybackLapBlock | null = null
         for (const block of blocks) {
           if (next.currentTime >= block.startSessionTime && next.currentTime <= block.endSessionTime &&
               (!currentBlock || block.startSessionTime > currentBlock.startSessionTime)) {
@@ -105,11 +117,6 @@ export function usePlayback(onClose: () => void) {
       if (uiTimerRef.current) clearTimeout(uiTimerRef.current)
     }
   }, [])
-
-  useEffect(() => {
-    currentLapRef.current = null
-    setCurrentLapNum(null)
-  }, [state?.filename])
 
   const seekBackward = useCallback(() => {
     const current = stateRef.current
@@ -162,7 +169,7 @@ export function usePlayback(onClose: () => void) {
   const selectFile = useCallback(async () => {
     const file = await window.fsBridge.selectTNRDFile()
     if (file) {
-      setState((previous: any) => ({ ...(previous || {}), isScanning: true }))
+      setState(previous => ({ ...(previous ?? IDLE_PLAYBACK), isScanning: true }))
       window.playerBridge.load(file)
     }
   }, [])
@@ -170,7 +177,7 @@ export function usePlayback(onClose: () => void) {
   return {
     close, confirmOpenFilePath, currentLapNum, exportError, exportProgress, exportStage,
     exportState, exportXlsx, loadError, seekBackward, seekForward, seekProgress, selectFile, setSpeed,
-    sessionFileStart: sessionFileStartRef.current, setConfirmOpenFilePath, setLoadError,
+    sessionFileStart, setConfirmOpenFilePath, setLoadError,
     speedRpmBlocks, state, togglePlay,
   }
 }

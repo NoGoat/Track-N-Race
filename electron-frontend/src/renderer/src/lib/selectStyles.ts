@@ -1,15 +1,28 @@
-import type { StylesConfig } from 'react-select'
+import type { CSSObjectWithLabel, StylesConfig } from 'react-select'
 
 export const SELECT_MENU_ANIMATION_MS = 220
 
-export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28, labelStyleGroupHeadings = false, menuWidth, scrollableMenu = true }: { solidBg?: boolean; controlHeight?: number; labelStyleGroupHeadings?: boolean; menuWidth?: string | number; scrollableMenu?: boolean } = {}): StylesConfig<any, false> {
+type StateStyle<State> = (base: CSSObjectWithLabel, state: State) => CSSObjectWithLabel
+type StatefulKey = 'dropdownIndicator' | 'menu' | 'option'
+
+// The style functions read only option-independent state, so one config is
+// assignable to the styles prop of a Select over any option type.
+export type SelectStyles = {
+  [K in Exclude<keyof StylesConfig<unknown, false>, StatefulKey>]?: (base: CSSObjectWithLabel) => CSSObjectWithLabel
+} & {
+  dropdownIndicator?: StateStyle<{ isFocused: boolean; selectProps: { menuIsOpen?: boolean } }>
+  menu?: StateStyle<{ placement: string }>
+  option?: StateStyle<{ isFocused: boolean; isSelected: boolean }>
+}
+
+export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28, labelStyleGroupHeadings = false, menuWidth, scrollableMenu = true }: { solidBg?: boolean; controlHeight?: number; labelStyleGroupHeadings?: boolean; menuWidth?: string | number; scrollableMenu?: boolean } = {}): SelectStyles {
   return {
     container: (base) => ({
       ...base,
       userSelect: 'none',
       WebkitUserSelect: 'none',
     }),
-    control: (base, _state) => ({
+    control: (base) => ({
       ...base,
       display: 'flex',
       alignItems: 'center',

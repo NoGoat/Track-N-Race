@@ -40,7 +40,7 @@ export interface ChartZoomOptions {
 }
 
 export interface CapableElement extends Element, ElementCSSInlineStyle {
-    addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: CapableElement, ev: GlobalEventHandlersEventMap[K]) => any, options?: boolean | AddEventListenerOptions): void;
+    addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: CapableElement, ev: GlobalEventHandlersEventMap[K]) => unknown, options?: boolean | AddEventListenerOptions): void;
 };
 
 export function dirOptions(options: ResolvedOptions) {

@@ -9,14 +9,13 @@ interface RecordingErrorDialogProps {
 }
 
 export default function RecordingErrorDialog({ error, onClose }: RecordingErrorDialogProps) {
-  const modalPresence = useModalPresenceValue(error)
-  const displayedError = modalPresence.value
-  if (!modalPresence.mounted || !displayedError) return null
+  const { mounted, visible, transitionTargetRef, value: displayedError } = useModalPresenceValue(error)
+  if (!mounted || !displayedError) return null
 
   return (
     <div
-      ref={modalPresence.transitionTargetRef}
-      data-state={modalPresence.visible ? 'open' : 'closed'}
+      ref={transitionTargetRef}
+      data-state={visible ? 'open' : 'closed'}
       className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"

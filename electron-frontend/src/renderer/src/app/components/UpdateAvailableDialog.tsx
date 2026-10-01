@@ -9,9 +9,8 @@ interface UpdateAvailableDialogProps {
 }
 
 export default function UpdateAvailableDialog({ update, onClose }: UpdateAvailableDialogProps) {
-  const modalPresence = useModalPresenceValue(update)
-  const displayedUpdate = modalPresence.value
-  if (!modalPresence.mounted || !displayedUpdate) return null
+  const { mounted, visible, transitionTargetRef, value: displayedUpdate } = useModalPresenceValue(update)
+  if (!mounted || !displayedUpdate) return null
 
   const skipVersion = () => {
     window.updateBridge.skipVersion(displayedUpdate.latestVersion)
@@ -25,8 +24,8 @@ export default function UpdateAvailableDialog({ update, onClose }: UpdateAvailab
 
   return (
     <div
-      ref={modalPresence.transitionTargetRef}
-      data-state={modalPresence.visible ? 'open' : 'closed'}
+      ref={transitionTargetRef}
+      data-state={visible ? 'open' : 'closed'}
       className="modal-backdrop fixed inset-0 z-[130] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"

@@ -70,7 +70,7 @@ export class Legend {
                 item.appendChild(name);
                 this.itemContainer.appendChild(item);
 
-                item.addEventListener('click', (ev) => {
+                item.addEventListener('click', () => {
                     s.visible = !s.visible;
                     this.model.requestRedraw();
                 })

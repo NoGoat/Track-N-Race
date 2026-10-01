@@ -8,10 +8,10 @@ function shouldReduceAnimations(): boolean {
   return document.documentElement.dataset.reduceAnimations === 'true'
 }
 
-/** Keeps react-select's menu mounted just long enough to play its exit animation. */
+/** Keeps react-select's menu mounted just long enough to play its exit animation. Single-select only. */
 export default function AnimatedSelect<
   Option,
-  IsMulti extends boolean = false,
+  IsMulti extends false = false,
   Group extends GroupBase<Option> = GroupBase<Option>,
 >(props: Props<Option, IsMulti, Group>) {
   const {
@@ -27,21 +27,12 @@ export default function AnimatedSelect<
   const [phase, setPhase] = useState<MenuPhase>(
     defaultMenuIsOpen || controlledMenuIsOpen ? 'open' : 'closed',
   )
-  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectRef = useRef<SelectInstance<Option, IsMulti, Group> | null>(null)
 
-  const cancelClose = useCallback(() => {
-    if (closeTimerRef.current !== null) {
-      clearTimeout(closeTimerRef.current)
-      closeTimerRef.current = null
-    }
-  }, [])
-
   const openMenu = useCallback(() => {
-    cancelClose()
     setPhase('open')
     onMenuOpen?.()
-  }, [cancelClose, onMenuOpen])
+  }, [onMenuOpen])
 
   const closeMenu = useCallback(() => {
     if (phase !== 'open') return
@@ -49,23 +40,19 @@ export default function AnimatedSelect<
     // would otherwise snap the list back to the selected option before it closes.
     if (selectRef.current) selectRef.current.scrollToFocusedOptionOnUpdate = false
     onMenuClose?.()
-    if (shouldReduceAnimations()) {
-      setPhase('closed')
-      return
-    }
-    setPhase('closing')
-    closeTimerRef.current = setTimeout(() => {
-      closeTimerRef.current = null
-      setPhase('closed')
-    }, SELECT_MENU_ANIMATION_MS)
+    setPhase(shouldReduceAnimations() ? 'closed' : 'closing')
   }, [onMenuClose, phase])
 
-  useEffect(() => cancelClose, [cancelClose])
-
+  // Ends the exit animation; reopening or unmounting first cancels it.
   useEffect(() => {
-    if (controlledMenuIsOpen === true && phase !== 'open') openMenu()
-    if (controlledMenuIsOpen === false && phase === 'open') closeMenu()
-  }, [closeMenu, controlledMenuIsOpen, openMenu, phase])
+    if (phase !== 'closing') return
+    const timer = setTimeout(() => setPhase('closed'), SELECT_MENU_ANIMATION_MS)
+    return () => clearTimeout(timer)
+  }, [phase])
+
+  // A controlled menuIsOpen drives the phase directly.
+  if (controlledMenuIsOpen === true && phase !== 'open') setPhase('open')
+  if (controlledMenuIsOpen === false && phase === 'open') setPhase(shouldReduceAnimations() ? 'closed' : 'closing')
 
   const animatedStyles = useMemo<StylesConfig<Option, IsMulti, Group>>(() => ({
     ...styles,

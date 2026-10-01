@@ -1,4 +1,4 @@
-import { useEffect, useRef, type MutableRefObject } from 'react'
+import { useEffect, useRef, type MutableRefObject, useLayoutEffect, useState } from 'react'
 import { ChartTooltipPortal, useChartTooltip } from '../../hooks/useChartTooltip'
 import {
   ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, analyzeSeriesHasLines, analyzeSeriesLineColor, analyzeSeriesMemberIds, analyzeSeriesScaleDef,
@@ -8,6 +8,7 @@ import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugi
 import { createCursorLinesPlugin, type CursorLine, type CursorLinesConfig, type CursorLinesHandle } from '../../lib/timechart/cursorLines'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/core/alignedData'
+import type { TimeChartSeriesOptions } from '../../lib/timechart/engine/options'
 import { buildLapProgressMap, findSectorSplits, interpolateLapElapsed, type LapProgressMap, type SectorSplit } from '../../lib/lapDelta'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { themeSeriesColor } from '../../lib/themeColors'
@@ -70,7 +71,8 @@ type Buffers = Record<Role, SourceBuffers> & {
   deltaPositive: AlignedDataBuffer
   deltaNegative: AlignedDataBuffer
 }
-type SeriesRecord = Record<Role, Map<string, any>>
+type SeriesRecord = Record<Role, Map<string, TimeChartSeriesOptions>>
+type DeltaSeriesPair = { positive: TimeChartSeriesOptions; negative: TimeChartSeriesOptions }
 type StackedAxisPanel = NonNullable<AxisConfig['panels']>[number]
 type StackedViewport = { top: number; bottom: number; gapAfter: number }
 type StackedTransition = {
@@ -81,7 +83,7 @@ type StackedTransition = {
 }
 
 const SOURCES: AnalyzeSource[] = ['telemetry', 'motion', 'motionEx', 'status', 'damage']
-const EMPTY_ROWS = emptyView<any>()
+const EMPTY_ROWS = emptyView()
 const Y_TICKS = [0, 0.25, 0.5, 0.75, 1]
 const TOP_PADDING = 16
 const STACKED_TOP_PADDING = 6
@@ -102,7 +104,7 @@ function easeInOutCubic(progress: number): number {
     : 1 - Math.pow(-2 * progress + 2, 3) / 2
 }
 
-function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): ColumnView<any> {
+function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): ColumnView {
   if (source === 'status') return lap.statusHistory
   if (source === 'damage') return lap.damageHistory
   return lap[source]
@@ -153,7 +155,7 @@ function nearestIndex(data: SeriesData, x: number): number {
 
 function syncSource(
   buffer: AlignedDataBuffer,
-  rows: ColumnView<any>,
+  rows: ColumnView,
   defs: typeof ANALYZE_METRICS,
   origin: number,
   rebuild: boolean,
@@ -226,7 +228,7 @@ function syncSource(
 
 function syncSourceDistance(
   buffer: AlignedDataBuffer,
-  rows: ColumnView<any>,
+  rows: ColumnView,
   defs: typeof ANALYZE_METRICS,
   progress: LapProgressMap | null,
   rebuild: boolean,
@@ -420,19 +422,27 @@ export default function AnalyzeTimeChart({
   zoomEnabled, realtimeCurrent, controlsRef, onInspectMap,
   deltaData,
   metricScope, showXAxis = true, interactionEnabled = true, stackedMode = false,
-  tooltipEnabled = true, syncedTooltip = false, sectorBoundaries = false, sectorDelta = false,
+  tooltipEnabled = true, syncedTooltip = false, sectorBoundaries = false,
   showMapCursors = false, mapCurrentColor = '#ffffff', mapComparisonColor = '#ffffff',
 }: AnalyzeTimeChartProps) {
   // Series topology is fixed for the lifetime of this chart. Stacked mode
   // includes every metric as channels on one shared WebGL canvas.
-  const scopedMetricsRef = useRef(metricScope
-    ? ANALYZE_METRICS.filter(def => metricScope.includes(def.id))
-    : ANALYZE_METRICS)
-  const metricsBySourceRef = useRef(Object.fromEntries(SOURCES.map(source => [
-    source,
-    scopedMetricsRef.current.filter(metric => metric.source === source),
-  ])) as Record<AnalyzeSource, typeof ANALYZE_METRICS>)
-  const activeSourcesRef = useRef(SOURCES.filter(source => metricsBySourceRef.current[source].length > 0))
+  const [topology] = useState(() => {
+    const scopedMetrics = metricScope
+      ? ANALYZE_METRICS.filter(def => metricScope.includes(def.id))
+      : ANALYZE_METRICS
+    const metricsBySource = Object.fromEntries(SOURCES.map(source => [
+      source,
+      scopedMetrics.filter(metric => metric.source === source),
+    ])) as Record<AnalyzeSource, typeof ANALYZE_METRICS>
+    const activeSources = SOURCES.filter(source => metricsBySource[source].length > 0)
+    const scratch: Partial<Record<AnalyzeSource, Float64Array>> = Object.fromEntries(activeSources.map(source =>
+      [source, new Float64Array(metricsBySource[source].length)]))
+    return { scopedMetrics, metricsBySource, activeSources, scratch }
+  })
+  const scopedMetricsRef = useRef(topology.scopedMetrics)
+  const metricsBySourceRef = useRef(topology.metricsBySource)
+  const activeSourcesRef = useRef(topology.activeSources)
   const themedDeltaPositive = themeSeriesColor(deltaPositiveColor, isDark)
   const themedDeltaNegative = themeSeriesColor(deltaNegativeColor, isDark)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -444,7 +454,7 @@ export default function AnalyzeTimeChart({
   const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
   const cursorCfgRef = useRef<{ current: CursorLinesConfig } | null>(null)
   const cursorHandleRef = useRef<CursorLinesHandle | null>(null)
-  const deltaSeriesRef = useRef<{ positive: any; negative: any } | null>(null)
+  const deltaSeriesRef = useRef<DeltaSeriesPair | null>(null)
   const stackedViewportAnimationRef = useRef(0)
   const stackedAxisPanelsRef = useRef(new Map<string, StackedAxisPanel>())
   const stackedExitingMetricIdsRef = useRef(new Set<string>())
@@ -454,7 +464,7 @@ export default function AnalyzeTimeChart({
   const stackedMembershipRef = useRef('')
   const combinedSeriesAnimationRef = useRef(0)
   const combinedSeriesVisibilityReadyRef = useRef(false)
-  const combinedSeriesDesiredVisibilityRef = useRef(new Map<any, boolean>())
+  const combinedSeriesDesiredVisibilityRef = useRef(new Map<TimeChartSeriesOptions, boolean>())
   const deltaRangeRef = useRef(0.5)
   const deltaSamplesRef = useRef<DeltaRenderState>({ source: null, renderedCount: 0, renderedRange: 0 })
   const deltaColorsRef = useRef({ positive: themedDeltaPositive, negative: themedDeltaNegative })
@@ -477,21 +487,26 @@ export default function AnalyzeTimeChart({
   const distanceCursorsRef = useRef<Record<string, { value: number }>>({})
   const lastRealtimeCutoffRef = useRef(-Infinity)
   const syncPlaybackCursorRef = useRef<(() => void) | null>(null)
-  const scratchRef = useRef<Partial<Record<AnalyzeSource, Float64Array>>>(Object.fromEntries(activeSourcesRef.current.map(source => [source, new Float64Array(metricsBySourceRef.current[source].length)])))
-  selectedRef.current = selected
-  isDarkRef.current = isDark
-  currentRef.current = current
-  comparisonRef.current = comparison
-  comparisonSelectedRef.current = comparisonSelected
-  primaryLabelRef.current = primaryLabel
-  comparisonLabelRef.current = comparisonLabel
-  zoomEnabledRef.current = zoomEnabled
-  interactionEnabledRef.current = interactionEnabled
-  tooltipEnabledRef.current = tooltipEnabled
-  syncedTooltipRef.current = syncedTooltip
-  distanceModeRef.current = distanceMode
-  onInspectMapRef.current = onInspectMap
-  deltaColorsRef.current = { positive: themedDeltaPositive, negative: themedDeltaNegative }
+  const scratchRef = useRef(topology.scratch)
+
+  // Latest render values for the chart's imperative handlers and plugins.
+  // Declared ahead of every effect below, so each of them sees this render.
+  useLayoutEffect(() => {
+    selectedRef.current = selected
+    isDarkRef.current = isDark
+    currentRef.current = current
+    comparisonRef.current = comparison
+    comparisonSelectedRef.current = comparisonSelected
+    primaryLabelRef.current = primaryLabel
+    comparisonLabelRef.current = comparisonLabel
+    zoomEnabledRef.current = zoomEnabled
+    interactionEnabledRef.current = interactionEnabled
+    tooltipEnabledRef.current = tooltipEnabled
+    syncedTooltipRef.current = syncedTooltip
+    distanceModeRef.current = distanceMode
+    onInspectMapRef.current = onInspectMap
+    deltaColorsRef.current = { positive: themedDeltaPositive, negative: themedDeltaNegative }
+  })
 
   useEffect(() => {
     const host = hostRef.current
@@ -511,7 +526,7 @@ export default function AnalyzeTimeChart({
     const cursorHandle: CursorLinesHandle = { redraw: null }
     cursorCfgRef.current = cursorCfg
     cursorHandleRef.current = cursorHandle
-    const rawSeries: any[] = []
+    const rawSeries: TimeChartSeriesOptions[] = []
     for (const role of ['comparison', 'current'] as Role[]) {
       for (const def of scopedMetrics) {
         const channel = metricsBySource[def.source].findIndex(candidate => candidate.id === def.id)
@@ -524,14 +539,14 @@ export default function AnalyzeTimeChart({
         })
       }
     }
-    const deltaSeries = {
+    const deltaSeries: DeltaSeriesPair = {
       positive: {
         name: 'delta:positive', color: themedDeltaPositive, visible: false, lineWidth: 2,
-        lineType: TimeChart.LineType.Line, data: buffers.deltaPositive.series[0], viewport: undefined,
+        lineType: TimeChart.LineType.Line, stepLocation: 1, data: buffers.deltaPositive.series[0], viewport: undefined,
       },
       negative: {
         name: 'delta:negative', color: themedDeltaNegative, visible: false, lineWidth: 2,
-        lineType: TimeChart.LineType.Line, data: buffers.deltaNegative.series[0], viewport: undefined,
+        lineType: TimeChart.LineType.Line, stepLocation: 1, data: buffers.deltaNegative.series[0], viewport: undefined,
       },
     }
     rawSeries.push(deltaSeries.positive, deltaSeries.negative)
@@ -548,8 +563,8 @@ export default function AnalyzeTimeChart({
         nearestPoint: corePlugins.nearestPoint,
         axis: createAxisPlugin(axisCfg),
         cursorLines: createCursorLinesPlugin(cursorCfg, cursorHandle),
-      } as any,
-    } as any)
+      },
+    })
     chartRef.current = chart
 
     let xDomainAnimationFrame = 0
@@ -649,7 +664,7 @@ export default function AnalyzeTimeChart({
       if (!inspectMap) return
       const rect = interactionNode.getBoundingClientRect()
       const contentX = Math.max(0, Math.min(rect.width, clientX - rect.left))
-      const chartX = (chart.model.xScale as any).invert(contentX + chart.options.paddingLeft) as number
+      const chartX = chart.model.xScale.invert(contentX + chart.options.paddingLeft) as number
       const lap = currentRef.current
       const elapsed = distanceModeRef.current
         ? (() => {
@@ -732,7 +747,7 @@ export default function AnalyzeTimeChart({
 
     const move = (contentX: number, contentY: number) => {
       if (!tooltipEnabledRef.current) { hide(); return }
-      const x = (chart.model.xScale as any).invert(contentX + chart.options.paddingLeft) as number
+      const x = chart.model.xScale.invert(contentX + chart.options.paddingLeft) as number
       const rows: string[] = [`<div style="color:var(--text-secondary);margin-bottom:4px">${distanceModeRef.current ? fmtDistance(x) : fmtLapTime(x)}</div>`]
       let hasValue = false
       let hoveredMetricId: string | null = null
@@ -830,7 +845,7 @@ export default function AnalyzeTimeChart({
     const deltaItem = selected.find(item => item.metricId === 'delta')
     const showDelta = !!deltaItem && deltaItem.visible !== false && distanceMode && comparisonSelected
     const deltaSeries = deltaSeriesRef.current
-    const desiredVisibility = new Map<any, boolean>()
+    const desiredVisibility = new Map<TimeChartSeriesOptions, boolean>()
     for (const def of scopedMetricsRef.current) {
       const item = ownerById.get(def.id)
       const visible = !!item?.visible
@@ -857,7 +872,7 @@ export default function AnalyzeTimeChart({
         document.documentElement.dataset.reduceAnimations !== 'true'
       if (animateVisibility) {
         if (combinedSeriesAnimationRef.current) cancelAnimationFrame(combinedSeriesAnimationRef.current)
-        const transitions = new Map<any, { from: number; to: number }>()
+        const transitions = new Map<TimeChartSeriesOptions, { from: number; to: number }>()
         for (const [option, visible] of desiredVisibility) {
           const from = option.visible ? option.opacity ?? 1 : 0
           const to = visible ? 1 : 0
@@ -931,13 +946,15 @@ export default function AnalyzeTimeChart({
           }
         : distanceMode ? fmtDistance : fmtLapTime
     if (!stackedMode) {
+      // The chart lives in a ref and is updated imperatively; the compiler aliases it with the creation effect's captures.
+      // eslint-disable-next-line react-hooks/immutability
       for (const option of chart.options.series) option.viewport = undefined
       stackedExitingMetricIdsRef.current.clear()
       stackedLayoutReadyRef.current = false
       stackedLayoutSignatureRef.current = ''
       stackedMembershipRef.current = ''
     }
-    const viewportAnimation = new Map<any, StackedTransition>()
+    const viewportAnimation = new Map<TimeChartSeriesOptions, StackedTransition>()
     const panelViewportAnimation = new Map<string, StackedTransition>()
     let animateStackedLayout = false
     let layoutChanged = false
@@ -1013,7 +1030,7 @@ export default function AnalyzeTimeChart({
           fromOpacity: prior ? representative?.opacity ?? 1 : 0,
           toOpacity: 1,
         })
-        const applyViewport = (option: any) => {
+        const applyViewport = (option: TimeChartSeriesOptions | undefined) => {
           if (!option) return
           const prior = option.viewport
           const from = prior
@@ -1070,7 +1087,7 @@ export default function AnalyzeTimeChart({
           fromOpacity: representative?.opacity ?? 1,
           toOpacity: 0,
         })
-        const applyExitViewport = (option: any) => {
+        const applyExitViewport = (option: TimeChartSeriesOptions | undefined) => {
           if (!option) return
           const optionPrior = option.viewport
           const optionFrom: StackedViewport = optionPrior
@@ -1083,6 +1100,8 @@ export default function AnalyzeTimeChart({
           option.visible = item.metricId === 'delta' || option.name.startsWith('current:') || !!comparison
         }
         if (item.metricId === 'delta') {
+          // Series options belong to the ref-held chart (see the viewport reset above).
+          // eslint-disable-next-line react-hooks/immutability
           applyExitViewport(deltaSeries?.positive)
           applyExitViewport(deltaSeries?.negative)
         } else {
@@ -1099,7 +1118,8 @@ export default function AnalyzeTimeChart({
       return analyzeSeriesMemberIds(item).flatMap(id => {
         const currentOption = records.current.get(id)
         const comparisonOption = records.comparison.get(id)
-        return comparisonOption && comparison ? [comparisonOption, currentOption].filter(Boolean) : [currentOption].filter(Boolean)
+        const options = comparisonOption && comparison ? [comparisonOption, currentOption] : [currentOption]
+        return options.filter((option): option is TimeChartSeriesOptions => !!option)
       })
     })
     for (const item of [...exitingItems].reverse()) {
@@ -1298,7 +1318,7 @@ export default function AnalyzeTimeChart({
     if (hostRef.current) hostRef.current.style.color = axis
     chart.update()
     chart.model.resize(chart.clientWidth, chart.clientHeight)
-  }, [comparison, comparisonSelected, current, distanceMode, isDark, sectorBoundaries, selected, showXAxis, themedDeltaNegative, themedDeltaPositive])
+  }, [comparison, comparisonSelected, current, distanceMode, isDark, sectorBoundaries, selected, showXAxis, stackedMode, themedDeltaNegative, themedDeltaPositive, trackLengthM])
 
   useEffect(() => {
     let animationFrame = 0
@@ -1504,6 +1524,8 @@ export default function AnalyzeTimeChart({
 
   useEffect(() => {
     const node = chartRef.current?.contentBoxDetector.node
+    // A DOM node of the ref-held chart, which the compiler aliases with the creation effect's captures.
+    // eslint-disable-next-line react-hooks/immutability
     if (node) node.style.cursor = interactionEnabled && zoomEnabled ? 'grab' : ''
     if (!zoomEnabled) controlsRef.current?.reset()
   }, [controlsRef, interactionEnabled, zoomEnabled])

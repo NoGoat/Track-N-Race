@@ -184,7 +184,11 @@ const StatCard = memo(function StatCard({ label, value, unit, accent, sub, compa
   )
 })
 
-function areProximityPropsEqual(prev: any, next: any) {
+interface ProximityProps {
+  timing: TimingMsg; participants: ParticipantsMsg | null; compact?: DensityMode | boolean
+}
+
+function areProximityPropsEqual(prev: ProximityProps, next: ProximityProps) {
   if (prev.compact !== next.compact) return false
   if (prev.participants !== next.participants) return false
   if (!prev.timing || !next.timing) return prev.timing === next.timing
@@ -205,9 +209,7 @@ function areProximityPropsEqual(prev: any, next: any) {
   return true
 }
 
-const ProximityWidget = memo(function ProximityWidget({ timing, participants, compact }: {
-  timing: TimingMsg; participants: ParticipantsMsg | null; compact?: DensityMode | boolean
-}) {
+const ProximityWidget = memo(function ProximityWidget({ timing, participants, compact }: ProximityProps) {
   const isCompact = compact === true || compact === 'compact'
   const isSpacious = compact === 'spacious'
 
@@ -280,7 +282,9 @@ const ProximityWidget = memo(function ProximityWidget({ timing, participants, co
   )
 }, areProximityPropsEqual)
 
-function areMarshalPropsEqual(prev: any, next: any) {
+interface MarshalProps { zones: SessionMsg['marshal_zones']; isDark: boolean }
+
+function areMarshalPropsEqual(prev: MarshalProps, next: MarshalProps) {
   if (prev.isDark !== next.isDark) return false
   if (!prev.zones || !next.zones) return prev.zones === next.zones
   if (prev.zones.length !== next.zones.length) return false
@@ -294,7 +298,7 @@ function areMarshalPropsEqual(prev: any, next: any) {
   return true
 }
 
-const MarshalStrip = memo(function MarshalStrip({ zones, isDark }: { zones: SessionMsg['marshal_zones']; isDark: boolean }) {
+const MarshalStrip = memo(function MarshalStrip({ zones, isDark }: MarshalProps) {
   const valid = zones.filter(z => z.flag !== -1)
   if (valid.length === 0) return <p className="text-xs text-[var(--text-secondary)]">No zone data</p>
 
@@ -378,7 +382,6 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
   const noData  = !session
   const colorFn = useColorFn(null, null, isDark)
-  const accent  = session ? sessionAccent(session.session_type, isDark) : (isDark ? '#a0a8b8' : '#565B70')
   const info    = session ? TRACK_MAPS[session.track_id] : null
   const gpKey   = session ? `track.${session.track_id}.track_name` : ''
   const circuitKey = session ? `track.${session.track_id}.circuit_name` : ''
@@ -388,7 +391,6 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
     ? gpOverride : (info?.track_name ?? (session ? `Track ${session.track_id}` : '—'))
   const circuit = circuitOverride && circuitOverride !== circuitKey
     ? circuitOverride : (info?.circuit_name ?? '')
-  const sType   = session ? SESSION_TYPES[session.session_type] ?? 'Unknown' : null
 
   const playerCar = timing?.cars.find(c => c.idx === timing.player_idx && c.result_status === 2)
   const remainingLaps = (session && session.total_laps > 0 && playerCar)

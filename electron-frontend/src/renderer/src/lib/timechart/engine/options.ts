@@ -75,7 +75,7 @@ export type NoPlugin = Readonly<Record<string, never>>;
 
 export type TimeChartOptions<TPlugins extends TimeChartPlugins> =
     TimeChartOptionsBase &
-    (NoPlugin extends TPlugins ? {plugins?: Record<string, never>} : {plugins: TPlugins});
+    {plugins?: TPlugins};
 
 export interface TimeChartOptionsBase extends Partial<TimeChartRenderOptions> {
     series?: Partial<TimeChartSeriesOptions>[];

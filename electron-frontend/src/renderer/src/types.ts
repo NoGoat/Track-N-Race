@@ -484,6 +484,17 @@ export interface LiveFastestLapDataMsg {
   rows: Array<StatusRow | DamageRow | LapRow>
 }
 
+// Mirrors PlaybackState in src/main/bridgeManager.ts, sent on 'playback_state'.
+export interface PlaybackState {
+  isPlaying: boolean
+  speed: number
+  progressPct: number
+  currentTime: number
+  totalTime: number
+  filename: string | null
+  isScanning: boolean
+}
+
 export interface PlaybackLapBlock {
   lapNum: number
   startSessionTime: number
@@ -523,9 +534,36 @@ export interface PlaybackLoadedMsg {
 export interface PlaybackControlMsg {
   type:
     | 'playback_close'
-    | 'playback_seek_flush_bin'
     | 'playback_seek_flush_failed'
-    | 'playback_lap_blocks'
+}
+
+// A seek's history payload, broadcast by bridgeManager's seek-flush callback.
+export interface PlaybackSeekFlushBinMsg {
+  type: 'playback_seek_flush_bin'
+  binary: Uint8Array | ArrayBuffer | null
+  coldJson: string | null
+  currentLapStart: number
+  lapNum: number
+  allHistory: boolean
+  requestId: number
+  authoritativeSeek: boolean
+  rowTypeMask: number
+  historyStart: number
+}
+
+export interface PlaybackLapBlocksMsg {
+  type: 'playback_lap_blocks'
+  blocks: PlaybackLapBlock[]
+  fastestLapNum: number
+  playbackDriverIndex?: number | null
+  events?: RaceEventMsg[]
+  laps?: Array<{ lapNum: number; lapTimeMs: number }>
+  initialFuelKg?: number
+  trackLengthM?: number
+  lapDistanceAvailable?: boolean
+  deltaAvailable?: boolean
+  tnrdVersion?: string
+  analysisDrivers?: AnalysisDriverLapCatalog[]
 }
 
 export type GatewayMsg =
@@ -555,6 +593,8 @@ export type GatewayMsg =
   | PlaybackLapDataMsg
   | LiveFastestLapDataMsg
   | PlaybackControlMsg
+  | PlaybackSeekFlushBinMsg
+  | PlaybackLapBlocksMsg
 
 export interface ProtocolCapabilities {
   gameYear:        24 | 25 | 26 | null  // null = no packets received yet
@@ -719,7 +759,7 @@ declare global {
       close: () => void
       exportXlsx: () => Promise<{ ok: boolean; error?: string }>
       onExportProgress: (cb: (pct: number, stage: string) => void) => () => void
-      onStateChange: (cb: (state: any) => void) => () => void
+      onStateChange: (cb: (state: PlaybackState) => void) => () => void
       onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void
       onLoadFailed: (cb: (reason: string) => void) => () => void
     }

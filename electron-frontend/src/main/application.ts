@@ -2,7 +2,7 @@ import { app, BrowserWindow, shell, ipcMain, Menu, Tray, nativeTheme, nativeImag
 import * as path from 'path'
 import * as fs from 'fs'
 import { join } from 'path'
-import { execFile, spawn } from 'child_process'
+import { execFile } from 'child_process'
 import { configStore as store } from './configStore'
 import {
   closePairingWindow,
@@ -74,7 +74,7 @@ function getFilePathFromArgs(argv: string[]): string | null {
         if (fs.existsSync(arg)) {
           return path.resolve(arg)
         }
-      } catch (e) {}
+      } catch { /* unreadable path: not a launch file */ }
     }
   }
   return null

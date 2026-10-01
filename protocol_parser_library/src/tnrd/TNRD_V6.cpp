@@ -752,7 +752,8 @@ struct TnrdV6Writer::Impl {
     std::FILE* file{};
     std::string path;
     HeaderRow session;
-    std::array<DriverState, 24> drivers;
+    static constexpr uint8_t kDriverSlots = 24;
+    std::array<DriverState, kDriverSlots> drivers;
     std::map<uint8_t, V6DriverHeader> liveHeaders;
     std::map<uint8_t, V6DriverHeader> committedHeaders;
     std::vector<V6LapSummary> committedLaps;
@@ -980,7 +981,7 @@ struct TnrdV6Writer::Impl {
         }
         for (const auto& pending : pendingTyreHistory)
             liveHeaders[pending.driver].tyreStints = pending.stints;
-        for (uint8_t i = 0; i < drivers.size(); ++i) {
+        for (uint8_t i = 0; i < kDriverSlots; ++i) {
             auto& state = drivers[i]; if (!state.known) continue;
             auto& header = liveHeaders[i]; header.vehicleIndex = i;
             for (const auto& [type, _] : state.committedState) header.availableTypeMask |= v6DataTypeBit(type);
@@ -1037,7 +1038,7 @@ struct TnrdV6Writer::Impl {
     // leaves exactly the state a commit would have rebuilt. advanceSessionTime
     // runs this for every datagram, so it must stay cheap.
     bool commitDue() const {
-        for (uint8_t index = 0; index < drivers.size(); ++index)
+        for (uint8_t index = 0; index < kDriverSlots; ++index)
             for (const auto& lap : drivers[index].pending)
                 if (eligible(lap, false)) return true;
         const float time = now();
@@ -1056,7 +1057,7 @@ struct TnrdV6Writer::Impl {
     bool commit(bool force, std::string* errorOut) {
         if (!force && !commitDue()) return true;
         const size_t chunksBefore = chunks.size();
-        for (uint8_t index = 0; index < drivers.size(); ++index) {
+        for (uint8_t index = 0; index < kDriverSlots; ++index) {
             auto& state = drivers[index]; auto lap = state.pending.begin();
             while (lap != state.pending.end()) {
                 if (!eligible(*lap, force)) { ++lap; continue; }
@@ -1411,10 +1412,10 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
         RaceEventRow row; if (glz::read<kPartialRead>(row,json)) return true;
         if (row.code == "SCAR" && row.safety_car_type == 3 && row.event_type == 3 && phase == V6Phase::Formation) {
             const float formationEnd = std::max(0.0f, phaseTime[1]);
-            for (uint8_t index = 0; index < drivers.size(); ++index)
+            for (uint8_t index = 0; index < kDriverSlots; ++index)
                 if (drivers[index].open) closeLap(index,formationEnd,0,0,0,0,false,!drivers[index].currentInvalid,true);
             phase = V6Phase::Race; phaseTime[0] = time;
-            for (uint8_t index = 0; index < drivers.size(); ++index)
+            for (uint8_t index = 0; index < kDriverSlots; ++index)
                 if (drivers[index].known) startLap(index,1,time);
         }
         if (row.code == "RTMT" && row.car_idx && *row.car_idx >= 0 && *row.car_idx < 24)
@@ -1562,7 +1563,7 @@ void TnrdV6Writer::abort() {
 bool TnrdV6Writer::finish(std::string* errorOut) {
     if (!isOpen()) return true;
     const float time = std::max(0.0f,impl_->now());
-    for (uint8_t index=0;index<impl_->drivers.size();++index) if (impl_->drivers[index].open)
+    for (uint8_t index=0;index<Impl::kDriverSlots;++index) if (impl_->drivers[index].open)
         impl_->closeLap(index,time,0,0,0,0,false,!impl_->drivers[index].currentInvalid,false);
     // One index, written once, directly after the last chunk. With no
     // superseded checkpoints there is nothing to reclaim, so the file is

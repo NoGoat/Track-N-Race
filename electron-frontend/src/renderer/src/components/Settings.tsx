@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, memo } from 're
 import { flushSync } from 'react-dom'
 import { Bug, Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, Globe, Folder, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone, Palette, RotateCcw } from 'lucide-react'
 import QRCode from 'qrcode'
-import type { PairServiceState, ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
+import type { PairServiceState } from '../types'
 import {
   GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, DENSITY_OPTIONS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS, HEADER_LEVEL_OPTIONS,
   TYRE_Y_AXIS_SECTIONS, POWER_Y_AXIS_SECTIONS,
@@ -19,6 +19,8 @@ import Select from '../lib/AnimatedSelect'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
 import ColorPicker from './ColorPicker'
+
+declare const __APP_VERSION__: string | undefined
 
 interface Props {
   isOpen: boolean
@@ -1356,7 +1358,6 @@ const Settings = memo(function Settings({
           Track N Race
         </h1>
         <p className="text-[10px] font-mono text-[var(--text-secondary)] font-bold uppercase tracking-wider bg-[var(--bg-input)] border border-[var(--border-muted)] px-3 py-1 rounded-full">
-          {/* @ts-ignore */}
           {import.meta.env.DEV ? 'Version Next' : (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0')}
         </p>
       </div>

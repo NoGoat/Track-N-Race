@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useLayoutEffect } from 'react'
 import { useSize } from '../../hooks/useSize'
 import { ChartTooltipPortal, useChartTooltip } from '../../hooks/useChartTooltip'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
@@ -129,10 +129,10 @@ function ersAtTime(rows: ColumnView<StatusRow>, sessionTime: number): number {
   return index >= 0 ? rows.num('ers_pct', index) : NaN
 }
 
-function lowerBoundTime(rows: ColumnView<any>, value: number): number {
+function lowerBoundTime(rows: ColumnView, value: number): number {
   return rows.lowerBound(value, false)
 }
-function lowerBoundTimeInclusive(rows: ColumnView<any>, value: number): number {
+function lowerBoundTimeInclusive(rows: ColumnView, value: number): number {
   return rows.lowerBound(value, true)
 }
 
@@ -228,22 +228,12 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   const axisKindRef = useRef<'time' | 'distance'>(coordinates.distanceMode ? 'distance' : 'time')
   const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode))
   const comparisonKeyRef = useRef('')
-  cursorSyncContextRef.current = cursorSyncContext
-  telemetryRef.current = telemetry
-  statusesRef.current = statuses
-  comparisonTelemetryRef.current = comparisonTelemetry
-  comparisonStatusesRef.current = comparisonStatuses
-  colorsRef.current = colors
-  visibleSeriesRef.current = visibleSeries
-  getXRef.current = coordinates.getX
-  getComparisonXRef.current = coordinates.getComparisonX
-  axisKindRef.current = coordinates.distanceMode ? 'distance' : 'time'
   const comparisonLapNum = coordinates.lapData?.lapNum
   const baseComparisonLabel = getChartComparisonLabel(coordinates.mode)
-  comparisonLabelRef.current = coordinates.mode === 'RL' && comparisonLapNum != null
+  const comparisonLabel = coordinates.mode === 'RL' && comparisonLapNum != null
     ? `${baseComparisonLabel} ${comparisonLapNum}`
     : baseComparisonLabel
-  comparisonKeyRef.current = coordinates.mode === 'RL'
+  const comparisonKey = coordinates.mode === 'RL'
     ? `RL:${comparisonLapNum ?? ''}`
     : coordinates.mode ?? ''
   const chartRef = useRef<TChart | null>(null)
@@ -266,11 +256,28 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   const comparisonLapRef = useRef<number | null>(null)
   const dirtyRef = useRef(false)
   const tooltipFormatRef = useRef(tooltipFormat)
-  tooltipFormatRef.current = tooltipFormat
   const xFormatRef = useRef(xTickFormat)
-  xFormatRef.current = xTickFormat
   const getDeltaAtDistanceRef = useRef(coordinates.getDeltaAtDistance)
-  getDeltaAtDistanceRef.current = coordinates.getDeltaAtDistance
+
+  // Latest render values for the chart's imperative handlers and plugins.
+  // Declared ahead of every effect below, so each of them sees this render.
+  useLayoutEffect(() => {
+    cursorSyncContextRef.current = cursorSyncContext
+    telemetryRef.current = telemetry
+    statusesRef.current = statuses
+    comparisonTelemetryRef.current = comparisonTelemetry
+    comparisonStatusesRef.current = comparisonStatuses
+    colorsRef.current = colors
+    visibleSeriesRef.current = visibleSeries
+    getXRef.current = coordinates.getX
+    getComparisonXRef.current = coordinates.getComparisonX
+    axisKindRef.current = coordinates.distanceMode ? 'distance' : 'time'
+    comparisonLabelRef.current = comparisonLabel
+    comparisonKeyRef.current = comparisonKey
+    tooltipFormatRef.current = tooltipFormat
+    xFormatRef.current = xTickFormat
+    getDeltaAtDistanceRef.current = coordinates.getDeltaAtDistance
+  })
 
   const historyStartIndex = coordinates.stintLapsMode
     ? lowerBoundTimeInclusive(telemetry, coordinates.historyStartTime)
@@ -319,8 +326,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         { name: 'RPM', color: colors.rpm, lineWidth: 1.5, visible: visibleSeries.rpm, data: buffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
         { name: 'ERS', color: colors.ers, lineWidth: 1.5, visible: visibleSeries.ers, data: buffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
       ],
-      plugins: { lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair, nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg) } as any,
-    } as any)
+      plugins: { lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair, nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg) },
+    })
     chartRef.current = chart
     host.style.color = axis
     host.style.setProperty('--background-overlay', isDark ? '#12141f' : '#f1f0ec')
@@ -509,7 +516,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         hide()
         const rect = hostRef.current?.getBoundingClientRect()
         if (!rect) return
-        const axisX = (chart.model.xScale as any).invert(pointer.x) as number
+        const axisX = chart.model.xScale.invert(pointer.x) as number
         const plotHeight = chart.clientHeight - chart.options.paddingTop - chart.options.paddingBottom
         const plotYRatio = plotHeight > 0
           ? Math.max(0, Math.min(1, (pointer.y - chart.options.paddingTop) / plotHeight))
@@ -518,7 +525,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         return
       }
       const px = pointer.x - chart.options.paddingLeft + 44
-      const x = (chart.model.xScale as any).invert(px) as number
+      const x = chart.model.xScale.invert(px) as number
       const index = nearestIndex(chart.options.series[3].data, x)
       for (let i = 0; i < 3; i++) tooltipValues[i] = index >= 0 ? chart.options.series[i + 3].data.yAt(index) : NaN
       const comparisonData = chart.options.series[0].data
@@ -593,18 +600,19 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     chart.model.requestRedraw()
   }, [colors, coordinates.allLapsMode, hasComparison, isDark, visibleSeries])
 
+  const { allLapsMode, axisRevision, distanceMode, formatX, xTickValues } = coordinates
   useEffect(() => {
     const cfg = axisCfgRef.current
     if (!cfg) return
     cfg.current = {
       ...cfg.current,
-      xTickFormat: x => coordinates.distanceMode || coordinates.allLapsMode ? coordinates.formatX(x) : xFormatRef.current(x),
-      xTickValues: coordinates.xTickValues,
-      xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
-      xLabelOffset: coordinates.allLapsMode ? 4 : 0,
+      xTickFormat: x => distanceMode || allLapsMode ? formatX(x) : xFormatRef.current(x),
+      xTickValues,
+      xTickAnchor: allLapsMode ? 'start' : 'middle',
+      xLabelOffset: allLapsMode ? 4 : 0,
     }
     chartRef.current?.model.requestRedraw()
-  }, [coordinates.allLapsMode, coordinates.axisRevision, coordinates.distanceMode, coordinates.formatX, coordinates.xTickValues])
+  }, [allLapsMode, axisRevision, distanceMode, formatX, xTickValues])
 
   useEffect(() => {
     const buffer = comparisonBufferRef.current
@@ -649,60 +657,62 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       syncRowsRef.current()
     })
   }
-  syncRowsRef.current = () => {
-    const buffer = bufferRef.current
-    if (!buffer) return
-    // An authoritative playback seek replaces both source histories, including
-    // when the time axis remains in the same lap or moves forward.  Reusing the
-    // existing aligned buffer in that case leaves its already-rendered ERS
-    // values joined to the pre-seek status rows while only the new tail is
-    // appended.  lapRevision is advanced when the seek flush is installed, so
-    // treat it as a timeline replacement for the time chart as well as for the
-    // distance chart.
-    const rebuild = syncRef.current.lapRevision !== coordinates.lapRevision ||
-      syncRef.current.historyRevision !== coordinates.historyRevision
-    if (rebuild) {
-      playbackDebug('speed-chart-lap-revision', {
-        previousRevision: syncRef.current.lapRevision,
-        revision: coordinates.lapRevision,
-        mode: coordinates.mode,
-        telemetryRows: telemetry.length,
-        telemetryFirstTime: telemetry.length ? telemetry.time(0) : null,
-        telemetryLastTime: telemetry.length ? telemetry.time(telemetry.length - 1) : null,
-        firstX: telemetry.length ? coordinates.getX(telemetry.time(0)) : null,
-        lastX: telemetry.length ? coordinates.getX(telemetry.time(telemetry.length - 1)) : null,
-        statusRows: statuses.length,
-        bufferRowsBeforeClear: buffer.length,
-        cursorSessionTime: syncRef.current.lastSessionTime,
-      })
+  useLayoutEffect(() => {
+    syncRowsRef.current = () => {
+      const buffer = bufferRef.current
+      if (!buffer) return
+      // An authoritative playback seek replaces both source histories, including
+      // when the time axis remains in the same lap or moves forward.  Reusing the
+      // existing aligned buffer in that case leaves its already-rendered ERS
+      // values joined to the pre-seek status rows while only the new tail is
+      // appended.  lapRevision is advanced when the seek flush is installed, so
+      // treat it as a timeline replacement for the time chart as well as for the
+      // distance chart.
+      const rebuild = syncRef.current.lapRevision !== coordinates.lapRevision ||
+        syncRef.current.historyRevision !== coordinates.historyRevision
+      if (rebuild) {
+        playbackDebug('speed-chart-lap-revision', {
+          previousRevision: syncRef.current.lapRevision,
+          revision: coordinates.lapRevision,
+          mode: coordinates.mode,
+          telemetryRows: telemetry.length,
+          telemetryFirstTime: telemetry.length ? telemetry.time(0) : null,
+          telemetryLastTime: telemetry.length ? telemetry.time(telemetry.length - 1) : null,
+          firstX: telemetry.length ? coordinates.getX(telemetry.time(0)) : null,
+          lastX: telemetry.length ? coordinates.getX(telemetry.time(telemetry.length - 1)) : null,
+          statusRows: statuses.length,
+          bufferRowsBeforeClear: buffer.length,
+          cursorSessionTime: syncRef.current.lastSessionTime,
+        })
+      }
+      syncRef.current.lapRevision = coordinates.lapRevision
+      syncRef.current.historyRevision = coordinates.historyRevision
+      if (!syncTelemetry(
+        buffer, telemetry, statuses, scratchRef.current, coordinates.getX, syncRef.current, rebuild,
+        coordinates.stintLapsMode ? coordinates.historyStartTime : -Infinity,
+      )) return
+      if (telemetry.length > historyStartIndex) acceptDataRange(
+        coordinates.getX(telemetry.time(telemetry.length - 1)),
+        coordinates.getX(telemetry.time(historyStartIndex)),
+      )
+      if (rebuild) {
+        playbackDebug('speed-chart-lap-revision-synced', {
+          revision: coordinates.lapRevision,
+          bufferRows: buffer.length,
+          bufferFirstX: buffer.length ? buffer.firstX : null,
+          bufferLastX: buffer.length ? buffer.lastX : null,
+          cursorSessionTime: syncRef.current.lastSessionTime,
+        })
+      }
+      dirtyRef.current = true
+      if (coordinates.distanceMode && chartRef.current) {
+        const max = coordinates.trackLengthM > 0 ? coordinates.trackLengthM : buffer.lastX
+        chartRef.current.options.xRange = { min: 0, max: Math.max(max, 1) }
+        chartRef.current.model.requestRedraw()
+        dirtyRef.current = false
+      } else wake()
     }
-    syncRef.current.lapRevision = coordinates.lapRevision
-    syncRef.current.historyRevision = coordinates.historyRevision
-    if (!syncTelemetry(
-      buffer, telemetry, statuses, scratchRef.current, coordinates.getX, syncRef.current, rebuild,
-      coordinates.stintLapsMode ? coordinates.historyStartTime : -Infinity,
-    )) return
-    if (telemetry.length > historyStartIndex) acceptDataRange(
-      coordinates.getX(telemetry.time(telemetry.length - 1)),
-      coordinates.getX(telemetry.time(historyStartIndex)),
-    )
-    if (rebuild) {
-      playbackDebug('speed-chart-lap-revision-synced', {
-        revision: coordinates.lapRevision,
-        bufferRows: buffer.length,
-        bufferFirstX: buffer.length ? buffer.firstX : null,
-        bufferLastX: buffer.length ? buffer.lastX : null,
-        cursorSessionTime: syncRef.current.lastSessionTime,
-      })
-    }
-    dirtyRef.current = true
-    if (coordinates.distanceMode && chartRef.current) {
-      const max = coordinates.trackLengthM > 0 ? coordinates.trackLengthM : buffer.lastX
-      chartRef.current.options.xRange = { min: 0, max: Math.max(max, 1) }
-      chartRef.current.model.requestRedraw()
-      dirtyRef.current = false
-    } else wake()
-  }
+  })
 
   useEffect(() => {
     scheduleRowsSync()

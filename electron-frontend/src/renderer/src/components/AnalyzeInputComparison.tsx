@@ -43,7 +43,7 @@ function readPosition(value: unknown): Position {
   return { x: 0, y: 0 }
 }
 
-function rowIndexAt(rows: ColumnView<any>, target: number): number {
+function rowIndexAt(rows: ColumnView, target: number): number {
   if (rows.length === 0) return -1
   return Math.max(0, rows.lowerBound(target, false) - 1)
 }

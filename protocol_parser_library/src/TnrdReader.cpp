@@ -223,7 +223,7 @@ public:
     }
 
     std::vector<V6ProjectedRecord> take() {
-        for (uint8_t type = 0; type < pending_.size(); ++type)
+        for (uint8_t type = 0; type < kTypeSlots; ++type)
             if (pending_[type]) flush(type);
         std::stable_sort(records_.begin(), records_.end(), [](const auto& left, const auto& right) {
             return std::tie(left.sessionTime, left.order) < std::tie(right.sessionTime, right.order);
@@ -265,11 +265,12 @@ private:
         pending_[type] = false;
     }
 
-    std::array<glz::generic, 16> states_{};
-    std::array<bool, 16> ready_{};
-    std::array<bool, 16> pending_{};
-    std::array<float, 16> pendingTime_{};
-    std::array<uint64_t, 16> pendingOrder_{};
+    static constexpr uint8_t kTypeSlots = 16;
+    std::array<glz::generic, kTypeSlots> states_{};
+    std::array<bool, kTypeSlots> ready_{};
+    std::array<bool, kTypeSlots> pending_{};
+    std::array<float, kTypeSlots> pendingTime_{};
+    std::array<uint64_t, kTypeSlots> pendingOrder_{};
     std::vector<V6ProjectedRecord> records_;
     uint64_t nextOrder_{};
     TimingRow timing_{};
