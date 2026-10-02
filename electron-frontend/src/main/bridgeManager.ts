@@ -249,6 +249,13 @@ let hiddenJsonStart = 0
 // The time window alone can be up to 600 s, so cap the retained characters too.
 const MAX_RESUME_JSON_CHARS = 32 * 1024 * 1024
 let hiddenJsonChars = 0
+// V6 playback rows are patches applied over the previous row, and edge-encoded
+// types (tyre state, aero, brake bias) are only re-sent when they change. Once
+// the window drops a type's oldest patches, the retained ones would be merged
+// onto the pre-hide row, carrying stale values (e.g. an old tyre age that reads
+// as a tyre change in Stint Laps). Keep the newest dropped row per row/V6 type,
+// in drop order, and replay those first so every patch lands on its true base.
+let hiddenJsonSeeds = new Map<string, string>()
 
 function clearResumeCache(): void {
   hiddenBinary = []
@@ -256,10 +263,21 @@ function clearResumeCache(): void {
   hiddenBinaryStart = 0
   hiddenJsonStart = 0
   hiddenJsonChars = 0
+  hiddenJsonSeeds = new Map()
+}
+
+function resumeSeedKey(row: string): string {
+  const type = /"type":"([a-z_]+)"/.exec(row)?.[1] ?? ''
+  const v6Type = /"_v6_type":(\d+)/.exec(row)?.[1] ?? ''
+  return `${type}:${v6Type}`
 }
 
 function dropOldestResumeJson(): void {
-  hiddenJsonChars -= hiddenJson[hiddenJsonStart].data.length
+  const row = hiddenJson[hiddenJsonStart].data
+  const key = resumeSeedKey(row)
+  hiddenJsonSeeds.delete(key)
+  hiddenJsonSeeds.set(key, row)
+  hiddenJsonChars -= row.length
   hiddenJsonStart++
 }
 
@@ -308,11 +326,12 @@ function cacheResumeJson(batch: string, now: number): void {
 }
 
 function sendResumeCache(): void {
-  if (hiddenBinaryStart === hiddenBinary.length && hiddenJsonStart === hiddenJson.length) return
+  if (hiddenBinaryStart === hiddenBinary.length && hiddenJsonStart === hiddenJson.length &&
+      hiddenJsonSeeds.size === 0) return
   const binary = hiddenBinaryStart === hiddenBinary.length
     ? Buffer.alloc(0)
     : Buffer.concat(hiddenBinary.slice(hiddenBinaryStart).map(entry => entry.data))
-  const coldJson = hiddenJson.slice(hiddenJsonStart).map(entry => entry.data).join('\n')
+  const coldJson = [...hiddenJsonSeeds.values(), ...hiddenJson.slice(hiddenJsonStart).map(entry => entry.data)].join('\n')
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send('telemetry-resume', { binary, coldJson })
@@ -1323,7 +1342,11 @@ export function setRendererVisible(visible: boolean): void {
     console.info('[telemetry-diagnostics][main] renderer visibility changed:', { previous: wasVisible, next: visible })
   }
   if (!visible && wasVisible) {
-    const selectedSeconds = Number(store.get('timeWindow', 30))
+    // `timeWindow` is the legacy key; the renderer now persists `chartWindow`,
+    // which is either seconds or a lap mode ('CL', 'AL', ...). Lap modes need
+    // the whole lap, so retain the maximum window for them.
+    const chartWindow = store.get('chartWindow', store.get('timeWindow', 30))
+    const selectedSeconds = typeof chartWindow === 'number' ? chartWindow : 600
     resumeWindowMs = Math.min(600, Math.max(15, Number.isFinite(selectedSeconds) ? selectedSeconds : 30)) * 1000
     clearResumeCache()
   }

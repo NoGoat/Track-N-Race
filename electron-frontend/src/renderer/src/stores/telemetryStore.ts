@@ -1327,20 +1327,27 @@ function handleMsg(msg: GatewayMsg): void {
       const merged = mergePlaybackPatch(previous, msg as StatusRow)
       const next: Partial<TelemetryStoreState> = { status: merged }
       const previousStintStartTime = currentStintStartTime
-      if (!previous || merged.session_time < previous.session_time) {
+      // A row older than the held tail is not necessarily a new timeline. After
+      // a playback seek the engine's per-type panel rows (JSON, %.9g) routinely
+      // land a hair before the flush's float32 tail, and resetting the stint to
+      // that row made Stint Laps start at the seek point. Re-derive the stint
+      // from the reconciled table instead.
+      const regressed = previous !== undefined && merged.session_time < previous.session_time
+      if (!previous) {
         currentStintStartTime = merged.session_time
-      } else if (isNewTyreStint(previous, merged)) {
+      } else if (!regressed && isNewTyreStint(previous, merged)) {
         currentStintStartTime = merged.session_time
       }
-      if (previousStintStartTime !== currentStintStartTime) next.currentStintStartTime = currentStintStartTime
       if (!isPlaybackFlag && Number.isFinite(msg.fuel_kg) && msg.fuel_kg >= 0 && msg.fuel_kg > fuelMaxReceived) {
         fuelMaxReceived = msg.fuel_kg
         // Keep exactly one kilogram of breathing room above the highest value
         // received in this live session.
         next.fuelUpperLimit = fuelMaxReceived + 1
       }
-      set(next)
       appendPlaybackPatch(stsTable, msg as StatusRow, MAX_ROWS)
+      if (regressed) currentStintStartTime = findCurrentStintStart(stsTable.frozen())
+      if (previousStintStartTime !== currentStintStartTime) next.currentStintStartTime = currentStintStartTime
+      set(next)
       if (isPlaybackFlag && !(historyRowMask & HISTORY_ROW.status)) stsTable.keepLastOnly()
       break
     }
@@ -2062,9 +2069,18 @@ async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promi
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+function latestHeldTime(): number {
+  return Math.max(...Object.values(TABLE_OF_FAMILY).map(table => table.lastTime() ?? 0))
+}
+
 // Set the visible time window (seconds). Infinity selects the full-session
 // publication used by All Laps and Stint Laps. Recomputes slices at once.
-function requestVisibleWindowHistory(): void {
+//
+// `refetch` requests every visible family even when its oldest row already
+// covers the window. A restore from hidden leaves a hole *inside* the window
+// (rows from before hiding, then only main's bounded resume cache), which the
+// prefix check cannot see; V6 playback installs the response as an overlay.
+function requestVisibleWindowHistory(refetch = false): void {
   if (speedRpmBlocksVal === null) return
   const fileStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
   const currentTime = Math.max(
@@ -2089,7 +2105,7 @@ function requestVisibleWindowHistory(): void {
       const firstTime = firstTimes.get(bit)
       const missingPrefix = !covered && (firstTime ?? Infinity) > requiredStart + 1
       families.push({ bit: `0x${bit.toString(16)}`, pendingV6Type, covered, firstTime: firstTime ?? null, missingPrefix })
-      if (pendingV6Type || missingPrefix)
+      if (refetch || pendingV6Type || missingPrefix)
         missingMask |= bit
     }
     playbackDebug('history-backfill-evaluation', {
@@ -2466,6 +2482,8 @@ export function startTelemetryBridge(): void {
       console.info(`[telemetry-diagnostics][renderer] applying resume payload: ${JSON.stringify({ binaryBytes: binary.byteLength, coldJsonChars: coldJson.length })}`)
     }
     if (seekRendererPending) return
+    // Newest row held before hiding: the hidden gap starts here.
+    const lastTimeBeforeResume = latestHeldTime()
     let dirty = DirtySlice.None
     try {
       forEachDecodedBinaryRow(binary, row => {
@@ -2544,7 +2562,13 @@ export function startTelemetryBridge(): void {
     // storm. Each source buffer is independently chronological, so the hot and
     // cold channels do not need a combined O(n log n) sort.
     const current: Partial<TelemetryStoreState> = {}
-    if (latestStatus) current.status = latestStatus
+    if (latestStatus) {
+      current.status = latestStatus
+      // Status rows here bypass handleMsg's incremental stint tracking, and a
+      // tyre change may have happened while hidden.
+      currentStintStartTime = findCurrentStintStart(stsTable.frozen())
+      current.currentStintStartTime = currentStintStartTime
+    }
     if (latestDamage) current.damage = latestDamage
     if (!isPlaybackFlag && fuelMaxReceived > -Infinity) current.fuelUpperLimit = fuelMaxReceived + 1
     if (Object.keys(current).length > 0) {
@@ -2552,6 +2576,19 @@ export function startTelemetryBridge(): void {
     }
     recompute(dirty)
     if (additionalLoggingEnabled && dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
+    // Main's resume cache is bounded, so a long minimize (or a lap window
+    // longer than the cache) still leaves a gap. Playback can re-read the
+    // visible window from the recording.
+    if (isPlaybackFlag) {
+      requestVisibleWindowHistory(true)
+      // All Laps / Stint Laps hold the whole session, so re-read only the
+      // hidden interval rather than the session from its start. The window is
+      // measured back from the engine's playhead, which can be ahead of the
+      // renderer at high playback speeds, hence the margin; overlap merges.
+      const gapSeconds = latestHeldTime() - lastTimeBeforeResume
+      if (allLapsMode && lastTimeBeforeResume > 0 && gapSeconds > 1)
+        window.playerBridge.getWindowData(gapSeconds + 5, fullSessionHistoryRowMask)
+    }
   })
 
 }
