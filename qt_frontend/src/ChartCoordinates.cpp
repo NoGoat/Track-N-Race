@@ -2,6 +2,7 @@
 #include "SessionModel.h"
 
 #include <QtMath>
+#include <algorithm>
 
 ChartDomain resolveChartDomain(const SessionData& data, ChartWindow window,
                                int selectedLap, float currentTime,
@@ -62,7 +63,17 @@ ChartDomain resolveChartDomain(const SessionData& data, ChartWindow window,
     if (sectorBoundaries) {
         out.ticks.push_back(0.0);
         out.tickLabels.push_back(QString());
+        // Live sessions keep the boundaries learned from completed laps for
+        // the whole session; the current lap only fills sectors not yet known.
+        QVector<LapProgressSample> splits = data.sessionSectorSplits;
         for (const auto& split : data.sectorSplits(out.primary)) {
+            const bool known = std::any_of(splits.cbegin(), splits.cend(),
+                [&](const LapProgressSample& existing) { return existing.sector == split.sector; });
+            if (!known) splits.push_back(split);
+        }
+        std::sort(splits.begin(), splits.end(),
+            [](const LapProgressSample& a, const LapProgressSample& b) { return a.sector < b.sector; });
+        for (const auto& split : splits) {
             out.ticks.push_back(split.distanceM);
             out.tickLabels.push_back(QString("S%1").arg(split.sector));
         }

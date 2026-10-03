@@ -53,7 +53,7 @@ QVector<LapProgressSample> resolvedSectorSplits(const SessionData*primaryData,co
 
 AnalyzeChart::AnalyzeChart(QWidget* parent):ChartView(parent) {
     setPanelInsetsAligned(true);   // stacked graphs share one plot width, as in Electron
-    xAxis_=addAxis({Side::Bottom,0,1,QColor(),true,'f',1,false}); setAxisTimeTicker(xAxis_,"%m:%s");
+    xAxis_=addAxis({Side::Bottom,0,1,QColor(),true,'f',1,true}); setAxisTimeTicker(xAxis_,"%m:%s");
     const auto& metrics=analyzeMetrics();
     QStringList scales;
     for(const auto& m:metrics) if(!scales.contains(m.scaleKey)) scales<<m.scaleKey;
@@ -77,11 +77,11 @@ AnalyzeChart::AnalyzeChart(QWidget* parent):ChartView(parent) {
     deltaHandles_.comparison=addSeries({"DELTA −",QColor("#37872D"),1.75,xAxis_,deltaAxis_,"s",3});
     deltaHandles_.current=addSeries({"DELTA +",QColor("#C4162A"),1.75,xAxis_,deltaAxis_,"s",3});setSeriesVisible(deltaHandles_.comparison,false);setSeriesVisible(deltaHandles_.current,false);
     stacked_.resize(metrics.size());
-    for(int i=0;i<metrics.size();++i){const auto&m=metrics[i];auto&h=stacked_[i];h.panel=addPanel();h.xAxis=addAxis({Side::Bottom,0,1,QColor(),true,'f',1,false},h.panel);setAxisTimeTicker(h.xAxis,"%m:%s");h.yAxis=addAxis({Side::Left,m.min,m.max,m.defaultColor,true,'f',m.precision,true},h.panel);if(m.scaleKey=="rpm")setAxisNumberSuffix(h.yAxis,1000.0,"k");else if(m.unit=="%")setAxisNumberSuffix(h.yAxis,1.0,"%");else if(!m.unit.isEmpty())setAxisNumberSuffix(h.yAxis,1.0,m.unit=="°C"?"°":m.unit);h.comparison=addSeries({"COMPARE · "+m.label,muted(m.defaultColor,palette().color(QPalette::Window)),1.25,h.xAxis,h.yAxis,m.unit,m.precision,m.id=="rpm",false,QColor(),m.step});h.current=addSeries({"CURRENT · "+m.label,m.defaultColor,1.75,h.xAxis,h.yAxis,m.unit,m.precision,m.id=="rpm",false,QColor(),m.step});setPanelLegendVisible(h.panel,false);}
-    stackedDelta_.panel=addPanel();stackedDelta_.xAxis=addAxis({Side::Bottom,0,1,QColor(),true,'f',1,false},stackedDelta_.panel);setAxisTimeTicker(stackedDelta_.xAxis,"%m:%s");stackedDelta_.yAxis=addAxis({Side::Left,-0.5,0.5,QColor("#C4162A"),true,'f',1,true},stackedDelta_.panel);setAxisNumberSuffix(stackedDelta_.yAxis,1.0,"s");stackedDelta_.comparison=addSeries({"DELTA −",QColor("#37872D"),1.75,stackedDelta_.xAxis,stackedDelta_.yAxis,"s",3});stackedDelta_.current=addSeries({"DELTA +",QColor("#C4162A"),1.75,stackedDelta_.xAxis,stackedDelta_.yAxis,"s",3});setPanelLegendVisible(stackedDelta_.panel,false);
+    for(int i=0;i<metrics.size();++i){const auto&m=metrics[i];auto&h=stacked_[i];h.panel=addPanel();h.xAxis=addAxis({Side::Bottom,0,1,QColor(),true,'f',1,true},h.panel);setAxisTimeTicker(h.xAxis,"%m:%s");h.yAxis=addAxis({Side::Left,m.min,m.max,m.defaultColor,true,'f',m.precision,true},h.panel);if(m.scaleKey=="rpm")setAxisNumberSuffix(h.yAxis,1000.0,"k");else if(m.unit=="%")setAxisNumberSuffix(h.yAxis,1.0,"%");else if(!m.unit.isEmpty())setAxisNumberSuffix(h.yAxis,1.0,m.unit=="°C"?"°":m.unit);h.comparison=addSeries({"COMPARE · "+m.label,muted(m.defaultColor,palette().color(QPalette::Window)),1.25,h.xAxis,h.yAxis,m.unit,m.precision,m.id=="rpm",false,QColor(),m.step});h.current=addSeries({"CURRENT · "+m.label,m.defaultColor,1.75,h.xAxis,h.yAxis,m.unit,m.precision,m.id=="rpm",false,QColor(),m.step});setPanelLegendVisible(h.panel,false);}
+    stackedDelta_.panel=addPanel();stackedDelta_.xAxis=addAxis({Side::Bottom,0,1,QColor(),true,'f',1,true},stackedDelta_.panel);setAxisTimeTicker(stackedDelta_.xAxis,"%m:%s");stackedDelta_.yAxis=addAxis({Side::Left,-0.5,0.5,QColor("#C4162A"),true,'f',1,true},stackedDelta_.panel);setAxisNumberSuffix(stackedDelta_.yAxis,1.0,"s");stackedDelta_.comparison=addSeries({"DELTA −",QColor("#37872D"),1.75,stackedDelta_.xAxis,stackedDelta_.yAxis,"s",3});stackedDelta_.current=addSeries({"DELTA +",QColor("#C4162A"),1.75,stackedDelta_.xAxis,stackedDelta_.yAxis,"s",3});setPanelLegendVisible(stackedDelta_.panel,false);
     // Combined tyre series: one panel per tyre row that draws its picked corners together.
     const auto&tyreRows=analyzeTyreRows();combined_.resize(tyreRows.size());
-    for(int r=0;r<tyreRows.size();++r){const AnalyzeMetric&m=*analyzeScaleMetric(tyreRows[r].combinedId());auto&h=combined_[r];h.panel=addPanel();h.xAxis=addAxis({Side::Bottom,0,1,QColor(),true,'f',1,false},h.panel);setAxisTimeTicker(h.xAxis,"%m:%s");h.yAxis=addAxis({Side::Left,m.min,m.max,tyreRows[r].combinedColor,true,'f',m.precision,true},h.panel);if(m.unit=="%")setAxisNumberSuffix(h.yAxis,1.0,"%");else if(!m.unit.isEmpty())setAxisNumberSuffix(h.yAxis,1.0,m.unit=="°C"?"°":m.unit);
+    for(int r=0;r<tyreRows.size();++r){const AnalyzeMetric&m=*analyzeScaleMetric(tyreRows[r].combinedId());auto&h=combined_[r];h.panel=addPanel();h.xAxis=addAxis({Side::Bottom,0,1,QColor(),true,'f',1,true},h.panel);setAxisTimeTicker(h.xAxis,"%m:%s");h.yAxis=addAxis({Side::Left,m.min,m.max,tyreRows[r].combinedColor,true,'f',m.precision,true},h.panel);if(m.unit=="%")setAxisNumberSuffix(h.yAxis,1.0,"%");else if(!m.unit.isEmpty())setAxisNumberSuffix(h.yAxis,1.0,m.unit=="°C"?"°":m.unit);
         for(const auto&corner:analyzeTyreCorners()){const AnalyzeMetric&member=*analyzeMetric(tyreRows[r].idPrefix+"-"+corner.key);h.comparison<<addSeries({"COMPARE · "+member.label,muted(member.defaultColor,palette().color(QPalette::Window)),1.25,h.xAxis,h.yAxis,member.unit,member.precision,false,false,QColor(),member.step});h.current<<addSeries({"CURRENT · "+member.label,member.defaultColor,1.75,h.xAxis,h.yAxis,member.unit,member.precision,false,false,QColor(),member.step});setSeriesVisible(h.comparison.last(),false);setSeriesVisible(h.current.last(),false);}
         setPanelLegendVisible(h.panel,false);}
     layoutPanelsRows({{0}});setCursorModeKey("analysis");
@@ -93,7 +93,10 @@ void AnalyzeChart::setConfig(const QVector<AnalyzeSeriesSetting>& s,bool y){sele
 void AnalyzeChart::setPlaybackMode(bool on){playback_=on;requestRefresh();}
 void AnalyzeChart::setCurrentTime(float t){currentTime_=t;requestRefresh();}
 void AnalyzeChart::setDistanceMode(bool on){if(distanceMode_==on)return;distanceMode_=on;setAxisDistanceMode(xAxis_,on);refreshMapCursorGuides();requestRefresh();}
-void AnalyzeChart::setIndividualGraphs(bool on,bool synced){individualGraphs_=on;syncedTooltip_=synced;setCursorSync(on&&synced,true,false);requestRefresh();}
+// Stacked graphs behave as one chart (Electron's stackedMode TimeChart): a
+// shared crosshair and markers on every graph; syncedTooltip only widens the
+// tooltip to every graph's rows.
+void AnalyzeChart::setIndividualGraphs(bool on,bool synced){individualGraphs_=on;syncedTooltip_=synced;setCursorSync(false,true,false);setPanelsShareCursor(on);requestRefresh();}
 void AnalyzeChart::setSectorOptions(bool boundaries,bool delta){sectorBoundaries_=boundaries;sectorDelta_=boundaries&&delta;requestRefresh();}
 void AnalyzeChart::setLabels(const QString&current,const QString&comparison){currentLabel_=current;comparisonLabel_=comparison;requestRefresh();}
 void AnalyzeChart::setMapCursors(bool visible,const QColor&currentColor,const QColor&comparisonColor){mapCursorsVisible_=visible;mapCurrentColor_=currentColor;mapComparisonColor_=comparisonColor;refreshMapCursorGuides();}
@@ -163,7 +166,8 @@ void AnalyzeChart::refresh(){
             const double a=elapsedAtDistance(primary,x),b=elapsedAtDistance(compare,x);double ab=0,bb=0;if(!sectorStarts.isEmpty()){double start=0;for(double split:sectorStarts)if(split<=x)start=split;if(start>0){ab=elapsedAtDistance(primary,start);bb=elapsedAtDistance(compare,start);}}appendDelta(x,(a-ab)-(b-bb));lastStoredX=x;
         }
     }
-    const QColor positive=delta&&delta->color.isValid()?delta->color:QColor("#C4162A"),negative=delta&&delta->negativeColor.isValid()?delta->negativeColor:QColor("#37872D");for(int id:{deltaHandles_.current,stackedDelta_.current}){setSeriesData(id,dx,dp);setSeriesColor(id,positive);}for(int id:{deltaHandles_.comparison,stackedDelta_.comparison}){setSeriesData(id,dx,dn);setSeriesColor(id,negative);}for(int axis:{deltaAxis_,stackedDelta_.yAxis})setAxisRange(axis,-deltaRange,deltaRange);setAxisColor(deltaAxis_,positive);setAxisColor(stackedDelta_.yAxis,positive);setSeriesVisible(deltaHandles_.current,!individualGraphs_&&showDelta);setSeriesVisible(deltaHandles_.comparison,!individualGraphs_&&showDelta);setSeriesVisible(stackedDelta_.current,individualGraphs_&&showDelta);setSeriesVisible(stackedDelta_.comparison,individualGraphs_&&showDelta);setAxisVisible(stackedDelta_.yAxis,individualGraphs_&&showDelta&&delta->showYAxis);if(individualGraphs_&&showDelta){activePanels<<stackedDelta_.panel;activeXAxes<<stackedDelta_.xAxis;}
+    const QColor positive=delta&&delta->color.isValid()?delta->color:QColor("#C4162A"),negative=delta&&delta->negativeColor.isValid()?delta->negativeColor:QColor("#37872D");
+    primaryLapNum_=primary?primary->lapNum:0;comparisonLapNum_=compare?compare->lapNum:-1;showDelta_=showDelta;deltaPositive_=positive;deltaNegative_=negative;for(int id:{deltaHandles_.current,stackedDelta_.current}){setSeriesData(id,dx,dp);setSeriesColor(id,positive);}for(int id:{deltaHandles_.comparison,stackedDelta_.comparison}){setSeriesData(id,dx,dn);setSeriesColor(id,negative);}for(int axis:{deltaAxis_,stackedDelta_.yAxis})setAxisRange(axis,-deltaRange,deltaRange);setAxisColor(deltaAxis_,positive);setAxisColor(stackedDelta_.yAxis,positive);setSeriesVisible(deltaHandles_.current,!individualGraphs_&&showDelta);setSeriesVisible(deltaHandles_.comparison,!individualGraphs_&&showDelta);setSeriesVisible(stackedDelta_.current,individualGraphs_&&showDelta);setSeriesVisible(stackedDelta_.comparison,individualGraphs_&&showDelta);setAxisVisible(stackedDelta_.yAxis,individualGraphs_&&showDelta&&delta->showYAxis);if(individualGraphs_&&showDelta){activePanels<<stackedDelta_.panel;activeXAxes<<stackedDelta_.xAxis;}
     for(auto it=selected_.crbegin();it!=selected_.crend();++it)if(it->visible){if(it->metricId=="delta"&&showDelta){order<<deltaHandles_.comparison<<deltaHandles_.current;}else if(const auto*r=analyzeCombinedRow(it->metricId)){for(const QString&key:it->corners)if(const auto*m=analyzeMetric(r->idPrefix+"-"+key)){const int i=int(m-defs.constData());order<<handles_[i].comparison<<handles_[i].current;}}else if(const auto*m=analyzeMetric(it->metricId)){const int i=int(m-defs.constData());order<<handles_[i].comparison<<handles_[i].current;}}setSeriesOrder(order);
     for(const auto&s:selected_)if(s.visible&&s.showYAxis&&analyzeSeriesHasLines(s)){if(s.metricId=="delta"){setAxisVisible(deltaAxis_,!individualGraphs_&&showDelta);continue;}if(const auto*m=analyzeScaleMetric(s.metricId))if(!shownScales.contains(m->scaleKey)){shownScales.insert(m->scaleKey);if(firstScale.isEmpty())firstScale=m->scaleKey;setAxisColor(axes_[m->scaleKey],s.color);}}for(auto it=axes_.cbegin();it!=axes_.cend();++it){setAxisVisible(it.value(),!individualGraphs_&&shownScales.contains(it.key()));setAxisGridVisible(it.value(),!individualGraphs_&&it.key()==firstScale);}if(!shownScales.contains("delta"))setAxisVisible(deltaAxis_,!individualGraphs_&&showDelta&&delta&&delta->showYAxis);
     // Like Electron, the overlay's value axes alternate left, right, left… in list order.
@@ -174,4 +178,74 @@ void AnalyzeChart::refresh(){
     setAxisVisible(xAxis_,!individualGraphs_);for(const auto&h:stacked_)setAxisVisible(h.xAxis,false);for(const auto&h:combined_)setAxisVisible(h.xAxis,false);setAxisVisible(stackedDelta_.xAxis,false);if(individualGraphs_&&!activeXAxes.isEmpty())setAxisVisible(activeXAxes.last(),true);
     QVector<QVector<int>>rows;if(individualGraphs_){for(int panel:activePanels)rows.push_back({panel});if(rows.isEmpty())rows.push_back({0});}else rows={{0}};QStringList panelKeys;for(int panel:activePanels)panelKeys<<QString::number(panel);const QString layoutKey=QString::number(individualGraphs_)+":"+panelKeys.join(',');if(layoutKey!=panelLayoutKey_){panelLayoutKey_=layoutKey;layoutPanelsRows(rows);}activeXAxes.prepend(xAxis_);setLinkedXAxes(individualGraphs_?activeXAxes:QVector<int>{xAxis_});
     const int navAxis=individualGraphs_&&!activeXAxes.isEmpty()&&activeXAxes.size()>1?activeXAxes[1]:xAxis_;const bool fixedNavigation=fixed_&&primary;setXNavigation(navAxis,fixedNavigation,0,fullMax,distanceMode_?25.0:0.5);if(fixedNavigation){const QString key=QString("%1:%2:%3:%4:%5:%6").arg(distanceMode_).arg(individualGraphs_).arg(primary?primary->lapNum:-1).arg(compare?compare->lapNum:-1).arg(lapStart(*primary),0,'f',3).arg(lapEnd(*primary),0,'f',3);if(key!=fixedDomainKey_){fixedDomainKey_=key;resetX();}}else{fixedDomainKey_.clear();setXRange(navAxis,0,fullMax);}requestReplot();
+}
+
+QString AnalyzeChart::metricForPanel(int panelId) const {
+    const auto& defs = analyzeMetrics();
+    for (int i = 0; i < stacked_.size(); ++i) if (stacked_[i].panel == panelId) return defs[i].id;
+    for (int r = 0; r < combined_.size(); ++r) if (combined_[r].panel == panelId) return analyzeTyreRows()[r].combinedId();
+    if (stackedDelta_.panel == panelId) return QStringLiteral("delta");
+    return {};
+}
+
+bool AnalyzeChart::customTooltip(int panelId, double key, TooltipContent& out) const {
+    out.clear();
+    const QColor secondary = tooltipMutedColor();
+    const QColor background = palette().color(QPalette::Window);
+    // fmtDistance / fmtLapTime: "123 m" or m:ss.s.
+    QString header;
+    if (distanceMode_) header = QString("%1 m").arg(qRound(key));
+    else {
+        const double seconds = std::fmod(key, 60.0);
+        header = QString("%1:%2").arg(qint64(std::floor(key / 60.0)))
+                     .arg(QString::number(seconds, 'f', 1).rightJustified(4, '0'));
+    }
+    out << tooltipTextLine(header, secondary);
+    out.last().marginBottom = 4;
+    const QString hovered = individualGraphs_ ? metricForPanel(panelId) : QString();
+    const auto& defs = analyzeMetrics();
+    bool hasValue = false;
+    auto appendRole = [&](bool comparison, const QString& heading) {
+        TooltipContent rows;
+        for (const auto& item : selected_) {
+            if (!item.visible) continue;
+            if (!hovered.isEmpty() && !syncedTooltip_ && item.metricId != hovered) continue;
+            QStringList ids;
+            if (const AnalyzeTyreRow* row = analyzeCombinedRow(item.metricId)) {
+                for (const QString& corner : item.corners) ids << row->idPrefix + "-" + corner;
+            } else if (analyzeMetric(item.metricId)) ids << item.metricId;
+            for (const QString& id : ids) {
+                const AnalyzeMetric* def = analyzeMetric(id);
+                if (!def) continue;
+                const int index = int(def - defs.constData());
+                const Handles& handles = handles_[index];
+                const double value = seriesValueAt(comparison ? handles.comparison : handles.current, key);
+                const QColor color = analyzeSeriesLineColor(item, id);
+                rows << tooltipValueLine(def->label, comparison ? muted(color, background) : color,
+                                         analyzeFormatValue(*def, value));
+            }
+        }
+        if (rows.isEmpty()) return;
+        TooltipLine title = tooltipTextLine(heading, secondary);
+        title.pixelSize = 10;
+        title.marginTop = out.size() > 1 ? 5 : 0;
+        title.marginBottom = 2;
+        out << title << rows;
+        hasValue = true;
+    };
+    appendRole(false, QString("%1 · L%2").arg(currentLabel_,
+        primaryLapNum_ > 0 ? QString::number(primaryLapNum_) : QString::fromUtf8("—")));
+    if (comparisonLapNum_ >= 0)
+        appendRole(true, QString("%1 · L%2").arg(comparisonLabel_).arg(comparisonLapNum_));
+    if (distanceMode_ && showDelta_ && (hovered.isEmpty() || syncedTooltip_ || hovered == "delta")) {
+        const double positive = seriesValueAt(deltaHandles_.current, key);
+        const double negative = seriesValueAt(deltaHandles_.comparison, key);
+        const double delta = std::isfinite(positive) ? positive : negative;
+        if (std::isfinite(delta)) {
+            out << tooltipDeltaLine(delta, deltaPositive_, deltaNegative_);
+            hasValue = true;
+        }
+    }
+    if (!hasValue) out.clear();
+    return true;
 }

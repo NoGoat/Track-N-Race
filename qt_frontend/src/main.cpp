@@ -206,7 +206,7 @@ int main(int argc, char* argv[]) {
     addHostQtPluginPath();
 #endif
     TrackNRaceApplication app(argc, argv);
-    app.setApplicationName("Track N Race Background Recorder");
+    app.setApplicationName("Track N Race - Qt");
     app.setApplicationVersion(APP_VERSION);   // defined by CMake from PROJECT_VERSION
     app.setOrganizationName("TrackNRace");
     app.setWindowIcon(loadAppIcon(":/icon.ico"));

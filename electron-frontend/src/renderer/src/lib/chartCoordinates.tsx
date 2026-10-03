@@ -85,6 +85,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
   const playbackCache = useTelemetryStore(state => state.playbackLapDataCache)
   const livePreviousLap = useTelemetryStore(state => state.livePreviousLapData)
   const liveFastestLap = useTelemetryStore(state => state.liveFastestLapData)
+  const liveSectorSplits = useTelemetryStore(state => state.liveSectorSplits)
   const fastestLapNum = useTelemetryStore(state => state.fastestLapNum)
   const liveLapBoundaries = useTelemetryStore(state => state.lapBoundaries)
   const allLapsLapBoundaries = useTelemetryStore(state => state.allLapsLapBoundaries)
@@ -207,6 +208,12 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
     for (const split of findSectorSplitsFromProgress(rawProgress, currentProgressMap)) {
       sectorSplitsByNumber.set(split.afterSector, split)
     }
+  }
+  // Live: once a completed lap has fixed a boundary, keep it for the whole
+  // session. The per-lap discovery above only fills sectors not yet learned,
+  // so a new lap no longer starts with the boundaries missing or shifted.
+  if (sectorBoundaryMode && !isPlayback) {
+    for (const split of liveSectorSplits) sectorSplitsByNumber.set(split.afterSector, split)
   }
   const sectorSplits = ([1, 2] as const).flatMap(sector => {
     const split = sectorSplitsByNumber.get(sector)

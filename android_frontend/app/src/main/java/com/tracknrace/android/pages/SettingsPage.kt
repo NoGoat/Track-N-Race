@@ -105,7 +105,7 @@ internal fun SettingsScreen(
         item {
             SettingsSection(
                 title = "Recording",
-                supporting = "Capture complete sessions as portable TNRD V5 files.",
+                supporting = "Capture complete sessions as portable TNRD V6 files.",
             ) {
                 ListItem(
                     headlineContent = { Text("Record telemetry sessions") },

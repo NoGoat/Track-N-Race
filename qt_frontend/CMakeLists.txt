@@ -4,7 +4,7 @@ if(NOT DEFINED TNR_APP_VERSION)
     if(DEFINED ENV{TNR_APP_VERSION} AND NOT "$ENV{TNR_APP_VERSION}" STREQUAL "")
         set(TNR_APP_VERSION "$ENV{TNR_APP_VERSION}")
     else()
-        set(TNR_APP_VERSION "1.0.0")
+        set(TNR_APP_VERSION "1.6.0")
     endif()
 endif()
 project(NativeRecorder VERSION "${TNR_APP_VERSION}" LANGUAGES CXX)
@@ -198,8 +198,9 @@ set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track-N-Race - Qt"
 target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(native_recorder PRIVATE tnrp ${QT_LIBS})
 if(WIN32)
-    # GetProcessMemoryInfo backs the optional one-second diagnostics sampler.
-    target_link_libraries(native_recorder PRIVATE psapi)
+    # GetProcessMemoryInfo/GetGuiResources back the optional one-second
+    # diagnostics sampler.
+    target_link_libraries(native_recorder PRIVATE psapi user32)
 endif()
 
 qt_add_shaders(native_recorder "tnr_chart_shaders"

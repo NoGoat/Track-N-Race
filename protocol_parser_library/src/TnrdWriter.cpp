@@ -132,9 +132,9 @@ void TnrdWriter::publishMemoryStatsOnWriterThread(bool force) {
     stats.streamActive = streamActive();
     stats.rollingEntries = rollingBuffer_.size();
     // std::deque does not expose block capacity. Count live entry storage plus
-    // the reusable non-owning V5 staging array; payload capacities are below.
+    // the reusable non-owning V6 staging array; payload capacities are below.
     stats.rollingContainerCapacityBytes = rollingBuffer_.size() * sizeof(BufferEntry) +
-        v5SourceRowViews_.capacity() * sizeof(std::pair<std::string_view, float>);
+        v6SourceRowViews_.capacity() * sizeof(std::pair<std::string_view, float>);
     for (const auto& entry : rollingBuffer_) {
         stats.rollingPayloadBytes += entry.line.size();
         stats.rollingPayloadCapacityBytes += entry.line.capacity() + 1;
@@ -148,84 +148,84 @@ void TnrdWriter::publishMemoryStatsOnWriterThread(bool force) {
     stats.peakRollingFlushEntries = peakRollingFlushEntries_;
     stats.peakRollingFlushPayloadBytes = peakRollingFlushPayloadBytes_;
     stats.peakRollingFlushCopyCapacityBytes = peakRollingFlushCopyCapacityBytes_;
-    stats.v5AppendBatches = v5AppendBatches_;
-    stats.v5AppendRowsProcessed = v5AppendRowsProcessed_;
-    stats.v5AppendPayloadBytesProcessed = v5AppendPayloadBytesProcessed_;
-    stats.lastV5AppendRows = lastV5AppendRows_;
-    stats.lastV5AppendPayloadBytes = lastV5AppendPayloadBytes_;
-    stats.lastV5SourceRowCapacityBytes = lastV5SourceRowCapacityBytes_;
-    stats.peakV5AppendRows = peakV5AppendRows_;
-    stats.peakV5AppendPayloadBytes = peakV5AppendPayloadBytes_;
-    stats.peakV5SourceRowCapacityBytes = peakV5SourceRowCapacityBytes_;
+    stats.v6AppendBatches = v6AppendBatches_;
+    stats.v6AppendRowsProcessed = v6AppendRowsProcessed_;
+    stats.v6AppendPayloadBytesProcessed = v6AppendPayloadBytesProcessed_;
+    stats.lastV6AppendRows = lastV6AppendRows_;
+    stats.lastV6AppendPayloadBytes = lastV6AppendPayloadBytes_;
+    stats.lastV6SourceRowCapacityBytes = lastV6SourceRowCapacityBytes_;
+    stats.peakV6AppendRows = peakV6AppendRows_;
+    stats.peakV6AppendPayloadBytes = peakV6AppendPayloadBytes_;
+    stats.peakV6SourceRowCapacityBytes = peakV6SourceRowCapacityBytes_;
     stats.dedupeEntries = dedupeCache_.size();
     for (const auto& [type, json] : dedupeCache_) {
         stats.dedupePayloadBytes += type.size() + json.size();
         stats.dedupePayloadCapacityBytes += type.capacity() + 1 + json.capacity() + 1;
     }
-    stats.v5ChunkWrites = closedV5Activity_.chunkWrites;
-    stats.v5ChunkPlainBytesProcessed = closedV5Activity_.chunkPlainBytesProcessed;
-    stats.v5ChunkCompressedBytesWritten = closedV5Activity_.chunkCompressedBytesWritten;
-    stats.v5CompressionBufferBytesAllocated = closedV5Activity_.compressionBufferBytesAllocated;
-    stats.v5LastChunkPlainBytes = closedV5Activity_.lastChunkPlainBytes;
-    stats.v5LastChunkCompressedBytes = closedV5Activity_.lastChunkCompressedBytes;
-    stats.v5LastCompressionBufferCapacityBytes = closedV5Activity_.lastCompressionBufferCapacityBytes;
-    stats.v5PeakCompressionBufferCapacityBytes = closedV5Activity_.peakCompressionBufferCapacityBytes;
-    stats.v5CheckpointWrites = closedV5Activity_.checkpointWrites;
-    stats.v5CheckpointScratchBytesAllocated = closedV5Activity_.checkpointScratchBytesAllocated;
-    stats.v5LastCheckpointScratchBytes = closedV5Activity_.lastCheckpointScratchBytes;
-    stats.v5PeakCheckpointScratchBytes = closedV5Activity_.peakCheckpointScratchBytes;
-    stats.v5LastCheckpointDirectoryBytes = closedV5Activity_.lastCheckpointDirectoryBytes;
-    stats.v5PeakCheckpointDirectoryBytes = closedV5Activity_.peakCheckpointDirectoryBytes;
-    stats.v5LastCheckpointRowIndexBytes = closedV5Activity_.lastCheckpointRowIndexBytes;
-    stats.v5PeakCheckpointRowIndexBytes = closedV5Activity_.peakCheckpointRowIndexBytes;
+    stats.v6ChunkWrites = closedV6Activity_.chunkWrites;
+    stats.v6ChunkPlainBytesProcessed = closedV6Activity_.chunkPlainBytesProcessed;
+    stats.v6ChunkCompressedBytesWritten = closedV6Activity_.chunkCompressedBytesWritten;
+    stats.v6CompressionBufferBytesAllocated = closedV6Activity_.compressionBufferBytesAllocated;
+    stats.v6LastChunkPlainBytes = closedV6Activity_.lastChunkPlainBytes;
+    stats.v6LastChunkCompressedBytes = closedV6Activity_.lastChunkCompressedBytes;
+    stats.v6LastCompressionBufferCapacityBytes = closedV6Activity_.lastCompressionBufferCapacityBytes;
+    stats.v6PeakCompressionBufferCapacityBytes = closedV6Activity_.peakCompressionBufferCapacityBytes;
+    stats.v6CheckpointWrites = closedV6Activity_.checkpointWrites;
+    stats.v6CheckpointScratchBytesAllocated = closedV6Activity_.checkpointScratchBytesAllocated;
+    stats.v6LastCheckpointScratchBytes = closedV6Activity_.lastCheckpointScratchBytes;
+    stats.v6PeakCheckpointScratchBytes = closedV6Activity_.peakCheckpointScratchBytes;
+    stats.v6LastCheckpointDirectoryBytes = closedV6Activity_.lastCheckpointDirectoryBytes;
+    stats.v6PeakCheckpointDirectoryBytes = closedV6Activity_.peakCheckpointDirectoryBytes;
+    stats.v6LastCheckpointRowIndexBytes = closedV6Activity_.lastCheckpointRowIndexBytes;
+    stats.v6PeakCheckpointRowIndexBytes = closedV6Activity_.peakCheckpointRowIndexBytes;
     if (v6Writer_) {
-        const auto v5 = v6Writer_->memoryStats();
-        stats.v5RetainedBytes = v5.retainedBytes;
-        stats.v5BuilderCount = v5.builderCount;
-        stats.v5BuilderPlainBytes = v5.builderPlainBytes;
-        stats.v5BuilderPlainCapacityBytes = v5.builderPlainCapacityBytes;
-        stats.v5BuilderRowIndexEntries = v5.builderRowIndexEntries;
-        stats.v5BuilderRowIndexCapacityBytes = v5.builderRowIndexCapacityBytes;
-        stats.v5ChunkCount = v5.chunkCount;
-        stats.v5ChunkContainerCapacityBytes = v5.chunkContainerCapacityBytes;
-        stats.v5ChunkRowIndexEntries = v5.chunkRowIndexEntries;
-        stats.v5ChunkRowIndexCapacityBytes = v5.chunkRowIndexCapacityBytes;
-        stats.v5BranchCount = v5.branchCount;
-        stats.v5BranchCapacityBytes = v5.branchCapacityBytes;
-        stats.v5LapCount = v5.lapCount;
-        stats.v5StatusLapCount = v5.statusLapCount;
-        stats.v5EventCount = v5.eventCount;
-        stats.v5EventPayloadBytes = v5.eventPayloadBytes;
-        stats.v5EventPayloadCapacityBytes = v5.eventPayloadCapacityBytes;
-        stats.v5EventContainerCapacityBytes = v5.eventContainerCapacityBytes;
-        stats.v5LapStatusCapacityBytes = v5.lapStatusCapacityBytes;
-        stats.v5ChunkWrites += v5.chunkWrites;
-        stats.v5ChunkPlainBytesProcessed += v5.chunkPlainBytesProcessed;
-        stats.v5ChunkCompressedBytesWritten += v5.chunkCompressedBytesWritten;
-        stats.v5CompressionBufferBytesAllocated += v5.compressionBufferBytesAllocated;
-        stats.v5CompressionScratchCapacityBytes = v5.compressionScratchCapacityBytes;
-        stats.v5CompressionContextBytes = v5.compressionContextBytes;
-        stats.v5LastChunkPlainBytes = v5.lastChunkPlainBytes;
-        stats.v5LastChunkCompressedBytes = v5.lastChunkCompressedBytes;
-        stats.v5LastCompressionBufferCapacityBytes = v5.lastCompressionBufferCapacityBytes;
-        stats.v5PeakCompressionBufferCapacityBytes = std::max(
-            stats.v5PeakCompressionBufferCapacityBytes,
-            v5.peakCompressionBufferCapacityBytes);
-        stats.v5CheckpointWrites += v5.checkpointWrites;
-        stats.v5CheckpointScratchBytesAllocated += v5.checkpointScratchBytesAllocated;
-        stats.v5LastCheckpointScratchBytes = v5.lastCheckpointScratchBytes;
-        stats.v5PeakCheckpointScratchBytes = std::max(
-            stats.v5PeakCheckpointScratchBytes, v5.peakCheckpointScratchBytes);
-        stats.v5LastCheckpointDirectoryBytes = v5.lastCheckpointDirectoryBytes;
-        stats.v5PeakCheckpointDirectoryBytes = std::max(
-            stats.v5PeakCheckpointDirectoryBytes, v5.peakCheckpointDirectoryBytes);
-        stats.v5LastCheckpointRowIndexBytes = v5.lastCheckpointRowIndexBytes;
-        stats.v5PeakCheckpointRowIndexBytes = std::max(
-            stats.v5PeakCheckpointRowIndexBytes, v5.peakCheckpointRowIndexBytes);
+        const auto v6 = v6Writer_->memoryStats();
+        stats.v6RetainedBytes = v6.retainedBytes;
+        stats.v6BuilderCount = v6.builderCount;
+        stats.v6BuilderPlainBytes = v6.builderPlainBytes;
+        stats.v6BuilderPlainCapacityBytes = v6.builderPlainCapacityBytes;
+        stats.v6BuilderRowIndexEntries = v6.builderRowIndexEntries;
+        stats.v6BuilderRowIndexCapacityBytes = v6.builderRowIndexCapacityBytes;
+        stats.v6ChunkCount = v6.chunkCount;
+        stats.v6ChunkContainerCapacityBytes = v6.chunkContainerCapacityBytes;
+        stats.v6ChunkRowIndexEntries = v6.chunkRowIndexEntries;
+        stats.v6ChunkRowIndexCapacityBytes = v6.chunkRowIndexCapacityBytes;
+        stats.v6BranchCount = v6.branchCount;
+        stats.v6BranchCapacityBytes = v6.branchCapacityBytes;
+        stats.v6LapCount = v6.lapCount;
+        stats.v6StatusLapCount = v6.statusLapCount;
+        stats.v6EventCount = v6.eventCount;
+        stats.v6EventPayloadBytes = v6.eventPayloadBytes;
+        stats.v6EventPayloadCapacityBytes = v6.eventPayloadCapacityBytes;
+        stats.v6EventContainerCapacityBytes = v6.eventContainerCapacityBytes;
+        stats.v6LapStatusCapacityBytes = v6.lapStatusCapacityBytes;
+        stats.v6ChunkWrites += v6.chunkWrites;
+        stats.v6ChunkPlainBytesProcessed += v6.chunkPlainBytesProcessed;
+        stats.v6ChunkCompressedBytesWritten += v6.chunkCompressedBytesWritten;
+        stats.v6CompressionBufferBytesAllocated += v6.compressionBufferBytesAllocated;
+        stats.v6CompressionScratchCapacityBytes = v6.compressionScratchCapacityBytes;
+        stats.v6CompressionContextBytes = v6.compressionContextBytes;
+        stats.v6LastChunkPlainBytes = v6.lastChunkPlainBytes;
+        stats.v6LastChunkCompressedBytes = v6.lastChunkCompressedBytes;
+        stats.v6LastCompressionBufferCapacityBytes = v6.lastCompressionBufferCapacityBytes;
+        stats.v6PeakCompressionBufferCapacityBytes = std::max(
+            stats.v6PeakCompressionBufferCapacityBytes,
+            v6.peakCompressionBufferCapacityBytes);
+        stats.v6CheckpointWrites += v6.checkpointWrites;
+        stats.v6CheckpointScratchBytesAllocated += v6.checkpointScratchBytesAllocated;
+        stats.v6LastCheckpointScratchBytes = v6.lastCheckpointScratchBytes;
+        stats.v6PeakCheckpointScratchBytes = std::max(
+            stats.v6PeakCheckpointScratchBytes, v6.peakCheckpointScratchBytes);
+        stats.v6LastCheckpointDirectoryBytes = v6.lastCheckpointDirectoryBytes;
+        stats.v6PeakCheckpointDirectoryBytes = std::max(
+            stats.v6PeakCheckpointDirectoryBytes, v6.peakCheckpointDirectoryBytes);
+        stats.v6LastCheckpointRowIndexBytes = v6.lastCheckpointRowIndexBytes;
+        stats.v6PeakCheckpointRowIndexBytes = std::max(
+            stats.v6PeakCheckpointRowIndexBytes, v6.peakCheckpointRowIndexBytes);
     }
     stats.retainedBytes = stats.rollingPayloadCapacityBytes +
         stats.rollingContainerCapacityBytes + stats.dedupePayloadCapacityBytes +
-        stats.v5RetainedBytes;
+        stats.v6RetainedBytes;
     {
         std::lock_guard<std::mutex> lock(memoryStatsMutex_);
         publishedMemoryStats_ = stats;
@@ -487,35 +487,35 @@ void TnrdWriter::closeActiveStreamOnWriterThread() {
     if (v6Writer_) {
         std::string err;
         if (!v6Writer_->finish(&err)) reportError("close", err, activePath_);
-        const auto v5 = v6Writer_->memoryStats();
-        closedV5Activity_.chunkWrites += v5.chunkWrites;
-        closedV5Activity_.chunkPlainBytesProcessed += v5.chunkPlainBytesProcessed;
-        closedV5Activity_.chunkCompressedBytesWritten += v5.chunkCompressedBytesWritten;
-        closedV5Activity_.compressionBufferBytesAllocated += v5.compressionBufferBytesAllocated;
-        closedV5Activity_.lastChunkPlainBytes = v5.lastChunkPlainBytes;
-        closedV5Activity_.lastChunkCompressedBytes = v5.lastChunkCompressedBytes;
-        closedV5Activity_.lastCompressionBufferCapacityBytes =
-            v5.lastCompressionBufferCapacityBytes;
-        closedV5Activity_.peakCompressionBufferCapacityBytes = std::max(
-            closedV5Activity_.peakCompressionBufferCapacityBytes,
-            v5.peakCompressionBufferCapacityBytes);
-        closedV5Activity_.checkpointWrites += v5.checkpointWrites;
-        closedV5Activity_.checkpointScratchBytesAllocated +=
-            v5.checkpointScratchBytesAllocated;
-        closedV5Activity_.lastCheckpointScratchBytes = v5.lastCheckpointScratchBytes;
-        closedV5Activity_.peakCheckpointScratchBytes = std::max(
-            closedV5Activity_.peakCheckpointScratchBytes,
-            v5.peakCheckpointScratchBytes);
-        closedV5Activity_.lastCheckpointDirectoryBytes =
-            v5.lastCheckpointDirectoryBytes;
-        closedV5Activity_.peakCheckpointDirectoryBytes = std::max(
-            closedV5Activity_.peakCheckpointDirectoryBytes,
-            v5.peakCheckpointDirectoryBytes);
-        closedV5Activity_.lastCheckpointRowIndexBytes =
-            v5.lastCheckpointRowIndexBytes;
-        closedV5Activity_.peakCheckpointRowIndexBytes = std::max(
-            closedV5Activity_.peakCheckpointRowIndexBytes,
-            v5.peakCheckpointRowIndexBytes);
+        const auto v6 = v6Writer_->memoryStats();
+        closedV6Activity_.chunkWrites += v6.chunkWrites;
+        closedV6Activity_.chunkPlainBytesProcessed += v6.chunkPlainBytesProcessed;
+        closedV6Activity_.chunkCompressedBytesWritten += v6.chunkCompressedBytesWritten;
+        closedV6Activity_.compressionBufferBytesAllocated += v6.compressionBufferBytesAllocated;
+        closedV6Activity_.lastChunkPlainBytes = v6.lastChunkPlainBytes;
+        closedV6Activity_.lastChunkCompressedBytes = v6.lastChunkCompressedBytes;
+        closedV6Activity_.lastCompressionBufferCapacityBytes =
+            v6.lastCompressionBufferCapacityBytes;
+        closedV6Activity_.peakCompressionBufferCapacityBytes = std::max(
+            closedV6Activity_.peakCompressionBufferCapacityBytes,
+            v6.peakCompressionBufferCapacityBytes);
+        closedV6Activity_.checkpointWrites += v6.checkpointWrites;
+        closedV6Activity_.checkpointScratchBytesAllocated +=
+            v6.checkpointScratchBytesAllocated;
+        closedV6Activity_.lastCheckpointScratchBytes = v6.lastCheckpointScratchBytes;
+        closedV6Activity_.peakCheckpointScratchBytes = std::max(
+            closedV6Activity_.peakCheckpointScratchBytes,
+            v6.peakCheckpointScratchBytes);
+        closedV6Activity_.lastCheckpointDirectoryBytes =
+            v6.lastCheckpointDirectoryBytes;
+        closedV6Activity_.peakCheckpointDirectoryBytes = std::max(
+            closedV6Activity_.peakCheckpointDirectoryBytes,
+            v6.peakCheckpointDirectoryBytes);
+        closedV6Activity_.lastCheckpointRowIndexBytes =
+            v6.lastCheckpointRowIndexBytes;
+        closedV6Activity_.peakCheckpointRowIndexBytes = std::max(
+            closedV6Activity_.peakCheckpointRowIndexBytes,
+            v6.peakCheckpointRowIndexBytes);
         v6Writer_.reset();
     }
     if (activeStream_) {
@@ -528,7 +528,7 @@ void TnrdWriter::closeActiveStreamOnWriterThread() {
     // Release its deque blocks and borrowed-view capacity at rotation/close so
     // the recorder itself does not pin that session's high-water allocation.
     std::deque<BufferEntry>().swap(rollingBuffer_);
-    std::vector<std::pair<std::string_view, float>>().swap(v5SourceRowViews_);
+    std::vector<std::pair<std::string_view, float>>().swap(v6SourceRowViews_);
     currentTrackId_     = -1;
     currentSessionType_ = -1;
     activePath_.clear();
@@ -608,33 +608,33 @@ bool TnrdWriter::flushBufferToDisk(size_t entryCount, bool allowV4Checkpoint) {
     entryCount = std::min(entryCount, rollingBuffer_.size());
     if (v6Writer_) {
         if (entryCount == 0) return true;
-        v5SourceRowViews_.clear();
-        v5SourceRowViews_.reserve(entryCount);
+        v6SourceRowViews_.clear();
+        v6SourceRowViews_.reserve(entryCount);
         size_t payloadBytes = 0;
         for (size_t index = 0; index < entryCount; ++index) {
             const auto& e = rollingBuffer_[index];
-            v5SourceRowViews_.emplace_back(e.line, e.sessionTime);
+            v6SourceRowViews_.emplace_back(e.line, e.sessionTime);
             payloadBytes += e.line.size();
         }
-        ++v5AppendBatches_;
-        v5AppendRowsProcessed_ += entryCount;
-        v5AppendPayloadBytesProcessed_ += payloadBytes;
-        lastV5AppendRows_ = entryCount;
-        lastV5AppendPayloadBytes_ = payloadBytes;
-        lastV5SourceRowCapacityBytes_ = v5SourceRowViews_.capacity() *
+        ++v6AppendBatches_;
+        v6AppendRowsProcessed_ += entryCount;
+        v6AppendPayloadBytesProcessed_ += payloadBytes;
+        lastV6AppendRows_ = entryCount;
+        lastV6AppendPayloadBytes_ = payloadBytes;
+        lastV6SourceRowCapacityBytes_ = v6SourceRowViews_.capacity() *
             sizeof(std::pair<std::string_view, float>);
-        peakV5AppendRows_ = std::max(peakV5AppendRows_, lastV5AppendRows_);
-        peakV5AppendPayloadBytes_ = std::max(
-            peakV5AppendPayloadBytes_, lastV5AppendPayloadBytes_);
-        peakV5SourceRowCapacityBytes_ = std::max(
-            peakV5SourceRowCapacityBytes_, lastV5SourceRowCapacityBytes_);
+        peakV6AppendRows_ = std::max(peakV6AppendRows_, lastV6AppendRows_);
+        peakV6AppendPayloadBytes_ = std::max(
+            peakV6AppendPayloadBytes_, lastV6AppendPayloadBytes_);
+        peakV6SourceRowCapacityBytes_ = std::max(
+            peakV6SourceRowCapacityBytes_, lastV6SourceRowCapacityBytes_);
         std::string err;
-        if (!v6Writer_->appendViews(v5SourceRowViews_, &err)) {
-            v5SourceRowViews_.clear();
+        if (!v6Writer_->appendViews(v6SourceRowViews_, &err)) {
+            v6SourceRowViews_.clear();
             reportError("data write", err, activePath_);
             return false;
         }
-        v5SourceRowViews_.clear();
+        v6SourceRowViews_.clear();
         const float newestTime = rollingBuffer_[entryCount - 1].sessionTime;
         if (allowV4Checkpoint && (v4LastCheckpointTime_ < 0.0f ||
             newestTime - v4LastCheckpointTime_ >= V4_CHECKPOINT_INTERVAL_S)) {

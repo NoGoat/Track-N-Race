@@ -39,6 +39,10 @@ public slots:
 
 protected:
     void showEvent(QShowEvent* event) override;
+    // Electron AnalyzeTimeChart's own tooltip: lap time/distance header, a
+    // "<label> · L<n>" section per lap and the delta row; stacked graphs list
+    // only the hovered graph unless the synced tooltip is on.
+    bool customTooltip(int panelId, double key, TooltipContent& out) const override;
 
 private:
     struct Handles { int current=-1, comparison=-1; };
@@ -77,6 +81,14 @@ private:
     double mapCursorElapsed_ = 0.0;
     QColor mapCurrentColor_{"#5794F2"};
     QColor mapComparisonColor_{"#C4162A"};
+
+    // Hover state captured by refresh() for customTooltip().
+    int primaryLapNum_ = 0;          // 0: no current lap (Electron prints "L—")
+    int comparisonLapNum_ = -1;      // -1: no comparison lap
+    bool showDelta_ = false;
+    QColor deltaPositive_{"#C4162A"};
+    QColor deltaNegative_{"#37872D"};
+    QString metricForPanel(int panelId) const;
 
     void requestRefresh();
     void refresh();

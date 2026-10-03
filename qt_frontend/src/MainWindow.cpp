@@ -164,7 +164,7 @@ static bool looksMaximized(const QRect& g, const QScreen* s) {
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    setWindowTitle("Track N Race Background Recorder");
+    setWindowTitle("Track N Race - Qt");
     setMinimumSize(1200, 700);  // match the Electron frontend's minimum window size
     // Restore the last windowed size/position, then maximize directly if we were
     // closed maximized — setting the state before the first show maps the window
@@ -693,7 +693,7 @@ MainWindow::MainWindow(QWidget* parent)
         playbackSparseRebuildPending_ = false;
         strategyRebuilding_ = false;
         dirtyStrategy_ = true;
-        setWindowTitle("Track N Race Background Recorder");
+        setWindowTitle("Track N Race - Qt");
     });
 
     // ── Telemetry engine (libtnrp) ────────────────────────────────────────
@@ -1404,18 +1404,35 @@ void MainWindow::setMemoryLogEnabled(bool on) {
 }
 
 QJsonObject MainWindow::memoryDiagnosticsSnapshot() const {
+    // Same split as Electron's ram_usage.log telemetry_data: "main" is the
+    // native engine side, "renderer" is what the UI holds (session model and
+    // chart buffers). Diagnostics wraps this into the shared sample layout.
     const auto number = [](auto value) { return static_cast<double>(value); };
-    QJsonObject snapshot;
-    snapshot["sampled_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
-    snapshot["mode"] = inPlayback_ ? QStringLiteral("playback")
-                                    : QStringLiteral("realtime");
-    snapshot["renderer_visible"] = renderingActive_;
-    snapshot["active_page"] = static_cast<int>(currentPage_);
+    const QString sampledAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    const QString mode = inPlayback_ ? QStringLiteral("playback")
+                                     : QStringLiteral("realtime");
 
+    QJsonObject renderer;
+    renderer["sampled_at"] = sampledAt;
+    renderer["mode"] = mode;
+    renderer["active_page"] = static_cast<int>(currentPage_);
     const QJsonObject session = model_ ? model_->retentionDiagnostics() : QJsonObject{};
-    snapshot["session_model"] = session;
-    quint64 retainedBytes = static_cast<quint64>(
-        session.value("estimated_retained_bytes").toDouble());
+    renderer["session_model"] = session;
+    const QJsonObject charts = ChartView::retentionDiagnostics();
+    renderer["chart_buffers"] = charts;
+    const quint64 rendererBytes =
+        static_cast<quint64>(session.value("estimated_retained_bytes").toDouble()) +
+        static_cast<quint64>(charts.value("cpu_bytes").toDouble()) +
+        static_cast<quint64>(charts.value("gpu_buffer_bytes").toDouble());
+    renderer["estimated_retained_bytes"] = number(rendererBytes);
+    renderer["estimate_basis"] = QStringLiteral(
+        "session-model QVector/QHash allocated capacity, chart series sample capacity and staging caches; QRhi buffer sizes are exact");
+
+    QJsonObject snapshot;
+    snapshot["sampled_at"] = sampledAt;
+    snapshot["mode"] = mode;
+    snapshot["renderer_visible"] = renderingActive_;
+    quint64 retainedBytes = 0;
 
     if (engine_) {
         const auto runtime = engine_->runtimeMemoryStats();
@@ -1433,7 +1450,7 @@ QJsonObject MainWindow::memoryDiagnosticsSnapshot() const {
         runtimeJson["datagrams_processed"] = number(runtime.datagramsProcessed);
         runtimeJson["parser_rows_produced"] = number(runtime.parserRowsProduced);
         runtimeJson["parser_binary_bytes_produced"] = number(runtime.parserBinaryBytesProduced);
-        snapshot["engine_runtime"] = runtimeJson;
+        snapshot["native_engine_runtime"] = runtimeJson;
 
         QJsonObject historyJson;
         historyJson["retained_bytes"] = number(history.retainedBytes);
@@ -1445,7 +1462,7 @@ QJsonObject MainWindow::memoryDiagnosticsSnapshot() const {
         historyJson["json_payload_capacity_bytes"] = number(history.jsonPayloadCapacityBytes);
         historyJson["compressed_capacity_bytes"] = number(history.compressedCapacityBytes);
         historyJson["queued_jobs"] = number(history.queuedJobs);
-        snapshot["engine_live_history"] = historyJson;
+        snapshot["native_live_history"] = historyJson;
 
         QJsonObject strategyJson;
         strategyJson["subscribed"] = strategy.subscribed;
@@ -1457,7 +1474,7 @@ QJsonObject MainWindow::memoryDiagnosticsSnapshot() const {
         strategyJson["active_retained_bytes"] = number(strategy.activeRetainedBytes);
         strategyJson["processor_retained_bytes"] = number(strategy.processor.retainedBytes);
         strategyJson["rollback_retained_bytes"] = number(strategy.rollback.retainedBytes);
-        snapshot["engine_strategy"] = strategyJson;
+        snapshot["native_strategy"] = strategyJson;
 
         QJsonObject writerJson;
         writerJson["stream_active"] = writer.streamActive;
@@ -1467,7 +1484,7 @@ QJsonObject MainWindow::memoryDiagnosticsSnapshot() const {
         writerJson["rolling_entries"] = number(writer.rollingEntries);
         writerJson["rolling_payload_bytes"] = number(writer.rollingPayloadBytes);
         writerJson["rolling_payload_capacity_bytes"] = number(writer.rollingPayloadCapacityBytes);
-        snapshot["recording_writer"] = writerJson;
+        snapshot["native_recording_writer"] = writerJson;
 
         retainedBytes += static_cast<quint64>(runtime.retainedBytes) +
             static_cast<quint64>(history.retainedBytes) +
@@ -1475,11 +1492,18 @@ QJsonObject MainWindow::memoryDiagnosticsSnapshot() const {
             static_cast<quint64>(writer.retainedBytes);
     }
 
-    snapshot["estimated_retained_bytes"] = number(retainedBytes);
+    snapshot["retained_bytes"] = number(retainedBytes);
     snapshot["byte_basis"] = QStringLiteral(
-        "Qt session-model allocated capacity plus native engine-cache, live-history, strategy, and recording-writer retained capacity; already included in process totals");
-    snapshot["already_included_in_process_totals"] = true;
-    return snapshot;
+        "estimated native engine-cache, live-history, Strategy, and recording-writer allocation capacity; parser and writer activity counters are reported separately");
+
+    QJsonObject result;
+    result["mode"] = mode;
+    result["attribution_scope"] = QStringLiteral(
+        "Qt session model, chart CPU samples/staging and QRhi GPU buffers, native engine-cache/recording-writer/Strategy allocation capacity, and native live-history allocation capacity; "
+        "parser/writer activity counters and native allocator counters are reported separately from retained totals");
+    result["main"] = snapshot;
+    result["renderer"] = renderer;
+    return result;
 }
 
 void MainWindow::logAdditionalDiagnostics(const QString& reason) {

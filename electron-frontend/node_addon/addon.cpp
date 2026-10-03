@@ -16,6 +16,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -402,6 +403,7 @@ public:
             InstanceMethod("playerGetAllLapsData", &TNRPAddon::PlayerGetAllLapsData),
             InstanceMethod("playerGetWindowData", &TNRPAddon::PlayerGetWindowData),
             InstanceMethod("playerClose", &TNRPAddon::PlayerClose),
+            InstanceMethod("setHostVisible", &TNRPAddon::SetHostVisible),
             InstanceMethod("analysisLoadFile", &TNRPAddon::AnalysisLoadFile),
             InstanceMethod("analysisGetLapData", &TNRPAddon::AnalysisGetLapData),
             InstanceMethod("analysisCompareLaps", &TNRPAddon::AnalysisCompareLaps),
@@ -670,6 +672,27 @@ public:
                      float currentLapStart, int lapNum, bool allHistory,
                      uint64_t requestId, bool authoritativeSeek,
                      uint32_t rowTypeMask, float historyStart) override {
+        postSeekFlush(std::move(binStore), binBegin, binEnd, std::move(coldJson),
+                      currentLapStart, lapNum, allHistory, requestId,
+                      authoritativeSeek, rowTypeMask, historyStart, std::nullopt);
+    }
+
+    // A host restore travels the seek-flush channel as an additive payload,
+    // with its replace ranges in a trailing object argument.
+    void onRestoreFlush(std::shared_ptr<const std::vector<uint8_t>> binStore,
+                        size_t binBegin, size_t binEnd, std::string&& coldJson,
+                        const tnrp::Sink::RestoreFlushInfo& info) override {
+        postSeekFlush(std::move(binStore), binBegin, binEnd, std::move(coldJson),
+                      info.currentLapStart, info.lapNum, false, 0, false,
+                      info.rowTypeMask, info.chartFrom, info);
+    }
+
+    void postSeekFlush(std::shared_ptr<const std::vector<uint8_t>> binStore,
+                       size_t binBegin, size_t binEnd, std::string&& coldJson,
+                       float currentLapStart, int lapNum, bool allHistory,
+                       uint64_t requestId, bool authoritativeSeek,
+                       uint32_t rowTypeMask, float historyStart,
+                       std::optional<tnrp::Sink::RestoreFlushInfo> restore) {
         if (!hasSeekCb_) return;
         struct SeekData {
             std::shared_ptr<const std::vector<uint8_t>> binStore;
@@ -685,6 +708,7 @@ public:
             bool authoritativeSeek;
             uint32_t rowTypeMask;
             float historyStart;
+            std::optional<tnrp::Sink::RestoreFlushInfo> restore;
             bool reportExceptions;
             std::shared_ptr<FlushState> json;
             Napi::ThreadSafeFunction jsonTsfn;
@@ -698,7 +722,7 @@ public:
         auto* d = new SeekData{ std::move(binStore), binBegin, binEnd, std::move(coldJson),
                                 seekFlushBytes_, retainedBytes,
                                 currentLapStart, lapNum, allHistory, requestId,
-                                authoritativeSeek, rowTypeMask, historyStart,
+                                authoritativeSeek, rowTypeMask, historyStart, restore,
                                 nativeExceptionReporting_->load(std::memory_order_relaxed),
                                 flush_, tsfn };
         {
@@ -719,6 +743,17 @@ public:
                                 env, d->binStore->data() + d->binBegin, len);
                         stage = "creating the cold JSON string";
                         auto cold = Napi::String::New(env, d->cold);
+                        stage = "creating the restore ranges";
+                        Napi::Value restore = env.Undefined();
+                        if (d->restore) {
+                            auto object = Napi::Object::New(env);
+                            object.Set("chartFrom", Napi::Number::New(env, d->restore->chartFrom));
+                            object.Set("includesEvents", Napi::Boolean::New(env, d->restore->includesEvents));
+                            object.Set("eventsFrom", Napi::Number::New(env, d->restore->eventsFrom));
+                            object.Set("through", Napi::Number::New(env, d->restore->through));
+                            object.Set("sessionChanged", Napi::Boolean::New(env, d->restore->sessionChanged));
+                            restore = object;
+                        }
                         stage = "calling the JavaScript seek callback";
                         cb.Call({ buffer,
                                   cold,
@@ -728,7 +763,9 @@ public:
                                   Napi::Number::New(env, static_cast<double>(d->requestId)),
                                   Napi::Boolean::New(env, d->authoritativeSeek),
                                   Napi::Number::New(env, d->rowTypeMask),
-                                  Napi::Number::New(env, d->historyStart) });
+                                  Napi::Number::New(env, d->historyStart),
+                                  env.Undefined(),
+                                  restore });
                     } catch (const Napi::Error& error) {
                         if (!d->reportExceptions) {
                             unreportedException = std::current_exception();
@@ -1355,7 +1392,7 @@ private:
         writerStats.Set("stream_active", Napi::Boolean::New(info.Env(), writer.streamActive));
         writerStats.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.retainedBytes)));
         writerStats.Set("estimate_basis", Napi::String::New(info.Env(),
-            "queued event object/payload allocation plus rolling, dedupe, V5 builder, reusable compression scratch, chunk-index, branch, event, and lap-status capacities; transient activity is reported separately; allocator and map/deque node overhead excluded"));
+            "queued event object/payload allocation plus rolling, dedupe, V6 builder, reusable compression scratch, chunk-index, branch, event, and lap-status capacities; transient activity is reported separately; allocator and map/deque node overhead excluded"));
         writerStats.Set("queued_events", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedEvents)));
         writerStats.Set("queued_retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedRetainedBytes)));
         writerStats.Set("queued_record_events", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedRecordEvents)));
@@ -1384,16 +1421,16 @@ private:
         writerStats.Set("rolling_buffer", rolling);
 
         Napi::Object appendActivity = Napi::Object::New(info.Env());
-        appendActivity.Set("batches", Napi::Number::New(info.Env(), static_cast<double>(writer.v5AppendBatches)));
-        appendActivity.Set("rows_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.v5AppendRowsProcessed)));
-        appendActivity.Set("payload_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.v5AppendPayloadBytesProcessed)));
-        appendActivity.Set("last_rows", Napi::Number::New(info.Env(), static_cast<double>(writer.lastV5AppendRows)));
-        appendActivity.Set("last_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.lastV5AppendPayloadBytes)));
-        appendActivity.Set("last_source_row_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.lastV5SourceRowCapacityBytes)));
-        appendActivity.Set("peak_rows", Napi::Number::New(info.Env(), static_cast<double>(writer.peakV5AppendRows)));
-        appendActivity.Set("peak_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.peakV5AppendPayloadBytes)));
-        appendActivity.Set("peak_source_row_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.peakV5SourceRowCapacityBytes)));
-        writerStats.Set("v5_append_activity", appendActivity);
+        appendActivity.Set("batches", Napi::Number::New(info.Env(), static_cast<double>(writer.v6AppendBatches)));
+        appendActivity.Set("rows_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.v6AppendRowsProcessed)));
+        appendActivity.Set("payload_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.v6AppendPayloadBytesProcessed)));
+        appendActivity.Set("last_rows", Napi::Number::New(info.Env(), static_cast<double>(writer.lastV6AppendRows)));
+        appendActivity.Set("last_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.lastV6AppendPayloadBytes)));
+        appendActivity.Set("last_source_row_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.lastV6SourceRowCapacityBytes)));
+        appendActivity.Set("peak_rows", Napi::Number::New(info.Env(), static_cast<double>(writer.peakV6AppendRows)));
+        appendActivity.Set("peak_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.peakV6AppendPayloadBytes)));
+        appendActivity.Set("peak_source_row_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.peakV6SourceRowCapacityBytes)));
+        writerStats.Set("v6_append_activity", appendActivity);
 
         Napi::Object dedupe = Napi::Object::New(info.Env());
         dedupe.Set("entries", Napi::Number::New(info.Env(), static_cast<double>(writer.dedupeEntries)));
@@ -1401,49 +1438,49 @@ private:
         dedupe.Set("payload_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.dedupePayloadCapacityBytes)));
         writerStats.Set("dedupe_cache", dedupe);
 
-        Napi::Object v5 = Napi::Object::New(info.Env());
-        v5.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5RetainedBytes)));
-        v5.Set("builders", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BuilderCount)));
-        v5.Set("builder_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BuilderPlainBytes)));
-        v5.Set("builder_plain_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BuilderPlainCapacityBytes)));
-        v5.Set("builder_row_index_entries", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BuilderRowIndexEntries)));
-        v5.Set("builder_row_index_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BuilderRowIndexCapacityBytes)));
-        v5.Set("chunks", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkCount)));
-        v5.Set("chunk_container_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkContainerCapacityBytes)));
-        v5.Set("chunk_row_index_entries", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkRowIndexEntries)));
-        v5.Set("chunk_row_index_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkRowIndexCapacityBytes)));
-        v5.Set("branches", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BranchCount)));
-        v5.Set("branch_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BranchCapacityBytes)));
-        v5.Set("laps", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LapCount)));
-        v5.Set("status_laps", Napi::Number::New(info.Env(), static_cast<double>(writer.v5StatusLapCount)));
-        v5.Set("events", Napi::Number::New(info.Env(), static_cast<double>(writer.v5EventCount)));
-        v5.Set("event_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5EventPayloadBytes)));
-        v5.Set("event_payload_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5EventPayloadCapacityBytes)));
-        v5.Set("event_container_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5EventContainerCapacityBytes)));
-        v5.Set("lap_status_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LapStatusCapacityBytes)));
+        Napi::Object v6 = Napi::Object::New(info.Env());
+        v6.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6RetainedBytes)));
+        v6.Set("builders", Napi::Number::New(info.Env(), static_cast<double>(writer.v6BuilderCount)));
+        v6.Set("builder_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6BuilderPlainBytes)));
+        v6.Set("builder_plain_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6BuilderPlainCapacityBytes)));
+        v6.Set("builder_row_index_entries", Napi::Number::New(info.Env(), static_cast<double>(writer.v6BuilderRowIndexEntries)));
+        v6.Set("builder_row_index_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6BuilderRowIndexCapacityBytes)));
+        v6.Set("chunks", Napi::Number::New(info.Env(), static_cast<double>(writer.v6ChunkCount)));
+        v6.Set("chunk_container_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6ChunkContainerCapacityBytes)));
+        v6.Set("chunk_row_index_entries", Napi::Number::New(info.Env(), static_cast<double>(writer.v6ChunkRowIndexEntries)));
+        v6.Set("chunk_row_index_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6ChunkRowIndexCapacityBytes)));
+        v6.Set("branches", Napi::Number::New(info.Env(), static_cast<double>(writer.v6BranchCount)));
+        v6.Set("branch_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6BranchCapacityBytes)));
+        v6.Set("laps", Napi::Number::New(info.Env(), static_cast<double>(writer.v6LapCount)));
+        v6.Set("status_laps", Napi::Number::New(info.Env(), static_cast<double>(writer.v6StatusLapCount)));
+        v6.Set("events", Napi::Number::New(info.Env(), static_cast<double>(writer.v6EventCount)));
+        v6.Set("event_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6EventPayloadBytes)));
+        v6.Set("event_payload_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6EventPayloadCapacityBytes)));
+        v6.Set("event_container_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6EventContainerCapacityBytes)));
+        v6.Set("lap_status_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6LapStatusCapacityBytes)));
         Napi::Object compressionActivity = Napi::Object::New(info.Env());
-        compressionActivity.Set("chunk_writes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkWrites)));
-        compressionActivity.Set("plain_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkPlainBytesProcessed)));
-        compressionActivity.Set("compressed_bytes_written", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkCompressedBytesWritten)));
-        compressionActivity.Set("buffer_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(writer.v5CompressionBufferBytesAllocated)));
-        compressionActivity.Set("retained_scratch_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5CompressionScratchCapacityBytes)));
-        compressionActivity.Set("retained_context_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5CompressionContextBytes)));
-        compressionActivity.Set("last_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastChunkPlainBytes)));
-        compressionActivity.Set("last_compressed_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastChunkCompressedBytes)));
-        compressionActivity.Set("last_buffer_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastCompressionBufferCapacityBytes)));
-        compressionActivity.Set("peak_buffer_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5PeakCompressionBufferCapacityBytes)));
-        v5.Set("compression_activity", compressionActivity);
+        compressionActivity.Set("chunk_writes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6ChunkWrites)));
+        compressionActivity.Set("plain_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.v6ChunkPlainBytesProcessed)));
+        compressionActivity.Set("compressed_bytes_written", Napi::Number::New(info.Env(), static_cast<double>(writer.v6ChunkCompressedBytesWritten)));
+        compressionActivity.Set("buffer_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(writer.v6CompressionBufferBytesAllocated)));
+        compressionActivity.Set("retained_scratch_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6CompressionScratchCapacityBytes)));
+        compressionActivity.Set("retained_context_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6CompressionContextBytes)));
+        compressionActivity.Set("last_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6LastChunkPlainBytes)));
+        compressionActivity.Set("last_compressed_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6LastChunkCompressedBytes)));
+        compressionActivity.Set("last_buffer_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6LastCompressionBufferCapacityBytes)));
+        compressionActivity.Set("peak_buffer_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6PeakCompressionBufferCapacityBytes)));
+        v6.Set("compression_activity", compressionActivity);
         Napi::Object checkpointActivity = Napi::Object::New(info.Env());
-        checkpointActivity.Set("writes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5CheckpointWrites)));
-        checkpointActivity.Set("scratch_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(writer.v5CheckpointScratchBytesAllocated)));
-        checkpointActivity.Set("last_scratch_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastCheckpointScratchBytes)));
-        checkpointActivity.Set("peak_scratch_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5PeakCheckpointScratchBytes)));
-        checkpointActivity.Set("last_directory_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastCheckpointDirectoryBytes)));
-        checkpointActivity.Set("peak_directory_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5PeakCheckpointDirectoryBytes)));
-        checkpointActivity.Set("last_row_index_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastCheckpointRowIndexBytes)));
-        checkpointActivity.Set("peak_row_index_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5PeakCheckpointRowIndexBytes)));
-        v5.Set("checkpoint_activity", checkpointActivity);
-        writerStats.Set("v5", v5);
+        checkpointActivity.Set("writes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6CheckpointWrites)));
+        checkpointActivity.Set("scratch_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(writer.v6CheckpointScratchBytesAllocated)));
+        checkpointActivity.Set("last_scratch_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6LastCheckpointScratchBytes)));
+        checkpointActivity.Set("peak_scratch_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6PeakCheckpointScratchBytes)));
+        checkpointActivity.Set("last_directory_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6LastCheckpointDirectoryBytes)));
+        checkpointActivity.Set("peak_directory_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6PeakCheckpointDirectoryBytes)));
+        checkpointActivity.Set("last_row_index_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6LastCheckpointRowIndexBytes)));
+        checkpointActivity.Set("peak_row_index_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v6PeakCheckpointRowIndexBytes)));
+        v6.Set("checkpoint_activity", checkpointActivity);
+        writerStats.Set("v6", v6);
         result.Set("writer", writerStats);
         return result;
     }
@@ -1658,6 +1695,21 @@ private:
             const uint32_t rowTypeMask = info.Length() >= 2 && info[1].IsNumber()
                 ? info[1].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
             (new PlayerHistoryWorker(info.Env(), engine, requestId, rowTypeMask))->Queue();
+        }
+        return info.Env().Undefined();
+    }
+
+    // Showing may read the recording, so both edges run off the JS thread;
+    // the sequence lets the engine ignore an edge that arrives late.
+    Napi::Value SetHostVisible(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 2 && info[0].IsBoolean() && info[1].IsNumber()) {
+            const bool visible = info[0].As<Napi::Boolean>().Value();
+            const uint64_t sequence =
+                static_cast<uint64_t>(info[1].As<Napi::Number>().Int64Value());
+            auto target = engine;
+            (new EngineCallWorker(info.Env(), [target, visible, sequence] {
+                target->setHostVisible(visible, sequence);
+            }))->Queue();
         }
         return info.Env().Undefined();
     }

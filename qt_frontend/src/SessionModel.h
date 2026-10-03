@@ -84,6 +84,10 @@ struct SessionData {
     // Fuel chart ceiling (kg), as Electron: live = highest fuel seen + 1,
     // playback = the recording's initial fuel + 1. <= 0 means unknown.
     float fuelUpperLimit = -1;
+    // Live only: S1/S2 boundaries learned from completed laps. Sector positions
+    // are track geometry, so once known they stay fixed for the whole session
+    // instead of being rediscovered (and missing) at the start of every lap.
+    QVector<LapProgressSample> sessionSectorSplits;
     bool  trimBuffers   = true;    // source histories use Electron's 750,000-row cap
 
     void onTelemetry(float t, float speed, float rpm, float gear, float throttle, float brake, float steering);
@@ -116,6 +120,7 @@ struct SessionData {
     double distanceAtTime(const LapBlock* lap, float t) const;
     double timeAtDistance(const LapBlock* lap, double distance) const;
     QVector<LapProgressSample> sectorSplits(const LapBlock* lap) const;
+    void learnSessionSectorSplits(const LapBlock& lap);
 
 private:
     void finalizeCurrentLap(int lastLapMs);

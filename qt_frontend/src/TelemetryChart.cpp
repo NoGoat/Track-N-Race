@@ -36,7 +36,7 @@ TelemetryChart::TelemetryChart(QWidget* parent)
     : ChartView(parent)
 {
     axXId_      = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0, true });
-    int axSpeed = addAxis({ Side::Left,   0.0, MAX_SPEED, C_SPEED, true,  'f', 0 });
+    int axSpeed = addAxis({ Side::Left,   0.0, MAX_SPEED, C_SPEED, true,  'f', 0, true });  // SpeedRpmTimeChart showYGrid
     int axRpm   = addAxis({ Side::Right,  0.0, MAX_RPM,   C_RPM,   true,  'f', 0 });
     int axErs   = addAxis({ Side::Right,  0.0, 100.0,     C_ERS,   true,  'f', 0 });
 
@@ -49,7 +49,7 @@ TelemetryChart::TelemetryChart(QWidget* parent)
     rErId_ = addSeries({ "",      muted(C_ERS),   1.0, axXId_, axErs,   "",    0, false, false, QColor(), false });
     rRpId_ = addSeries({ "",      muted(C_RPM),   1.0, axXId_, axRpm   });
     rSpId_ = addSeries({ "",      muted(C_SPEED), 1.0, axXId_, axSpeed });
-    erId_  = addSeries({ "ERS",   C_ERS,   1.5, axXId_, axErs,   "%",   1, false, false, QColor(), false });
+    erId_  = addSeries({ "ERS",   C_ERS,   1.5, axXId_, axErs,   "%",   0, false, false, QColor(), false });
     rpId_  = addSeries({ "RPM",   C_RPM,   1.5, axXId_, axRpm,   "",    0, true  });
     spId_  = addSeries({ "Speed", C_SPEED, 1.5, axXId_, axSpeed, "kph", 0, false });
 

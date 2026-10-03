@@ -223,7 +223,7 @@ function writeRamUsageSample(): void {
       estimated_retained_kb: estimatedRetainedBytes / 1024,
       already_included_in_process_totals: true,
       attribution_scope: 'Electron telemetry stores, published views, chart CPU/GPU pages, ' +
-        'seek/resume buffers, native transit queues, native engine-cache/recording-writer/Strategy allocation capacity, and native live-history allocation capacity; ' +
+        'seek buffers, native transit queues, native engine-cache/recording-writer/Strategy allocation capacity, and native live-history allocation capacity; ' +
         'parser/transit/writer/Strategy allocation churn and Node/V8 heap counters are reported separately from retained totals',
       renderer_sample_age_ms: Number.isFinite(rendererSampledAt)
         ? Math.max(0, Date.now() - rendererSampledAt)

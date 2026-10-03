@@ -154,6 +154,9 @@ struct LiveHistoryStore::Impl {
         float through{};
         BackfillCallback callback;
         uint64_t generation{};
+        // Multi-range requests; empty for single-range and lap jobs.
+        std::vector<RangeSpec> ranges;
+        std::function<void()> onStale;
     };
 
     mutable std::mutex stateMutex;
@@ -380,6 +383,66 @@ struct LiveHistoryStore::Impl {
         return output;
     }
 
+    // Newest row of a JSON family with session_time strictly before `before`,
+    // or empty. Laps are searched newest first and skipped once they start at
+    // or after `before`.
+    static std::string latestJsonBefore(
+        const std::vector<std::shared_ptr<LapSegment>>& segments,
+        uint8_t type, float before) {
+        if (type >= 16 || isPacked(type)) return {};
+        for (auto it = segments.rbegin(); it != segments.rend(); ++it) {
+            const auto& lap = *it;
+            std::lock_guard<std::mutex> lock(lap->mutex);
+            if (lap->start >= before) continue;
+            const auto& family = lap->families[type];
+            if (family.compressed.empty()) {
+                for (auto row = family.json.rbegin(); row != family.json.rend(); ++row)
+                    if (row->json && row->sessionTime < before) return *row->json;
+                continue;
+            }
+            std::vector<uint8_t> plain;
+            if (!decompress(family, plain)) continue;
+            std::vector<LiveHistoryJsonRow> rows;
+            std::string ignored;
+            appendJsonLines(plain.data(), plain.size(),
+                            -std::numeric_limits<float>::infinity(), before,
+                            ignored, &rows);
+            for (auto row = rows.rbegin(); row != rows.rend(); ++row)
+                if (row->json && row->sessionTime < before) return *row->json;
+        }
+        return {};
+    }
+
+    static LiveHistoryBackfill gatherRanges(
+        const std::vector<std::shared_ptr<LapSegment>>& segments,
+        const std::vector<RangeSpec>& ranges, float through) {
+        LiveHistoryBackfill output;
+        for (const auto& range : ranges) {
+            if (range.familyMask == 0) continue;
+            // Seeds precede their family's range rows, keeping each family in
+            // time order.
+            for (uint8_t type = 1; type < 16; ++type) {
+                if (!(range.seedMask & range.familyMask & (1u << type))) continue;
+                std::string seed = latestJsonBefore(segments, type, range.fromSessionTime);
+                if (seed.empty()) continue;
+                if (!output.json.empty()) output.json.push_back('\n');
+                output.json += seed;
+            }
+            auto part = gather(segments, range.familyMask,
+                               range.fromSessionTime, through);
+            if (part.binary) {
+                if (!output.binary) output.binary = std::move(part.binary);
+                else output.binary->insert(output.binary->end(),
+                                           part.binary->begin(), part.binary->end());
+            }
+            if (!part.json.empty()) {
+                if (!output.json.empty()) output.json.push_back('\n');
+                output.json += part.json;
+            }
+        }
+        return output;
+    }
+
     void run() {
         for (;;) {
             Job job;
@@ -412,7 +475,9 @@ struct LiveHistoryStore::Impl {
             }
             activeJobKind.store(3, std::memory_order_relaxed);
             rangeJobs.fetch_add(1, std::memory_order_relaxed);
-            auto result = gather(job.laps, job.mask, job.from, job.through);
+            auto result = job.ranges.empty()
+                ? gather(job.laps, job.mask, job.from, job.through)
+                : gatherRanges(job.laps, job.ranges, job.through);
             bool currentGeneration = false;
             {
                 std::lock_guard<std::mutex> lock(stateMutex);
@@ -420,6 +485,8 @@ struct LiveHistoryStore::Impl {
             }
             if (currentGeneration && job.callback)
                 job.callback(std::move(result));
+            else if (!currentGeneration && job.onStale)
+                job.onStale();
             activeJobKind.store(0, std::memory_order_relaxed);
         }
     }
@@ -762,6 +829,25 @@ void LiveHistoryStore::requestRange(uint32_t familyMask, float fromSessionTime,
     job.from = fromSessionTime;
     job.through = throughSessionTime;
     job.callback = std::move(callback);
+    {
+        std::lock_guard<std::mutex> lock(impl_->stateMutex);
+        job.generation = impl_->generation;
+        for (const auto& [_, lap] : impl_->laps) job.laps.push_back(lap);
+    }
+    impl_->enqueue(std::move(job));
+}
+
+void LiveHistoryStore::requestRanges(std::vector<RangeSpec> ranges,
+                                     float throughSessionTime,
+                                     BackfillCallback callback,
+                                     std::function<void()> onStale) {
+    Impl::Job job;
+    job.kind = Impl::JobKind::Range;
+    for (auto& range : ranges) range.familyMask &= kRangeHistoricalMask;
+    job.ranges = std::move(ranges);
+    job.through = throughSessionTime;
+    job.callback = std::move(callback);
+    job.onStale = std::move(onStale);
     {
         std::lock_guard<std::mutex> lock(impl_->stateMutex);
         job.generation = impl_->generation;

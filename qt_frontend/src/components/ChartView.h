@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QColor>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -71,6 +72,31 @@ public:
         QColor  color;
     };
 
+    // Hover tooltip content, drawn by ChartView itself. Each line mirrors one
+    // Electron tooltip <div>: coloured runs of text, CSS-style margins (adjacent
+    // margins collapse), an optional 1 px separator above it (border-top plus
+    // padding-top) and an opacity for the faded comparison-lap section. A run
+    // with an invalid colour uses the tooltip text colour.
+    struct TooltipRun {
+        QString text; QColor color;
+        bool operator==(const TooltipRun&) const = default;
+    };
+    struct TooltipLine {
+        QVector<TooltipRun> runs;
+        int pixelSize = 12;
+        qreal opacity = 1.0;
+        int marginTop = 0, marginBottom = 0;
+        bool ruleAbove = false;
+        int paddingTop = 0;
+        bool operator==(const TooltipLine&) const = default;
+    };
+    using TooltipContent = QVector<TooltipLine>;
+    // Electron's tooltip building blocks: a plain coloured line, a
+    // "<coloured name>: value" row, and formatChartDeltaTooltip's delta row.
+    static TooltipLine tooltipTextLine(const QString& text, const QColor& color);
+    static TooltipLine tooltipValueLine(const QString& name, const QColor& nameColor, const QString& value);
+    static TooltipLine tooltipDeltaLine(double deltaSeconds, const QColor& positive, const QColor& negative);
+
     struct CursorGuide {
         double x = 0.0;
         QColor color;
@@ -84,6 +110,10 @@ public:
     // MSAA can be reapplied live; switching the process-wide RHI backend takes
     // effect on restart because Qt fixes one API per top-level window.
     static void reapplyRenderSettings();
+
+    // Memory-log snapshot across every live chart: retained series samples,
+    // CPU staging caches, and allocated QRhi buffer bytes (GUI thread only).
+    static QJsonObject retentionDiagnostics();
 
     // Kept for the existing live style-change call site. QRhiWidget resources do
     // no longer needs a backend-specific pre-repolish teardown.
@@ -119,7 +149,8 @@ public:
     void setPanelLegendVisible(int panelId, bool on);
     void setPanelNote(int panelId, const QString& note);   // muted text after the colour key
     void bindPanelChartSettings(int panelId, SessionModel* model, tnr::GraphSection section);
-    // Extra tooltip rows for a panel (e.g. Electron's "Total: 412.3 kW"). The
+    // Extra tooltip row for a panel (e.g. Electron's "Total: 412.3 kW"), as
+    // plain text drawn in the muted axis colour; empty adds nothing. The
     // callback receives the value of every named series in the panel, in
     // creation order (NaN where a series has no sample at the cursor). It is
     // also applied to the comparison-lap section when one is shown.
@@ -157,6 +188,9 @@ public:
     void setPanelInsetsAligned(bool on);
     void setAxisColor(int axisId, const QColor& color);
     void setAxisGridVisible(int axisId, bool visible);
+    // Electron's per-chart axis look: dashed grid lines (Tyre trends use 3/3)
+    // and x tick marks below the plot (0 = none, the TimeChart default).
+    void setAxisGridStyle(int axisId, bool dashed, int tickMarkPx = 0);
 
     // Format duration ticks using %h, %m, %s and optional %z (milliseconds).
     // Subsecond zoom adds fractional seconds when needed to distinguish ticks.
@@ -179,6 +213,10 @@ public:
     void setHoverReadout(bool on);
     void setCursorSync(bool enabled, bool secondaryVertical, bool secondaryHorizontal);
     void setCursorModeKey(const QString& key);
+    // Treat every visible panel as one chart for hovering, like Electron's
+    // stacked Analyze chart: one vertical crosshair through all panels and
+    // hover markers on every panel's series.
+    void setPanelsShareCursor(bool on);
     // Persistent, non-interactive cursors drawn only by the lightweight raster
     // overlay. Updating these never rebuilds or resubmits the GPU traces.
     void setCursorGuides(const QVector<CursorGuide>& guides);
@@ -203,6 +241,14 @@ signals:
     void inspectionRequested(double x, bool distanceCoordinate);
 
 protected:
+    // Replace the default tooltip for a hover over panelId at x = key. Return
+    // true to use `out` (empty hides the tooltip); false keeps the default.
+    virtual bool customTooltip(int panelId, double key, TooltipContent& out) const;
+    // Value of the sample nearest x = key (NaN when the series is empty).
+    double seriesValueAt(int seriesId, double key) const;
+    QColor tooltipTextColor() const;
+    QColor tooltipMutedColor() const;
+
     bool event(QEvent* e) override;
     void changeEvent(QEvent* e) override;   // keep label/legend colors in sync with the theme
     void resizeEvent(QResizeEvent* e) override;
@@ -214,18 +260,29 @@ private:
     void ensurePanelHeader(int panelId);   // build a panel's title+legend header row
     void refreshPanelChartSettings();
     void positionPanelChartSettings();
-    QString showSyncedCursor(double sessionTime, double sourceAxisX,
-                             bool sourceDistanceAxis, double yRatio,
-                             ChartView* source, int sourcePanel);
+    struct PanelTooltip;
+    struct SyncedSample;
+    // Cursor sync participant (Electron chartCursorSync): moves this chart's
+    // crosshairs/markers to the synced position and returns one tooltip
+    // fragment per panel that has data there, the source panel included.
+    // With buildContent false only the crosshairs/markers move (the source
+    // reuses its tooltip for an unchanged snapped sample).
+    QVector<SyncedSample> showSyncedCursor(double sessionTime, double sourceAxisX,
+                                           bool sourceDistanceAxis, double yRatio,
+                                           ChartView* source, int sourcePanel,
+                                           bool buildContent = true);
+    // Whether any visible named series in the panel has a value at x = key.
+    bool panelHasValue(int panelId, double key, bool strictRange, bool allowEndpoint) const;
     void clearSyncedCursor();
     void updateHover(const QPoint& position);
-    // One panel's tooltip body at x = key: the series rows, any extra rows, and
-    // — in a Previous/Fastest/Selected lap window — the comparison-lap section
+    void showTooltip(const TooltipContent& content, const QPoint& position);
+    // One panel's tooltip parts at x = key: the series rows plus extra rows,
+    // and — in a Previous/Fastest/Selected lap window — the comparison-lap rows
     // and the lap delta, matching Electron's chart tooltips. strictRange limits
     // sampling to each series' own x range (synced peer panels); allowEndpoint
     // also accepts keys just past a series' last sample.
-    QString panelTooltipRows(int panelId, double key, bool strictRange,
-                             bool allowEndpoint, bool* any) const;
+    PanelTooltip panelTooltip(int panelId, double key, bool strictRange,
+                              bool allowEndpoint) const;
 
     struct Impl;
     std::unique_ptr<Impl> d_;

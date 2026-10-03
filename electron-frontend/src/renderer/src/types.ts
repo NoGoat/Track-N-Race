@@ -549,6 +549,17 @@ export interface PlaybackSeekFlushBinMsg {
   authoritativeSeek: boolean
   rowTypeMask: number
   historyStart: number
+  // Present on a host restore after the window was hidden: chart families in
+  // rowTypeMask replace [chartFrom, through], race events [eventsFrom, through].
+  restore?: HostRestoreRanges
+}
+
+export interface HostRestoreRanges {
+  chartFrom: number
+  includesEvents: boolean
+  eventsFrom: number
+  through: number
+  sessionChanged: boolean
 }
 
 export interface PlaybackLapBlocksMsg {

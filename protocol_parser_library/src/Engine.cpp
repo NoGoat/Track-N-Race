@@ -45,6 +45,10 @@ static constexpr uint32_t kRestoreRowMask =
 static constexpr uint32_t kHistoricalRowMask =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 11) |
     (1u << 12);
+static constexpr uint32_t kRaceEventRowBit = 1u << 6;
+// Sparse state families: a chart reads their value at a lap or window start
+// from the newest row before it, so a restore range must carry that row.
+static constexpr uint32_t kRestoreSeedRowMask = (1u << 2) | (1u << 3);
 // Session/timing/all-car status packets can arrive at the game's frame rate,
 // but Strategy only needs a recent state sample plus every lap/event/set change
 // when reconstructing after a flashback. Retain these inputs in the engine's
@@ -372,6 +376,19 @@ void Engine::rewindLiveTimeline(float sessionTime, uint16_t format) {
     for (float& retirementTime : liveRetirementTimes_)
         if (retirementTime > sessionTime)
             retirementTime = std::numeric_limits<float>::infinity();
+    noteHostTimelineMovedLocked(sessionTime);
+}
+
+void Engine::resetLiveSessionHistoryLocked() {
+    liveLatestRows_ = {};
+    liveHistory_->reset();
+    liveHistoryLastSample_.fill(-std::numeric_limits<float>::infinity());
+    liveHistoryLastLap_.fill(-1);
+    liveRetirementTimes_.fill(std::numeric_limits<float>::infinity());
+    liveSessionTime_ = 0.0f;
+    liveLapStart_ = 0.0f;
+    liveLapNum_ = 0;
+    noteHostTimelineMovedLocked(0.0f);
 }
 
 void Engine::enqueueLiveStrategyWork(StrategyWork work) {
@@ -985,6 +1002,20 @@ void Engine::onDatagram(const uint8_t* data, int length) {
             liveDiagnostics_.noOutput++;
     }
 
+    // Every packet header carries m_sessionUID (F1 24, F1 25 and the 2026
+    // Season Pack). A new UID is a new session whose times restart near zero.
+    // The rewind path below cannot trim the old session for it, because no
+    // old lap starts that early, so drop the old history here. A zero UID
+    // identifies no session: the game sends it around a session's start and
+    // interleaves it with the real UID after SEND (seen in F1 25 2026
+    // captures), so it must neither reset history nor become the identity.
+    if (r.format != 0 && r.sessionUid != 0) {
+        if (liveSessionUidKnown_ && r.sessionUid != liveSessionUid_)
+            resetLiveSessionHistoryLocked();
+        liveSessionUid_ = r.sessionUid;
+        liveSessionUidKnown_ = true;
+    }
+
     const float timelineTime = r.rewindSessionTime.value_or(r.sessionTime);
     if (std::isfinite(timelineTime) && timelineTime >= 0.0f) {
         // Prefer FLBK's exact target. If the event is absent/lost, retain the
@@ -1492,6 +1523,8 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             liveSessionTime_ = 0.0f;
             liveLapStart_ = 0.0f;
             liveLapNum_ = 0;
+            liveSessionUidKnown_ = false;
+            noteHostTimelineMovedLocked(-std::numeric_limits<float>::infinity());
             lapBlocksMsg = reader_.lapBlocksMessage();
             restrictionMsg = reader_.driverRestrictionMessage(reader_.startTime());
             lastDriverRestriction_ = restrictionMsg;
@@ -1672,7 +1705,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
             : windowSeconds > 0.0f ? std::max(start, target - windowSeconds)
             : lapStart;
         if (config_.binaryPlayback) {
-            // Start the V5 target frontier before extracting the prefix. The
+            // Start the archive target frontier before extracting the prefix. The
             // archive executor can now decompress both sets concurrently, and
             // its in-flight table shares target-containing chunks between them.
             reader_.beginCursorPrime(target);
@@ -1704,6 +1737,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         // the cursor or seed playback rows from its obsolete target.
         if (requestId != 0 && requestId != latestSeekRequestId_.load(std::memory_order_acquire)) return;
         currentTime_ = target;
+        noteHostTimelineMovedLocked(target);
         if (config_.binaryPlayback) {
             // beginCursorPrime() already positioned the lanes. This wait is
             // normally a cache/in-flight join because it overlapped the
@@ -2104,6 +2138,7 @@ void Engine::playerClose() {
         playbackStrategyPending_ = false;
         playbackStrategyPendingRows_.clear();
         playbackPath_.clear();
+        noteHostTimelineMovedLocked(-std::numeric_limits<float>::infinity());
         if (config_.binaryPlayback) {
             dupCache_ = {};
             // Restore the live format's labels — playback may have switched
@@ -2123,6 +2158,217 @@ void Engine::playerClose() {
     if (!liveStatus.empty()) emitRow(liveStatus);
     std::fprintf(stderr, "[close-trace] Engine::playerClose complete\n");
     std::fflush(stderr);
+}
+
+// ── Host restore ─────────────────────────────────────────────────────────────
+
+void Engine::noteHostTimelineMovedLocked(float sessionTime) {
+    if (hostHidden_) hiddenRestoreFrom_ = std::min(hiddenRestoreFrom_, sessionTime);
+    if (restorePending_) pendingRestoreFrom_ = std::min(pendingRestoreFrom_, sessionTime);
+}
+
+std::vector<std::string> Engine::hostLatestRowsLocked() {
+    std::vector<std::string> rows;
+    // Chart-history families come with the restore flush. Replaying an older
+    // latest row of one would read as a timeline reversal in the host's tables
+    // and truncate the rows streamed since the window was shown.
+    const uint32_t mask = hostConsumerRowMask_ &
+        (kRestoreRowMask | kStrategyRowBit) & ~kHistoricalRowMask;
+    if (inPlayback_.load()) {
+        auto tagged = reader_.latestOfTypesTagged(currentTime_, typesInMask(mask));
+        for (auto& [type, row] : tagged) {
+            if (type < dupCache_.size()) dupCache_[type] = row;
+            rows.push_back(std::move(row));
+        }
+    } else {
+        for (size_t type = 1; type < liveLatestRows_.size(); ++type)
+            if ((mask & (1u << type)) && !liveLatestRows_[type].empty())
+                rows.push_back(liveLatestRows_[type]);
+    }
+    return rows;
+}
+
+void Engine::setHostVisible(bool visible, uint64_t sequence) {
+    bool playbackRestore = false;
+    float playbackRestoreFrom = 0.0f;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (sequence != 0 && sequence <= hostVisibilitySequence_) return;
+        if (sequence != 0) hostVisibilitySequence_ = sequence;
+        const bool playback = inPlayback_.load();
+        const float now = playback ? currentTime_ : liveSessionTime_;
+        if (!visible) {
+            if (hostHidden_) return;
+            hostHidden_ = true;
+            // A live restore that never reached the host leaves its gap open,
+            // and so does a session change it was going to report.
+            hiddenRestoreFrom_ = restorePending_ ? std::min(pendingRestoreFrom_, now) : now;
+            if (!(restorePending_ && pendingSessionChanged_)) {
+                hiddenSessionUid_ = liveSessionUid_;
+                hiddenSessionUidKnown_ = liveSessionUidKnown_;
+            }
+            ++restoreGeneration_;
+            restorePending_ = false;
+            return;
+        }
+
+        // Without a recorded hide (the first call, or a hide that lost the
+        // race to this show) the host may be missing anything.
+        const float restoreFrom = hostHidden_
+            ? hiddenRestoreFrom_ : -std::numeric_limits<float>::infinity();
+        const bool sessionChanged = hostHidden_ && !playback &&
+            (hiddenSessionUidKnown_ != liveSessionUidKnown_ ||
+             hiddenSessionUid_ != liveSessionUid_);
+        hostHidden_ = false;
+        if (!config_.binaryPlayback) return;
+
+        if (playback) {
+            playbackRestore = true;
+            playbackRestoreFrom = restoreFrom;
+        } else {
+            pendingRestoreFrom_ = sessionChanged ? 0.0f : std::max(0.0f, restoreFrom);
+            pendingSessionChanged_ = sessionChanged;
+            restorePending_ = true;
+            issueLiveRestoreLocked();
+        }
+    }
+    if (playbackRestore) runPlaybackRestore(playbackRestoreFrom);
+}
+
+void Engine::issueLiveRestoreLocked() {
+    const uint64_t generation = ++restoreGeneration_;
+    const float through = liveSessionTime_;
+    const float from = pendingRestoreFrom_;
+    const float windowFrom = hostConsumerWindowSeconds_ < 0.0f ? 0.0f
+        : hostConsumerWindowSeconds_ == 0.0f ? liveLapStart_
+        : std::max(0.0f, through - hostConsumerWindowSeconds_);
+    const uint32_t chartMask = hostConsumerHistoryMask_ & kHistoricalRowMask;
+
+    Sink::RestoreFlushInfo info;
+    info.chartFrom = std::max(windowFrom, from);
+    info.includesEvents = (hostConsumerRowMask_ & kRaceEventRowBit) != 0;
+    info.eventsFrom = from;
+    info.rowTypeMask = chartMask | (info.includesEvents ? kRaceEventRowBit : 0u);
+    info.through = through;
+    info.sessionChanged = pendingSessionChanged_;
+    info.currentLapStart = liveLapStart_;
+    info.lapNum = liveLapNum_;
+
+    // Events ignore the chart window: in current-lap mode the host still needs
+    // the events of every lap it missed.
+    std::vector<detail::LiveHistoryStore::RangeSpec> ranges;
+    if (chartMask != 0)
+        ranges.push_back({chartMask, info.chartFrom, chartMask & kRestoreSeedRowMask});
+    if (info.includesEvents) ranges.push_back({kRaceEventRowBit, info.eventsFrom});
+    if (liveDiagnosticsEnabled_) {
+        std::fprintf(stderr,
+            "[playback-debug] host-restore-requested mode=live generation=%llu chartMask=0x%08x chartFrom=%.3f events=%d eventsFrom=%.3f through=%.3f sessionChanged=%d\n",
+            static_cast<unsigned long long>(generation), chartMask, info.chartFrom,
+            info.includesEvents ? 1 : 0, info.eventsFrom, through,
+            info.sessionChanged ? 1 : 0);
+        std::fflush(stderr);
+    }
+
+    Sink* const sink = sink_;
+    liveHistory_->requestRanges(std::move(ranges), through,
+        [this, sink, generation, info](detail::LiveHistoryBackfill backfill) mutable {
+            std::vector<std::string> latestRows;
+            {
+                std::lock_guard<std::mutex> lk(mutex_);
+                if (generation != restoreGeneration_ || !restorePending_) return;
+                restorePending_ = false;
+                latestRows = hostLatestRowsLocked();
+            }
+            if (!sink) return;
+            const size_t binarySize = backfill.binary ? backfill.binary->size() : 0;
+            sink->onRestoreFlush(std::move(backfill.binary), 0, binarySize,
+                                 std::move(backfill.json), info);
+            // After the flush: a session-changed restore resets the host, and
+            // these rows must land on the new session, not be wiped by it.
+            emitRows(latestRows);
+        },
+        // A rewind or new session replaced the timeline while the worker was
+        // gathering; rewinds have already moved pendingRestoreFrom_ back.
+        [this, generation] {
+            std::lock_guard<std::mutex> lk(mutex_);
+            if (generation != restoreGeneration_ || !restorePending_) return;
+            issueLiveRestoreLocked();
+        });
+}
+
+void Engine::runPlaybackRestore(float restoreFrom) {
+    TnrdReader::SeekFlush flush;
+    V6HistoryRead historyRead;
+    bool columnarHistory = false;
+    Sink::RestoreFlushInfo info;
+    std::vector<std::string> latestRows;
+    {
+        std::unique_lock<std::mutex> lk(mutex_);
+        requirementsCv_.wait(lk, [this] {
+            return !inPlayback_.load() ||
+                appliedRequirementsRequestId_ >= latestRequirementsRequestId_.load(std::memory_order_acquire);
+        });
+        if (!inPlayback_.load() || !config_.binaryPlayback) return;
+        const float target = currentTime_;
+        float lapStart = target;
+        int lapNum = 0;
+        reader_.currentLapAt(target, lapStart, lapNum);
+        const float start = reader_.startTime();
+        const float windowFrom = hostConsumerWindowSeconds_ < 0.0f ? start
+            : hostConsumerWindowSeconds_ == 0.0f ? lapStart
+            : std::max(start, target - hostConsumerWindowSeconds_);
+        info.rowTypeMask = hostConsumerHistoryMask_ & kHistoricalRowMask;
+        info.chartFrom = std::max(windowFrom, restoreFrom);
+        info.through = target;
+        info.currentLapStart = lapStart;
+        info.lapNum = lapNum;
+        if (liveDiagnosticsEnabled_) {
+            std::fprintf(stderr,
+                "[playback-debug] host-restore-requested mode=playback chartMask=0x%08x chartFrom=%.3f through=%.3f\n",
+                info.rowTypeMask, info.chartFrom, target);
+            std::fflush(stderr);
+        }
+        // Playback events come from the lap-blocks catalog the host already
+        // holds in full; only chart history needs reading.
+        if (info.rowTypeMask != 0 && target > info.chartFrom) {
+            columnarHistory = prepareV6HistoryReadLocked(
+                info.chartFrom, target, info.rowTypeMask, historyRead);
+            if (!columnarHistory)
+                flush = reader_.seekFlush(target, lapStart, false, info.rowTypeMask,
+                                          target - info.chartFrom, false);
+            // V6 history already seeds each field at the range start. V1-V5
+            // status is cut strictly at it and their damage is resampled from
+            // it onwards, so add the state in force just before the start.
+            const uint32_t seedMask = info.rowTypeMask & kRestoreSeedRowMask;
+            if (!columnarHistory && seedMask != 0 &&
+                reader_.loadedFormat() != TnrdFormat::ChunkedV6) {
+                const float before = std::nextafter(
+                    info.chartFrom, -std::numeric_limits<float>::infinity());
+                std::string seeds;
+                for (auto& [type, row] : reader_.latestOfTypesTagged(before, typesInMask(seedMask))) {
+                    (void)type;
+                    seeds += row;
+                    seeds.push_back('\n');
+                }
+                if (!seeds.empty()) {
+                    if (flush.coldJson.empty()) seeds.pop_back();
+                    flush.coldJson.insert(0, seeds);
+                }
+            }
+        }
+        latestRows = hostLatestRowsLocked();
+    }
+    if (columnarHistory) {
+        // A driver change or close abandons the read via the epoch.
+        auto payload = runV6HistoryRead(historyRead, {}, true);
+        if (!payload) return;
+        flush.binaryBegin = 0;
+        flush.binaryEnd = payload->size();
+        flush.binaryStore = std::move(payload);
+    }
+    if (sink_) sink_->onRestoreFlush(std::move(flush.binaryStore), flush.binaryBegin,
+                                     flush.binaryEnd, std::move(flush.coldJson), info);
+    emitRows(latestRows);
 }
 
 void Engine::stopPlaybackThread() {

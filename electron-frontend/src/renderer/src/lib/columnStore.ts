@@ -498,7 +498,7 @@ export function concatAfter<T extends { session_time: number }>(prefix: ColumnVi
   return new FrozenView<T>(builder.build(), 0, builder.length, prefix.rowType || rest.rowType)
 }
 
-export type InstallMode = 'authoritative' | 'prefix' | 'overlay'
+export type InstallMode = 'authoritative' | 'prefix' | 'overlay' | 'replaceRange'
 
 /**
  * Installs a decoded history range next to already-held rows.
@@ -506,6 +506,9 @@ export type InstallMode = 'authoritative' | 'prefix' | 'overlay'
  *   overlay: time-ordered union; at a shared timestamp the held row is kept
  *            and the incoming fields are laid over it (V6 patch history).
  *   prefix: incoming rows older than the held rows, then the held rows.
+ *   replaceRange: held rows before `range.from`, the incoming rows inside
+ *            [from, through], then held rows after `range.through`. An empty
+ *            incoming view still clears the held rows inside the range.
  * The result keeps at most `maxRows` newest rows.
  */
 export function installHistory<T extends { session_time: number }>(
@@ -513,12 +516,20 @@ export function installHistory<T extends { session_time: number }>(
   incoming: ColumnView<T>,
   mode: InstallMode,
   maxRows: number,
+  range?: { from: number; through: number },
 ): void {
   const held = table.frozen()
   const inc = viewParts(incoming)
   const old = viewParts(held)
   const builder = new StorageBuilder(incoming.length + held.length)
-  if (mode === 'authoritative' || held.length === 0) {
+  if (mode === 'replaceRange') {
+    const from = range?.from ?? -Infinity
+    const through = range?.through ?? Infinity
+    if (old) builder.appendRange(old.storage, old.start, old.start + held.lowerBound(from, true))
+    if (inc) builder.appendRange(inc.storage, inc.start + incoming.lowerBound(from, true),
+      inc.start + incoming.lowerBound(through, false))
+    if (old) builder.appendRange(old.storage, old.start + held.lowerBound(through, false), old.end)
+  } else if (mode === 'authoritative' || held.length === 0) {
     if (inc) builder.appendRange(inc.storage, inc.start, inc.end)
     if (old && mode === 'authoritative' && incoming.length > 0) {
       const lastTime = incoming.time(incoming.length - 1)

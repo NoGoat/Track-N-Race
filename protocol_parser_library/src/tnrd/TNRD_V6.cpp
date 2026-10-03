@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -15,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <span>
 #include <tuple>
 #include <unordered_map>
 #include <variant>
@@ -146,10 +148,10 @@ void appendNumber(std::string& out, double value) {
     if (size > 0) out.append(buffer, std::min<size_t>(static_cast<size_t>(size), sizeof(buffer) - 1));
 }
 
-// One sample as the writer holds it: its time plus typed field values, in the
-// order the add() call listed them. Keys always point at string literals, so a
-// sample can outlive the row it was built from. The chunk encoder turns a run
-// of these into column arrays; nothing formats them as JSON on the write path.
+// One sample: its time plus typed field values, in the order the add() call
+// listed them. Keys always point at string literals, so a sample can outlive
+// the row it was built from. Lap builders store these as columns (see
+// SampleColumns); a whole V6Sample is kept only for state types' last values.
 // A string value is raw JSON (tyre sets), stored and rendered verbatim.
 using V6Value = std::variant<int64_t, double, bool, std::string>;
 struct V6Field {
@@ -165,17 +167,14 @@ V6Value number(double value) { return V6Value(std::in_place_index<1>, value); }
 V6Value integer(int64_t value) { return V6Value(std::in_place_index<0>, value); }
 V6Value boolean(bool value) { return V6Value(std::in_place_index<2>, value); }
 V6Value rawJson(std::string value) { return V6Value(std::in_place_index<3>, std::move(value)); }
-V6Sample sample(float time, std::initializer_list<V6Field> fields) { return {time, std::vector<V6Field>(fields)}; }
-V6Sample sample(float time, std::vector<V6Field> fields) { return {time, std::move(fields)}; }
-V6Sample retime(V6Sample value, float time) { value.time = time; return value; }
-bool isUnavailable(const V6Sample& value) {
-    for (const auto& field : value.fields)
+bool isUnavailable(std::span<const V6Field> fields) {
+    for (const auto& field : fields)
         if (field.key == "available" && field.value.index() == 2 && !std::get<2>(field.value)) return true;
     return false;
 }
 // A state type's samples carry one field group each, named by its first key.
-std::string signatureOf(const V6Sample& value) {
-    return value.fields.empty() ? std::string{} : std::string(value.fields.front().key);
+std::string signatureOf(std::span<const V6Field> fields) {
+    return fields.empty() ? std::string{} : std::string(fields.front().key);
 }
 void appendValue(std::string& out, const V6Value& value) {
     switch (value.index()) {
@@ -253,111 +252,400 @@ uint8_t intWidth(int64_t low, int64_t high) {
     return 8;
 }
 
-bool encodeColumnar(const std::vector<V6Sample>& samples, std::vector<uint8_t>& out) {
-    struct Plan {
-        std::string_view name;
-        size_t firstKind{};
-        bool mixed{};
-        std::vector<const V6Value*> values;  // one slot per row, null when absent
-    };
-    const size_t rows = samples.size();
-    if (rows > UINT32_MAX) return false;
-    std::vector<Plan> plans;
-    for (size_t row = 0; row < rows; ++row) {
-        for (const auto& field : samples[row].fields) {
-            auto plan = std::find_if(plans.begin(), plans.end(),
-                [&](const Plan& candidate) { return candidate.name == field.key; });
-            if (plan == plans.end()) {
-                if (field.key.empty() || field.key.size() > UINT8_MAX || plans.size() >= UINT16_MAX) return false;
-                plans.push_back({field.key, field.value.index(), false, std::vector<const V6Value*>(rows)});
-                plan = plans.end() - 1;
-            }
-            if (field.value.index() != plan->firstKind) plan->mixed = true;
-            plan->values[row] = &field.value;
-        }
-    }
-
-    out.clear();
-    put32(out, COLUMNAR_MAGIC); put32(out, static_cast<uint32_t>(rows));
-    put16(out, static_cast<uint16_t>(plans.size())); put16(out, 0);
-    std::vector<uint8_t> packed; packed.reserve(rows * 8);
-    for (const auto& value : samples) {
-        uint32_t bits{}; std::memcpy(&bits, &value.time, sizeof(bits)); putLE(packed, bits, 4);
-    }
-    putPlanes(out, packed, 4);
-
-    struct Layout { ColumnKind kind{}; uint8_t width{}; bool dense{}; };
-    std::vector<Layout> layouts; layouts.reserve(plans.size());
-    for (const auto& plan : plans) {
-        Layout layout;
-        layout.dense = std::all_of(plan.values.begin(), plan.values.end(), [](const V6Value* v) { return v; });
-        if (plan.mixed) {
-            layout.kind = ColumnKind::Json;  // never written today; kept lossless if it ever is
-        } else if (plan.firstKind == 0) {
-            int64_t low = 0, high = 0;
-            for (const auto* value : plan.values) if (value) {
-                low = std::min(low, std::get<0>(*value)); high = std::max(high, std::get<0>(*value));
-            }
-            layout.kind = ColumnKind::Int; layout.width = intWidth(low, high);
-        } else if (plan.firstKind == 1) {
-            // Float32 whenever every value survives the round trip, which is
-            // every field the game sends as a float. Anything else stays exact.
-            const bool narrow = std::all_of(plan.values.begin(), plan.values.end(), [](const V6Value* v) {
-                if (!v) return true;
-                const double value = std::get<1>(*v);
-                if (!std::isfinite(value)) return true;  // inf and NaN survive as floats
-                return std::fabs(value) <= std::numeric_limits<float>::max() &&
-                    static_cast<double>(static_cast<float>(value)) == value;
-            });
-            layout.kind = narrow ? ColumnKind::Float32 : ColumnKind::Float64;
-            layout.width = narrow ? 4 : 8;
-        } else if (plan.firstKind == 2) {
-            layout.kind = ColumnKind::Bool; layout.width = 1;
-        } else {
-            layout.kind = ColumnKind::Json;
-        }
-        out.push_back(static_cast<uint8_t>(plan.name.size()));
-        out.insert(out.end(), plan.name.begin(), plan.name.end());
-        out.push_back(static_cast<uint8_t>(layout.kind)); out.push_back(layout.width);
-        out.push_back(layout.dense ? 1 : 0);
-        layouts.push_back(layout);
-    }
-
-    for (size_t c = 0; c < plans.size(); ++c) {
-        const auto& plan = plans[c]; const auto& layout = layouts[c];
-        if (!layout.dense) {
-            std::vector<uint8_t> bitmap((rows + 7) / 8);
-            for (size_t row = 0; row < rows; ++row)
-                if (plan.values[row]) bitmap[row / 8] |= static_cast<uint8_t>(1u << (row % 8));
-            out.insert(out.end(), bitmap.begin(), bitmap.end());
-        }
-        packed.clear();
-        for (const auto* value : plan.values) {
-            if (!value) continue;
-            switch (layout.kind) {
-                case ColumnKind::Int:
-                    putLE(packed, static_cast<uint64_t>(std::get<0>(*value)), layout.width); break;
-                case ColumnKind::Float32: {
-                    const float narrow = static_cast<float>(std::get<1>(*value));
-                    uint32_t bits{}; std::memcpy(&bits, &narrow, sizeof(bits)); putLE(packed, bits, 4); break;
-                }
-                case ColumnKind::Float64: {
-                    uint64_t bits{}; std::memcpy(&bits, &std::get<1>(*value), sizeof(bits)); putLE(packed, bits, 8); break;
-                }
-                case ColumnKind::Bool: out.push_back(std::get<2>(*value) ? 1 : 0); break;
-                case ColumnKind::Json: {
-                    std::string text; appendValue(text, *value);
-                    if (text.size() > UINT32_MAX) return false;
-                    put32(out, static_cast<uint32_t>(text.size())); out.insert(out.end(), text.begin(), text.end());
-                    break;
-                }
-            }
-        }
-        if (layout.kind == ColumnKind::Int || layout.kind == ColumnKind::Float32 ||
-            layout.kind == ColumnKind::Float64) putPlanes(out, packed, layout.width);
-    }
-    return true;
+// ---- In-memory lap builder ---------------------------------------------------
+// The writer holds each open lap as one SampleColumns per data type until the
+// lap is committed. Values are kept the way the V6C1 payload stores them: one
+// column per key, present values only, packed at the narrowest width seen so
+// far. A row of V6Fields costs ~100 B for a 2-byte speed; a column costs the
+// value plus 4 B of time. See docs/TNRD_V6_COLUMNAR_BUILDER_DESIGN.md.
+//
+// encode() emits exactly what encoding the same samples as rows of fields
+// would: columns in order of first appearance (by row, then by position within
+// the row), integer widths from a range that includes 0, Float32 only when
+// every value round-trips, and Json for strings and mixed kinds. Widths are
+// recomputed from the values at encode time, because a column widened by rows
+// that splitAt() moved away may fit a narrower width again.
+bool narrowFloat(double value) {
+    if (!std::isfinite(value)) return true;  // inf and NaN survive as floats
+    return std::fabs(value) <= std::numeric_limits<float>::max() &&
+        static_cast<double>(static_cast<float>(value)) == value;
 }
+uint8_t valueWidth(int64_t value) {
+    return intWidth(std::min<int64_t>(0, value), std::max<int64_t>(0, value));
+}
+
+class SampleColumns {
+    enum class Store : uint8_t { Int, Float32, Float64, Bool, Text, Variant };
+    struct Column {
+        std::string_view key;
+        Store store{};
+        uint8_t width{};                  // bytes per value in `packed`; 0 for Text and Variant
+        bool sparse{};                    // some covered row has no value; `present` is valid
+        uint32_t covered{};               // rows [0, covered) have a presence decision
+        uint32_t count{};                 // present values
+        std::vector<uint8_t> packed;      // Int, Float32, Float64, Bool: little endian
+        std::vector<std::string> texts;   // Text: raw JSON, as rawJson() stores it
+        std::vector<V6Value> variants;    // Variant: a column whose values changed kind
+        std::vector<uint64_t> present;    // one bit per covered row while sparse
+
+        bool has(size_t row) const {
+            return row < covered && (!sparse || ((present[row / 64] >> (row % 64)) & 1u));
+        }
+        // Rows between `covered` and `row` have no value; `row` has one.
+        void mark(size_t row) {
+            if (row > covered && !sparse) {
+                sparse = true; present.assign(row / 64 + 1, 0);
+                for (size_t r = 0; r < covered; ++r) present[r / 64] |= uint64_t{1} << (r % 64);
+            }
+            if (sparse) {
+                if (present.size() <= row / 64) present.resize(row / 64 + 1, 0);
+                present[row / 64] |= uint64_t{1} << (row % 64);
+            }
+            covered = static_cast<uint32_t>(row + 1); ++count;
+        }
+    };
+    // A row whose fields were not listed in column order. Encoding a subset of
+    // rows after splitAt() orders columns by their first row in that subset,
+    // then by position within that row, so the listed order has to survive.
+    // The add() call sites list their keys in a fixed order, so this is rare.
+    struct RowOrder { uint32_t row{}; std::vector<uint32_t> columns; };
+    struct Layout { ColumnKind kind{}; uint8_t width{}; };
+
+    std::vector<float> time_;
+    std::vector<Column> columns_;
+    std::vector<RowOrder> orders_;
+    std::vector<uint32_t> rowColumns_;  // append() scratch
+
+    size_t find(std::string_view key) const {
+        for (size_t i = 0; i < columns_.size(); ++i) if (columns_[i].key == key) return i;
+        return columns_.size();
+    }
+    static Column start(const V6Field& field) {
+        Column column; column.key = field.key;
+        switch (field.value.index()) {
+            case 0: column.store = Store::Int; column.width = 1; break;
+            case 1:
+                column.store = narrowFloat(std::get<1>(field.value)) ? Store::Float32 : Store::Float64;
+                column.width = column.store == Store::Float32 ? 4 : 8; break;
+            case 2: column.store = Store::Bool; column.width = 1; break;
+            default: column.store = Store::Text; break;
+        }
+        return column;
+    }
+    static int64_t intAt(const Column& c, size_t i) {
+        return signExtend(getLE(c.packed.data() + i * c.width, c.width), c.width);
+    }
+    static double realAt(const Column& c, size_t i) {
+        if (c.store == Store::Float32) {
+            const uint32_t bits = static_cast<uint32_t>(getLE(c.packed.data() + i * 4, 4));
+            float value{}; std::memcpy(&value, &bits, sizeof(value)); return value;
+        }
+        const uint64_t bits = getLE(c.packed.data() + i * 8, 8);
+        double value{}; std::memcpy(&value, &bits, sizeof(value)); return value;
+    }
+    static V6Value valueAt(const Column& c, size_t i) {
+        switch (c.store) {
+            case Store::Int: return integer(intAt(c, i));
+            case Store::Float32: case Store::Float64: return number(realAt(c, i));
+            case Store::Bool: return boolean(c.packed[i] != 0);
+            case Store::Text: return rawJson(c.texts[i]);
+            default: return c.variants[i];
+        }
+    }
+    static void widen(Column& c, uint8_t width) {
+        std::vector<uint8_t> wider; wider.reserve((static_cast<size_t>(c.count) + 1) * width);
+        for (size_t i = 0; i < c.count; ++i) putLE(wider, static_cast<uint64_t>(intAt(c, i)), width);
+        c.packed = std::move(wider); c.width = width;
+    }
+    static void toFloat64(Column& c) {
+        std::vector<uint8_t> wider; wider.reserve((static_cast<size_t>(c.count) + 1) * 8);
+        for (size_t i = 0; i < c.count; ++i) {
+            const double value = realAt(c, i);
+            uint64_t bits{}; std::memcpy(&bits, &value, sizeof(bits)); putLE(wider, bits, 8);
+        }
+        c.packed = std::move(wider); c.store = Store::Float64; c.width = 8;
+    }
+    static void toVariant(Column& c) {
+        std::vector<V6Value> values; values.reserve(static_cast<size_t>(c.count) + 1);
+        for (size_t i = 0; i < c.count; ++i) values.push_back(valueAt(c, i));
+        c.variants = std::move(values); c.packed = {}; c.texts = {};
+        c.store = Store::Variant; c.width = 0;
+    }
+    static void put(Column& c, const V6Value& value) {
+        switch (c.store) {
+            case Store::Int:
+                if (value.index() != 0) break;
+                {
+                    const int64_t v = std::get<0>(value);
+                    if (const uint8_t width = valueWidth(v); width > c.width) widen(c, width);
+                    putLE(c.packed, static_cast<uint64_t>(v), c.width); return;
+                }
+            case Store::Float32:
+                if (value.index() != 1) break;
+                if (narrowFloat(std::get<1>(value))) {
+                    const float narrow = static_cast<float>(std::get<1>(value));
+                    uint32_t bits{}; std::memcpy(&bits, &narrow, sizeof(bits)); putLE(c.packed, bits, 4); return;
+                }
+                toFloat64(c);
+                [[fallthrough]];
+            case Store::Float64:
+                if (value.index() != 1) break;
+                {
+                    uint64_t bits{}; std::memcpy(&bits, &std::get<1>(value), sizeof(bits));
+                    putLE(c.packed, bits, 8); return;
+                }
+            case Store::Bool:
+                if (value.index() != 2) break;
+                c.packed.push_back(std::get<2>(value) ? 1 : 0); return;
+            case Store::Text:
+                if (value.index() != 3) break;
+                c.texts.push_back(std::get<3>(value)); return;
+            case Store::Variant:
+                c.variants.push_back(value); return;
+        }
+        toVariant(c); c.variants.push_back(value);
+    }
+    // Removes the value `row` holds, the last one in the column.
+    static void drop(Column& c, size_t row) {
+        if (c.store == Store::Text) c.texts.pop_back();
+        else if (c.store == Store::Variant) c.variants.pop_back();
+        else c.packed.resize(c.packed.size() - c.width);
+        if (c.sparse) c.present[row / 64] &= ~(uint64_t{1} << (row % 64));
+        --c.count; c.covered = static_cast<uint32_t>(row);
+    }
+    static size_t presentBefore(const Column& c, size_t row) {
+        if (row >= c.covered) return c.count;
+        if (!c.sparse) return row;
+        size_t total = 0;
+        for (size_t word = 0; word < row / 64; ++word) total += std::popcount(c.present[word]);
+        if (row % 64) total += std::popcount(c.present[row / 64] & ((uint64_t{1} << (row % 64)) - 1));
+        return total;
+    }
+    static Layout intLayout(int64_t low, int64_t high) { return {ColumnKind::Int, intWidth(low, high)}; }
+    static Layout layoutOf(const Column& c) {
+        switch (c.store) {
+            case Store::Int: {
+                int64_t low = 0, high = 0;
+                for (size_t i = 0; i < c.count; ++i) { const int64_t v = intAt(c, i); low = std::min(low, v); high = std::max(high, v); }
+                return intLayout(low, high);
+            }
+            case Store::Float32: return {ColumnKind::Float32, 4};
+            case Store::Float64: {
+                for (size_t i = 0; i < c.count; ++i) if (!narrowFloat(realAt(c, i))) return {ColumnKind::Float64, 8};
+                return {ColumnKind::Float32, 4};
+            }
+            case Store::Bool: return {ColumnKind::Bool, 1};
+            case Store::Text: return {ColumnKind::Json, 0};
+            case Store::Variant: break;
+        }
+        // Rows that moved away in splitAt() can leave a Variant column with a
+        // single kind again; it then encodes as that kind.
+        const size_t kind = c.variants.front().index();
+        for (const auto& value : c.variants) if (value.index() != kind) return {ColumnKind::Json, 0};
+        switch (kind) {
+            case 0: {
+                int64_t low = 0, high = 0;
+                for (const auto& value : c.variants) { low = std::min(low, std::get<0>(value)); high = std::max(high, std::get<0>(value)); }
+                return intLayout(low, high);
+            }
+            case 1:
+                for (const auto& value : c.variants) if (!narrowFloat(std::get<1>(value))) return {ColumnKind::Float64, 8};
+                return {ColumnKind::Float32, 4};
+            case 2: return {ColumnKind::Bool, 1};
+            default: return {ColumnKind::Json, 0};
+        }
+    }
+    void truncate(size_t keep) {
+        for (auto& c : columns_) {
+            const size_t count = presentBefore(c, keep);
+            if (c.store == Store::Text) c.texts.resize(count);
+            else if (c.store == Store::Variant) c.variants.resize(count);
+            else c.packed.resize(count * c.width);
+            c.count = static_cast<uint32_t>(count);
+            c.covered = static_cast<uint32_t>(std::min<size_t>(c.covered, keep));
+            if (c.sparse) {
+                c.present.resize((static_cast<size_t>(c.covered) + 63) / 64);
+                if (c.covered % 64) c.present.back() &= (uint64_t{1} << (c.covered % 64)) - 1;
+            }
+        }
+        // Columns are created in order of first appearance, so the ones left
+        // without values are a suffix: the indices orders_ refers to stay put.
+        while (!columns_.empty() && columns_.back().count == 0) columns_.pop_back();
+        orders_.erase(std::lower_bound(orders_.begin(), orders_.end(), keep,
+            [](const RowOrder& order, size_t row) { return order.row < row; }), orders_.end());
+        time_.resize(keep);
+    }
+
+public:
+    size_t rows() const { return time_.size(); }
+    const std::vector<float>& times() const { return time_; }
+
+    void append(float time, std::span<const V6Field> fields) {
+        const size_t row = time_.size();
+        size_t cursor = 0; bool ordered = true;
+        rowColumns_.clear();
+        for (const auto& field : fields) {
+            // The keys of a call site arrive in the same order every time, so
+            // the column after the previous field's is almost always the one.
+            const size_t index = cursor < columns_.size() && columns_[cursor].key == field.key
+                ? cursor : find(field.key);
+            if (index == columns_.size()) columns_.push_back(start(field));
+            auto& column = columns_[index];
+            if (column.covered > row) {
+                // A key repeated within one sample: the last value wins.
+                drop(column, row); put(column, field.value); column.mark(row); continue;
+            }
+            if (!rowColumns_.empty() && index < rowColumns_.back()) ordered = false;
+            put(column, field.value); column.mark(row);
+            rowColumns_.push_back(static_cast<uint32_t>(index)); cursor = index + 1;
+        }
+        if (!ordered) orders_.push_back({static_cast<uint32_t>(row), rowColumns_});
+        time_.push_back(time);
+    }
+
+    // Calls fn(time, fields) for rows [begin, end), with each row's fields in
+    // the order they were appended.
+    template <class Fn> void forEachRow(size_t begin, size_t end, Fn&& fn) const {
+        std::vector<size_t> next(columns_.size());
+        for (size_t c = 0; c < columns_.size(); ++c) next[c] = presentBefore(columns_[c], begin);
+        auto order = std::lower_bound(orders_.begin(), orders_.end(), begin,
+            [](const RowOrder& value, size_t row) { return value.row < row; });
+        std::vector<V6Field> fields;
+        for (size_t row = begin; row < end; ++row) {
+            fields.clear();
+            if (order != orders_.end() && order->row == row) {
+                for (const uint32_t c : order->columns) fields.push_back({columns_[c].key, valueAt(columns_[c], next[c]++)});
+                ++order;
+            } else {
+                for (size_t c = 0; c < columns_.size(); ++c)
+                    if (columns_[c].has(row)) fields.push_back({columns_[c].key, valueAt(columns_[c], next[c]++)});
+            }
+            fn(time_[row], std::span<const V6Field>(fields));
+        }
+    }
+    template <class Fn> void forEachRow(Fn&& fn) const { forEachRow(0, time_.size(), std::forward<Fn>(fn)); }
+
+    // Rows at or after `boundary` leave this builder for the returned one.
+    // Both keep their rows in order.
+    SampleColumns splitAt(float boundary) {
+        SampleColumns moved;
+        const size_t rows = time_.size();
+        size_t first = rows; bool suffix = true;
+        for (size_t row = 0; row < rows; ++row) {
+            if (time_[row] >= boundary) { if (first == rows) first = row; }
+            else if (first != rows) suffix = false;
+        }
+        if (first == rows) return moved;
+        if (suffix && first == 0) { std::swap(moved, *this); return moved; }
+        if (suffix) {
+            forEachRow(first, rows, [&](float time, std::span<const V6Field> fields) { moved.append(time, fields); });
+            truncate(first);
+            return moved;
+        }
+        SampleColumns kept;
+        forEachRow([&](float time, std::span<const V6Field> fields) {
+            (time >= boundary ? moved : kept).append(time, fields);
+        });
+        *this = std::move(kept);
+        return moved;
+    }
+
+    bool encode(std::vector<uint8_t>& out) const {
+        const size_t rows = time_.size();
+        if (rows > UINT32_MAX || columns_.size() > UINT16_MAX) return false;
+        for (const auto& c : columns_) if (c.key.empty() || c.key.size() > UINT8_MAX) return false;
+
+        out.clear();
+        put32(out, COLUMNAR_MAGIC); put32(out, static_cast<uint32_t>(rows));
+        put16(out, static_cast<uint16_t>(columns_.size())); put16(out, 0);
+        std::vector<uint8_t> packed; packed.reserve(rows * 4);
+        for (const float time : time_) {
+            uint32_t bits{}; std::memcpy(&bits, &time, sizeof(bits)); putLE(packed, bits, 4);
+        }
+        putPlanes(out, packed, 4);
+
+        std::vector<Layout> layouts; layouts.reserve(columns_.size());
+        for (const auto& c : columns_) {
+            const Layout layout = layoutOf(c);
+            out.push_back(static_cast<uint8_t>(c.key.size()));
+            out.insert(out.end(), c.key.begin(), c.key.end());
+            out.push_back(static_cast<uint8_t>(layout.kind)); out.push_back(layout.width);
+            out.push_back(c.count == rows ? 1 : 0);
+            layouts.push_back(layout);
+        }
+
+        for (size_t index = 0; index < columns_.size(); ++index) {
+            const auto& c = columns_[index]; const auto& layout = layouts[index];
+            if (c.count != rows) {
+                std::vector<uint8_t> bitmap((rows + 7) / 8);
+                for (size_t row = 0; row < c.covered; ++row)
+                    if (c.has(row)) bitmap[row / 8] |= static_cast<uint8_t>(1u << (row % 8));
+                out.insert(out.end(), bitmap.begin(), bitmap.end());
+            }
+            packed.clear();
+            switch (c.store) {
+                case Store::Int:
+                    if (layout.width == c.width) { putPlanes(out, c.packed, c.width); break; }
+                    for (size_t i = 0; i < c.count; ++i) putLE(packed, static_cast<uint64_t>(intAt(c, i)), layout.width);
+                    putPlanes(out, packed, layout.width); break;
+                case Store::Float32: putPlanes(out, c.packed, 4); break;
+                case Store::Float64:
+                    if (layout.kind == ColumnKind::Float64) { putPlanes(out, c.packed, 8); break; }
+                    for (size_t i = 0; i < c.count; ++i) {
+                        const float narrow = static_cast<float>(realAt(c, i));
+                        uint32_t bits{}; std::memcpy(&bits, &narrow, sizeof(bits)); putLE(packed, bits, 4);
+                    }
+                    putPlanes(out, packed, 4); break;
+                case Store::Bool: out.insert(out.end(), c.packed.begin(), c.packed.end()); break;
+                case Store::Text:
+                    for (const auto& text : c.texts) {
+                        if (text.size() > UINT32_MAX) return false;
+                        put32(out, static_cast<uint32_t>(text.size())); out.insert(out.end(), text.begin(), text.end());
+                    }
+                    break;
+                case Store::Variant:
+                    for (const auto& value : c.variants) {
+                        switch (layout.kind) {
+                            case ColumnKind::Int: putLE(packed, static_cast<uint64_t>(std::get<0>(value)), layout.width); break;
+                            case ColumnKind::Float32: {
+                                const float narrow = static_cast<float>(std::get<1>(value));
+                                uint32_t bits{}; std::memcpy(&bits, &narrow, sizeof(bits)); putLE(packed, bits, 4); break;
+                            }
+                            case ColumnKind::Float64: {
+                                uint64_t bits{}; std::memcpy(&bits, &std::get<1>(value), sizeof(bits)); putLE(packed, bits, 8); break;
+                            }
+                            case ColumnKind::Bool: out.push_back(std::get<2>(value) ? 1 : 0); break;
+                            case ColumnKind::Json: {
+                                std::string text; appendValue(text, value);
+                                if (text.size() > UINT32_MAX) return false;
+                                put32(out, static_cast<uint32_t>(text.size())); out.insert(out.end(), text.begin(), text.end());
+                                break;
+                            }
+                        }
+                    }
+                    if (layout.kind == ColumnKind::Int || layout.kind == ColumnKind::Float32 ||
+                        layout.kind == ColumnKind::Float64) putPlanes(out, packed, layout.width);
+                    break;
+            }
+        }
+        return true;
+    }
+
+    // Resident footprint: used bytes, or reserved bytes when `capacity`.
+    size_t bytes(bool capacity) const {
+        const auto n = [capacity](const auto& v) { return capacity ? v.capacity() : v.size(); };
+        size_t total = n(time_) * sizeof(float) + n(columns_) * sizeof(Column) +
+            n(orders_) * sizeof(RowOrder) + n(rowColumns_) * sizeof(uint32_t);
+        for (const auto& c : columns_) {
+            total += n(c.packed) + n(c.present) * sizeof(uint64_t) +
+                n(c.texts) * sizeof(std::string) + n(c.variants) * sizeof(V6Value);
+            for (const auto& text : c.texts) total += text.size();
+            for (const auto& value : c.variants) if (value.index() == 3) total += std::get<3>(value).size();
+        }
+        for (const auto& order : orders_) total += n(order.columns) * sizeof(uint32_t);
+        return total;
+    }
+};
 
 bool decodeColumnar(std::string_view payload, uint32_t expectedRows, ColumnarChunk& out) {
     out = {};
@@ -712,7 +1000,7 @@ V6DataType v6TypeFromName(std::string_view name) {
 
 struct TnrdV6Writer::Impl {
     struct Builder {
-        std::vector<V6Sample> samples;
+        SampleColumns columns;
         float first{std::numeric_limits<float>::infinity()};
         float last{-std::numeric_limits<float>::infinity()};
         uint32_t count{};
@@ -799,11 +1087,16 @@ struct TnrdV6Writer::Impl {
         state.current.isPartial = true; state.current.isValid = true;
         state.chunks.clear();
         for (const auto& [type, values] : state.lastState)
-            for (const auto& [_, value] : values) add(index, type, time, retime(value, time), false);
+            for (const auto& [_, value] : values) addFields(index, type, time, value.fields, false);
         for (V6DataType type : state.unavailable)
-            add(index, type, time, sample(time, {{"available", boolean(false)}}), false);
+            add(index, type, time, {{"available", boolean(false)}}, false);
     }
-    void add(uint8_t index, V6DataType type, float time, V6Sample value, bool updateState = true) {
+    void add(uint8_t index, V6DataType type, float time, std::initializer_list<V6Field> fields,
+             bool updateState = true) {
+        addFields(index, type, time, std::span<const V6Field>(fields.begin(), fields.size()), updateState);
+    }
+    void addFields(uint8_t index, V6DataType type, float time, std::span<const V6Field> fields,
+                   bool updateState = true) {
         if (index >= drivers.size() || type == V6DataType::Unknown || !std::isfinite(time)) return;
         // Once a car's race is over its telemetry is stale, but the game keeps
         // reclassifying it, so LapTiming is the one family that still records.
@@ -811,31 +1104,34 @@ struct TnrdV6Writer::Impl {
         if ((!player || index != *player) && !drivers[index].known) return;
         auto& state = ensure(index, time);
         if (!state.open) return;
-        if (isUnavailable(value)) state.unavailable.insert(type); else state.unavailable.erase(type);
+        if (isUnavailable(fields)) state.unavailable.insert(type); else state.unavailable.erase(type);
         if (updateState && stateType(type)) {
-            std::string signature = signatureOf(value);
+            std::string signature = signatureOf(fields);
             const auto typeState = state.lastState.find(type);
             if (typeState != state.lastState.end()) {
                 const auto previous = typeState->second.find(signature);
-                if (previous != typeState->second.end() && previous->second.fields == value.fields) return;
+                if (previous != typeState->second.end() && std::equal(previous->second.fields.begin(), previous->second.fields.end(), fields.begin(), fields.end())) return;
             }
-            state.lastState[type][std::move(signature)] = value;
+            state.lastState[type][std::move(signature)] = V6Sample{time, std::vector<V6Field>(fields.begin(), fields.end())};
         }
         auto& builder = state.chunks[type];
-        builder.samples.push_back(std::move(value));
+        builder.columns.append(time, fields);
         builder.first = std::min(builder.first, time); builder.last = std::max(builder.last, time); ++builder.count;
         state.current.endSessionTime = std::max(state.current.endSessionTime, time);
         liveHeaders[index].availableTypeMask |= v6DataTypeBit(type);
     }
     static Builder splitAt(Builder& source, float boundary) {
-        Builder moved, kept;
-        for (auto& value : source.samples) {
-            const float time = value.time;
-            auto& target = time >= boundary ? moved : kept;
-            target.samples.push_back(std::move(value));
-            target.first = std::min(target.first, time); target.last = std::max(target.last, time); ++target.count;
-        }
-        source = std::move(kept); return moved;
+        Builder moved; moved.columns = source.columns.splitAt(boundary);
+        const auto recount = [](Builder& builder) {
+            builder.first = std::numeric_limits<float>::infinity();
+            builder.last = -std::numeric_limits<float>::infinity();
+            builder.count = static_cast<uint32_t>(builder.columns.rows());
+            for (const float time : builder.columns.times()) {
+                builder.first = std::min(builder.first, time); builder.last = std::max(builder.last, time);
+            }
+        };
+        recount(source); recount(moved);
+        return moved;
     }
     void boundary(uint8_t index, uint32_t newNumber, float time, uint32_t lapTime,
                   uint32_t s1, uint32_t s2, uint32_t s3, bool completed, bool valid) {
@@ -887,7 +1183,7 @@ struct TnrdV6Writer::Impl {
     bool writeChunk(uint8_t driver, uint32_t lapId, V6Phase chunkPhase, V6DataType type,
                     const Builder& builder, V6ChunkInfo& info, std::string* errorOut) {
         if (!builder.count) return true;
-        if (!encodeColumnar(builder.samples, encoded) || encoded.size() > MAX_CHUNK_PLAIN ||
+        if (!builder.columns.encode(encoded) || encoded.size() > MAX_CHUNK_PLAIN ||
             chunks.size() >= MAX_CHUNKS) {
             fail(errorOut, "V6 chunk exceeds its format limit"); return false;
         }
@@ -1074,11 +1370,13 @@ struct TnrdV6Writer::Impl {
                 for (const auto& [type, builder] : lap->chunks) {
                     if (builder.count) header.availableTypeMask |= v6DataTypeBit(type);
                     if (stateType(type) && builder.count) {
-                        for (const auto& value : builder.samples) {
-                            state.committedState[type][signatureOf(value)] = value;
-                            if (isUnavailable(value)) state.committedUnavailable.insert(type);
-                            else state.committedUnavailable.erase(type);
-                        }
+                        const V6DataType family = type;
+                        builder.columns.forEachRow([&](float time, std::span<const V6Field> fields) {
+                            state.committedState[family][signatureOf(fields)] =
+                                V6Sample{time, std::vector<V6Field>(fields.begin(), fields.end())};
+                            if (isUnavailable(fields)) state.committedUnavailable.insert(family);
+                            else state.committedUnavailable.erase(family);
+                        });
                     }
                 }
                 committedThrough[phaseIndex(lap->summary.phase)] = std::max(
@@ -1167,12 +1465,12 @@ struct TnrdV6Writer::Impl {
     }
     bool privateAvailable(uint8_t index) const { return player == index || setting(index) == TelemetrySetting::Public; }
     void unavailable(uint8_t index, float time) {
-        const V6Sample missing = sample(time, {{"available", boolean(false)}});
+        const V6Field missing[] = {{"available", boolean(false)}};
         for (auto type : {V6DataType::Fuel,V6DataType::ERSStore,V6DataType::ERSHarvest,
                           V6DataType::ERSDeployment,V6DataType::EnginePower,V6DataType::BrakeBias,
                           V6DataType::TyreWear,V6DataType::Damage,V6DataType::TyreState}) {
             drivers[index].lastState[type].clear();
-            add(index, type, time, missing);
+            addFields(index, type, time, missing);
         }
     }
 
@@ -1189,7 +1487,7 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
     phaseTime[phaseIndex(phase)] = std::max(phaseTime[phaseIndex(phase)], time);
 
     auto telemetry = [&](uint8_t index, const auto& car) {
-        add(index, V6DataType::Speed, time, sample(time, {{"speed_kph",integer(car.speed_kph)}}));
+        add(index, V6DataType::Speed, time, {{"speed_kph",integer(car.speed_kph)}});
         std::vector<V6Field> rpm{{"rpm",integer(car.rpm)}};
         if constexpr (requires { car.rev_lights_pct.has_value(); }) {
             if (car.rev_lights_pct) rpm.push_back({"rev_lights_pct", integer(*car.rev_lights_pct)});
@@ -1198,32 +1496,32 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
             rpm.push_back({"rev_lights_pct", integer(car.rev_lights_pct)});
             rpm.push_back({"rev_lights_bit_value", integer(car.rev_lights_bit_value)});
         }
-        add(index, V6DataType::RPM, time, sample(time, rpm));
-        add(index, V6DataType::Gear, time, sample(time, {{"gear",integer(car.gear)}}));
+        addFields(index, V6DataType::RPM, time, rpm);
+        add(index, V6DataType::Gear, time, {{"gear",integer(car.gear)}});
         if constexpr (requires { car.throttle.has_value(); }) {
-            if (car.throttle) add(index,V6DataType::Throttle,time,sample(time,{{"throttle",number(*car.throttle)}}));
-            if (car.brake) add(index,V6DataType::Brake,time,sample(time,{{"brake",number(*car.brake)}}));
-            if (car.steering) add(index,V6DataType::Steering,time,sample(time,{{"steering",number(*car.steering)}}));
+            if (car.throttle) add(index,V6DataType::Throttle,time,{{"throttle",number(*car.throttle)}});
+            if (car.brake) add(index,V6DataType::Brake,time,{{"brake",number(*car.brake)}});
+            if (car.steering) add(index,V6DataType::Steering,time,{{"steering",number(*car.steering)}});
         } else {
-            add(index,V6DataType::Throttle,time,sample(time,{{"throttle",number(car.throttle)}}));
-            add(index,V6DataType::Brake,time,sample(time,{{"brake",number(car.brake)}}));
-            add(index,V6DataType::Steering,time,sample(time,{{"steering",number(car.steering)}}));
+            add(index,V6DataType::Throttle,time,{{"throttle",number(car.throttle)}});
+            add(index,V6DataType::Brake,time,{{"brake",number(car.brake)}});
+            add(index,V6DataType::Steering,time,{{"steering",number(car.steering)}});
         }
-        add(index,V6DataType::Aero,time,sample(time,{{"drs",integer(car.drs)},{"slm",integer(car.slm)}}));
-        add(index,V6DataType::TyreSurfaceTemp,time,sample(time,{
+        add(index,V6DataType::Aero,time,{{"drs",integer(car.drs)},{"slm",integer(car.slm)}});
+        add(index,V6DataType::TyreSurfaceTemp,time,{
             {"tyre_temp_surface_fl",integer(car.tyre_temp_surface_fl)},
             {"tyre_temp_surface_fr",integer(car.tyre_temp_surface_fr)},
             {"tyre_temp_surface_rl",integer(car.tyre_temp_surface_rl)},
-            {"tyre_temp_surface_rr",integer(car.tyre_temp_surface_rr)}}));
-        add(index,V6DataType::TyreInnerTemp,time,sample(time,{
+            {"tyre_temp_surface_rr",integer(car.tyre_temp_surface_rr)}});
+        add(index,V6DataType::TyreInnerTemp,time,{
             {"tyre_temp_inner_fl",integer(car.tyre_temp_inner_fl)},
             {"tyre_temp_inner_fr",integer(car.tyre_temp_inner_fr)},
             {"tyre_temp_inner_rl",integer(car.tyre_temp_inner_rl)},
-            {"tyre_temp_inner_rr",integer(car.tyre_temp_inner_rr)}}));
-        add(index,V6DataType::BrakeTemp,time,sample(time,{
+            {"tyre_temp_inner_rr",integer(car.tyre_temp_inner_rr)}});
+        add(index,V6DataType::BrakeTemp,time,{
             {"brake_temp_fl",integer(car.brake_temp_fl)},{"brake_temp_fr",integer(car.brake_temp_fr)},
-            {"brake_temp_rl",integer(car.brake_temp_rl)},{"brake_temp_rr",integer(car.brake_temp_rr)}}));
-        add(index,V6DataType::EngineTemp,time,sample(time,{{"engine_temp",integer(car.engine_temp)}}));
+            {"brake_temp_rl",integer(car.brake_temp_rl)},{"brake_temp_rr",integer(car.brake_temp_rr)}});
+        add(index,V6DataType::EngineTemp,time,{{"engine_temp",integer(car.engine_temp)}});
     };
 
     if (kind == "telemetry") {
@@ -1238,23 +1536,23 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
         if (row.player_idx >= 0 && row.player_idx < 24) player = static_cast<uint8_t>(row.player_idx);
         for (const auto& car : row.cars) if (car.idx >= 0 && car.idx < 24) {
             const auto index = static_cast<uint8_t>(car.idx);
-            add(index,V6DataType::Position,time,sample(time,{{"x",number(car.x)},{"z",number(car.z)}}));
+            add(index,V6DataType::Position,time,{{"x",number(car.x)},{"z",number(car.z)}});
             if (car.g_lat && car.g_long && car.g_vert)
-                add(index,V6DataType::GForce,time,sample(time,{{"g_lat",number(*car.g_lat)},
-                    {"g_long",number(*car.g_long)},{"g_vert",number(*car.g_vert)}}));
+                add(index,V6DataType::GForce,time,{{"g_lat",number(*car.g_lat)},
+                    {"g_long",number(*car.g_long)},{"g_vert",number(*car.g_vert)}});
         }
     } else if (kind == "motion") {
         MotionRow row; if (!glz::read<kPartialRead>(row, json) && row.player_idx >= 0 && row.player_idx < 24) {
             player = static_cast<uint8_t>(row.player_idx);
-            add(*player,V6DataType::GForce,time,sample(time,{{"g_lat",number(row.g_lat)},
-                {"g_long",number(row.g_long)},{"g_vert",number(row.g_vert)}}));
+            add(*player,V6DataType::GForce,time,{{"g_lat",number(row.g_lat)},
+                {"g_long",number(row.g_long)},{"g_vert",number(row.g_vert)}});
         }
     } else if (kind == "motion_ex") {
         MotionExRow row; if (!glz::read<kPartialRead>(row, json) && row.player_idx >= 0 && row.player_idx < 24) {
             player = static_cast<uint8_t>(row.player_idx);
-            add(*player,V6DataType::RideHeight,time,sample(time,{
+            add(*player,V6DataType::RideHeight,time,{
                 {"front_aero_height_mm",number(row.front_aero_height_mm)},
-                {"rear_aero_height_mm",number(row.rear_aero_height_mm)}}));
+                {"rear_aero_height_mm",number(row.rear_aero_height_mm)}});
         }
     } else if (kind == "timing") {
         TimingRow row; if (glz::read<kPartialRead>(row, json)) return true;
@@ -1319,27 +1617,27 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
                 {"sector",integer(car.sector)},{"result_status",integer(car.result_status)},
                 {"driver_status",integer(car.driver_status)}};
             if (car.lap_distance_m) values.push_back({"lap_distance_m", number(*car.lap_distance_m)});
-            add(index,V6DataType::LapTiming,time,sample(time,values));
+            addFields(index,V6DataType::LapTiming,time,values);
             if (ended) terminate(index,time);
         }
     } else if (kind == "all_status") {
         AllStatusRow row; if (glz::read<kPartialRead>(row, json)) return true;
         for (const auto& car : row.cars) if (car.idx >= 0 && car.idx < 24) {
             const uint8_t index = static_cast<uint8_t>(car.idx);
-            add(index,V6DataType::Aero,time,sample(time,{{"drs_allowed",boolean(car.drs_allowed)}}));
-            add(index,V6DataType::TyreState,time,sample(time,{{"tyre_compound",integer(car.tyre_compound)},
-                {"visual_compound",integer(car.visual_compound)},{"tyre_age_laps",integer(car.tyre_age_laps)}}));
+            add(index,V6DataType::Aero,time,{{"drs_allowed",boolean(car.drs_allowed)}});
+            add(index,V6DataType::TyreState,time,{{"tyre_compound",integer(car.tyre_compound)},
+                {"visual_compound",integer(car.visual_compound)},{"tyre_age_laps",integer(car.tyre_age_laps)}});
             if (!privateAvailable(index)) continue;
-            add(index,V6DataType::Fuel,time,sample(time,{{"fuel_kg",number(car.fuel_kg)},
-                {"fuel_laps",number(car.fuel_laps)},{"fuel_mix",integer(car.fuel_mix)}}));
-            add(index,V6DataType::BrakeBias,time,sample(time,{{"front_brake_bias",integer(car.front_brake_bias)}}));
-            add(index,V6DataType::ERSStore,time,sample(time,{{"ers_j",integer(car.ers_j)},
-                {"ers_pct",number(car.ers_pct)},{"ers_mode",integer(car.ers_mode)}}));
-            add(index,V6DataType::ERSHarvest,time,sample(time,{{"ers_harvested_mguk_j",integer(car.ers_harvested_mguk_j)},
-                {"ers_harvested_mguh_j",integer(car.ers_harvested_mguh_j)}}));
-            add(index,V6DataType::ERSDeployment,time,sample(time,{{"ers_deployed_j",integer(car.ers_deployed_j)}}));
-            add(index,V6DataType::EnginePower,time,sample(time,{{"engine_power_ice_kw",number(car.engine_power_ice_kw)},
-                {"engine_power_mguk_kw",number(car.engine_power_mguk_kw)}}));
+            add(index,V6DataType::Fuel,time,{{"fuel_kg",number(car.fuel_kg)},
+                {"fuel_laps",number(car.fuel_laps)},{"fuel_mix",integer(car.fuel_mix)}});
+            add(index,V6DataType::BrakeBias,time,{{"front_brake_bias",integer(car.front_brake_bias)}});
+            add(index,V6DataType::ERSStore,time,{{"ers_j",integer(car.ers_j)},
+                {"ers_pct",number(car.ers_pct)},{"ers_mode",integer(car.ers_mode)}});
+            add(index,V6DataType::ERSHarvest,time,{{"ers_harvested_mguk_j",integer(car.ers_harvested_mguk_j)},
+                {"ers_harvested_mguh_j",integer(car.ers_harvested_mguh_j)}});
+            add(index,V6DataType::ERSDeployment,time,{{"ers_deployed_j",integer(car.ers_deployed_j)}});
+            add(index,V6DataType::EnginePower,time,{{"engine_power_ice_kw",number(car.engine_power_ice_kw)},
+                {"engine_power_mguk_kw",number(car.engine_power_mguk_kw)}});
         }
     } else if (kind == "damage") {
         DamageRow row; if (glz::read<kPartialRead>(row, json)) return true;
@@ -1355,8 +1653,8 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
             ADD_OPT(values,diffuser_damage); ADD_OPT(values,sidepod_damage); ADD_OPT(values,gearbox_damage);
             ADD_OPT(values,engine_damage); ADD_OPT(values,drs_fault); ADD_OPT(values,ers_fault);
 #undef ADD_OPT
-            if (!wear.empty()) add(index,V6DataType::TyreWear,time,sample(time,wear));
-            if (!values.empty()) add(index,V6DataType::Damage,time,sample(time,values));
+            if (!wear.empty()) addFields(index,V6DataType::TyreWear,time,wear);
+            if (!values.empty()) addFields(index,V6DataType::Damage,time,values);
         };
         if (player) damage(*player,row,true);
         if (row.cars) for (const auto& car : *row.cars)
@@ -1365,8 +1663,8 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
     } else if (kind == "tyre_sets") {
         TyreSetsRow row; if (!glz::read<kPartialRead>(row, json) && row.car_idx >= 0 && row.car_idx < 24) {
             const uint8_t index = static_cast<uint8_t>(row.car_idx);
-            if (privateAvailable(index)) add(index,V6DataType::TyreState,time,sample(time,
-                {{"sets",rawJson(jsonOf(row.sets))},{"fitted_idx",integer(row.fitted_idx)}}));
+            if (privateAvailable(index)) add(index,V6DataType::TyreState,time,
+                {{"sets",rawJson(jsonOf(row.sets))},{"fitted_idx",integer(row.fitted_idx)}});
         }
     } else if (kind == "participants") {
         ParticipantsRow row; if (glz::read<kPartialRead>(row, json)) return true;
@@ -1480,11 +1778,13 @@ bool TnrdV6Writer::Impl::rewind(float time, std::string* errorOut) {
         if (!state.open || state.current.lapNumber != 0) state.garageHold = false;
         auto consider = [&](const std::map<V6DataType,Builder>& chunks) {
             for (const auto& [type,builder] : chunks) if (stateType(type) && builder.count) {
-                for (const auto& value : builder.samples) {
-                    state.lastState[type][signatureOf(value)] = value;
-                    if (isUnavailable(value)) state.unavailable.insert(type);
-                    else state.unavailable.erase(type);
-                }
+                const V6DataType family = type;
+                builder.columns.forEachRow([&](float time, std::span<const V6Field> fields) {
+                    state.lastState[family][signatureOf(fields)] =
+                        V6Sample{time, std::vector<V6Field>(fields.begin(), fields.end())};
+                    if (isUnavailable(fields)) state.unavailable.insert(family);
+                    else state.unavailable.erase(family);
+                });
             }
         };
         for (const auto& lap : state.pending) consider(lap.chunks); consider(state.chunks);
@@ -1578,9 +1878,9 @@ bool TnrdV6Writer::finish(std::string* errorOut) {
 }
 TnrdV6WriterMemoryStats TnrdV6Writer::memoryStats() const {
     TnrdV6WriterMemoryStats out; out.open=isOpen(); if(!impl_) return out;
-    // Builders hold typed samples, not text, so "plain" bytes are their
-    // resident footprint: sample records plus their field vectors.
-    const auto sampleBytes=[](const Impl::Builder& b,bool capacity){size_t bytes=(capacity?b.samples.capacity():b.samples.size())*sizeof(V6Sample);for(const auto& s:b.samples){bytes+=(capacity?s.fields.capacity():s.fields.size())*sizeof(V6Field);for(const auto& f:s.fields)if(f.value.index()==3)bytes+=std::get<3>(f.value).size();}return bytes;};
+    // Builders hold typed columns, not text, so "plain" bytes are their
+    // resident footprint: time, packed values, presence bitmaps and strings.
+    const auto sampleBytes=[](const Impl::Builder& b,bool capacity){return b.columns.bytes(capacity);};
     for(const auto& state:impl_->drivers){out.builderCount+=state.chunks.size();for(const auto&[_,b]:state.chunks){out.builderPlainBytes+=sampleBytes(b,false);out.builderPlainCapacityBytes+=sampleBytes(b,true);}out.pendingLapCount+=state.pending.size();for(const auto&lap:state.pending)for(const auto&[_,b]:lap.chunks)out.pendingLapPlainBytes+=sampleBytes(b,false);}
     out.chunkCount=impl_->chunks.size();out.lapCount=impl_->committedLaps.size();out.eventCount=impl_->committedShared.size();
     out.chunkWrites=impl_->chunkWrites;out.chunkPlainBytesProcessed=impl_->plainBytes;out.chunkCompressedBytesWritten=impl_->compressedBytes;out.compressionBufferBytesAllocated=impl_->compressionAllocated;out.compressionScratchCapacityBytes=impl_->scratch.capacity();out.compressionContextBytes=impl_->compressor?ZSTD_sizeof_CCtx(impl_->compressor):0;out.lastChunkPlainBytes=impl_->lastPlain;out.lastChunkCompressedBytes=impl_->lastCompressed;out.peakCompressionBufferCapacityBytes=impl_->peakScratch;out.checkpointWrites=impl_->checkpoints;out.retainedBytes=out.builderPlainCapacityBytes+out.pendingLapPlainBytes+out.compressionScratchCapacityBytes;return out;

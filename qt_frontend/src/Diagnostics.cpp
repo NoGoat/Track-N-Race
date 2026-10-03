@@ -19,6 +19,7 @@
 #include <QTimer>
 #include <QtGlobal>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -28,7 +29,10 @@
 #include <psapi.h>
 #elif defined(Q_OS_MACOS)
 #include <mach/mach.h>
-#elif !defined(Q_OS_LINUX)
+#include <malloc/malloc.h>
+#elif defined(Q_OS_LINUX)
+#include <malloc.h>
+#else
 #include <sys/resource.h>
 #endif
 
@@ -51,28 +55,53 @@ double jsonNumber(quint64 value) {
     return static_cast<double>(value);
 }
 
-QJsonObject processMemorySnapshot() {
-    QJsonObject process;
-    process["category"] = QStringLiteral("process");
-    process["pid"] = jsonNumber(QCoreApplication::applicationPid());
+// One OS-level process row in Electron's app.getAppMetrics() shape. Qt runs
+// in a single process, so the row list always has exactly one entry.
+struct ProcessMemory {
+    QJsonObject row;          // Electron "processes[]" entry
+    QJsonObject details;      // extra OS counters for main_runtime_memory
+    double workingSetKb = 0;
+    double privateKb = -1;    // < 0: not reported on this platform (as Electron)
+};
+
+ProcessMemory processMemorySnapshot() {
+    ProcessMemory out;
 
 #ifdef Q_OS_WIN
     PROCESS_MEMORY_COUNTERS_EX counters{};
     counters.cb = sizeof(counters);
     if (GetProcessMemoryInfo(GetCurrentProcess(),
             reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters))) {
-        process["resident_bytes"] = jsonNumber(counters.WorkingSetSize);
-        process["peak_resident_bytes"] = jsonNumber(counters.PeakWorkingSetSize);
-        process["private_bytes"] = jsonNumber(counters.PrivateUsage);
-        process["pagefile_bytes"] = jsonNumber(counters.PagefileUsage);
+        out.workingSetKb = jsonNumber(counters.WorkingSetSize) / 1024.0;
+        out.privateKb = jsonNumber(counters.PrivateUsage) / 1024.0;
+        out.details["working_set_bytes"] = jsonNumber(counters.WorkingSetSize);
+        out.details["peak_working_set_bytes"] = jsonNumber(counters.PeakWorkingSetSize);
+        out.details["private_bytes"] = jsonNumber(counters.PrivateUsage);
+        out.details["pagefile_bytes"] = jsonNumber(counters.PagefileUsage);
+        out.details["peak_pagefile_bytes"] = jsonNumber(counters.PeakPagefileUsage);
     }
+    DWORD handles = 0;
+    if (GetProcessHandleCount(GetCurrentProcess(), &handles))
+        out.details["handle_count"] = jsonNumber(handles);
+    out.details["gdi_objects"] = jsonNumber(GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS));
+    out.details["user_objects"] = jsonNumber(GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS));
 #elif defined(Q_OS_MACOS)
     mach_task_basic_info_data_t info{};
     mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
     if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
                   reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
-        process["resident_bytes"] = jsonNumber(info.resident_size);
-        process["virtual_bytes"] = jsonNumber(info.virtual_size);
+        out.workingSetKb = jsonNumber(info.resident_size) / 1024.0;
+        out.details["working_set_bytes"] = jsonNumber(info.resident_size);
+        out.details["peak_working_set_bytes"] = jsonNumber(info.resident_size_max);
+        out.details["virtual_bytes"] = jsonNumber(info.virtual_size);
+    }
+    // phys_footprint is the process's own memory as Activity Monitor reports it.
+    task_vm_info_data_t vm{};
+    mach_msg_type_number_t vmCount = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO,
+                  reinterpret_cast<task_info_t>(&vm), &vmCount) == KERN_SUCCESS) {
+        out.privateKb = jsonNumber(vm.phys_footprint) / 1024.0;
+        out.details["private_bytes"] = jsonNumber(vm.phys_footprint);
     }
 #elif defined(Q_OS_LINUX)
     QFile status(QStringLiteral("/proc/self/status"));
@@ -82,30 +111,85 @@ QJsonObject processMemorySnapshot() {
             const QList<QByteArray> fields = line.mid(key.size()).simplified().split(' ');
             bool ok = false;
             const quint64 kb = fields.isEmpty() ? 0 : fields.front().toULongLong(&ok);
-            return ok ? jsonNumber(kb * 1024ULL) : -1.0;
+            return ok ? jsonNumber(kb) : -1.0;
         };
         while (!status.atEnd()) {
             const QByteArray line = status.readLine();
             const struct { const char* source; const char* target; } fields[] = {
-                { "VmRSS:", "resident_bytes" },
-                { "VmHWM:", "peak_resident_bytes" },
+                { "VmRSS:", "working_set_bytes" },
+                { "VmHWM:", "peak_working_set_bytes" },
                 { "VmSize:", "virtual_bytes" },
                 { "RssAnon:", "anonymous_resident_bytes" },
+                { "VmSwap:", "swap_bytes" },
             };
             for (const auto& field : fields) {
-                const double value = readKb(line, field.source);
-                if (value >= 0.0) process[field.target] = value;
+                const double kb = readKb(line, field.source);
+                if (kb < 0.0) continue;
+                out.details[field.target] = kb * 1024.0;
+                if (qstrcmp(field.source, "VmRSS:") == 0) out.workingSetKb = kb;
             }
         }
     }
 #else
     struct rusage usage{};
     if (getrusage(RUSAGE_SELF, &usage) == 0)
-        process["peak_resident_bytes"] = jsonNumber(usage.ru_maxrss * 1024ULL);
+        out.details["peak_working_set_bytes"] = jsonNumber(usage.ru_maxrss * 1024ULL);
 #endif
-    return process;
+
+    out.row["pid"] = jsonNumber(QCoreApplication::applicationPid());
+    out.row["type"] = QStringLiteral("Qt");
+    out.row["process_type"] = QStringLiteral("Qt");
+    out.row["name"] = QStringLiteral("Track N Race (Qt)");
+    out.row["working_set_kb"] = out.workingSetKb;
+    out.row["private_kb"] = out.privateKb >= 0.0 ? QJsonValue(out.privateKb) : QJsonValue();
+    return out;
 }
 
+// Native allocator counters: the Qt build's counterpart of Electron's Node/V8
+// heap section. Only what the platform exposes cheaply is reported.
+QJsonObject allocatorSnapshot() {
+    QJsonObject heap;
+#if defined(Q_OS_MACOS)
+    malloc_statistics_t stats{};
+    malloc_zone_statistics(nullptr, &stats);
+    heap["source"] = QStringLiteral("malloc_zone_statistics");
+    heap["blocks_in_use"] = jsonNumber(stats.blocks_in_use);
+    heap["size_in_use_bytes"] = jsonNumber(stats.size_in_use);
+    heap["max_size_in_use_bytes"] = jsonNumber(stats.max_size_in_use);
+    heap["size_allocated_bytes"] = jsonNumber(stats.size_allocated);
+#elif defined(Q_OS_LINUX) && defined(__GLIBC__) && \
+    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+    const struct mallinfo2 info = mallinfo2();
+    heap["source"] = QStringLiteral("mallinfo2");
+    heap["arena_bytes"] = jsonNumber(info.arena);
+    heap["mmap_bytes"] = jsonNumber(info.hblkhd);
+    heap["in_use_bytes"] = jsonNumber(info.uordblks);
+    heap["free_bytes"] = jsonNumber(info.fordblks);
+    heap["releasable_bytes"] = jsonNumber(info.keepcost);
+#elif defined(Q_OS_WIN)
+    heap["source"] = QStringLiteral("GetProcessHeaps");
+    heap["process_heaps"] = jsonNumber(GetProcessHeaps(0, nullptr));
+#else
+    heap["source"] = QStringLiteral("unavailable");
+#endif
+    return heap;
+}
+
+double finiteNumber(const QJsonValue& value) {
+    const double number = value.toDouble(0.0);
+    return std::isfinite(number) ? number : 0.0;
+}
+
+void appendWithCategory(QJsonArray& categories, const QString& category, const QJsonObject& body) {
+    QJsonObject entry{{"category", category}};
+    for (auto it = body.begin(); it != body.end(); ++it) entry.insert(it.key(), it.value());
+    categories.append(entry);
+}
+
+// Mirrors the Electron main-process ram_usage.log sample (diagnostics.ts) so
+// both frontends' logs can be read by the same tooling. The provider returns
+// the telemetry_data body { mode, attribution_scope, main, renderer }: "main"
+// is native-engine retention and "renderer" is Qt UI retention.
 void writeMemorySample() {
     if (!ramUsageFile.isOpen()) return;
 
@@ -118,20 +202,57 @@ void writeMemorySample() {
         frontend["snapshot_error"] = QStringLiteral("Unknown snapshot failure");
     }
 
+    const ProcessMemory process = processMemorySnapshot();
+    QJsonArray processes;
+    processes.append(process.row);
+
+    const QJsonObject mainRetention = frontend.value("main").toObject();
+    const QJsonObject rendererRetention = frontend.value("renderer").toObject();
+    const double retainedBytes = finiteNumber(mainRetention.value("retained_bytes")) +
+        finiteNumber(rendererRetention.value("estimated_retained_bytes"));
+    const QDateTime rendererSampledAt = QDateTime::fromString(
+        rendererRetention.value("sampled_at").toString(), Qt::ISODateWithMs);
+
+    QJsonObject telemetryData;
+    telemetryData["type"] = QStringLiteral("TelemetryData");
+    telemetryData["name"] = QStringLiteral("Application-held telemetry");
+    telemetryData["mode"] = frontend.value("mode").toString(QStringLiteral("unknown"));
+    telemetryData["estimated_retained_bytes"] = retainedBytes;
+    telemetryData["estimated_retained_kb"] = retainedBytes / 1024.0;
+    telemetryData["already_included_in_process_totals"] = true;
+    telemetryData["attribution_scope"] = frontend.value("attribution_scope");
+    telemetryData["renderer_sample_age_ms"] = rendererSampledAt.isValid()
+        ? QJsonValue(jsonNumber(qMax<qint64>(0, rendererSampledAt.msecsTo(QDateTime::currentDateTimeUtc()))))
+        : QJsonValue();
+    telemetryData["main"] = frontend.contains("main") ? QJsonValue(mainRetention) : QJsonValue();
+    telemetryData["renderer"] = frontend.contains("renderer") ? QJsonValue(rendererRetention) : QJsonValue();
+    if (frontend.contains("snapshot_error"))
+        telemetryData["snapshot_error"] = frontend.value("snapshot_error");
+
+    QJsonObject runtime;
+    runtime["type"] = QStringLiteral("MainRuntimeMemory");
+    runtime["name"] = QStringLiteral("Qt process native runtime");
+    runtime["pid"] = process.row.value("pid");
+    runtime["already_included_in_process_totals"] = true;
+    runtime["process"] = process.details;
+    runtime["heap"] = allocatorSnapshot();
+
     QJsonObject sample;
     sample["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
     sample["elapsed_ms"] = jsonNumber(memoryElapsed.isValid() ? memoryElapsed.elapsed() : 0);
-    const QJsonObject process = processMemorySnapshot();
-    sample["process"] = process;
-    sample["frontend_retained"] = frontend;
-    sample["category_count"] = 2;
+    sample["total_working_set_kb"] = process.workingSetKb;
+    sample["total_private_kb"] = process.privateKb >= 0.0 ? QJsonValue(process.privateKb) : QJsonValue();
+    sample["process_count"] = processes.size();
+    sample["processes"] = processes;
+    sample["category_count"] = processes.size() + 2;
 
     QJsonArray categories;
-    categories.append(process);
-    QJsonObject frontendCategory = frontend;
-    frontendCategory["category"] = QStringLiteral("frontend_retained");
-    categories.append(frontendCategory);
+    appendWithCategory(categories, QStringLiteral("process"), process.row);
+    appendWithCategory(categories, QStringLiteral("telemetry_data"), telemetryData);
+    appendWithCategory(categories, QStringLiteral("main_runtime_memory"), runtime);
     sample["categories"] = categories;
+    sample["telemetry_data"] = telemetryData;
+    sample["main_runtime_memory"] = runtime;
 
     const QByteArray line = QJsonDocument(sample).toJson(QJsonDocument::Compact) + '\n';
     if (ramUsageFile.write(line) != line.size() || !ramUsageFile.flush())

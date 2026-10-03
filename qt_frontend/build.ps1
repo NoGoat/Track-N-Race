@@ -7,11 +7,11 @@ param(
     [string]$BreezeRuntimeDir = "C:\vcpkg\installed\x64-windows\bin"
 )
 
-# build.ps1 - Build the Track N Race Background Recorder on Windows
+# build.ps1 - Build Track N Race - Qt on Windows
 $ErrorActionPreference = "Stop"
 
 Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host "   TNRD Background Recorder - Build Script" -ForegroundColor Cyan
+Write-Host "   Track N Race - Qt - Build Script" -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan
 
 # 1. Detect Visual Studio and bundled CMake

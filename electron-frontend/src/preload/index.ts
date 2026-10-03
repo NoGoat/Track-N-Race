@@ -72,22 +72,6 @@ const telemetryBridge = {
     ipcRenderer.on('telemetry-binary', listener)
     return () => ipcRenderer.removeListener('telemetry-binary', listener)
   },
-  onResume: (callback: (payload: { binary: Uint8Array; coldJson: string }) => void): (() => void) => {
-    logSubscription('telemetry-resume')
-    let first = true
-    const listener = (_event: Electron.IpcRendererEvent, payload: { binary: Uint8Array; coldJson: string }) => {
-      if (first && additionalLoggingEnabled) {
-        first = false
-        console.info('[telemetry-diagnostics][preload] first telemetry-resume delivery', {
-          binaryBytes: payload.binary?.byteLength ?? null,
-          coldJsonBytes: payloadBytes(payload.coldJson),
-        })
-      }
-      callback(payload)
-    }
-    ipcRenderer.on('telemetry-resume', listener)
-    return () => ipcRenderer.removeListener('telemetry-resume', listener)
-  },
   reportRetention: (snapshot: unknown): void =>
     ipcRenderer.send('diagnostics:telemetry-retention', snapshot),
 }

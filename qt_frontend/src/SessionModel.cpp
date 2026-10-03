@@ -321,6 +321,7 @@ void SessionData::clear() {
     trackLengthM = 0;
     currentStintStartTime = 0;
     fuelUpperLimit = -1;
+    sessionSectorSplits.clear();
 }
 
 void SessionData::trim() {
@@ -424,6 +425,18 @@ QVector<LapProgressSample> SessionData::sectorSplits(const LapBlock* lap) const 
         lastSector = point.sector;
     }
     return result;
+}
+
+void SessionData::learnSessionSectorSplits(const LapBlock& lap) {
+    if (sessionSectorSplits.size() >= 2) return;
+    // Only fill sectors not yet known; an established boundary never moves.
+    for (const LapProgressSample& split : sectorSplits(&lap)) {
+        const bool known = std::any_of(sessionSectorSplits.cbegin(), sessionSectorSplits.cend(),
+            [&](const LapProgressSample& existing) { return existing.sector == split.sector; });
+        if (!known) sessionSectorSplits.push_back(split);
+    }
+    std::sort(sessionSectorSplits.begin(), sessionSectorSplits.end(),
+        [](const LapProgressSample& a, const LapProgressSample& b) { return a.sector < b.sector; });
 }
 
 // ── SessionModel: QObject wrapper + per-frame coalescing ────────────────────
@@ -641,7 +654,10 @@ void SessionModel::onLap(int lapNum, int currentLapMs, int lastLapMs, bool inval
     const int before = d_.laps.size();
     d_.onLap(lapNum, currentLapMs, lastLapMs, invalid, driverStatus, timedSession,
              sessionTime, lapDistanceM, sector, pitStatus);
-    if (d_.laps.size() != before) emit lapsChanged();
+    if (d_.laps.size() != before) {
+        if (!playbackMode_) d_.learnSessionSectorSplits(d_.laps.last());
+        emit lapsChanged();
+    }
 }
 
 void SessionModel::beginIngestBatch() { ++ingestBatchDepth_; }

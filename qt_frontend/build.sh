@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh — Build the Track N Race Background Recorder on Linux/macOS
+# build.sh — Build Track N Race - Qt on Linux/macOS
 # Usage: ./build.sh [--clean] [--qt-prefix /path/to/Qt/6.x.x/gcc_64] [--with-breeze [prefix]]
 set -e
 
@@ -36,7 +36,7 @@ if [ "$CLEAN" = true ] && [ -d "$SCRIPT_DIR/build" ]; then
 fi
 
 echo "============================================="
-echo "   TNRD Background Recorder - Build Script"
+echo "   Track N Race - Qt - Build Script"
 echo "============================================="
 
 CMAKE_ARGS=(

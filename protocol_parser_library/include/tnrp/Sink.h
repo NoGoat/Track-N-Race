@@ -46,6 +46,27 @@ public:
                              uint32_t /*rowTypeMask*/ = 0xFFFFFFFFu,
                              float /*historyStart*/ = 0.0f) {}
 
+    // Host restore after Engine::setHostVisible(true). The payload has the
+    // same layout as a seek flush, but it replaces exactly what the hidden
+    // host missed. Chart families replace [chartFrom, through]. Race events,
+    // when included, replace [eventsFrom, through]. sessionChanged means the
+    // live session UID changed while the host was hidden, so the host must
+    // drop its session state before installing the payload.
+    struct RestoreFlushInfo {
+        uint32_t rowTypeMask = 0;
+        float chartFrom = 0.0f;
+        bool includesEvents = false;
+        float eventsFrom = 0.0f;
+        float through = 0.0f;
+        bool sessionChanged = false;
+        float currentLapStart = 0.0f;
+        int lapNum = 0;
+    };
+    virtual void onRestoreFlush(std::shared_ptr<const std::vector<uint8_t>> /*binStore*/,
+                                size_t /*binBegin*/, size_t /*binEnd*/,
+                                std::string&& /*coldJson*/,
+                                const RestoreFlushInfo& /*info*/) {}
+
     // Paired-display state is emitted as two documents: public state for UI
     // presentation and opaque private state for host persistence. Keeping the
     // latter opaque prevents credentials and protocol ownership leaking into

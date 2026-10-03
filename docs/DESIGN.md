@@ -32,8 +32,8 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   │                 optionally forwards each raw datagram to ≤15 IPv4 targets
   ├── Parser        pure decode: format detect + override + debounce +
   │                 duplicate rejection + dispatch to protocols/f1_24|25|26.cpp
-  ├── TnrdWriter    .tnrd V5 recording (own disk thread)
-  ├── TnrdReader    V1–V5 playback (index, per-lap blocks, binary stores)
+  ├── TnrdWriter    .tnrd V6 recording (own disk thread)
+  ├── TnrdReader    V1–V6 playback (index, per-lap blocks, binary stores)
   ├── PairServer    discovery + WebSocket/auth/subscriptions/latest-state cache
   └── Sink*         host seam (onRow/onBinary/onSeekFlush/onPairState)
 ```
@@ -292,11 +292,11 @@ overlay flows.
   `magic` and `compression: "zstd"` header values. V3 adds `track_length_m` to
   the header and `lap_distance_m` to lap rows. `TnrdReader::load()` detects the
   codec from its native bytes, then uses and validates the JSON header to
-  distinguish V2 from V3. Normal recording writes V5. Explicit
+  distinguish V2 from V3. Normal recording writes V6 (see `TNRD_V6_DESIGN.md`). Explicit
   `setLoggingGzip()` retains deprecated V1 writing for compatibility. Every
   subsequent line is one typed row with `session_time`. Telemetry rows expose the
   game's exact `rev_lights_pct` and 15-bit `rev_lights_bit_value` fields for live
-  data and V5 recordings; V1-V4 playback deliberately marks them unavailable so
+  data and V5/V6 recordings; V1-V4 playback deliberately marks them unavailable so
   clients do not synthesize rev lights from RPM. V4/V5 use an uncompressed indexed
   control plane and independently checksummed `(lap,rowType,segment)` Zstandard
   JSONL chunks. V5 checkpoints omit row indexes, completed recordings write the
@@ -327,8 +327,7 @@ F1 game ──UDP:20777──> tnrp::Engine (in-process via node_addon)
                           ▼                          ▼
 main: bridgeManager.ts  'telemetry-batch' IPC   direct real batches → 'telemetry-binary' IPC
                           │  (visibility-gated)     │  (addon-coalesced, visibility-gated)
-                          └──── bounded hidden-window cache ────┘
-                                      'telemetry-resume' IPC
+                          │  on show: one engine restore flush ('playback_seek_flush_bin' + restore)
 preload (contextBridge)   ▼                          ▼
 renderer: telemetryStore.ts (Zustand) ── slices ──> pages/components
                                         └─ TimeChartView (WebGL) per chart
@@ -384,11 +383,15 @@ the JS progress callback). Module-level exports: `labelsJson(format)`,
   `session_time` values.
 - **Visibility gating** (`setRendererVisible`, fed by the renderer's
   `document.visibilityState` over IPC): while hidden, normal IPC forwarding
-  stops and main retains only the selected chart window (hot chart records plus
-  status/damage history; position records are excluded). On refocus this is
-  coalesced into one `telemetry-resume` payload, bulk-applied by the renderer,
-  and the cached `protocol_status` is re-pushed. The cache is time-bounded and
-  compacted in chunks, so Chromium never accumulates a per-frame IPC backlog.
+  stops and main caches nothing, so Chromium never accumulates a per-frame IPC
+  backlog. Main tells the engine (`setHostVisible`). On show the engine rebuilds
+  what the renderer missed from its live history or the recording: chart
+  families from the later of the chart window and the hide point, and in live
+  mode race events from the hide point. It moves that start back for rewinds,
+  seeks and loads while hidden, and reports a header `m_sessionUID` change.
+  The result is one restore flush, followed by the latest current-state rows,
+  and the cached `protocol_status` is re-pushed. See
+  `docs/RENDERER_RESTORE_DESIGN.md`.
   `requestStatus()` lets a renderer pull the cached status on demand (e.g.
   after mounting with fallback labels).
 - **Playback glue**: `playerLoad` closes any open clip first, tracks the
@@ -431,10 +434,11 @@ re-render the whole tree. Now IPC ingestion writes to module-level buffers
   (Telemetry/Motion/MotionEx/Status/Damage/Derived) and only the touched
   window groups are recomputed — unchanged groups keep their array identity so
   their subscribers stay cold.
-- **Resume backfill**: the single `telemetry-resume` payload appends retained
-  hot and cold chart histories directly to their monotonic buffers, publishes
-  current status/damage once, and recomputes affected slices once. This restores
-  the selected window without a per-row Zustand/render storm.
+- **Restore after hidden**: the engine's restore flush installs each requested
+  family with `replaceRange` (held rows before and after the range survive),
+  merges race events without replaying banners, rebuilds lap state, publishes
+  once and recomputes affected slices once. A session change resets the session
+  first.
 - **Lap state**: lap-number changes snapshot the completed lap (last 3 kept +
   fastest), maintaining live lap times; in playback the same derived slices are
   served from the engine's `playback_lap_blocks` slim blocks instead, filtered
@@ -656,7 +660,7 @@ discovery, QR/manual-code pairing, and open-source notices. Material You dynamic
 color is used on Android 12+ with light/dark Material 3 fallback schemes.
 
 The JNI bridge also exposes `Engine::setLogging`, so the full-page Settings
-screen can control the shared asynchronous TNRD V5 writer without
+screen can control the shared asynchronous TNRD V6 writer without
 reimplementing recording in Java. Recording is disabled by default; opt-in
 intent is persisted and sessions are staged under the app's external Documents
 directory (`Track N Race/`), which the Android host creates and verifies before

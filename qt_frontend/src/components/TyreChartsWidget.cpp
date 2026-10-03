@@ -50,6 +50,10 @@ TyreChartsWidget::TyreChartsWidget(bool grid, QWidget* parent)
         yId_[sec] = chart_->addAxis(
             { ChartView::Side::Left, yMin, yMax, QColor(), true, 'f', 0 }, sec);
         chart_->setAxisTimeTicker(xId_[sec], "%m:%s");
+        // Electron TyreTrendCharts: dashed 3/3 grid on both axes, 3 px x ticks.
+        chart_->setAxisGridStyle(xId_[sec], true, 3);
+        chart_->setAxisGridVisible(yId_[sec], true);
+        chart_->setAxisGridStyle(yId_[sec], true);
         // Build the header (title + colour key) before the series, so the series
         // register in this panel's key legend rather than the default one.
         chart_->setPanelTitle(sec, title);

@@ -1,5 +1,8 @@
 #include "AnalyzeMetrics.h"
 
+#include <QLocale>
+#include <cmath>
+
 namespace {
 AnalyzeMetric M(const char* id, const char* group, const char* label, AnalyzeSource source,
                 const char* field, const char* color, const char* scale, double min, double max,
@@ -49,6 +52,22 @@ const QVector<AnalyzeMetric>& analyzeMetrics() {
 const AnalyzeMetric* analyzeMetric(const QString& id) {
     for (const auto& m : analyzeMetrics()) if (m.id == id) return &m;
     return nullptr;
+}
+
+QString analyzeFormatValue(const AnalyzeMetric& metric, double value) {
+    if (!std::isfinite(value)) return QString::fromUtf8("—");
+    // Qt stores throttle/brake/steering as percentages; Electron as 0..1.
+    if (metric.id == "rpm") {
+        QLocale locale;
+        return locale.toString(qint64(std::llround(value))) + " rpm";
+    }
+    if (metric.id == "gear") return QString("Gear %1").arg(std::llround(value));
+    if (metric.id == "throttle" || metric.id == "brake") return QString("%1%").arg(std::llround(value));
+    if (metric.id == "steering")
+        return QString("%1%2%").arg(value < 0 ? "L " : value > 0 ? "R " : "").arg(std::llround(std::abs(value)));
+    const QString number = QString::number(value, 'f', metric.precision);
+    if (metric.id == "speed") return number + " km/h";
+    return metric.unit == "%" ? number + "%" : number + " " + metric.unit;
 }
 
 const QStringList& analyzeMetricGroups() {

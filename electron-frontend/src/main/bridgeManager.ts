@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
-import { chartHistoryRecords, inspectBinaryBatch } from './binaryRows'
+import { inspectBinaryBatch } from './binaryRows'
 import { configStore as store } from './configStore'
 import { normalizeTeamColorOverrides, type TeamColorOverrides } from './teamColors'
 import { setTelemetryRetentionProvider } from './diagnostics'
@@ -184,11 +184,6 @@ function logBridgeHealth(reason: string): void {
       lastJsonAgeMs: bridgeDiagnostics.lastJsonAt == null ? null : now - bridgeDiagnostics.lastJsonAt,
       lastBinaryAgeMs: bridgeDiagnostics.lastBinaryAt == null ? null : now - bridgeDiagnostics.lastBinaryAt,
     },
-    resumeCache: {
-      binaryEntries: hiddenBinary.length - hiddenBinaryStart,
-      jsonEntries: hiddenJson.length - hiddenJsonStart,
-      windowMs: resumeWindowMs,
-    },
     windows: windowDiagnostics(),
   })
 
@@ -237,112 +232,6 @@ function configureAdditionalLogging(enabled: boolean): void {
   }
 }
 
-interface TimedBinary { at: number; data: Buffer }
-interface TimedJson { at: number; data: string }
-let resumeWindowMs = 30_000
-let hiddenBinary: TimedBinary[] = []
-let hiddenJson: TimedJson[] = []
-let hiddenBinaryStart = 0
-let hiddenJsonStart = 0
-// Sparse V6 playback projects the hot families as JSON patches, so this cache
-// grows far faster than it does for the cold-only rows of the other formats.
-// The time window alone can be up to 600 s, so cap the retained characters too.
-const MAX_RESUME_JSON_CHARS = 32 * 1024 * 1024
-let hiddenJsonChars = 0
-// V6 playback rows are patches applied over the previous row, and edge-encoded
-// types (tyre state, aero, brake bias) are only re-sent when they change. Once
-// the window drops a type's oldest patches, the retained ones would be merged
-// onto the pre-hide row, carrying stale values (e.g. an old tyre age that reads
-// as a tyre change in Stint Laps). Keep the newest dropped row per row/V6 type,
-// in drop order, and replay those first so every patch lands on its true base.
-let hiddenJsonSeeds = new Map<string, string>()
-
-function clearResumeCache(): void {
-  hiddenBinary = []
-  hiddenJson = []
-  hiddenBinaryStart = 0
-  hiddenJsonStart = 0
-  hiddenJsonChars = 0
-  hiddenJsonSeeds = new Map()
-}
-
-function resumeSeedKey(row: string): string {
-  const type = /"type":"([a-z_]+)"/.exec(row)?.[1] ?? ''
-  const v6Type = /"_v6_type":(\d+)/.exec(row)?.[1] ?? ''
-  return `${type}:${v6Type}`
-}
-
-function dropOldestResumeJson(): void {
-  const row = hiddenJson[hiddenJsonStart].data
-  const key = resumeSeedKey(row)
-  hiddenJsonSeeds.delete(key)
-  hiddenJsonSeeds.set(key, row)
-  hiddenJsonChars -= row.length
-  hiddenJsonStart++
-}
-
-function trimResumeCache(now: number): void {
-  const cutoff = now - resumeWindowMs
-  while (hiddenBinaryStart < hiddenBinary.length && hiddenBinary[hiddenBinaryStart].at < cutoff) hiddenBinaryStart++
-  while (hiddenJsonStart < hiddenJson.length && hiddenJson[hiddenJsonStart].at < cutoff) dropOldestResumeJson()
-  while (hiddenJsonChars > MAX_RESUME_JSON_CHARS && hiddenJsonStart < hiddenJson.length) dropOldestResumeJson()
-  // Compact in chunks rather than slicing a long window on every 60 Hz tick.
-  if (hiddenBinaryStart >= 4096) {
-    hiddenBinary = hiddenBinary.slice(hiddenBinaryStart)
-    hiddenBinaryStart = 0
-  }
-  if (hiddenJsonStart >= 512) {
-    hiddenJson = hiddenJson.slice(hiddenJsonStart)
-    hiddenJsonStart = 0
-  }
-}
-
-function cacheResumeJson(batch: string, now: number): void {
-  let start = 0
-  while (start < batch.length) {
-    let end = batch.indexOf('\n', start)
-    if (end === -1) end = batch.length
-    if (end > start) {
-      const row = batch.slice(start, end)
-      // Only chart histories need backfilling. Other panels receive their
-      // next current-state row normally, without replaying stale banners/events.
-      //
-      // status/damage are cold JSON rows in every format. telemetry/motion/
-      // motion_ex normally arrive packed on the binary channel (and are cached
-      // by chartHistoryRecords), but sparse V6 playback projects them as JSON
-      // patches, so for TNRD V6 they reach the renderer through here — dropping
-      // them while hidden is what left V6 charts with a hole after a restore.
-      // Positions stay excluded for the same reason as in the binary cache.
-      if (row.includes('"type":"status"') || row.includes('"type":"damage"') ||
-          row.includes('"type":"telemetry"') || row.includes('"type":"motion"') ||
-          row.includes('"type":"motion_ex"')) {
-        hiddenJson.push({ at: now, data: row })
-        hiddenJsonChars += row.length
-      }
-    }
-    start = end + 1
-  }
-  trimResumeCache(now)
-}
-
-function sendResumeCache(): void {
-  if (hiddenBinaryStart === hiddenBinary.length && hiddenJsonStart === hiddenJson.length &&
-      hiddenJsonSeeds.size === 0) return
-  const binary = hiddenBinaryStart === hiddenBinary.length
-    ? Buffer.alloc(0)
-    : Buffer.concat(hiddenBinary.slice(hiddenBinaryStart).map(entry => entry.data))
-  const coldJson = [...hiddenJsonSeeds.values(), ...hiddenJson.slice(hiddenJsonStart).map(entry => entry.data)].join('\n')
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) {
-      win.webContents.send('telemetry-resume', { binary, coldJson })
-      if (additionalLoggingEnabled) bridgeDiagnostics.ipcSendTargets++
-    }
-  }
-  if (additionalLoggingEnabled) {
-    console.info('[telemetry-diagnostics][main] sent renderer resume cache:', { binaryBytes: binary.length, coldJsonBytes: Buffer.byteLength(coldJson) })
-  }
-}
-
 // The surface of protocol_parser.node (node_addon/addon.cpp) this module uses.
 interface NativeEngine extends NativePairEngine {
   startUdp(): boolean
@@ -358,6 +247,7 @@ interface NativeEngine extends NativePairEngine {
     v6Types: number[], v6HistoryTypes: number[]): void
   liveGetFastestLap(requestId: number): void
   setLapHistoryCar(carIdx: number): void
+  setHostVisible?(visible: boolean, sequence: number): void
   setOverride(value: ProtocolOverride): void
   teamColorCatalog(): string
   setTeamColorOverrides(overrides: TeamColorOverrides): void
@@ -381,13 +271,25 @@ interface NativeEngine extends NativePairEngine {
   analysisCloseFile(): void
 }
 
+// Replace ranges of a host restore flush (Engine::setHostVisible). Chart
+// families replace [chartFrom, through]; race events replace
+// [eventsFrom, through] when included.
+interface HostRestoreRanges {
+  chartFrom: number
+  includesEvents: boolean
+  eventsFrom: number
+  through: number
+  sessionChanged: boolean
+}
+
 interface NativeAddon {
   Engine: new (
     config: Record<string, unknown>,
     onBatch: (batch: string) => void,
     onBinaryBatch: (binBatch: Uint8Array) => void,
     onSeekFlush: (binary: Buffer | null, coldJson: string | null, currentLapStart: number, lapNum: number, allHistory: boolean,
-      requestId: number, authoritativeSeek: boolean, rowTypeMask: number, historyStart: number, nativeError?: string) => void,
+      requestId: number, authoritativeSeek: boolean, rowTypeMask: number, historyStart: number, nativeError?: string,
+      restore?: HostRestoreRanges) => void,
     onPairState: (publicJson: string, persistedJson: string) => void,
     onPairDiagnostic: (message: string) => void,
   ) => NativeEngine
@@ -462,51 +364,7 @@ function bufferSeekBinary(batch: Uint8Array): void {
   trimSeekForwardBuffer()
 }
 
-function timedBinaryRetention(entries: TimedBinary[], activeStart: number): {
-  entries: number
-  activeEntries: number
-  payloadBytes: number
-  activePayloadBytes: number
-} {
-  let payloadBytes = 0
-  let activePayloadBytes = 0
-  for (let index = 0; index < entries.length; index++) {
-    const bytes = entries[index].data.byteLength
-    payloadBytes += bytes
-    if (index >= activeStart) activePayloadBytes += bytes
-  }
-  return {
-    entries: entries.length,
-    activeEntries: Math.max(0, entries.length - activeStart),
-    payloadBytes,
-    activePayloadBytes,
-  }
-}
-
-function timedJsonRetention(entries: TimedJson[], activeStart: number): {
-  entries: number
-  activeEntries: number
-  payloadBytes: number
-  activePayloadBytes: number
-} {
-  let payloadBytes = 0
-  let activePayloadBytes = 0
-  for (let index = 0; index < entries.length; index++) {
-    const bytes = Buffer.byteLength(entries[index].data)
-    payloadBytes += bytes
-    if (index >= activeStart) activePayloadBytes += bytes
-  }
-  return {
-    entries: entries.length,
-    activeEntries: Math.max(0, entries.length - activeStart),
-    payloadBytes,
-    activePayloadBytes,
-  }
-}
-
 function mainTelemetryRetentionDiagnostics(): Record<string, unknown> {
-  const resumeBinary = timedBinaryRetention(hiddenBinary, hiddenBinaryStart)
-  const resumeJson = timedJsonRetention(hiddenJson, hiddenJsonStart)
   const seekBinaryBytes = seekBufferedBinary.reduce((total, batch) => total + batch.byteLength, 0)
   const seekJsonBytes = seekBufferedJson.reduce((total, batch) => total + Buffer.byteLength(batch), 0)
   let nativeTransit: Record<string, unknown> | null = null
@@ -531,8 +389,8 @@ function mainTelemetryRetentionDiagnostics(): Record<string, unknown> {
     : 0
   const nativeTransitDetails = nativeTransit ? { ...nativeTransit } : null
   if (nativeTransitDetails) delete nativeTransitDetails.live_history
-  const retainedBytes = resumeBinary.payloadBytes + resumeJson.payloadBytes +
-    seekBinaryBytes + seekJsonBytes + nativeTransitBytes + nativeLiveHistoryBytes
+  const retainedBytes = seekBinaryBytes + seekJsonBytes + nativeTransitBytes +
+    nativeLiveHistoryBytes
 
   return {
     sampled_at: new Date().toISOString(),
@@ -540,12 +398,6 @@ function mainTelemetryRetentionDiagnostics(): Record<string, unknown> {
     retained_bytes: retainedBytes,
     byte_basis: 'retained Buffer/string payload bytes, reserved native transit payload bytes, estimated native engine-cache/writer/Strategy allocation capacity, and estimated native live-history allocation capacity; transient allocation activity is reported separately',
     renderer_visible: rendererVisible,
-    resume_window_ms: resumeWindowMs,
-    hidden_resume: {
-      binary: resumeBinary,
-      json: resumeJson,
-      retained_bytes: resumeBinary.payloadBytes + resumeJson.payloadBytes,
-    },
     seek_forward: {
       phase: seekForwardPhase,
       request_id: seekForwardRequestId,
@@ -569,16 +421,8 @@ function releaseSeekForwarding(requestId: number): void {
   const binary = seekBufferedBinary.length > 0 ? Buffer.concat(seekBufferedBinary) : null
   const json = seekBufferedJson.join('')
   resetSeekForwarding()
-  if (!rendererVisible) {
-    const now = performance.now()
-    if (binary?.length) {
-      const history = chartHistoryRecords(binary)
-      if (history.length > 0) hiddenBinary.push({ at: now, data: history })
-    }
-    if (json) cacheResumeJson(json, now)
-    trimResumeCache(now)
-    return
-  }
+  // A hidden renderer drops these; the engine rebuilds them on show.
+  if (!rendererVisible) return
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue
     if (binary?.length) win.webContents.send('telemetry-binary', binary)
@@ -642,9 +486,6 @@ function forwardBinary(batch: Uint8Array): void {
     if (additionalLoggingEnabled) bridgeDiagnostics.binaryForwardedBatches++
   } else {
     if (additionalLoggingEnabled) bridgeDiagnostics.binaryHiddenBatches++
-    const history = chartHistoryRecords(buffer)
-    if (history.length > 0) hiddenBinary.push({ at: performance.now(), data: history })
-    trimResumeCache(performance.now())
   }
 }
 
@@ -731,7 +572,6 @@ function handlePlaybackRow(row: Record<string, unknown>): void {
     })
   } else if (type === 'playback_close') {
     activeFilePath = null
-    clearResumeCache()
     emitPlaybackState({})   // paused, no file
   }
 }
@@ -885,7 +725,6 @@ export function startBridge(): BridgeStartResult {
         }
       } else {
         if (additionalLoggingEnabled) bridgeDiagnostics.jsonHiddenBatches++
-        cacheResumeJson(batch, performance.now())
       }
 
       // Control-row interception (always runs, visible or not): protocol_status
@@ -917,7 +756,7 @@ export function startBridge(): BridgeStartResult {
       }
     }, (binBatch: Uint8Array) => {
       forwardBinary(binBatch)
-    }, (binary: Buffer | null, coldJson: string | null, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean, rowTypeMask: number, historyStart: number, nativeError?: string) => {
+    }, (binary: Buffer | null, coldJson: string | null, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean, rowTypeMask: number, historyStart: number, nativeError?: string, restore?: HostRestoreRanges) => {
       if (additionalLoggingEnabled) {
         console.info('[playback-debug] native-history-flush-callback', {
           requestId,
@@ -927,6 +766,7 @@ export function startBridge(): BridgeStartResult {
           historyStart,
           currentLapStart,
           lapNum,
+          restore,
           binaryBytes: binary?.byteLength ?? 0,
           coldJsonBytes: coldJson ? Buffer.byteLength(coldJson) : 0,
           v6Types: summarizeV6StoredTypes(coldJson),
@@ -952,8 +792,7 @@ export function startBridge(): BridgeStartResult {
           seekForwardPhase = 'waiting-renderer'
       } else if (requestId !== 0 && requestId <= latestSeekRequestId) return
       try {
-        clearResumeCache()
-        broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek, rowTypeMask, historyStart })
+        broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek, rowTypeMask, historyStart, ...(restore ? { restore } : {}) })
       } catch (error) {
         console.error('[bridge] Failed to forward playback seek history:', error)
         // Never leave the renderer's AL publication gate closed if IPC rejects
@@ -1006,7 +845,6 @@ export function stopBridge(forceProcessExit = false): void {
   stopDiagnosticTimer()
   for (const unsub of unsubLogging) unsub()
   unsubLogging = []
-  clearResumeCache()
   resetSeekForwarding()
   activeFilePath = null
   activeUdpConfig = null
@@ -1334,31 +1172,22 @@ export function requestStatus(): void {
 }
 
 // Renderer visibility gate: pause IPC while the window is hidden/minimized/
-// occluded. Main retains one bounded chart window (not an IPC queue), sends it
-// as a single resume payload on return, and refreshes the protocol catalog.
+// occluded. Nothing is cached here. On show the engine rebuilds what the
+// renderer missed from its live history (or the recording) and sends one
+// restore flush, plus the current state of the subscribed families.
+let hostVisibilitySequence = 0
+
 export function setRendererVisible(visible: boolean): void {
   const wasVisible = rendererVisible
   if (additionalLoggingEnabled && visible !== wasVisible) {
     console.info('[telemetry-diagnostics][main] renderer visibility changed:', { previous: wasVisible, next: visible })
   }
-  if (!visible && wasVisible) {
-    // `timeWindow` is the legacy key; the renderer now persists `chartWindow`,
-    // which is either seconds or a lap mode ('CL', 'AL', ...). Lap modes need
-    // the whole lap, so retain the maximum window for them.
-    const chartWindow = store.get('chartWindow', store.get('timeWindow', 30))
-    const selectedSeconds = typeof chartWindow === 'number' ? chartWindow : 600
-    resumeWindowMs = Math.min(600, Math.max(15, Number.isFinite(selectedSeconds) ? selectedSeconds : 30)) * 1000
-    clearResumeCache()
-  }
   rendererVisible = visible
-  if (visible && !wasVisible) {
-    trimResumeCache(performance.now())
-    // Send one bounded catch-up before normal live forwarding can resume. The
-    // renderer applies it as a single store publication, avoiding an IPC burst.
-    sendResumeCache()
-    clearResumeCache()
-    if (lastStatusRow) broadcast(lastStatusRow)
-  }
+  if (visible === wasVisible) return
+  // Open the gate before the engine restores, so rows newer than the restore
+  // reach the renderer and the restore covers everything older.
+  engine?.setHostVisible?.(visible, ++hostVisibilitySequence)
+  if (visible && lastStatusRow) broadcast(lastStatusRow)
 }
 
 export function isRendererVisible(): boolean { return rendererVisible }

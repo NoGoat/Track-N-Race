@@ -12,7 +12,10 @@ void initialize();
 void setFatalFlushHandler(std::function<void()> handler);
 // The provider runs on the GUI thread once per memory sample. It should return
 // only cheap snapshots of already-retained state; diagnostics must never become
-// another owner of telemetry history.
+// another owner of telemetry history. It returns the ram_usage.log
+// telemetry_data body in Electron's layout: { mode, attribution_scope,
+// main: { retained_bytes, ... }, renderer: { sampled_at,
+// estimated_retained_bytes, ... } }.
 void setMemorySnapshotProvider(std::function<QJsonObject()> provider);
 void setMemoryLoggingEnabled(bool enabled);
 QString failureReport(const QString& heading, const QString& details);

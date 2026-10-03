@@ -93,6 +93,19 @@ public:
     // Callback runs on the history worker.
     void requestRange(uint32_t familyMask, float fromSessionTime,
                       float throughSessionTime, BackfillCallback callback);
+    // One payload gathered from several family ranges sharing an end time.
+    // onStale runs instead of callback when a rewind or reset replaced the
+    // timeline the request was taken from, so the caller can ask again.
+    // seedMask names the JSON families that also need the newest row strictly
+    // before fromSessionTime: the state in force when the range starts, for
+    // consumers that read the value at the range start from the row before it.
+    struct RangeSpec {
+        uint32_t familyMask{};
+        float fromSessionTime{};
+        uint32_t seedMask{};
+    };
+    void requestRanges(std::vector<RangeSpec> ranges, float throughSessionTime,
+                       BackfillCallback callback, std::function<void()> onStale);
     void requestFastestLap(std::function<void(int, int, float, float, LiveHistoryBackfill)> callback);
 
 private:

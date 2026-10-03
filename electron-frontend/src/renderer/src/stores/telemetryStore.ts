@@ -4,13 +4,14 @@ import type {
   ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg,
   LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg, DriverLapHistory,
   AnalyzeLapData, AnalysisDriverLapCatalog, PlaybackLapDataMsg,
-  StrategySnapshotMsg, PlaybackLapBlock, FastestLapMsg, PlaybackSeekFlushBinMsg,
+  StrategySnapshotMsg, PlaybackLapBlock, FastestLapMsg, PlaybackSeekFlushBinMsg, HostRestoreRanges,
 } from '../types'
 import { decodeBinaryBatchRange, forEachDecodedBinaryRow } from '../lib/decodeBinaryBatch'
 import { scheduleCooperativeTask, yieldToMainThread } from '../lib/cooperativeTask'
 import { playbackDebug } from '../lib/playbackDebug'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
+import { buildLapProgressMap, findSectorSplitsFromProgress, type SectorSplit } from '../lib/lapDelta'
 import { getTelemetryChartRetentionDiagnostics } from '../diagnostics/telemetryRetention'
 import { getDebugSettings, subscribeDebugSettings } from '../lib/debugSettings'
 import {
@@ -118,7 +119,6 @@ declare global {
       on: (callback: (row: unknown) => void) => (() => void)
       onBatch: (callback: (batch: string) => void) => (() => void)
       onBinary: (callback: (batch: Uint8Array) => void) => (() => void)
-      onResume: (callback: (payload: { binary: Uint8Array; coldJson: string }) => void) => (() => void)
       reportRetention: (snapshot: unknown) => void
     }
   }
@@ -165,6 +165,10 @@ export interface TelemetryStoreState {
   playbackLapDataCache: Record<number, AnalyzeLapData>
   livePreviousLapData: AnalyzeLapData | null
   liveFastestLapData: AnalyzeLapData | null
+  // Live only: S1/S2 end distances learned from the first completed lap that
+  // crossed them. Sector positions are track geometry, so they stay fixed for
+  // the whole session instead of being rediscovered on every new lap.
+  liveSectorSplits: SectorSplit[]
   lapTimesByNum: Record<number, number>
   speedRpmBlocks: PlaybackLapBlock[] | null
   isConnected: boolean
@@ -211,6 +215,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   playbackLapDataCache: {},
   livePreviousLapData: null,
   liveFastestLapData: null,
+  liveSectorSplits: [],
   lapTimesByNum: {}, speedRpmBlocks: null, isConnected: true, error: null,
   protocolStatus: null, protocolWarning: null, fuelUpperLimit: null, seconds: 30,
   lapBoundaries: [],
@@ -235,6 +240,10 @@ const lapProgressTable = new ColumnTable<LapRow>('lap')
 const TABLE_OF_FAMILY: Record<HistoryFamily, ColumnTable> = {
   telemetry: telTable, motion: motTable, motion_ex: motExTable,
   status: stsTable, damage: dmgTable, lap: lapProgressTable,
+}
+const HISTORY_BIT_OF_FAMILY: Record<HistoryFamily, number> = {
+  telemetry: HISTORY_ROW.telemetry, motion: HISTORY_ROW.motion, motion_ex: HISTORY_ROW.motionEx,
+  status: HISTORY_ROW.status, damage: HISTORY_ROW.damage, lap: HISTORY_ROW.lap,
 }
 
 const raceEventListeners = new Set<(e: RaceEventMsg) => void>()
@@ -270,6 +279,7 @@ let fastestRecoveryTimer: ReturnType<typeof setTimeout> | null = null
 let fastestRecoveryGeneration = 0
 let fastestRecoveryPending = false
 let fastestRecoveryDeadline: number | null = null
+let lapNumAtHide: number | null = null
 
 function cancelFastestRecovery(): void {
   if (fastestRecoveryTimer !== null) clearTimeout(fastestRecoveryTimer)
@@ -655,9 +665,9 @@ interface RendererDiagnostics {
   binaryBytes: number
   binaryRows: number
   binaryDecodeErrors: number
-  resumePayloads: number
-  resumeBinaryBytes: number
-  resumeJsonChars: number
+  restorePayloads: number
+  restoreBinaryBytes: number
+  restoreJsonChars: number
   recomputes: number
   rowTypes: Record<string, number>
   rowSources: Record<string, number>
@@ -673,7 +683,7 @@ function freshRendererDiagnostics(): RendererDiagnostics {
     startedAt: Date.now(),
     jsonBatches: 0, jsonChars: 0, jsonRows: 0, jsonParseErrors: 0, singleRows: 0,
     binaryBatches: 0, binaryBytes: 0, binaryRows: 0, binaryDecodeErrors: 0,
-    resumePayloads: 0, resumeBinaryBytes: 0, resumeJsonChars: 0, recomputes: 0,
+    restorePayloads: 0, restoreBinaryBytes: 0, restoreJsonChars: 0, recomputes: 0,
     rowTypes: {}, rowSources: {}, lastAnyRowAt: null, lastTelemetryAt: null,
     lastTelemetrySessionTime: null, lastTelemetrySpeedKph: null, lastTelemetryRpm: null,
   }
@@ -887,6 +897,7 @@ function resetSession(): void {
     playbackLapDataCache: {},
     livePreviousLapData: null,
     liveFastestLapData: null,
+    liveSectorSplits: [],
     lapBoundaries: [],
     allLapsLapBoundaries: [],
     currentStintStartTime: -Infinity,
@@ -1163,6 +1174,21 @@ function applyLiveRewind(target: number): void {
   }
 }
 
+// Fill in any sector boundary not yet known for this session from a completed
+// lap. Known boundaries are never replaced, so the chart axis stays put.
+function learnLiveSectorSplits(completed: AnalyzeLapData): void {
+  const known = useTelemetryStore.getState().liveSectorSplits
+  if (known.length >= 2) return
+  const learned = findSectorSplitsFromProgress(completed.lapProgress, buildLapProgressMap(completed))
+  const merged = [...known]
+  for (const split of learned) {
+    if (!merged.some(existing => existing.afterSector === split.afterSector)) merged.push(split)
+  }
+  if (merged.length === known.length) return
+  merged.sort((a, b) => a.afterSector - b.afterSector)
+  set({ liveSectorSplits: merged })
+}
+
 // The old useEffect([lap]): on a lap-number change, snapshot the completed lap
 // and update live lap times / fastest lap. Runs in the 'lap' handler now.
 function onLap(lap: LapRow): void {
@@ -1264,6 +1290,7 @@ function onLap(lap: LapRow): void {
       playerPositions: [],
     }
     set({ livePreviousLapData: completedLapData })
+    learnLiveSectorSplits(completedLapData)
   }
 
   analyzeLapRevisionVal++
@@ -1273,8 +1300,11 @@ function onLap(lap: LapRow): void {
   // Never let whichever lap happens to cross a boundary after a seek replace it.
   if (!isPlaybackFlag && completedLapData) {
     const lapTimeMs = lap.last_lap_ms
-    if (lapTimeMs > 0 && lapTimeMs < 300_000) {
-      if (liveLapTimes[prevLapNum] !== lapTimeMs) liveLapTimes = { ...liveLapTimes, [prevLapNum]: lapTimeMs }
+    // last_lap_ms is the lap just before this one. That is prevLapNum unless
+    // laps passed while the window was hidden.
+    const completedLapNum = lap.lap_num - 1
+    if (lapTimeMs > 0 && lapTimeMs < 300_000 && completedLapNum > 0) {
+      if (liveLapTimes[completedLapNum] !== lapTimeMs) liveLapTimes = { ...liveLapTimes, [completedLapNum]: lapTimeMs }
     }
     if (lapTimeMs > 0 && lapTimeMs < 300_000 && lapTimeMs < fastestLapTime &&
         completedLapData.telemetry.length > 0 && completedLapData.lapProgress.length > 0) {
@@ -1821,9 +1851,118 @@ function tableSpan(table: ColumnTable): { rows: number; first: number | null; la
   return { rows: table.length, first: table.firstTime() ?? null, last: table.lastTime() ?? null }
 }
 
+// The renderer drops lap rows while hidden, so its lap tracking is stale after
+// a restore. Rebuild it from the engine's lap position and the restored lap
+// rows, the same way applyLiveRewind does after a flashback.
+function applyRestoredLapState(payload: PlaybackSeekFlushBinMsg, restore: HostRestoreRanges): void {
+  const restoredLapNum = Number(payload.lapNum)
+  const restoredLapStart = Number(payload.currentLapStart)
+  const restoredLapRows = Number(payload.rowTypeMask) & HISTORY_ROW.lap
+    ? lapProgressTable.frozen(lapProgressTable.lowerBound(restore.chartFrom, true))
+    : null
+  const restoredBoundaries = restoredLapRows ? reconstructLapBoundaries(restoredLapRows) : []
+  const restoredNums = new Set(restoredBoundaries.map(boundary => boundary.lapNum))
+  let boundaries = [
+    ...liveLapBoundaries.filter(boundary =>
+      boundary.sessionTime < restore.chartFrom && !restoredNums.has(boundary.lapNum)),
+    ...restoredBoundaries,
+  ]
+  if (restoredLapNum > 0) {
+    boundaries = boundaries.filter(boundary =>
+      boundary.lapNum < restoredLapNum && boundary.sessionTime < restoredLapStart)
+    if (Number.isFinite(restoredLapStart))
+      boundaries.push({ lapNum: restoredLapNum, sessionTime: restoredLapStart })
+  }
+  liveLapBoundaries = boundaries.sort((a, b) => a.sessionTime - b.sessionTime)
+
+  const lastLap = lapProgressTable.last() ?? undefined
+  lapState = lastLap ?? lapState
+  if (restoredLapNum > 0) lapNum = restoredLapNum
+  if (Number.isFinite(restoredLapStart)) lapStartTime = restoredLapStart
+  const sessionType = useTelemetryStore.getState().session?.session_type
+  const garageAware = sessionType != null && sessionType >= 1 && sessionType <= 14 &&
+    lastLap?.driver_status != null && lastLap.driver_status >= 0
+  lapTrackingActive = !garageAware || lastLap?.driver_status === 1
+  if (!lapTrackingActive) lapNum = null
+  pendingAnalyzeLapReset = false
+
+  const update: Partial<TelemetryStoreState> = {
+    lapBoundaries: liveLapBoundaries,
+    analyzeLapStartTime: lapStartTime,
+  }
+  if (!isPlaybackFlag) {
+    // A completed lap's time arrives as last_lap_ms on the first row of the
+    // next lap.
+    if (restoredLapRows) {
+      const times: Record<number, number> = {}
+      let previousLap = -1
+      for (let i = 0; i < restoredLapRows.length; i++) {
+        const lapNumber = restoredLapRows.num('lap_num', i)
+        const lastLapMs = restoredLapRows.num('last_lap_ms', i)
+        if (previousLap > 0 && lapNumber > previousLap && lastLapMs > 0 && lastLapMs < 300_000)
+          times[lapNumber - 1] = lastLapMs
+        if (Number.isFinite(lapNumber)) previousLap = lapNumber
+      }
+      const surviving: Record<number, number> = {}
+      for (const [key, value] of Object.entries(liveLapTimes)) {
+        if (restoredLapNum <= 0 || Number(key) < restoredLapNum) surviving[Number(key)] = value
+      }
+      liveLapTimes = { ...surviving, ...times }
+      update.lapTimesByNum = liveLapTimes
+    }
+
+    const currentIndex = liveLapBoundaries.length - 1
+    const currentBoundary = liveLapBoundaries[currentIndex]
+    update.livePreviousLapData = liveLapData(liveLapBoundaries[currentIndex - 1],
+      currentBoundary?.sessionTime ?? restore.through)
+
+    // Laps completed while hidden never reached onLap(); learn any still
+    // unknown sector boundaries from the restored completed laps instead.
+    if (restoredLapRows) {
+      for (let i = 0; i < currentIndex; i++) {
+        const completed = liveLapData(liveLapBoundaries[i], liveLapBoundaries[i + 1].sessionTime)
+        if (completed) learnLiveSectorSplits(completed)
+      }
+    }
+
+    // Laps completed while hidden may hold a new fastest lap, and the lap row
+    // that arrived first on show was snapshotted from a partial buffer. The
+    // engine's live history knows the real fastest lap; ask for it now.
+    if (restore.sessionChanged || lapNumAtHide === null || restoredLapNum !== lapNumAtHide) {
+      fastestLapTime = Infinity
+      update.liveFastestLapData = null
+      update.fastestLapNum = null
+      fastestRecoveryDeadline = Date.now()
+      scheduleFastestRecovery()
+    }
+
+    const restoredStatus = stsTable.frozen(stsTable.lowerBound(restore.chartFrom, true))
+    for (let i = 0; i < restoredStatus.length; i++) {
+      const fuel = restoredStatus.num('fuel_kg', i)
+      if (Number.isFinite(fuel) && fuel >= 0 && fuel > fuelMaxReceived) fuelMaxReceived = fuel
+    }
+  }
+  set(update)
+  // Laps completed while hidden can leave more boundaries than the live
+  // working set keeps.
+  if (!isPlaybackFlag) trimLiveWorkingSet()
+}
+
 async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promise<void> {
   const allHistory = payload.allHistory === true
   const authoritative = payload.authoritativeSeek !== false
+  // A host restore after the window was hidden (Engine::setHostVisible). It is
+  // additive like a window backfill, but replaces exactly the ranges it names.
+  const restore: HostRestoreRanges | null = payload.restore ?? null
+  if (restore) {
+    if (additionalLoggingEnabled) {
+      rendererDiagnostics.restorePayloads++
+      rendererDiagnostics.restoreBinaryBytes += Number(payload.binary?.byteLength ?? 0)
+      rendererDiagnostics.restoreJsonChars += typeof payload.coldJson === 'string' ? payload.coldJson.length : 0
+    }
+    playbackDebug('host-restore-received', { restore, rowTypeMask: `0x${(Number(payload.rowTypeMask) >>> 0).toString(16)}` })
+    if (restore.sessionChanged && !isPlaybackFlag) resetSession()
+  }
   // Live range backfills are decoded cooperatively. Keep the pre-request list
   // only to identify genuinely newer streamed events when installing the
   // authoritative historical prefix.
@@ -1979,11 +2118,35 @@ async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promi
   // boundary seed plus the live tail.
   for (const family of Object.keys(TABLE_OF_FAMILY) as HistoryFamily[]) {
     const table = incoming[family]
+    if (restore) {
+      // Every requested family, even an empty one: a rewind while hidden can
+      // leave no rows in the range, and the held ones there are stale.
+      if (!(Number(payload.rowTypeMask) & HISTORY_BIT_OF_FAMILY[family])) continue
+      const target = TABLE_OF_FAMILY[family]
+      const restored = table ? table.frozen() : emptyView(family)
+      // Status and damage arrive with the state in force just before the
+      // range: the row the lap and window slices read the start value from.
+      const seedEnd = restored.lowerBound(restore.chartFrom, true)
+      installHistory(target, restored.slice(seedEnd), 'replaceRange', MAX_ROWS,
+        { from: restore.chartFrom, through: restore.through })
+      if (seedEnd > 0) {
+        // Only a seed newer than everything held before the range replaces
+        // the predecessor. An older one is the state the held rows already
+        // continue (V1-V5 damage seeds carry the time of their last change).
+        const seed = restored.slice(seedEnd - 1, seedEnd)
+        const heldBefore = target.lowerBound(restore.chartFrom, true)
+        const newestHeld = heldBefore > 0 ? target.frozen(heldBefore - 1, heldBefore).time(0) : -Infinity
+        if (seed.time(0) > newestHeld) installHistory(target, seed, 'overlay', MAX_ROWS)
+      }
+      continue
+    }
     if (!table || table.length === 0) continue
     installHistory(TABLE_OF_FAMILY[family], table.frozen(),
       authoritative ? 'authoritative' : overlay.has(family) ? 'overlay' : 'prefix', MAX_ROWS)
   }
-  if (!authoritative && Object.keys(decodedV6Types).length > 0) {
+  // Restored rows replace rows the chart bridges have already consumed.
+  if (restore) analyzeLapRevisionVal++
+  else if (!authoritative && Object.keys(decodedV6Types).length > 0) {
     // Sparse V6 page backfills fill fields into timestamps the chart bridges
     // have already consumed. Advance the revision so they rebuild those rows
     // instead of syncing only samples appended after the page change.
@@ -1994,7 +2157,18 @@ async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promi
     const prefixStart = Math.max(0, stsTable.lowerBound(authoritativeLapStatusStart, true) - 1)
     authoritativeLapStatusPrefix = stsTable.frozen(prefixStart)
   }
-  if (!isPlaybackFlag && (Number(payload.rowTypeMask) & HISTORY_ROW.raceEvent)) {
+  if (restore) {
+    if (!isPlaybackFlag && restore.includesEvents) {
+      // Keep held events outside [eventsFrom, through]: older ones the host
+      // already had, and newer ones streamed after the window was shown.
+      // Restored events are never replayed to the banner listeners.
+      const kept = raceEventsArr.filter(event =>
+        event.session_time == null || event.session_time < restore.eventsFrom)
+      const newer = raceEventsArr.filter(event =>
+        event.session_time != null && event.session_time > restore.through)
+      raceEventsArr = mergeRaceEventHistory([...kept, ...raceEvents], newer)
+    }
+  } else if (!isPlaybackFlag && (Number(payload.rowTypeMask) & HISTORY_ROW.raceEvent)) {
     const priorEvents = new Set(raceEventsAtDecodeStart)
     const streamedDuringDecode = raceEventsArr.filter(event => !priorEvents.has(event))
     raceEventsArr = mergeRaceEventHistory(raceEvents, streamedDuringDecode)
@@ -2008,9 +2182,11 @@ async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promi
     // the next lap transition.
     trimLiveWorkingSet()
   }
+  if (restore) applyRestoredLapState(payload, restore)
   currentStintStartTime = findCurrentStintStart(stsTable.frozen())
   if (allHistory) waitingForAllLapsHistory = false
-  markHistoryCoverage(payload.rowTypeMask, payload.historyStart)
+  markHistoryCoverage(restore ? Number(payload.rowTypeMask) & ~HISTORY_ROW.raceEvent : payload.rowTypeMask,
+    payload.historyStart)
 
   const incomingLap = incoming.lap
   playbackDebug('seek-flush-decoded', {
@@ -2053,6 +2229,8 @@ async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promi
     ...(latestStatus ? { status: latestStatus } : {}),
     ...(latestDamage ? { damage: latestDamage } : {}),
     ...(!isPlaybackFlag && allLapsMode ? { allLapsLapBoundaries } : {}),
+    ...(restore && !isPlaybackFlag ? { raceEvents: raceEventsArr } : {}),
+    ...(restore && !isPlaybackFlag && fuelMaxReceived > -Infinity ? { fuelUpperLimit: fuelMaxReceived + 1 } : {}),
     currentStintStartTime,
   })
   const latestLap = lapProgressTable.last()
@@ -2069,18 +2247,9 @@ async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promi
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-function latestHeldTime(): number {
-  return Math.max(...Object.values(TABLE_OF_FAMILY).map(table => table.lastTime() ?? 0))
-}
-
 // Set the visible time window (seconds). Infinity selects the full-session
 // publication used by All Laps and Stint Laps. Recomputes slices at once.
-//
-// `refetch` requests every visible family even when its oldest row already
-// covers the window. A restore from hidden leaves a hole *inside* the window
-// (rows from before hiding, then only main's bounded resume cache), which the
-// prefix check cannot see; V6 playback installs the response as an overlay.
-function requestVisibleWindowHistory(refetch = false): void {
+function requestVisibleWindowHistory(): void {
   if (speedRpmBlocksVal === null) return
   const fileStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
   const currentTime = Math.max(
@@ -2105,7 +2274,7 @@ function requestVisibleWindowHistory(refetch = false): void {
       const firstTime = firstTimes.get(bit)
       const missingPrefix = !covered && (firstTime ?? Infinity) > requiredStart + 1
       families.push({ bit: `0x${bit.toString(16)}`, pendingV6Type, covered, firstTime: firstTime ?? null, missingPrefix })
-      if (refetch || pendingV6Type || missingPrefix)
+      if (pendingV6Type || missingPrefix)
         missingMask |= bit
     }
     playbackDebug('history-backfill-evaluation', {
@@ -2474,121 +2643,10 @@ export function startTelemetryBridge(): void {
     if (additionalLoggingEnabled && dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
   })
 
-  window.telemetryBridge.onResume(({ binary, coldJson }) => {
-    if (additionalLoggingEnabled) {
-      rendererDiagnostics.resumePayloads++
-      rendererDiagnostics.resumeBinaryBytes += binary.byteLength
-      rendererDiagnostics.resumeJsonChars += coldJson.length
-      console.info(`[telemetry-diagnostics][renderer] applying resume payload: ${JSON.stringify({ binaryBytes: binary.byteLength, coldJsonChars: coldJson.length })}`)
-    }
-    if (seekRendererPending) return
-    // Newest row held before hiding: the hidden gap starts here.
-    const lastTimeBeforeResume = latestHeldTime()
-    let dirty = DirtySlice.None
-    try {
-      forEachDecodedBinaryRow(binary, row => {
-        if (additionalLoggingEnabled) rendererDiagnostics.binaryRows++
-        const msg = row as GatewayMsg
-        if (additionalLoggingEnabled) observeRendererRow(msg, 'telemetry-resume-binary')
-        dirty |= dirtySliceFor(msg)
-        handleMsg(msg)
-      })
-    } catch (e) {
-      if (additionalLoggingEnabled) {
-        rendererDiagnostics.binaryDecodeErrors++
-        console.error('[telemetry-diagnostics][renderer] Failed to decode resume binary batch:', {
-          error: String(e),
-          bytes: binary.byteLength,
-          firstBytesHex: binaryPreview(binary),
-        })
-      } else {
-        console.error('Failed to decode resume binary batch:', e)
-      }
-    }
-
-    let latestStatus: StatusRow | null = null
-    let latestDamage: DamageRow | null = null
-    let start = 0
-    while (start < coldJson.length) {
-      let end = coldJson.indexOf('\n', start)
-      if (end === -1) end = coldJson.length
-      if (end > start) {
-        try {
-          const msg = JSON.parse(coldJson.slice(start, end)) as GatewayMsg
-          if (additionalLoggingEnabled) {
-            rendererDiagnostics.jsonRows++
-            observeRendererRow(msg, 'telemetry-resume-json')
-          }
-          // Sparse V6 playback delivers the hot families as JSON patches rather
-          // than packed binary. They append exactly like their binary
-          // counterparts above and publish through recompute(), not per-row
-          // set(), so routing them through handleMsg costs no extra renders.
-          if (msg.type === 'telemetry' || msg.type === 'motion' || msg.type === 'motion_ex') {
-            dirty |= dirtySliceFor(msg)
-            handleMsg(msg)
-          } else if (msg.type === 'status') {
-            appendPlaybackPatch(stsTable, msg, MAX_ROWS)
-            latestStatus = stsTable.last()!
-            if (!isPlaybackFlag && Number.isFinite(latestStatus.fuel_kg) && latestStatus.fuel_kg >= 0 && latestStatus.fuel_kg > fuelMaxReceived) {
-              fuelMaxReceived = latestStatus.fuel_kg
-            }
-            dirty |= DirtySlice.Status | DirtySlice.Derived
-          } else if (msg.type === 'damage') {
-            appendPlaybackPatch(dmgTable, msg, MAX_ROWS)
-            latestDamage = dmgTable.last()
-            dirty |= DirtySlice.Damage
-          }
-        }
-        catch (e) {
-          if (additionalLoggingEnabled) {
-            rendererDiagnostics.jsonParseErrors++
-            console.error('[telemetry-diagnostics][renderer] Failed to parse resume JSON:', {
-              error: String(e),
-              payloadChars: coldJson.length,
-              rowOffset: start,
-              rowChars: end - start,
-              rowPreview: coldJson.slice(start, Math.min(end, start + 300)),
-            })
-          } else {
-            console.error('Failed to parse resume JSON:', e)
-          }
-        }
-      }
-      start = end + 1
-    }
-
-    // Publish cold current-state values once after the bulk history append;
-    // per-row Zustand writes here would turn a long resume window into a render
-    // storm. Each source buffer is independently chronological, so the hot and
-    // cold channels do not need a combined O(n log n) sort.
-    const current: Partial<TelemetryStoreState> = {}
-    if (latestStatus) {
-      current.status = latestStatus
-      // Status rows here bypass handleMsg's incremental stint tracking, and a
-      // tyre change may have happened while hidden.
-      currentStintStartTime = findCurrentStintStart(stsTable.frozen())
-      current.currentStintStartTime = currentStintStartTime
-    }
-    if (latestDamage) current.damage = latestDamage
-    if (!isPlaybackFlag && fuelMaxReceived > -Infinity) current.fuelUpperLimit = fuelMaxReceived + 1
-    if (Object.keys(current).length > 0) {
-      set(current)
-    }
-    recompute(dirty)
-    if (additionalLoggingEnabled && dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
-    // Main's resume cache is bounded, so a long minimize (or a lap window
-    // longer than the cache) still leaves a gap. Playback can re-read the
-    // visible window from the recording.
-    if (isPlaybackFlag) {
-      requestVisibleWindowHistory(true)
-      // All Laps / Stint Laps hold the whole session, so re-read only the
-      // hidden interval rather than the session from its start. The window is
-      // measured back from the engine's playhead, which can be ahead of the
-      // renderer at high playback speeds, hence the margin; overlap merges.
-      const gapSeconds = latestHeldTime() - lastTimeBeforeResume
-      if (allLapsMode && lastTimeBeforeResume > 0 && gapSeconds > 1)
-        window.playerBridge.getWindowData(gapSeconds + 5, fullSessionHistoryRowMask)
-    }
+  // The lap the window was on when hidden; a restore that finds a different
+  // lap knows laps were completed while hidden.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') lapNumAtHide = lapNum
   })
 
 }

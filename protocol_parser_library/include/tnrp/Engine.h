@@ -243,6 +243,14 @@ public:
                              uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerClose();                    // back to live mode
 
+    // Host window visibility. A hidden host drops the rows it is sent, so on
+    // the hidden-to-visible edge the engine rebuilds what it missed from its
+    // own history (live) or the recording (playback) and sends one
+    // Sink::onRestoreFlush. sequence orders calls that reach the engine on
+    // different threads; an older call is ignored. Showing may read the
+    // recording, so call it off the UI thread.
+    void setHostVisible(bool visible, uint64_t sequence);
+
 private:
     void emitRows(const std::vector<std::string>& rows);
 
@@ -321,6 +329,9 @@ private:
     // carries that car's whole lap list.
     std::array<std::string, 24> liveLapHistoryRows_{};
     uint64_t          liveLapHistorySessionUid_ = 0;
+    // Header m_sessionUID of the live session the history store holds.
+    uint64_t          liveSessionUid_ = 0;
+    bool              liveSessionUidKnown_ = false;
     int               lapHistoryCar_ = -1;
     std::string       lastLapHistoryJson_;
     // Playback: the next lap end after the cursor, when the row may change.
@@ -426,6 +437,29 @@ private:
 
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
     void rewindLiveTimeline(float sessionTime, uint16_t format); // mutex_ held
+    // A new live session UID: drop the previous session's history so a
+    // backfill or restore never returns its rows. mutex_ held.
+    void resetLiveSessionHistoryLocked();
+
+    // Host restore state (guarded by mutex_). See setHostVisible().
+    uint64_t          hostVisibilitySequence_ = 0;
+    bool              hostHidden_ = false;
+    // Earliest time the host may be missing rows from. Starts at the hide
+    // time and moves back with every rewind, seek or load while hidden.
+    float             hiddenRestoreFrom_ = 0.0f;
+    uint64_t          hiddenSessionUid_ = 0;
+    bool              hiddenSessionUidKnown_ = false;
+    // A live restore issued but not yet handed to the sink. A rewind while it
+    // is pending moves its start back; hiding again folds it into the new gap.
+    uint64_t          restoreGeneration_ = 0;
+    bool              restorePending_ = false;
+    float             pendingRestoreFrom_ = 0.0f;
+    bool              pendingSessionChanged_ = false;
+    void noteHostTimelineMovedLocked(float sessionTime);
+    // Latest row of each current-state family the host subscribes to.
+    std::vector<std::string> hostLatestRowsLocked();
+    void issueLiveRestoreLocked();
+    void runPlaybackRestore(float restoreFrom);
     void emitRow(const std::string& json);               // forward to the sink
     void emitBinary(const uint8_t* data, size_t length);
     void setPairDataRequirements(uint32_t streamRowMask,

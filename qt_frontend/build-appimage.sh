@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-appimage.sh — Build the Track N Race Background Recorder into a
+# build-appimage.sh — Build Track N Race - Qt into a
 # self-contained AppImage on Linux, with the Breeze style stack bundled.
 #
 # This reuses build.sh --with-breeze, which already compiles the app and stages
@@ -20,7 +20,7 @@ APPDIR="$SCRIPT_DIR/AppDir"
 TOOLS_DIR="$SCRIPT_DIR/.appimage-tools"
 
 QT_PREFIX="${QT_PREFIX:-}"
-APP_VERSION="${TNR_APP_VERSION:-1.0.0}"
+APP_VERSION="${TNR_APP_VERSION:-1.6.0}"
 BREEZE_PREFIX=""   # empty => build.sh's default ($BUILD_DIR/breeze_stack/prefix)
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -37,7 +37,7 @@ fi
 export TNR_APP_VERSION="$APP_VERSION"
 
 echo "============================================="
-echo "   TNRD Background Recorder - AppImage Build"
+echo "   Track N Race - Qt - AppImage Build"
 echo "============================================="
 
 # ── 1. Build the app + Breeze bundle via the existing build script ───────────

@@ -25,6 +25,9 @@ struct AnalyzeMetric {
 
 const QVector<AnalyzeMetric>& analyzeMetrics();
 const AnalyzeMetric* analyzeMetric(const QString& id);
+// Tooltip value text, matching Electron's per-metric `format` ("123 km/h",
+// "12,345 rpm", "Gear 7", "L 23%", "1.25 g"...). Non-finite values print "—".
+QString analyzeFormatValue(const AnalyzeMetric& metric, double value);
 // Picker order of the metric groups.
 const QStringList& analyzeMetricGroups();
 

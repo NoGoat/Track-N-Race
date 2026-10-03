@@ -4,7 +4,6 @@
 #include "GraphTable.h"
 #include "../SessionModel.h"
 #include "../ChartCoordinates.h"
-#include "CardColors.h"
 
 #include <QGridLayout>
 #include <QColor>
@@ -26,11 +25,6 @@ ChartView::SeriesSpec powerSeries(const QString& name, const QColor& color, int 
     ChartView::SeriesSpec spec{ name, color, width, xAxis, yAxis, unit, precision };
     spec.unitSpace = false;
     return spec;
-}
-
-QString tooltipExtraRow(const QString& text) {
-    return QString("<div style='color:%1'>%2</div>")
-        .arg(tnr::themed("#7c8098", "#596168").name(), text.toHtmlEscaped());
 }
 
 double orZero(double value) { return std::isfinite(value) ? value : 0.0; }
@@ -68,7 +62,7 @@ PowerChartsWidget::PowerChartsWidget(QWidget* parent)
     splitMgukRefId_ = chart_->addSeries(powerSeries("", mgukRef, xId_[SPLIT], axSplit, "kW", 1, 1.1));
     chart_->setPanelTooltipExtra(SPLIT, [](const QVector<double>& v) {
         if (v.size() < 2 || (!std::isfinite(v[0]) && !std::isfinite(v[1]))) return QString();
-        return tooltipExtraRow(QString("Total: %1 kW").arg(orZero(v[0]) + orZero(v[1]), 0, 'f', 1));
+        return QString("Total: %1 kW").arg(orZero(v[0]) + orZero(v[1]), 0, 'f', 1);
     });
 
     // ── ERS HARVEST (panel 1) ────────────────────────────────────────────────
@@ -85,8 +79,8 @@ PowerChartsWidget::PowerChartsWidget(QWidget* parent)
     harvHRefId_ = chart_->addSeries(powerSeries("", hhRef, xId_[HARVEST], harvYId_, "kJ", 1, 1.1));
     chart_->setPanelTooltipExtra(HARVEST, [this](const QVector<double>& v) {
         if (v.size() < 2 || !std::isfinite(v[0])) return QString();
-        return tooltipExtraRow(QString("Total: %1 kJ")
-            .arg(orZero(v[0]) + (mguhVisible_ ? orZero(v[1]) : 0.0), 0, 'f', 1));
+        return QString("Total: %1 kJ")
+            .arg(orZero(v[0]) + (mguhVisible_ ? orZero(v[1]) : 0.0), 0, 'f', 1);
     });
 
     // ── ERS STORE (panel 2) ──────────────────────────────────────────────────
@@ -100,7 +94,7 @@ PowerChartsWidget::PowerChartsWidget(QWidget* parent)
     storeRefId_ = chart_->addSeries(powerSeries("", iceRef, xId_[STORE], axStore, "%", 1, 1.1));
     chart_->setPanelTooltipExtra(STORE, [](const QVector<double>& v) {
         if (v.isEmpty() || !std::isfinite(v[0])) return QString();
-        return tooltipExtraRow(QString("%1 / 4.00 MJ").arg(v[0] / 100.0 * 4.0, 0, 'f', 2));
+        return QString("%1 / 4.00 MJ").arg(v[0] / 100.0 * 4.0, 0, 'f', 2);
     });
 
     // ── FUEL (panel 3) ───────────────────────────────────────────────────────
