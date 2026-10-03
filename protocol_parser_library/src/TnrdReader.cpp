@@ -2666,8 +2666,17 @@ bool TnrdReader::loadV4PlaybackFrontier(float throughTime) {
     std::sort(pending.begin(),pending.end(),[](const auto&a,const auto&b){return a.sequence<b.sequence;});
     std::vector<size_t> indices;indices.reserve(pending.size());for(const auto& item:pending)indices.push_back(item.index);
     std::vector<std::vector<detail::V4TimedRow>> decoded;std::string error;
-    if(dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get())){
-        if(!indexedArchive_->rowsForChunks(indices,decoded,&error)){lastError_=error;return false;}
+    // V6 rows stay unrendered until pullUntil() emits them. A seek lands mid-lap
+    // in every driver's chunk of each all-car family (positions, timing), and
+    // rendering all of those laps here, only to drop the part before the
+    // cursor, dominated the seek. Lane 3 is Gear in V6, not Damage, and the
+    // damage-cadence state is V1-V5 only, so nothing needs rows at or before
+    // the cursor.
+    auto* v6=dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+    std::vector<std::shared_ptr<const detail::V6RowSource>> v6Sources;std::vector<std::vector<detail::V6DeferredRow>> v6Rows;std::vector<float> v6MaxTime;
+    if(v6){
+        v6Sources.resize(indices.size());v6Rows.resize(indices.size());v6MaxTime.resize(indices.size());
+        for(size_t i=0;i<indices.size();++i)if(!v6->deferredRowsForChunk(indices[i],v4PlaybackCursor_,v6Sources[i],v6Rows[i],v6MaxTime[i],&error)){lastError_=error;return false;}
     }else if(auto* v5=dynamic_cast<detail::TnrdV5Archive*>(indexedArchive_.get())){
         if(!v5->rowsForChunksRange(indices,v4PlaybackCursor_,std::numeric_limits<float>::infinity(),decoded,&error)){lastError_=error;return false;}
     }else if(!indexedArchive_->rowsForChunks(indices,decoded,&error)){lastError_=error;return false;}
@@ -2680,7 +2689,10 @@ bool TnrdReader::loadV4PlaybackFrontier(float throughTime) {
         lane.nextPrefetched=false;
         if(lane.rowPos){lane.rows.erase(lane.rows.begin(),lane.rows.begin()+(ptrdiff_t)lane.rowPos);lane.rowPos=0;}
         const size_t retained=lane.rows.size();
-        for(auto& row:decoded[i]){
+        if(v6){
+            lane.maxDecodedTime=std::max(lane.maxDecodedTime,v6MaxTime[i]);
+            for(const auto& row:v6Rows[i])lane.rows.push_back({row.sessionTime,pending[i].sequence,{},v6Sources[i],row.row});
+        }else for(auto& row:decoded[i]){
             const bool inBlock=loadedFormat_==TnrdFormat::ChunkedV6||block==lapBlocks_.end()||(row.sessionTime>=block->second.startSessionTime&&row.sessionTime<=block->second.endSessionTime);
             if(!inBlock)continue;if(std::isfinite(row.sessionTime))lane.maxDecodedTime=std::max(lane.maxDecodedTime,row.sessionTime);
             if(pending[i].lane==3&&row.sessionTime<=v4PlaybackCursor_&&(!v4PlaybackDamageStateReady_||row.sessionTime>=v4PlaybackDamageState_.t)){v4PlaybackDamageState_={row.sessionTime,std::move(row.json)};v4PlaybackDamageStateReady_=true;}
@@ -2778,7 +2790,7 @@ std::vector<std::string> TnrdReader::pullUntil(float t) {
         for(;;){
             size_t best=v4PlaybackLanes_.size();float safeThrough=inf;bool futureChunk=false;
             for(size_t i=0;i<v4PlaybackLanes_.size();++i){const auto& lane=v4PlaybackLanes_[i];safeThrough=std::min(safeThrough,lane.safeThrough);futureChunk|=lane.nextChunk<lane.chunks.size();if(lane.rowPos<lane.rows.size()&&(best==v4PlaybackLanes_.size()||before(lane.rows[lane.rowPos],v4PlaybackLanes_[best].rows[v4PlaybackLanes_[best].rowPos])))best=i;}
-            if(best!=v4PlaybackLanes_.size()&&v4PlaybackLanes_[best].rows[v4PlaybackLanes_[best].rowPos].t<=t&&(v4PlaybackLanes_[best].rows[v4PlaybackLanes_[best].rowPos].t<safeThrough||!futureChunk)){auto& lane=v4PlaybackLanes_[best];out.push_back(std::move(lane.rows[lane.rowPos++].json));continue;}
+            if(best!=v4PlaybackLanes_.size()&&v4PlaybackLanes_[best].rows[v4PlaybackLanes_[best].rowPos].t<=t&&(v4PlaybackLanes_[best].rows[v4PlaybackLanes_[best].rowPos].t<safeThrough||!futureChunk)){auto& lane=v4PlaybackLanes_[best];auto& row=lane.rows[lane.rowPos++];if(row.source){row.json=row.source->render(row.sourceRow);row.source.reset();setSessionTime(row.json,row.t);tagV6StoredType(row.json,static_cast<uint8_t>(best));}out.push_back(std::move(row.json));continue;}
             const float through=best!=v4PlaybackLanes_.size()&&v4PlaybackLanes_[best].rows[v4PlaybackLanes_[best].rowPos].t<=t?v4PlaybackLanes_[best].rows[v4PlaybackLanes_[best].rowPos].t:t;
             if(futureChunk&&safeThrough<=through){if(loadV4PlaybackFrontier(through))continue;break;}
             if(best!=v4PlaybackLanes_.size())break;

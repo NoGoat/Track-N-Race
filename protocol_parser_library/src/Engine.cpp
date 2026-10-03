@@ -61,6 +61,19 @@ static uint64_t steadyClockMilliseconds() {
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+// For getters Electron's main thread polls: waits out the brief holds of a
+// datagram or playback tick, but not a seek, which holds the lock for its
+// whole extraction. Returns unlocked when the engine stays busy.
+static std::unique_lock<std::mutex> lockUnlessBusy(std::mutex& mutex) {
+    std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+    while (!lock.owns_lock() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+        (void)lock.try_lock();
+    }
+    return lock;
+}
+
 template <typename T>
 static void updateAtomicMaximum(std::atomic<T>& target, T value) {
     T current = target.load(std::memory_order_relaxed);
@@ -345,8 +358,10 @@ bool Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
 }
 
 std::string Engine::udpLastError() const {
-    std::lock_guard<std::mutex> lk(mutex_);
-    return udp_.lastError();
+    auto lk = lockUnlessBusy(mutex_);
+    std::lock_guard<std::mutex> cached(diagnosticSnapshotMutex_);
+    if (lk.owns_lock()) lastUdpError_ = udp_.lastError();
+    return lastUdpError_;
 }
 
 void Engine::rewindLiveTimeline(float sessionTime, uint16_t format) {
@@ -756,7 +771,11 @@ void Engine::requestPlaybackStrategyRebuildLocked(float target) {
 }
 
 Engine::LiveDiagnostics Engine::liveDiagnostics() const {
-    std::lock_guard<std::mutex> lk(mutex_);
+    // Polled from Electron's main thread: a busy engine answers with the
+    // previous snapshot rather than blocking it (see lastLiveDiagnostics_).
+    auto lk = lockUnlessBusy(mutex_);
+    std::lock_guard<std::mutex> cached(diagnosticSnapshotMutex_);
+    if (!lk.owns_lock()) return lastLiveDiagnostics_;
     LiveDiagnostics snapshot = liveDiagnostics_;
     snapshot.udpRunning = udp_.isRunning();
     snapshot.inPlayback = inPlayback_.load();
@@ -764,6 +783,7 @@ Engine::LiveDiagnostics Engine::liveDiagnostics() const {
     snapshot.consumerRowMask = consumerRowMask_;
     snapshot.consumerHistoryMask = consumerHistoryMask_;
     snapshot.consumerWindowSeconds = consumerWindowSeconds_;
+    lastLiveDiagnostics_ = snapshot;
     return snapshot;
 }
 
@@ -812,14 +832,23 @@ Engine::LiveHistoryMemoryStats Engine::liveHistoryMemoryStats() const {
 Engine::StrategyMemoryStats Engine::strategyMemoryStats() const {
     StrategyMemoryStats stats;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        stats.subscribed = (consumerRowMask_ & kStrategyRowBit) != 0;
-        stats.cacheCapacityBytes = lastStrategyJson_.capacity() + 1 +
-            liveLatestRows_[kStrategyRowType].capacity() + 1 +
-            playbackStrategyPendingRows_.capacity() * sizeof(std::string);
-        for (const auto& row : playbackStrategyPendingRows_)
-            stats.cacheCapacityBytes += row.capacity() + 1;
-        if (inPlayback_.load()) stats.processor = strategy_.memoryStats();
+        // Polled from Electron's main thread; see liveDiagnostics().
+        auto lock = lockUnlessBusy(mutex_);
+        std::lock_guard<std::mutex> cached(diagnosticSnapshotMutex_);
+        if (lock.owns_lock()) {
+            StrategyLockedStats locked;
+            locked.subscribed = (consumerRowMask_ & kStrategyRowBit) != 0;
+            locked.cacheCapacityBytes = lastStrategyJson_.capacity() + 1 +
+                liveLatestRows_[kStrategyRowType].capacity() + 1 +
+                playbackStrategyPendingRows_.capacity() * sizeof(std::string);
+            for (const auto& row : playbackStrategyPendingRows_)
+                locked.cacheCapacityBytes += row.capacity() + 1;
+            if (inPlayback_.load()) locked.processor = strategy_.memoryStats();
+            lastStrategyLockedStats_ = std::move(locked);
+        }
+        stats.subscribed = lastStrategyLockedStats_.subscribed;
+        stats.cacheCapacityBytes = lastStrategyLockedStats_.cacheCapacityBytes;
+        if (inPlayback_.load()) stats.processor = lastStrategyLockedStats_.processor;
     }
     {
         std::lock_guard<std::mutex> lock(strategyMemoryStatsMutex_);
@@ -875,7 +904,10 @@ Engine::StrategyMemoryStats Engine::strategyMemoryStats() const {
 
 Engine::RuntimeMemoryStats Engine::runtimeMemoryStats() const {
     RuntimeMemoryStats stats;
-    std::lock_guard<std::mutex> lock(mutex_);
+    // Polled from Electron's main thread; see liveDiagnostics().
+    auto lock = lockUnlessBusy(mutex_);
+    std::lock_guard<std::mutex> cached(diagnosticSnapshotMutex_);
+    if (!lock.owns_lock()) return lastRuntimeMemoryStats_;
     for (const auto& row : dupCache_) {
         stats.duplicateCacheUsedBytes += row.size();
         stats.duplicateCacheCapacityBytes += row.capacity() + 1;
@@ -904,6 +936,7 @@ Engine::RuntimeMemoryStats Engine::runtimeMemoryStats() const {
     stats.peakFilteredBinaryCapacityBytes = runtimePeakFilteredBinaryCapacity_;
     stats.retainedBytes = stats.duplicateCacheCapacityBytes +
         stats.latestRowCacheCapacityBytes + stats.playbackPathCapacityBytes;
+    lastRuntimeMemoryStats_ = stats;
     return stats;
 }
 

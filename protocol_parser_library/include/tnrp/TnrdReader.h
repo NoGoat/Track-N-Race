@@ -20,7 +20,7 @@
 
 namespace tnrp {
 
-namespace detail { class TnrdIndexedArchive; struct V4TimedRow; }
+namespace detail { class TnrdIndexedArchive; struct V4TimedRow; class V6RowSource; }
 
 // Reads TNRD V1/gzip, V2/V3 monolithic Zstandard, and V4/V5 indexed chunked
 // Zstandard files. load() detects the container signature; the legacy JSON
@@ -211,7 +211,15 @@ private:
     // A stored raw JSONL row plus its session_time (for ordering). The json is
     // emitted verbatim into the playback payload via glz::raw_json.
     struct TimedRaw { float t; std::string json; uint64_t sequence{}; };
-    struct V4PlaybackRow { float t; uint64_t sequence; std::string json; };
+    // A V6 row arrives unrendered: `source` is set and `json` stays empty until
+    // pullUntil() emits it (see loadV4PlaybackFrontier()).
+    struct V4PlaybackRow {
+        float t;
+        uint64_t sequence;
+        std::string json;
+        std::shared_ptr<const detail::V6RowSource> source{};
+        uint32_t sourceRow{};
+    };
     struct V4PlaybackLane {
         std::vector<size_t> chunks;
         size_t nextChunk{};

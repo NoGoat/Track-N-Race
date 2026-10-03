@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <deque>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -199,6 +200,46 @@ public:
 private:
     std::function<void()> call_;
 };
+
+// Engine calls whose order matters (play, pause, speed, lap requests,
+// settings) take the same lock, so they cannot run on the JS thread either: a
+// seek holds it for its whole extraction and a waiting main process freezes
+// every window. EngineCallWorkers start in any order, so these share one
+// drain worker that runs them one at a time, in the order they were made.
+struct OrderedEngineCalls {
+    std::mutex mutex;
+    std::deque<std::function<void()>> pending;
+    bool draining = false;
+};
+
+static void queueOrderedEngineCall(Napi::Env env, const std::shared_ptr<OrderedEngineCalls>& calls,
+                                   std::function<void()> call) {
+    {
+        std::lock_guard<std::mutex> lock(calls->mutex);
+        calls->pending.push_back(std::move(call));
+        if (calls->draining) return;
+        calls->draining = true;
+    }
+    (new EngineCallWorker(env, [calls] {
+        for (;;) {
+            std::function<void()> next;
+            {
+                std::lock_guard<std::mutex> lock(calls->mutex);
+                if (calls->pending.empty()) { calls->draining = false; return; }
+                next = std::move(calls->pending.front());
+                calls->pending.pop_front();
+            }
+            try {
+                next();
+            } catch (...) {
+                // The rest stay queued for the drain worker the next call starts.
+                std::lock_guard<std::mutex> lock(calls->mutex);
+                calls->draining = false;
+                throw;
+            }
+        }
+    }))->Queue();
+}
 
 class PlayerHistoryWorker : public Napi::AsyncWorker {
 public:
@@ -1010,6 +1051,7 @@ private:
         std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::atomic<bool>> loadBusy_ = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<AnalysisReaderState> analysisReader_ = std::make_shared<AnalysisReaderState>();
+    std::shared_ptr<OrderedEngineCalls> orderedCalls_ = std::make_shared<OrderedEngineCalls>();
 
     Napi::Value StartUdp(const Napi::CallbackInfo& info) {
         TRACE("StartUdp: calling engine->startUdp()");
@@ -1486,8 +1528,13 @@ private:
     }
 
     Napi::Value SetTeamColorOverrides(const Napi::CallbackInfo& info) {
-        if (engine && info.Length() >= 1)
-            engine->setTeamColorOverrides(readTeamColorOverrides(info[0]));
+        if (engine && info.Length() >= 1) {
+            auto target = engine;
+            queueOrderedEngineCall(info.Env(), orderedCalls_,
+                [target, overrides = readTeamColorOverrides(info[0])] {
+                    target->setTeamColorOverrides(overrides);
+                });
+        }
         return info.Env().Undefined();
     }
 
@@ -1497,8 +1544,12 @@ private:
     }
 
     Napi::Value SetStrategyMinimumStops(const Napi::CallbackInfo& info) {
-        if (info.Length() >= 1 && info[0].IsNumber())
-            engine->setStrategyMinimumStops(info[0].As<Napi::Number>().Int32Value());
+        if (engine && info.Length() >= 1 && info[0].IsNumber()) {
+            auto target = engine;
+            const int stops = info[0].As<Napi::Number>().Int32Value();
+            queueOrderedEngineCall(info.Env(), orderedCalls_,
+                [target, stops] { target->setStrategyMinimumStops(stops); });
+        }
         return info.Env().Undefined();
     }
 
@@ -1566,12 +1617,18 @@ private:
     }
 
     Napi::Value PlayerPlay(const Napi::CallbackInfo& info) {
-        engine->playerPlay();
+        if (engine) {
+            auto target = engine;
+            queueOrderedEngineCall(info.Env(), orderedCalls_, [target] { target->playerPlay(); });
+        }
         return info.Env().Undefined();
     }
 
     Napi::Value PlayerPause(const Napi::CallbackInfo& info) {
-        engine->playerPause();
+        if (engine) {
+            auto target = engine;
+            queueOrderedEngineCall(info.Env(), orderedCalls_, [target] { target->playerPause(); });
+        }
         return info.Env().Undefined();
     }
 
@@ -1628,8 +1685,10 @@ private:
     }
 
     Napi::Value PlayerSetSpeed(const Napi::CallbackInfo& info) {
-        if (info.Length() >= 1 && info[0].IsNumber()) {
-            engine->playerSetSpeed(info[0].As<Napi::Number>().FloatValue());
+        if (engine && info.Length() >= 1 && info[0].IsNumber()) {
+            auto target = engine;
+            const float mult = info[0].As<Napi::Number>().FloatValue();
+            queueOrderedEngineCall(info.Env(), orderedCalls_, [target, mult] { target->playerSetSpeed(mult); });
         }
         return info.Env().Undefined();
     }
@@ -1683,7 +1742,10 @@ private:
         if (info.Length() >= 1 && info[0].IsNumber() && engine) {
             const uint32_t rowTypeMask = info.Length() >= 2 && info[1].IsNumber()
                 ? info[1].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
-            engine->playerGetLapData(info[0].As<Napi::Number>().Int32Value(), rowTypeMask);
+            auto target = engine;
+            const int lapNum = info[0].As<Napi::Number>().Int32Value();
+            queueOrderedEngineCall(info.Env(), orderedCalls_,
+                [target, lapNum, rowTypeMask] { target->playerGetLapData(lapNum, rowTypeMask); });
         }
         return info.Env().Undefined();
     }

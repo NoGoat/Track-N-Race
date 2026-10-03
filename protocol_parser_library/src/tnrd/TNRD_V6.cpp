@@ -2089,6 +2089,66 @@ bool parseChunkRows(const ChunkData& data, const V6ChunkInfo& chunk, float logic
     return true;
 }
 
+// The row parseChunkRows(-inf, at) would return last, without rendering the
+// rows before it. A seek restores every car's latest sample this way, and
+// rendering a whole lap per car only to keep its final row dominated the seek.
+bool latestChunkRow(const ChunkData& data, const V6ChunkInfo& chunk, float at, V6TimedRow& out) {
+    if (data.columnar) {
+        const auto& table = data.table;
+        for (size_t row = table.time.size(); row-- > 0;) {
+            const float time = table.time[row];
+            if (time > at) continue;
+            std::string json; json.reserve(64);
+            renderRow(json, table, row, chunk.driverIndex);
+            out = {time, chunk.typeId, chunk.sequence, std::move(json), static_cast<uint32_t>(row)};
+            return true;
+        }
+        return false;
+    }
+    const std::string_view plain = data.jsonl;
+    std::string_view latest;
+    float latestTime{};
+    uint32_t latestSource{};
+    bool found = false;
+    size_t start = 0; uint32_t source = 0;
+    while (start < plain.size()) {
+        const size_t end = plain.find('\n', start);
+        const size_t length = (end == std::string_view::npos ? plain.size() : end) - start;
+        if (length) {
+            const auto line = plain.substr(start, length);
+            const float time = scanTime(line);
+            if (time >= -std::numeric_limits<float>::infinity() && time <= at) {
+                latest = line; latestTime = time; latestSource = source; found = true;
+            }
+            ++source;
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    if (found) out = {latestTime, chunk.typeId, chunk.sequence, withDriver(latest, chunk.driverIndex), latestSource};
+    return found;
+}
+
+// Renders a decoded chunk's rows on demand, as parseChunkRows would. A row
+// handle is the table row of a columnar chunk, or an index into `lines` for a
+// JSONL one; the views point into the chunk this source keeps alive.
+class ChunkRowSource final : public V6RowSource {
+public:
+    ChunkRowSource(std::shared_ptr<const ChunkData> data, uint8_t driver)
+        : data_(std::move(data)), driver_(driver) {}
+    std::string render(uint32_t row) const override {
+        if (!data_->columnar) return row < lines.size() ? withDriver(lines[row], driver_) : std::string{};
+        std::string json; json.reserve(64);
+        renderRow(json, data_->table, row, driver_);
+        return json;
+    }
+    std::vector<std::string_view> lines;
+
+private:
+    std::shared_ptr<const ChunkData> data_;
+    uint8_t driver_;
+};
+
 std::string withDriver(std::string_view json, uint8_t driver) {
     if (json.empty() || json.front() != '{') return std::string(json);
     std::string out; out.reserve(json.size() + 20);
@@ -2606,6 +2666,58 @@ bool TnrdV6Archive::rowsForChunks(const std::vector<size_t>& indices, std::vecto
     }
     return true;
 }
+bool TnrdV6Archive::deferredRowsForChunk(size_t index, float after,
+                                         std::shared_ptr<const V6RowSource>& source,
+                                         std::vector<V6DeferredRow>& rows, float& maxTime,
+                                         std::string* errorOut) {
+    rows.clear(); source.reset();
+    maxTime = -std::numeric_limits<float>::infinity();
+    if (index >= impl_->v6Chunks.size()) { fail(errorOut, "invalid V6 chunk index"); return false; }
+    std::shared_ptr<const ChunkData> data; if (!impl_->load(index, data, errorOut)) return false;
+    const auto& chunk = impl_->v6Chunks[index];
+    // rowsForChunks()'s selection: parseChunkRows() over an unbounded range,
+    // dropping another car's tyre-set rows.
+    const bool skipSets = impl_->skipTyreSets(chunk.driverIndex) &&
+        chunk.typeId == static_cast<uint8_t>(V6DataType::TyreState);
+    auto rowSource = std::make_shared<ChunkRowSource>(data, chunk.driverIndex);
+    if (data->columnar) {
+        const auto& table = data->table;
+        const ColumnarChunk::Column* sets = nullptr;
+        if (skipSets)
+            for (const auto& column : table.columns)
+                if (column.name == "sets") { sets = &column; break; }
+        for (uint32_t row = 0; row < table.time.size(); ++row) {
+            if (sets && sets->has(row)) continue;
+            const float time = table.time[row];
+            if (std::isfinite(time)) maxTime = std::max(maxTime, time);
+            if (time > after) rows.push_back({time, row});
+        }
+    } else {
+        const std::string_view plain = data->jsonl;
+        size_t start = 0;
+        while (start < plain.size()) {
+            const size_t end = plain.find('\n', start);
+            const size_t length = (end == std::string_view::npos ? plain.size() : end) - start;
+            if (length) {
+                const auto line = plain.substr(start, length);
+                const float time = scanTime(line);
+                if (time >= -std::numeric_limits<float>::infinity() &&
+                    time <= std::numeric_limits<float>::infinity() &&
+                    !(skipSets && line.find("\"sets\":") != std::string_view::npos)) {
+                    if (std::isfinite(time)) maxTime = std::max(maxTime, time);
+                    if (time > after) {
+                        rows.push_back({time, static_cast<uint32_t>(rowSource->lines.size())});
+                        rowSource->lines.push_back(line);
+                    }
+                }
+            }
+            if (end == std::string_view::npos) break;
+            start = end + 1;
+        }
+    }
+    source = std::move(rowSource);
+    return true;
+}
 bool TnrdV6Archive::rowsForLap(uint32_t lap, V6RowTypeMask mask, std::vector<V6TimedRow>& out, std::string* errorOut) {
     return rowsForLapRange(lap, -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), mask, out, errorOut);
 }
@@ -2810,21 +2922,19 @@ bool TnrdV6Archive::readMultiDriverLatest(float at, const std::vector<uint8_t>& 
         size_t visited = 0;
         for (auto it = end; it != ordered.begin() && visited < STATE_BACKFILL_CHUNK_LIMIT; ++visited) {
             --it;
-            std::vector<V6TimedRow> rows;
             std::shared_ptr<const ChunkData> plain;
             if (!impl_->load(*it, plain, errorOut)) return false;
             const auto& chunk = impl_->v6Chunks[*it];
+            if (!state) {
+                V6TimedRow row;
+                if (latestChunkRow(*plain, chunk, at, row)) out.push_back(std::move(row));
+                break;
+            }
+            std::vector<V6TimedRow> rows;
             constexpr float offset = 0.0f;
             if (!parseChunkRows(*plain, chunk, offset, rows,
                                 -std::numeric_limits<float>::infinity(), at, {}, skipSets)) return false;
-            if (rows.empty()) {
-                if (!state) break;
-                continue;
-            }
-            if (!state) {
-                out.push_back(std::move(rows.back()));
-                break;
-            }
+            if (rows.empty()) continue;
 
             // Resolve this chunk on its own first: within a chunk the later row
             // wins, but across chunks anything already recovered is newer and

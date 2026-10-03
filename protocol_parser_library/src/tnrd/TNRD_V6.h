@@ -127,6 +127,20 @@ struct TnrdV6WriterMemoryStats {
     size_t lastCheckpointRowIndexBytes{}, peakCheckpointRowIndexBytes{};
 };
 
+// A decoded chunk whose rows are rendered one at a time, when asked for.
+// Playback holds these instead of rendering every driver's whole lap the
+// moment a seek lands in it. Holding one keeps its decoded chunk alive.
+class V6RowSource {
+public:
+    virtual ~V6RowSource() = default;
+    // The row exactly as rowsForChunks() renders it.
+    virtual std::string render(uint32_t row) const = 0;
+};
+struct V6DeferredRow {
+    float sessionTime{};
+    uint32_t row{};  // handle for V6RowSource::render
+};
+
 class TnrdV6Archive final : public TnrdIndexedArchive {
 public:
     TnrdV6Archive();
@@ -149,6 +163,13 @@ public:
     void cancelPrefetch() override;
     bool rowsForChunks(const std::vector<size_t>&, std::vector<std::vector<V6TimedRow>>&,
                        std::string*) override;
+    // rowsForChunks() for one chunk without rendering anything: the rows it
+    // would return that are later than `after`, in the same order, plus the
+    // newest finite time among all of them (-infinity when there is none).
+    bool deferredRowsForChunk(size_t index, float after,
+                              std::shared_ptr<const V6RowSource>& source,
+                              std::vector<V6DeferredRow>& rows, float& maxTime,
+                              std::string* errorOut);
     bool rowsForLap(uint32_t, V6RowTypeMask, std::vector<V6TimedRow>&, std::string*) override;
     bool rowsForLapRange(uint32_t, float, float, V6RowTypeMask,
                          std::vector<V6TimedRow>&, std::string*,

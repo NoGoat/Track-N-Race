@@ -394,6 +394,19 @@ private:
     mutable std::mutex strategyMemoryStatsMutex_;
     StrategyProcessor::MemoryStats publishedLiveStrategyMemoryStats_;
     StrategyRollbackMemoryStats publishedStrategyRollbackMemoryStats_;
+    // The last values the diagnostic getters read under mutex_. Electron polls
+    // them on its main thread, so while a seek holds mutex_ they answer from
+    // here instead of stalling every window until it finishes.
+    struct StrategyLockedStats {
+        bool subscribed{};
+        size_t cacheCapacityBytes{};
+        StrategyProcessor::MemoryStats processor;
+    };
+    mutable std::mutex diagnosticSnapshotMutex_;
+    mutable LiveDiagnostics lastLiveDiagnostics_;
+    mutable std::string lastUdpError_;
+    mutable RuntimeMemoryStats lastRuntimeMemoryStats_;
+    mutable StrategyLockedStats lastStrategyLockedStats_;
     std::atomic<size_t> strategyPeakQueuedRows_{0};
     std::atomic<size_t> strategyPeakQueuedRetainedBytes_{0};
     std::atomic<size_t> strategyActiveWorkItems_{0};
