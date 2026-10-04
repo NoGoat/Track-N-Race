@@ -29,6 +29,7 @@ public:
     void setColors(const QColor& current, const QColor& comparison);
     void setLabels(const QString& current, const QString& comparison);
     void setMapAppearance(bool sectorColors, int opacityPercent);
+    void setAeroMode(bool slm);
     void setCurrentTime(float sessionTime);
     // Moves the cursor to a lap-relative time and holds it there.
     void focusElapsed(double seconds);

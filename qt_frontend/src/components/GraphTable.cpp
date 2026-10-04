@@ -2,7 +2,12 @@
 #include "ChartView.h"
 
 #include <QAbstractTableModel>
+#include <QEvent>
 #include <QFrame>
+#include <QGraphicsDropShadowEffect>
+#include <QIcon>
+#include <QStyle>
+#include <QToolButton>
 #include <QGridLayout>
 #include <QHeaderView>
 #include <QLayoutItem>
@@ -127,6 +132,85 @@ GraphTable::GraphTable(const QVector<Column>& columns, QWidget* parent)
     verticalHeader()->setDefaultSectionSize(18);   // compact, uniform-height rows
     horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     horizontalHeader()->setHighlightSections(false);
+    // Pixel scrolling, so the 1.5-row unpin threshold is measured as Electron does.
+    setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { onScrolled(); });
+
+    // Electron: bottom-3 right-3, menu background with a soft drop shadow.
+    scrollButton_ = new QToolButton(this);
+    scrollButton_->setText(QStringLiteral("Scroll to Bottom"));
+    scrollButton_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    scrollButton_->setIconSize(QSize(12, 12));
+    scrollButton_->setCursor(Qt::PointingHandCursor);
+    auto* shadow = new QGraphicsDropShadowEffect(scrollButton_);
+    shadow->setBlurRadius(8);
+    shadow->setOffset(0, 2);
+    shadow->setColor(QColor(0, 0, 0, 89));   // rgba(0, 0, 0, 0.35)
+    scrollButton_->setGraphicsEffect(shadow);
+    styleScrollButton();
+    scrollButton_->hide();
+    connect(scrollButton_, &QToolButton::clicked, this, [this] { setPinned(true); });
+}
+
+void GraphTable::styleScrollButton() {
+    if (!scrollButton_) return;
+    scrollButton_->setIcon(QIcon::fromTheme(QStringLiteral("go-down"),
+                                            style()->standardIcon(QStyle::SP_ArrowDown)));
+    scrollButton_->setStyleSheet(QStringLiteral(
+        "QToolButton { background: palette(window); border: 1px solid palette(mid);"
+        " border-radius: 4px; padding: 3px 8px; }"
+        "QToolButton:hover { background: palette(button); }"));
+    scrollButton_->adjustSize();
+    placeScrollButton();
+}
+
+void GraphTable::placeScrollButton() {
+    if (!scrollButton_) return;
+    constexpr int kInset = 12;
+    scrollButton_->adjustSize();
+    scrollButton_->move(width() - scrollButton_->width() - kInset,
+                        height() - scrollButton_->height() - kInset);
+    scrollButton_->raise();
+}
+
+void GraphTable::resizeEvent(QResizeEvent* event) {
+    QTableView::resizeEvent(event);
+    placeScrollButton();
+    // Electron re-sticks to the newest row when the view height changes.
+    if (pinned_) {
+        autoScrolling_ = true;
+        scrollToBottom();
+        autoScrolling_ = false;
+    }
+}
+
+void GraphTable::changeEvent(QEvent* event) {
+    QTableView::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+        styleScrollButton();
+}
+
+void GraphTable::onScrolled() {
+    if (!pinned_ || autoScrolling_) return;
+    QScrollBar* sb = verticalScrollBar();
+    const int threshold = verticalHeader()->defaultSectionSize() * 3 / 2;
+    if (sb->maximum() - sb->value() >= threshold) setPinned(false);
+}
+
+void GraphTable::setPinned(bool pinned) {
+    if (pinned_ == pinned) return;
+    pinned_ = pinned;
+    scrollButton_->setVisible(!pinned);
+    if (pinned) {
+        // Resume immediately: the next rebuild is structural (fresh rows), and
+        // endRebuild() jumps to the newest row once they are in.
+        haveCommittedRange_ = false;
+        autoScrolling_ = true;
+        scrollToBottom();
+        autoScrolling_ = false;
+    } else {
+        placeScrollButton();
+    }
 }
 
 QString GraphTable::fmtTime(float t) {
@@ -145,6 +229,7 @@ void GraphTable::setColumns(const QVector<Column>& columns) {
     model_->setColumns(columns);
     model_->setDistanceMode(distanceMode_);
     haveCommittedRange_ = false;
+    setPinned(true);
 }
 
 void GraphTable::setDistanceMode(bool distance) {
@@ -152,10 +237,29 @@ void GraphTable::setDistanceMode(bool distance) {
     distanceMode_ = distance;
     model_->setDistanceMode(distance);
     haveCommittedRange_ = false;
+    setPinned(true);
 }
 
 void GraphTable::beginRebuild(double lowerTime, double upperTime, bool allLapsMode) {
     constexpr qint64 kAllLapsTableFrameMs = 200;
+    // Electron re-pins on a new lap (distance mode) or a history change (seek,
+    // flashback, new recording). Seen here as the requested range's upper edge
+    // moving backwards, or — on the time axis — leaping further than playback
+    // advances between frames. Its steady slide never re-pins.
+    constexpr double kBackwardSlack = 0.5;   // s or m, as the structural check below
+    constexpr double kForwardJumpS = 5.0;
+    if (!pinned_ && haveSeenRange_) {
+        const bool backwards = upperTime < seenUpperTime_ - kBackwardSlack;
+        const bool leapt = !distanceMode_ && upperTime - seenUpperTime_ > kForwardJumpS;
+        if (backwards || leapt) setPinned(true);
+    }
+    haveSeenRange_ = true;
+    seenUpperTime_ = upperTime;
+    if (!pinned_) {
+        // Frozen while the reader is scrolled away: keep the rows as they are.
+        acceptingRows_ = false;
+        return;
+    }
     const double span = upperTime - lowerTime;
     const double previousSpan = lastUpperTime_ - lastLowerTime_;
     const bool structural = !haveCommittedRange_ || upperTime < lastUpperTime_ ||
@@ -176,17 +280,16 @@ void GraphTable::addRowImpl(const double* values, int n) {
 
 void GraphTable::endRebuild() {
     if (!acceptingRows_) return;
-    // Preserve the "stick to newest" behaviour: only auto-scroll to the bottom if
-    // the user was already there (or the table was empty). If they scrolled up to
-    // read history, leave the viewport where it is.
-    QScrollBar* sb = verticalScrollBar();
-    const bool stickToBottom = sb->value() >= sb->maximum();
+    // Only reached while pinned (an unpinned table stops accepting rows), so the
+    // newest row always stays in view.
+    autoScrolling_ = true;
     model_->commit();
     // Row values shift every frame as the window slides even when the row count is
     // unchanged; repaint the viewport so those cells refresh. Only the visible rows
     // are actually painted (and formatted), so this stays O(on-screen rows).
     viewport()->update();
-    if (stickToBottom) scrollToBottom();
+    scrollToBottom();
+    autoScrolling_ = false;
     haveCommittedRange_ = true;
     lastLowerTime_ = pendingLowerTime_;
     lastUpperTime_ = pendingUpperTime_;

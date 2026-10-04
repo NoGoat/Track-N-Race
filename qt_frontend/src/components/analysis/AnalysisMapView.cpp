@@ -185,6 +185,10 @@ void AnalysisMapView::setMapAppearance(bool sectorColors, int opacityPercent) {
     map_->setMapOpacity(qBound(0, opacityPercent, 100) / 100.0);
 }
 
+void AnalysisMapView::setAeroMode(bool slm) {
+    map_->setAeroMode(slm);
+}
+
 void AnalysisMapView::setCurrentTime(float sessionTime) {
     sessionTime_ = sessionTime;
     if (!fixed_ && !focused_) refresh();

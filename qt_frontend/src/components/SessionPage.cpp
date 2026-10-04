@@ -3,6 +3,7 @@
 #include "../Labels.h"
 #include "CardColors.h"
 #include "PageUiHelpers.h"
+#include "ToastEvents.h"
 #include "TrackMapWidget.h"
 #include "../IconUtils.h"
 
@@ -19,12 +20,15 @@
 #include <QSizePolicy>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QRegularExpression>
+#include <QStringList>
 #include <QFontMetrics>
 #include <QPainter>
 #include <QMetaType>
 #include <QVariant>
 
 #include <algorithm>
+#include <optional>
 #include <vector>
 #include <utility>
 
@@ -152,31 +156,76 @@ QColor weatherColor(int w) {
     return QColor(dark ? v.dark : v.light);
 }
 
-QString eventCodeLabel(const std::string& code) {
-    // Library i18n catalog (protocol-aware: DRSE/DRSD read "Straight Line Mode
-    // …" under 2026). Unknown codes fall back to the raw code.
-    const QString key   = "event." + QString::fromStdString(code);
-    const QString label = tnr::L(key);
-    return label == key ? QString::fromStdString(code) : label;
-}
-
-QColor eventCodeColor(const std::string& code) {
-    if (code == "FTLP")                                      return tnr::themed("#BF5FFF", "#7C3BA6");
-    if (code == "RCWN")                                      return tnr::themed("#FFD700", "#765900");
-    if (code == "SCAR")                                      return tnr::themed("#ffd700", "#765900");
-    if (code == "RDFL")                                      return QColor("#e10600");
-    if (code == "DRSE" || code == "LGOT")                   return tnr::themed("#37872D", "#137333");
-    if (code == "DRSD")                                     return tnr::themed("#6e7177", "#565B70");
-    if (code == "SSTA" || code == "SEND")                   return tnr::themed("#5794F2", "#0B57D0");
-    if (code == "RTMT" || code == "CHQF" || code == "OVTK" ||
-        code == "DTSV" || code == "SGSV")                   return tnr::themed("#a0a8b8", "#565B70");
-    return QColor();
-}
-
 QString enumLabel(const QString& group, int id) {
     const QString key = group + QChar('.') + QString::number(id);
     const QString label = tnr::L(key);
     return label == key ? QString() : label;
+}
+
+// Electron's driverName(): the surname in capitals, else "Car N".
+QString eventDriverName(const tnrp::ParticipantsRow* participants, int carIdx) {
+    if (participants) {
+        for (const tnrp::Driver& d : participants->drivers) {
+            if (d.idx != carIdx) continue;
+            const QStringList parts = QString::fromStdString(d.name).trimmed()
+                .split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+            if (!parts.isEmpty()) return parts.last().toUpper();
+            break;
+        }
+    }
+    return QStringLiteral("Car %1").arg(carIdx);
+}
+
+// Electron's formatEvent() (SessionPanel.tsx): one label in the event colour,
+// or nullopt for codes the list does not show (FLBK, SPTP, unlabelled PENA, …).
+struct FormattedEvent { QString label; QColor color; };
+std::optional<FormattedEvent> formatEvent(const tnrp::RaceEventRow& ev,
+                                          const tnrp::ParticipantsRow* participants) {
+    const QString dash = QString::fromUtf8(" — ");
+    const auto name = [&] { return eventDriverName(participants, ev.car_idx.value_or(0)); };
+    const auto grey = [] { return tnr::themed("#a0a8b8", "#565B70"); };
+    const std::string& code = ev.code;
+    if (code == "FTLP") {
+        const double s = ev.lap_time_s.value_or(0.0f);
+        const int m = int(s / 60.0);
+        const QString lap = QStringLiteral("%1:%2").arg(m).arg(s - m * 60.0, 6, 'f', 3, QChar('0'));
+        return FormattedEvent{ QStringLiteral("Fastest Lap") + dash + name() + QStringLiteral("  ") + lap,
+                               tnr::themed("#BF5FFF", "#7C3BA6") };
+    }
+    if (code == "DRSE") return FormattedEvent{ QStringLiteral("DRS Enabled"), tnr::themed("#37872D", "#137333") };
+    if (code == "DRSD") return FormattedEvent{ QStringLiteral("DRS Disabled"), tnr::themed("#6e7177", "#565B70") };
+    if (code == "RDFL") return FormattedEvent{ QStringLiteral("Red Flag"), QColor("#e10600") };
+    if (code == "CHQF") return FormattedEvent{ QStringLiteral("Chequered Flag"), grey() };
+    if (code == "LGOT") return FormattedEvent{ QStringLiteral("Lights Out"), tnr::themed("#37872D", "#137333") };
+    if (code == "SSTA") return FormattedEvent{ QStringLiteral("Session Start"), tnr::themed("#5794F2", "#0B57D0") };
+    if (code == "SEND") return FormattedEvent{ QStringLiteral("Session End"), tnr::themed("#5794F2", "#0B57D0") };
+    if (code == "RTMT") return FormattedEvent{ QStringLiteral("Retired") + dash + name(), grey() };
+    if (code == "RCWN") return FormattedEvent{ QStringLiteral("Race Winner") + dash + name(), tnr::themed("#FFD700", "#765900") };
+    if (code == "DTSV") return FormattedEvent{ QStringLiteral("DT Served") + dash + name(), grey() };
+    if (code == "SGSV") return FormattedEvent{ QStringLiteral("SG Served") + dash + name(), grey() };
+    if (code == "SCAR") {
+        const int type = ev.safety_car_type.value_or(0);
+        const QString action = safetyCarActionLabel(type, ev.event_type.value_or(0));
+        const QString label = safetyCarTypeLabel(type);
+        return FormattedEvent{ action.isEmpty() ? label : label + dash + action,
+                               tnr::themed("#ffd700", "#765900") };
+    }
+    if (code == "PENA") {
+        const int pt = ev.penalty_type.value_or(0);
+        const QString penalty = enumLabel(QStringLiteral("penalty"), pt);
+        if (penalty.isEmpty()) return std::nullopt;
+        const QColor color = pt == 5 ? tnr::themed("#ffd700", "#765900")
+                           : (pt == 2 || pt == 4) ? tnr::themed("#c47d0e", "#A04300")
+                           : tnr::themed("#e10600", "#C4162A");
+        const QString time = (pt == 1 || pt == 4) && ev.penalty_time_s.value_or(0)
+            ? QStringLiteral(" %1s").arg(*ev.penalty_time_s) : QString();
+        const QString infringement = ev.infringement_type
+            ? enumLabel(QStringLiteral("infringe"), *ev.infringement_type) : QString();
+        return FormattedEvent{ penalty + time + dash + name()
+                                   + (infringement.isEmpty() ? QString() : dash + infringement),
+                               color };
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -399,7 +448,17 @@ SessionPage::SessionPage(QWidget* parent)
         "QListWidget{background:transparent;}"
         "QListWidget::item{border-bottom:1px solid rgba(255,255,255,0.06);}");
     sp_eventsList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    sp_eventsList->hide();   // until something is listed
     rv->addWidget(sp_eventsList, 1);
+    sp_eventsEmpty = new QLabel(QStringLiteral("No events yet"));
+    {
+        QFont f; f.setPointSize(7);   // Electron: text-[10px], secondary
+        sp_eventsEmpty->setFont(f);
+    }
+    sp_eventsEmpty->setForegroundRole(QPalette::PlaceholderText);
+    sp_eventsEmpty->setAlignment(Qt::AlignCenter);
+    sp_eventsEmpty->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    rv->addWidget(sp_eventsEmpty, 1);
     ch->addWidget(rightPanel_);
     root->addWidget(content, 1);
 
@@ -408,34 +467,19 @@ SessionPage::SessionPage(QWidget* parent)
 
 // ── Event log maintenance ─────────────────────────────────────────────────
 
-void SessionPage::addEvent(const tnrp::RaceEventRow& eventRow) {
-    constexpr size_t kMaxEvents = 1000;
-    if (eventLog_.size() >= kMaxEvents) {
-        eventLog_.erase(eventLog_.begin());
-        if (renderedEventCount_ > 0) --renderedEventCount_;
-        if (sp_eventsList && sp_eventsList->count() > 0)
-            delete sp_eventsList->takeItem(sp_eventsList->count() - 1);
-    }
-    eventLog_.push_back(eventRow);
-}
-
-void SessionPage::truncateEventsAfter(float sessionTime) {
-    const auto firstFuture = std::remove_if(eventLog_.begin(), eventLog_.end(),
-        [sessionTime](const tnrp::RaceEventRow& event) {
-            return event.session_time > sessionTime;
-        });
-    if (firstFuture == eventLog_.end()) return;
-    eventLog_.erase(firstFuture, eventLog_.end());
-    // Rebuild from the retained prefix so list items and the backing log cannot
-    // diverge after Electron-style live rewind truncation.
-    renderedEventCount_ = 0;
-    if (sp_eventsList) sp_eventsList->clear();
-}
-
-void SessionPage::clearEvents() {
-    eventLog_.clear();
-    renderedEventCount_ = 0;
-    if (sp_eventsList) sp_eventsList->clear();
+void SessionPage::setEvents(const std::vector<tnrp::RaceEventRow>& events) {
+    const auto sameEvent = [](const tnrp::RaceEventRow& x, const tnrp::RaceEventRow& y) {
+        return x.code == y.code && x.session_time == y.session_time && x.car_idx == y.car_idx &&
+               x.event_type == y.event_type && x.penalty_type == y.penalty_type;
+    };
+    const std::size_t old = eventLog_.size();
+    const bool extends = events.size() >= old &&
+        (old == 0 || sameEvent(eventLog_.back(), events[old - 1]));
+    if (extends && events.size() == old) return;   // unchanged
+    // Anything but an append (flashback truncation, a retirement replaced by its
+    // reason, a backwards seek, the 1000-event cap) rebuilds the list.
+    if (!extends) renderedEventCount_ = 0;
+    eventLog_ = events;
 }
 
 void SessionPage::setRenderingActive(bool on) {
@@ -668,6 +712,7 @@ void SessionPage::buildWeatherStrip() {
     // Icons are dropped in Compact 2 — null the members so updateSession skips
     // them and they aren't left dangling after clearLayout freed the old labels.
     sp_weatherNowIcon = nullptr;
+    sp_weatherNowAccuracy = nullptr;
     for (int i = 0; i < 5; ++i) sp_fcIcon[i] = nullptr;
 
     const bool spacious = weatherCompactLevel_ == 4;
@@ -723,6 +768,14 @@ void SessionPage::buildWeatherStrip() {
             nh->addWidget(sp_weatherNow);
             nh->addStretch();
         } else {
+            // Electron: forecast accuracy as a third line — "Exact" when
+            // forecast_accuracy == 0, else "Approx" (semibold in Spacious).
+            sp_weatherNowAccuracy = new QLabel("—");
+            QFont naf; naf.setPointSize(spacious ? 8 : 7);
+            if (spacious) naf.setWeight(QFont::DemiBold);
+            sp_weatherNowAccuracy->setFont(naf);
+            sp_weatherNowAccuracy->setForegroundRole(QPalette::PlaceholderText);
+
             QWidget* nowInfo = new QWidget;
             QVBoxLayout* niv = new QVBoxLayout(nowInfo);
             niv->setContentsMargins(0, 0, 0, 0);
@@ -730,6 +783,7 @@ void SessionPage::buildWeatherStrip() {
             niv->addStretch();
             niv->addWidget(nowCap);
             niv->addWidget(sp_weatherNow);
+            niv->addWidget(sp_weatherNowAccuracy);
             niv->addStretch();
 
             nh->addStretch();
@@ -993,6 +1047,9 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
         .arg(h24 >= 12 ? "PM" : "AM"));
 
     setLabelText(sp_weatherNow, weatherLabel(weather));
+    if (sp_weatherNowAccuracy)
+        setLabelText(sp_weatherNowAccuracy, session->forecast_accuracy == 0
+            ? QStringLiteral("Exact") : QStringLiteral("Approx"));
     // Compact 1 uses the standard card text colour beside its tinted icon.
     // Compact 2 has no icon, so the name carries the weather tint instead.
     if (weatherCompactLevel_ == 2) setLabelStyle(sp_weatherNow, "color:" + weatherColor(weather).name() + ";");
@@ -1061,29 +1118,17 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
 // ── Session events updater ────────────────────────────────────────────────
 
 void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
-    if (!sp_eventsList || eventLog_.empty()) return;
+    if (!sp_eventsList) return;
 
     const bool rebuild = renderedEventCount_ == 0 || renderedEventCount_ > eventLog_.size();
     if (!rebuild && renderedEventCount_ == eventLog_.size()) return;
     if (rebuild) sp_eventsList->clear();
 
-    int avail = sp_eventsList->viewport()->width();
+    // While nothing is listed the list is hidden and the placeholder holds its slot.
+    int avail = sp_eventsList->isVisible() ? sp_eventsList->viewport()->width()
+              : sp_eventsEmpty ? sp_eventsEmpty->width() : 0;
     if (avail <= 0) avail = sp_eventsList->width() - 4;
     if (avail <= 0) avail = 240;
-
-    // Electron's event names: the driver's surname in capitals, else "Car N".
-    auto driverSurname = [&](int carIdx) -> QString {
-        if (participants) {
-            for (const tnrp::Driver& d : participants->drivers) {
-                if (d.idx == carIdx) {
-                    const QStringList parts = QString::fromStdString(d.name).trimmed()
-                        .split(' ', Qt::SkipEmptyParts);
-                    if (!parts.isEmpty()) return parts.last().toUpper();
-                }
-            }
-        }
-        return QString("Car %1").arg(qMax(0, carIdx));
-    };
 
     // Initial population is newest-first. Later calls create only the newly
     // arrived rows and insert each at the front, preserving that same order.
@@ -1094,160 +1139,84 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
         else         sp_eventsList->insertItem(0, item);
         sp_eventsList->setItemWidget(item, widget);
     };
+    // Electron's event-colour alpha on the time: 0xaa (67%), 0xcc (80%) in Spacious.
+    const auto timeStyle = [](QColor c, int alpha) {
+        return QStringLiteral("color: rgba(%1, %2, %3, %4); background: transparent;")
+            .arg(c.red()).arg(c.green()).arg(c.blue()).arg(alpha);
+    };
     for (int i = first; rebuild ? i >= 0 : i < (int)eventLog_.size(); i += step) {
         const tnrp::RaceEventRow& ev = eventLog_[i];
-        const std::string& code = ev.code;
+        const std::optional<FormattedEvent> fmt = formatEvent(ev, participants);
+        if (!fmt) continue;
+        const QColor c = fmt->color;
 
-        int totalSecs = (int)ev.session_time;
-        QString timeStr = QString("%1:%2")
+        // Electron's fmtSessionTime(): MM:SS, "00:00" for no time.
+        const int totalSecs = std::max(0, (int)ev.session_time);
+        const QString timeStr = QString("%1:%2")
             .arg(totalSecs / 60, 2, 10, QChar('0'))
             .arg(totalSecs % 60, 2, 10, QChar('0'));
 
-        QString eventType;
-        QString text;
-        QColor colorOverride;
-
-        if (code == "FTLP") {
-            eventType = "Fastest Lap";
-            float lapS = ev.lap_time_s.value_or(0.0f);
-            int lapMs  = (int)(lapS * 1000.0f);
-            QString lapTimeStr = QString("%1:%2.%3")
-                .arg(lapMs / 60000)
-                .arg((lapMs % 60000) / 1000, 2, 10, QChar('0'))
-                .arg(lapMs % 1000, 3, 10, QChar('0'));
-            text = driverSurname(ev.car_idx.value_or(0)) + "  " + lapTimeStr;
-            colorOverride = eventCodeColor(code);
-        } else if (code == "PENA") {
-            int pt = ev.penalty_type.value_or(-1);
-            const QString ptLabel = enumLabel(QStringLiteral("penalty"), pt);
-            if (ptLabel.isEmpty()) continue;
-
-            const QString name = driverSurname(ev.car_idx.value_or(0));
-            const QString inf = enumLabel(QStringLiteral("infringe"), ev.infringement_type.value_or(-1));
-            const QString infSuffix = inf.isEmpty() ? QString() : QString::fromUtf8(" — ") + inf;
-
-            // Electron: warnings yellow, drive-through / stop-go amber, the rest red.
-            if (pt == 5) {
-                eventType = ptLabel;
-                text = name + infSuffix;
-                colorOverride = tnr::themed("#ffd700", "#765900");
-            } else {
-                eventType = "Penalty";
-                QString penText = ptLabel;
-                int timeS = ev.penalty_time_s.value_or(0);
-                if ((pt == 1 || pt == 4) && timeS > 0) penText += QString(" %1s").arg(timeS);
-                text = penText + QString::fromUtf8(" — ") + name + infSuffix;
-                colorOverride = (pt == 2 || pt == 4) ? tnr::themed("#c47d0e", "#A04300")
-                                                     : tnr::themed("#e10600", "#C4162A");
-            }
-        } else if (code == "SCAR") {
-            int t = ev.safety_car_type.value_or(0);
-            eventType = (t == 1) ? "Safety Car" : (t == 2) ? "Virtual SC"
-                         : (t == 3) ? "Formation Lap" : "SC";
-            int a = ev.event_type.value_or(0);
-            const char* action = (a == 0) ? "Deployed" : (a == 1) ? "Returning"
-                               : (a == 2) ? "Returned" : (a == 3) ? "Resume Race" : "";
-            text = action;
-        } else if (code == "RTMT" || code == "RCWN" || code == "DTSV" || code == "SGSV") {
-            eventType = eventCodeLabel(code);
-            text = driverSurname(ev.car_idx.value_or(0));
-        } else {
-            eventType = eventCodeLabel(code);
-            text = "";
-        }
-
-        QColor c = colorOverride.isValid() ? colorOverride : eventCodeColor(code);
-        if (!c.isValid()) c = QColor("#c8ccd4");
+        QFont tf; tf.setStyleHint(QFont::Monospace); tf.setFamily("monospace");
+        QFont lf;
 
         if (eventsCompact_) {
-            const int hPad = 8;
+            // One row, h-[32px] px-3: label (truncated) · time.
+            constexpr int hPad = 12, rowH = 32, gap = 8;
             QWidget* rowW = new QWidget;
-            rowW->setObjectName("eventRow");
-            rowW->setFixedHeight(32);
-            rowW->setStyleSheet(QString(
-                "#eventRow {"
-                "  border-left: 3px solid %1;"
-                "}"
-            ).arg(c.name()));
-
             QHBoxLayout* hl = new QHBoxLayout(rowW);
             hl->setContentsMargins(hPad, 0, hPad, 0);
-            hl->setSpacing(6);
+            hl->setSpacing(gap);
 
-            QString fullText = !text.isEmpty() ? (eventType + " – " + text) : eventType;
-            QLabel* descLbl = new QLabel(fullText);
-            QFont df; df.setPointSize(8); df.setBold(true);
-            descLbl->setFont(df);
-            descLbl->setStyleSheet("color: " + c.name() + "; background: transparent;");
-            descLbl->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-
+            tf.setPointSize(7); tf.setWeight(QFont::DemiBold);
             QLabel* timeLbl = new QLabel(timeStr);
-            QFont tf; tf.setPointSize(7); tf.setBold(true);
-            tf.setStyleHint(QFont::Monospace); tf.setFamily("monospace");
             timeLbl->setFont(tf);
-            timeLbl->setStyleSheet("color: #a0a8b8;");
+            timeLbl->setStyleSheet(timeStyle(c, 0xaa));
             timeLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-            hl->addWidget(descLbl, 1);
-            hl->addWidget(timeLbl);
+            lf.setPointSize(8); lf.setBold(true);
+            const int labelW = avail - 2 * hPad - gap - QFontMetrics(tf).horizontalAdvance(timeStr);
+            QLabel* label = new QLabel(QFontMetrics(lf).elidedText(fmt->label, Qt::ElideRight,
+                                                                    std::max(0, labelW)));
+            label->setFont(lf);
+            label->setToolTip(fmt->label);
+            label->setStyleSheet("color: " + c.name() + "; background: transparent;");
+            label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
-            const int rowH = 32;
+            hl->addWidget(label, 1);
+            hl->addWidget(timeLbl);
 
             auto* item = new QListWidgetItem;
             item->setSizeHint(QSize(avail, rowH));
             installRow(item, rowW);
         } else {
-            const int hPad = eventsSpacious_ ? 12 : 8;
-            const int vPad = eventsSpacious_ ? 10 : 6;
+            // Time above label: px-3 py-1.5 gap-0.5 (Normal), px-4 py-3 gap-1 (Spacious).
+            const int hPad = eventsSpacious_ ? 16 : 12;
+            const int vPad = eventsSpacious_ ? 12 : 6;
             const int gap = eventsSpacious_ ? 4 : 2;
             QWidget* rowW = new QWidget;
-            rowW->setObjectName("eventRow");
-            rowW->setStyleSheet(QString(
-                "#eventRow {"
-                "  border-left: 3px solid %1;"
-                "}"
-            ).arg(c.name()));
-
             QVBoxLayout* vl = new QVBoxLayout(rowW);
             vl->setContentsMargins(hPad, vPad, hPad, vPad);
             vl->setSpacing(gap);
 
-            QHBoxLayout* topH = new QHBoxLayout;
-            topH->setContentsMargins(0, 0, 0, 0);
-
+            tf.setPointSize(eventsSpacious_ ? 9 : 7);
+            tf.setWeight(eventsSpacious_ ? QFont::Bold : QFont::DemiBold);
             QLabel* timeLbl = new QLabel(timeStr);
-            QFont tf; tf.setPointSize(eventsSpacious_ ? 9 : 7); tf.setBold(true);
-            tf.setStyleHint(QFont::Monospace); tf.setFamily("monospace");
             timeLbl->setFont(tf);
-            timeLbl->setStyleSheet("color: #a0a8b8;");
+            timeLbl->setStyleSheet(timeStyle(c, eventsSpacious_ ? 0xcc : 0xaa));
 
-            QLabel* typeLbl = new QLabel(eventType);
-            QFont typeF; typeF.setPointSize(eventsSpacious_ ? 9 : 7); typeF.setBold(true);
-            typeLbl->setFont(typeF);
-            typeLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            typeLbl->setStyleSheet("color: " + c.name() + ";");
+            lf.setPointSize(eventsSpacious_ ? 11 : 8);
+            lf.setWeight(eventsSpacious_ ? QFont::Black : QFont::Bold);
+            QLabel* label = new QLabel(fmt->label);
+            label->setFont(lf);
+            label->setWordWrap(true);
+            label->setStyleSheet("color: " + c.name() + "; background: transparent;");
 
-            topH->addWidget(timeLbl);
-            topH->addWidget(typeLbl, 1);
-            vl->addLayout(topH);
+            vl->addWidget(timeLbl);
+            vl->addWidget(label);
 
-            int timeH = std::max(QFontMetrics(tf).height(), QFontMetrics(typeF).height());
-            int textH = 0;
-
-            if (!text.isEmpty()) {
-                QLabel* textLbl = new QLabel(text);
-                QFont lf; lf.setPointSize(eventsSpacious_ ? 11 : 9); lf.setWeight(QFont::DemiBold);
-                textLbl->setFont(lf);
-                textLbl->setWordWrap(true);
-                textLbl->setStyleSheet("color: palette(text); background: transparent;");
-                vl->addWidget(textLbl);
-
-                textH = QFontMetrics(lf).boundingRect(
-                    QRect(0, 0, avail - (2 * hPad), 10000), Qt::TextWordWrap, text).height();
-            }
-
-            int rowH = (2 * vPad) + timeH;
-            if (textH > 0) rowH += gap + textH;
+            const int labelH = QFontMetrics(lf).boundingRect(
+                QRect(0, 0, avail - 2 * hPad, 10000), Qt::TextWordWrap, fmt->label).height();
+            const int rowH = 2 * vPad + QFontMetrics(tf).height() + gap + labelH;
 
             auto* item = new QListWidgetItem;
             item->setSizeHint(QSize(avail, rowH));
@@ -1255,6 +1224,13 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
         }
     }
     renderedEventCount_ = eventLog_.size();
+    refreshEventsVisibility();
+}
+
+void SessionPage::refreshEventsVisibility() {
+    const bool any = sp_eventsList && sp_eventsList->count() > 0;
+    if (sp_eventsList) sp_eventsList->setVisible(showEvents_ && any);
+    if (sp_eventsEmpty) sp_eventsEmpty->setVisible(showEvents_ && !any);
 }
 
 // ── Proximity widget updater ──────────────────────────────────────────────
@@ -1469,7 +1445,8 @@ void SessionPage::applyLayout(const SessionLayout& L) {
     if (sp_proxSep_) sp_proxSep_->setVisible(L.showProximity && L.showEvents);
 
     if (sp_eventsHeader) sp_eventsHeader->setVisible(L.showEvents);
-    if (sp_eventsList) sp_eventsList->setVisible(L.showEvents);
+    showEvents_ = L.showEvents;
+    refreshEventsVisibility();
 
     if (rightPanel_) {
         rightPanel_->setVisible(L.showProximity || L.showEvents);

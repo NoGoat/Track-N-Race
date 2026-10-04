@@ -56,6 +56,9 @@ public:
     void setPlaybackDrivers(const QVector<PlaybackDriverOption>& drivers,
                             int selectedDriverIndex);
     void clearPlaybackDrivers();
+    // Red "UDP ERROR" beside the page dropdown with the full error as its tooltip;
+    // clicking it requests Settings. An empty string hides it.
+    void setUdpError(const QString& error);
 
 signals:
     void pageSelected(int index);
@@ -91,6 +94,7 @@ private:
     void setDeltaShown(bool shown);    // animated reveal/collapse, as Electron's delta slot
 
     QComboBox*    pageBtn_      = nullptr;   // compact page-navigation dropdown
+    QToolButton*  udpErrorBtn_  = nullptr;   // "UDP ERROR", hidden while the listener is fine
     QAction*      pageAct_      = nullptr;   // kept inline during overflow
     QComboBox*    windowBtn_    = nullptr;   // window-size dropdown (frameless combo box)
     QAction*      windowAct_    = nullptr;   // its toolbar action (hide to free space)

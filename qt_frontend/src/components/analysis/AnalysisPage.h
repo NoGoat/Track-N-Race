@@ -64,6 +64,7 @@ public:
     void setPlaybackMode(bool on, float currentTime = 0);
     void setCurrentTime(float t);
     void setMapAppearance(bool sectorColors, int opacityPercent);
+    void setAeroMode(bool slm);   // false = DRS (F1 24/25), true = SLM (F1 26)
     void resetPlaybackSelections();
     uint32_t playbackRowMask() const;
 
@@ -104,6 +105,7 @@ private:
     QAction* syncedTooltipAction_ = nullptr;
     QAction* sectorBoundariesAction_ = nullptr;
     QAction* sectorDeltaAction_ = nullptr;
+    QAction* splitCursorsAction_ = nullptr;
     QAction* inputsAction_ = nullptr;
     QAction* helpAction_ = nullptr;
     AnalysisDeltaReadout* deltaReadout_ = nullptr;

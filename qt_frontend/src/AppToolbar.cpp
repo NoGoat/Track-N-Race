@@ -131,6 +131,27 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     pageBtn_->setCurrentIndex(0);
     pageBtn_->setToolTip("Page");
     pageLayout->addWidget(pageBtn_);
+
+    pageLayout->addSpacing(8);
+    udpErrorBtn_ = new QToolButton(pageControl);
+    udpErrorBtn_->setObjectName("udpError");
+    udpErrorBtn_->setText(QStringLiteral("UDP error"));
+    QFont udpFont = udpErrorBtn_->font();
+    udpFont.setPixelSize(10);
+    udpFont.setWeight(QFont::Bold);
+    udpFont.setCapitalization(QFont::AllUppercase);
+    udpFont.setLetterSpacing(QFont::AbsoluteSpacing, 0.25);
+    udpErrorBtn_->setFont(udpFont);
+    udpErrorBtn_->setCursor(Qt::PointingHandCursor);
+    // Electron: border-red-500/60, bg-red-500/15 (25% on hover), text-red-400.
+    udpErrorBtn_->setStyleSheet(QStringLiteral(
+        "QToolButton#udpError { color: #f87171; background: rgba(239, 68, 68, 38);"
+        " border: 1px solid rgba(239, 68, 68, 153); border-radius: 3px; padding: 1px 8px; }"
+        "QToolButton#udpError:hover { background: rgba(239, 68, 68, 64); }"));
+    udpErrorBtn_->hide();
+    connect(udpErrorBtn_, &QToolButton::clicked, this, &AppToolbar::settingsRequested);
+    pageLayout->addWidget(udpErrorBtn_, 0, Qt::AlignVCenter);
+
     pageAct_ = addWidget(pageControl);
     connect(pageBtn_, QOverload<int>::of(&QComboBox::activated),
             this, &AppToolbar::pageSelected);
@@ -453,6 +474,15 @@ void AppToolbar::changeEvent(QEvent* e) {
     QToolBar::changeEvent(e);
     if (e->type() == QEvent::ApplicationPaletteChange || e->type() == QEvent::PaletteChange)
         refreshThemedIcons();
+}
+
+void AppToolbar::setUdpError(const QString& error) {
+    if (!udpErrorBtn_) return;
+    udpErrorBtn_->setToolTip(error);
+    const bool show = !error.isEmpty();
+    if (udpErrorBtn_->isVisibleTo(udpErrorBtn_->parentWidget()) == show) return;
+    udpErrorBtn_->setVisible(show);
+    relayout();
 }
 
 bool AppToolbar::eventFilter(QObject* obj, QEvent* e) {

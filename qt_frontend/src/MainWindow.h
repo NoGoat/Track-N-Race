@@ -37,6 +37,7 @@ class SessionModel;
 class EngineSink;
 namespace tnrp { class Engine; }
 class ToastHost;
+class SeekLoadingOverlay;
 class QTimer;
 class QLabel;
 class QProgressBar;
@@ -282,6 +283,7 @@ private:
     qsizetype    playbackSeekReplayBytes_ = 0;
     void bufferSeekReplay(const QByteArray& data, bool binary);
     void resetSeekGate();
+    SeekLoadingOverlay* seekOverlay_ = nullptr;   // "LOADING" after 300 ms of a pending seek
     bool         playbackRequirementsPending_ = false;
     uint64_t     playbackSeekGeneration_ = 0;
     PlaybackPatchMerger playbackPatchMerger_;
@@ -315,6 +317,7 @@ private:
     PairServiceState              pairServiceState_;
     void applyEngineLogging();   // push wantRecord/outputDirectory to the engine
     QString recreateEngine();    // stop/create/start using the current persisted host config
+    void showUdpListenerStatus(const QString& error);   // titlebar "UDP ERROR"; empty clears it
     void setLapHistoryCar(int carIdx);   // subscribe the engine to one car's lap times (-1 = none)
     QPointer<DriverLapsDialog> lapsDialog_;   // the open lap-times dialog, fed by pushed rows
     void receivePairState(const QByteArray& publicStateJson,
@@ -437,14 +440,30 @@ private:
     void routeLiveRow(const tnrp::AnyRow& row,
                       const QJsonObject* sparseObject = nullptr);
 
-    // Event toast notifications live in ToastHost; lastSafetyCarStatus_ tracks
-    // the session packet's SC state so changes can be toasted (routing decision).
+    // Event toast notifications live in ToastHost.
     ToastHost* toasts_ = nullptr;
-    int    lastSafetyCarStatus_ = 0;
     std::optional<int> lastRaceLeader_;
-    // Set when the player seeks: the safety-car snapshot that follows resyncs
-    // lastSafetyCarStatus_ without toasting (a jump isn't a live SC change).
-    bool scSuppressOnce_ = false;
+
+    // Race events as Electron's telemetry store keeps them. streamedEvents_ is
+    // every race_event row received (its raceEventsArr): the live list, and in
+    // playback only the retirement de-duplication. In playback the list is the
+    // recording's catalog events up to the playhead instead.
+    std::vector<tnrp::RaceEventRow> streamedEvents_;
+    std::vector<tnrp::RaceEventRow> playbackEvents_;   // catalog, sorted by session_time
+    std::size_t playbackEventCount_ = 0;                // prefix at or before the playhead
+    void loadPlaybackEvents();
+    void updatePlaybackEventCursor();
+    std::vector<tnrp::RaceEventRow> shownEvents() const;
+    // The persistent safety-car toast, re-derived (Electron's useRaceBanners) on
+    // session rows and event changes; re-shown only when its text changes.
+    std::optional<std::pair<QString, QString>> shownSafetyCarBanner_;
+    void refreshSafetyCarBanner();
+    // Window title: app name plus the current session type, and in playback the
+    // recording's track. Session type follows session rows (-1 until one
+    // arrives); playback falls back to the recording header's session name.
+    void updateWindowTitle();
+    int     titleSessionType_ = -1;
+    QString playbackTrackName_, playbackSessionName_;
     void ingestForModel(const tnrp::AnyRow& row);
     void schedulePlaybackDataRequirements();
     void updatePlaybackDataRequirements();

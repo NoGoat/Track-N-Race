@@ -1282,6 +1282,10 @@ public:
         setAttribute(Qt::WA_TranslucentBackground);
         setAttribute(Qt::WA_ShowWithoutActivating);
         setAttribute(Qt::WA_TransparentForMouseEvents);
+        // Breeze's ShadowHelper gives every Qt::ToolTip window a KWin shadow
+        // around its full rect, i.e. around our transparent shadow margin,
+        // doubling up with the cached shadow. Opt out before first polish.
+        setProperty("_KDE_NET_WM_SKIP_SHADOW", true);
         hide();
     }
 
@@ -1475,6 +1479,7 @@ struct ChartView::Impl {
             if (overlay) overlay->setPanelDividers(dividers);
             return;
         }
+        QHash<int, QMargins> insets;   // per panel, for the stacked pass below
         int availableH = qMax(1, bounds.height() - kGap * (lr.size() - 1)), y = bounds.top();
         for (int ri = 0; ri < lr.size(); ++ri) {
             int h = availableH / lr.size() + (ri < availableH % lr.size()), availableW = qMax(1, bounds.width() - kGap * (lr[ri].size() - 1)), x = bounds.left();
@@ -1524,8 +1529,9 @@ struct ChartView::Impl {
                     const int topInset = p.header
                         ? kHeader + kPlotEdgePad
                         : qMax(kPlotEdgePad, int(std::ceil((axisMetrics.height() + 2) / 2)));
-                    p.plot = p.outer.adjusted(leftInset, topInset,
-                                              -rightInset, -(bottomAxes.isEmpty() ? 4 : int(std::ceil(axisMetrics.height())) + 10));
+                    const int bottomInset = bottomAxes.isEmpty() ? 4 : int(std::ceil(axisMetrics.height())) + 10;
+                    insets.insert(id, QMargins(leftInset, topInset, rightInset, bottomInset));
+                    p.plot = p.outer.adjusted(leftInset, topInset, -rightInset, -bottomInset);
                     if (p.plot.width() < 8 || p.plot.height() < 8) p.plot = {};
                 }
                 x += w;
@@ -1538,6 +1544,38 @@ struct ChartView::Impl {
             if (ri + 1 < lr.size()) {
                 dividers.push_back({ QRect(bounds.left(), y, bounds.width(), kGap), QFrame::HLine });
                 y += kGap;
+            }
+        }
+        const bool singleColumn = std::all_of(lr.cbegin(), lr.cend(), [&](const QVector<int>& row) {
+            return row.size() == 1 && row.first() >= 0 && row.first() < panels.size();
+        });
+        if (alignedInsets && lr.size() > 1 && singleColumn) {
+            // Electron's stacked AnalyzeTimeChart: one plot area (top padding
+            // and x-axis strip taken once) split into equal slices, each minus
+            // a 10 px gap after it. Panels squash as more are added; they never
+            // drop out, unlike the generic split's per-panel insets.
+            constexpr int kStackedGap = 10;
+            const int n = lr.size();
+            const int top = bounds.top() + insets.value(lr.first().first()).top();
+            const int bottom = bounds.bottom() + 1 - insets.value(lr.last().first()).bottom();
+            const double span = qMax(0, bottom - top) / double(n);
+            auto sliceTop = [&](int index) { return top + int(std::lround(index * span)); };
+            dividers.clear();
+            for (int ri = 0; ri < n; ++ri) {
+                const int id = lr[ri].first();
+                Panel& p = panels[id];
+                const QMargins m = insets.value(id);
+                const bool lastRow = ri + 1 == n;
+                const int plotTop = sliceTop(ri);
+                const int plotBottom = qMax(plotTop + 1, sliceTop(ri + 1) - (lastRow ? 0 : kStackedGap));
+                p.outer = QRect(QPoint(bounds.left(), ri == 0 ? bounds.top() : plotTop),
+                                QPoint(bounds.right(), lastRow ? bounds.bottom() : sliceTop(ri + 1) - 1));
+                p.plot = QRect(QPoint(bounds.left() + m.left(), plotTop),
+                               QPoint(bounds.right() - m.right(), plotBottom - 1));
+                if (p.plot.width() < 8) p.plot = {};
+                if (!lastRow && sliceTop(ri + 1) > plotBottom)
+                    dividers.push_back({ QRect(bounds.left(), plotBottom, bounds.width(),
+                                               sliceTop(ri + 1) - plotBottom), QFrame::HLine });
             }
         }
         if (alignedInsets) {

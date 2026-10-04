@@ -51,8 +51,17 @@ std::optional<ToastSpec> buildToast(const tnrp::RaceEventRow& event,
             QString("%1  ·  %2").arg(lastName(participants, carIdx),
                                      fmtLap(event.lap_time_s.value_or(0.0f))),
             QColor("#BF5FFF") };
-    if (code == "DRSE") return ToastSpec{ tnr::L("event.DRSE"), {}, QColor("#37872D") };
-    if (code == "DRSD") return ToastSpec{ tnr::L("event.DRSD"), {}, QColor("#8e8e8e") };
+    if (code == "SCAR") {
+        // Electron: SC/VSC ending in Resume Race queues a transient green banner;
+        // every other phase lives in the persistent banner (safetyCarBanner).
+        const int type = event.safety_car_type.value_or(0);
+        if (event.event_type.value_or(-1) == 3 && (type == 1 || type == 2))
+            return ToastSpec{ "Resume Race", {}, QColor("#37872D") };
+        return std::nullopt;
+    }
+    // Electron's banner wording is fixed English, Straight Line Mode included.
+    if (code == "DRSE") return ToastSpec{ "DRS Enabled",  {}, QColor("#37872D") };
+    if (code == "DRSD") return ToastSpec{ "DRS Disabled", {}, QColor("#8e8e8e") };
     if (code == "RDFL") return ToastSpec{ "Red Flag",     {}, QColor("#e10600") };
     if (code == "PENA") {
         const int pt = event.penalty_type.value_or(0);
@@ -77,18 +86,46 @@ std::optional<ToastSpec> buildToast(const tnrp::RaceEventRow& event,
     if (code == "LGOT") return ToastSpec{ "Lights Out",     {}, QColor("#37872D") };
     if (code == "SSTA") return ToastSpec{ "Session Start",  {}, QColor("#5794F2") };
     if (code == "SEND") return ToastSpec{ "Session End",    {}, QColor("#5794F2") };
-    // SCAR (session-packet driven), OVTK, SPTP and anything else: no toast.
+    // OVTK, SPTP and anything else: no toast.
     return std::nullopt;
 }
 
-std::optional<ToastSpec> safetyCarToast(int oldStatus, int newStatus) {
-    if (newStatus == oldStatus) return std::nullopt;
-    switch (newStatus) {
-        case 1: return ToastSpec{ "Safety Car",         {}, QColor("#ffd700"), true,  true };
-        case 2: return ToastSpec{ "Virtual Safety Car", {}, QColor("#ffb347"), true,  true };
-        case 3: return ToastSpec{ "Formation Lap",      {}, QColor("#ffd700"), true,  true };
-        case 0:  // back to green — caller dismisses the persistent banner silently (no toast)
-            return std::nullopt;
-        default: return std::nullopt;
+QString safetyCarTypeLabel(int type) {
+    switch (type) {
+        case 2:  return QStringLiteral("Virtual Safety Car");
+        case 3:  return QStringLiteral("Formation Lap");
+        default: return QStringLiteral("Safety Car");
     }
+}
+
+QString safetyCarActionLabel(int type, int action) {
+    if ((type == 1 || type == 2) && action == 0) return {};
+    if ((type == 1 || type == 2) && action == 1) return QStringLiteral("Ending");
+    switch (action) {
+        case 0:  return QStringLiteral("Deployed");
+        case 1:  return QStringLiteral("Returning");
+        case 2:  return QStringLiteral("Returned");
+        case 3:  return QStringLiteral("Resume Race");
+        default: return {};
+    }
+}
+
+std::optional<ToastSpec> safetyCarBanner(std::optional<int> safetyCarStatus,
+                                         const tnrp::RaceEventRow* latestScar) {
+    if (!safetyCarStatus) return std::nullopt;
+
+    // Session packets can keep the formation-lap status after recording starts
+    // while the first SCAR is already its terminal Resume Race, so the latest
+    // event transition wins over the status (also after playback seeks).
+    const std::optional<int> action = latestScar ? latestScar->event_type : std::nullopt;
+    if (action && (*action == 2 || *action == 3)) return std::nullopt;
+
+    const int status = latestScar && action && (*action == 0 || *action == 1)
+        ? latestScar->safety_car_type.value_or(*safetyCarStatus)
+        : *safetyCarStatus;
+    if (status == 0) return std::nullopt;
+
+    const QColor color = status == 2 ? QColor("#ffb347") : QColor("#ffd700");
+    return ToastSpec{ safetyCarTypeLabel(status), safetyCarActionLabel(status, action.value_or(0)),
+                      color, true, true };
 }

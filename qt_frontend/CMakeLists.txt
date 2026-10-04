@@ -104,6 +104,8 @@ set(SOURCES
     src/components/ToastEvents.h
     src/components/ToastHost.h
     src/components/ToastHost.cpp
+    src/components/SeekLoadingOverlay.h
+    src/components/SeekLoadingOverlay.cpp
     src/components/OverviewLayout.h
     src/components/OverviewLayout.cpp
     src/components/EditOverviewLayoutDialog.h

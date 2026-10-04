@@ -34,16 +34,16 @@ public:
 
     // Cached rows fed by MainWindow; nullptr = the row hasn't been seen yet.
     void updateSession(const tnrp::SessionRow* session, const TimingRow* timing);
-    void updateEvents(const tnrp::ParticipantsRow* participants);   // rebuild list from the internal log
+    void updateEvents(const tnrp::ParticipantsRow* participants);   // render the log set by setEvents
     void updateProximity(const TimingRow* timing, const tnrp::ParticipantsRow* participants);
     void updateTrackMap(const tnrp::SessionRow* session,
                         const tnrp::ParticipantsRow* participants,
                         const PositionsRow* positions);
 
-    // Event log maintenance, fed from the race_event row stream.
-    void addEvent(const tnrp::RaceEventRow& eventRow);
-    void truncateEventsAfter(float sessionTime);   // live flashback → discard future events
-    void clearEvents();   // SSTA / new session
+    // The events to list, oldest first: MainWindow's live log, or in playback
+    // the recording's events up to the playhead. An extension of the previous
+    // log only adds the new rows; anything else rebuilds the list.
+    void setEvents(const std::vector<tnrp::RaceEventRow>& events);
 
     // Rendering gate pass-through for the map's 60fps animation timer.
     void setRenderingActive(bool on);
@@ -99,6 +99,7 @@ private:
     QLabel*      sp_timeOfDay     = nullptr;
     QLabel*      sp_weatherNow    = nullptr;
     QLabel*      sp_weatherNowIcon = nullptr;
+    QLabel*      sp_weatherNowAccuracy = nullptr;   // Exact / Approx — Normal and Spacious only
     QLabel*      sp_fcTime[5]     = {};
     QLabel*      sp_fcIcon[5]     = {};
     QLabel*      sp_fcWeather[5]  = {};
@@ -108,6 +109,9 @@ private:
     QLabel*      sp_proxGap[3]    = {};
     QWidget*     sp_proxRow[3]    = {};
     QListWidget* sp_eventsList    = nullptr;
+    QLabel*      sp_eventsEmpty   = nullptr;   // "No events yet" when nothing is listed
+    bool         showEvents_      = true;      // layout's Events section toggle
+    void refreshEventsVisibility();
     std::vector<tnrp::RaceEventRow> eventLog_;
     std::size_t renderedEventCount_ = 0; // append new rows; do not rebuild the whole log per event
 

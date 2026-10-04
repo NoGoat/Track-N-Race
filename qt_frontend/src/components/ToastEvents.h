@@ -20,15 +20,23 @@ struct ToastSpec {
 // Pure mapping from telemetry rows to a toast, mirroring the Electron app's
 // buildBanner() (electron-frontend/src/renderer/src/App.tsx:161).
 
-// race_event row → toast, or nullopt for codes that shouldn't notify (SCAR is
-// driven by the session packet; OVTK/SPTP are intentionally silent). `participants`
-// is the latest "participants" row for name lookup (nullptr = none seen yet).
+// race_event row → toast, or nullopt for codes that shouldn't notify (a SCAR only
+// toasts its transient green "Resume Race"; OVTK/SPTP are intentionally silent).
+// `participants` is the latest "participants" row for name lookup (nullptr =
+// none seen yet).
 std::optional<ToastSpec> buildToast(const tnrp::RaceEventRow& event,
                                     const tnrp::ParticipantsRow* participants);
 
-// Safety-car transition → toast. status values are the session packet's
-// safety_car_status (0=clear, 1=SC, 2=VSC, 3=formation). Returns nullopt when the
-// transition shouldn't notify (e.g. first sight of "clear").
-std::optional<ToastSpec> safetyCarToast(int oldStatus, int newStatus);
+// Electron's safety-car labels (bannerHelpers.ts), shared with the events list.
+// type: 1 = SC, 2 = VSC, 3 = formation lap. Action: 0 Deployed, 1 Returning
+// ("Ending" for SC/VSC), 2 Returned, 3 Resume Race; SC/VSC Deployed has none.
+QString safetyCarTypeLabel(int type);
+QString safetyCarActionLabel(int type, int action);   // empty = no sub-line
+
+// The persistent safety-car toast, derived like Electron's useRaceBanners():
+// from the session's safety_car_status (nullopt = no session row) and the most
+// recent SCAR event (nullptr = none). nullopt means no banner should be shown.
+std::optional<ToastSpec> safetyCarBanner(std::optional<int> safetyCarStatus,
+                                         const tnrp::RaceEventRow* latestScar);
 
 ToastSpec raceLeaderToast(int carIdx, const tnrp::ParticipantsRow* participants);

@@ -7,6 +7,7 @@
 #include "EngineSink.h"
 #include "Labels.h"
 #include "components/EditOverviewLayoutDialog.h"
+#include "components/SeekLoadingOverlay.h"
 #include "components/EditInputLayoutDialog.h"
 #include "components/EditPowerLayoutDialog.h"
 #include "components/EditMiscLayoutDialog.h"
@@ -75,8 +76,10 @@
 
 #include <algorithm>
 #include <exception>
+#include <iterator>
 #include <limits>
 #include <map>
+#include <set>
 
 #include <tnrp/Engine.h>
 #include <tnrp/Config.h>
@@ -135,6 +138,19 @@ QByteArray serializeTeamColorOverrides(const tnrp::TeamColorOverrides& overrides
 // std::optional cache → nullable pointer for the page update methods.
 template <class T>
 static const T* optPtr(const std::optional<T>& o) { return o ? &*o : nullptr; }
+
+// Electron's SESSION_TYPES (SessionPanel.tsx).
+static QString sessionTypeName(int t) {
+    static const char* const kNames[] = {
+        "Unknown", "Practice 1", "Practice 2", "Practice 3", "Short Practice",
+        "Qualifying 1", "Qualifying 2", "Qualifying 3", "Short Qualifying",
+        "One-Shot Qualifying", "Sprint Shootout 1", "Sprint Shootout 2",
+        "Sprint Shootout 3", "Short Sprint Shootout", "One-Shot Sprint Shootout",
+        "Race", "Race 2", "Race 3", "Time Trial",
+    };
+    if (t < 0 || t >= int(std::size(kNames))) return QStringLiteral("Unknown");
+    return QString::fromLatin1(kNames[t]);
+}
 
 static float playbackNumber(int value) {
     return value == kPlaybackMissingInt
@@ -438,6 +454,8 @@ MainWindow::MainWindow(QWidget* parent)
     vbox->setContentsMargins(0, 0, 0, 0);
     vbox->setSpacing(0);
     vbox->addWidget(stack);
+    // Covers the pages only, so the playback bar stays usable during a seek.
+    seekOverlay_ = new SeekLoadingOverlay(stack);
     vbox->addWidget(playback_->separator());
     vbox->addWidget(playback_->bar());
     setCentralWidget(container_);
@@ -548,6 +566,12 @@ MainWindow::MainWindow(QWidget* parent)
             [this](const tnrp::HeaderRow& hdr, float currentTime) {
         loadingOverlay_->hide();
         inPlayback_ = true;
+        // The catalog (and with it the events list) arrives after this.
+        streamedEvents_.clear();
+        playbackEvents_.clear();
+        playbackEventCount_ = 0;
+        dirtyEvents_ = true;
+        refreshSafetyCarBanner();
         playbackPatchMerger_.clear();
         playerStatusDrsAvailable_ = true;
         allStatusDrsAvailable_.clear();
@@ -567,8 +591,10 @@ MainWindow::MainWindow(QWidget* parent)
             if (powerPage_) powerPage_->setMguhVisible(tnrp::hasMguh(fmt));
             // Overtaking-aid overlay follows the clip's format: DRS (F1 24/25) vs
             // SLM (F1 26). The live protocol_status handler is skipped in playback.
+            const bool slm = tnrp::aeroMode(fmt) == "slm";
             if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
-                map->setAeroMode(tnrp::aeroMode(fmt) == "slm");
+                map->setAeroMode(slm);
+            if (analyzePage_) analyzePage_->setAeroMode(slm);
         }
         // Clear any frozen live value; the first replayed packet sets it afresh.
         if (toolbar_) toolbar_->resetSessionTimer();
@@ -587,19 +613,19 @@ MainWindow::MainWindow(QWidget* parent)
         hotSmoother_.reset();   // entering playback: drop live fill state
         lastRaceLeader_.reset();
         applyEngineLogging();   // inPlayback_ is set → stops live recording while reviewing
-        const QString trackName = hdr.track_name.empty()
+        playbackTrackName_ = hdr.track_name.empty()
             ? QStringLiteral("Unknown") : QString::fromStdString(hdr.track_name);
-        const QString sessName = hdr.session_name.empty()
+        playbackSessionName_ = hdr.session_name.empty()
             ? QStringLiteral("Unknown") : QString::fromStdString(hdr.session_name);
-        setWindowTitle(QString("Track N Race — %1 %2 [Playback]").arg(trackName, sessName));
+        titleSessionType_ = -1;   // the recording's own session rows take over
+        updateWindowTitle();
     });
 
-    // A seek replays a state snapshot (incl. the session packet); swallow the one
-    // safety-car toast that snapshot would otherwise raise — race_events aren't
-    // replayed on seek, so those need no special handling.
-    connect(playback_, &PlaybackController::seeked, this, [this] { scSuppressOnce_ = true; });
     connect(playback_, &PlaybackController::lapCatalogInstalled,
             this, &MainWindow::updatePlaybackDataRequirements);
+    // The events list follows the recording's catalog up to the playhead.
+    connect(playback_, &PlaybackController::lapCatalogInstalled,
+            this, &MainWindow::loadPlaybackEvents);
     connect(playback_, &PlaybackController::activeLapChanged,
             this, [this](int) { updatePlaybackDataRequirements(); });
     connect(playback_, &PlaybackController::driverRestrictionChanged,
@@ -615,6 +641,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(playback_, &PlaybackController::seekStarted, this, [this](uint64_t generation) {
         resetSeekGate();
         playbackSeekInstalling_ = true;   // waiting-flush: drop old-cursor rows
+        if (seekOverlay_) seekOverlay_->arm();
         playbackSeekGeneration_ = generation;
         playbackPatchMerger_.clear();
         // Strategy rebuilds asynchronously after the seek installs; keep the
@@ -641,6 +668,7 @@ MainWindow::MainWindow(QWidget* parent)
             if (item.binary) onEngineBinary(item.data);
             else onEngineRow(item.data);
         }
+        updatePlaybackEventCursor();
         // The active seek window changed, while the independent indexed-lap
         // cache remains valid. Re-evaluate current/selected dependencies so a
         // newly active lap is materialised immediately.
@@ -658,7 +686,9 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     connect(playback_, &PlaybackController::timeChanged, this, [this](float t) {
-        if (playbackSeekInstalling_ || !renderingActive_) return;
+        if (playbackSeekInstalling_) return;
+        updatePlaybackEventCursor();
+        if (!renderingActive_) return;
         switch (currentPage_) {
             case Overview: if (overviewPage_) overviewPage_->setCurrentTime(t); break;
             case Analyze: if (analyzePage_) analyzePage_->setCurrentTime(t); break;
@@ -672,6 +702,13 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(playback_, &PlaybackController::exited, this, [this] {
         inPlayback_ = false;
+        // Electron's resetSession(): no session, no events until live rows arrive.
+        streamedEvents_.clear();
+        playbackEvents_.clear();
+        playbackEventCount_ = 0;
+        lastSessionData.reset();
+        refreshSafetyCarBanner();
+        dirtyEvents_ = true;
         resetPlaybackDriverSelection();
         lastRaceLeader_.reset();
         hotSmoother_.reset();   // back to live: start the fill state fresh
@@ -693,7 +730,10 @@ MainWindow::MainWindow(QWidget* parent)
         playbackSparseRebuildPending_ = false;
         strategyRebuilding_ = false;
         dirtyStrategy_ = true;
-        setWindowTitle("Track N Race - Qt");
+        titleSessionType_ = -1;
+        playbackTrackName_.clear();
+        playbackSessionName_.clear();
+        updateWindowTitle();
     });
 
     // ── Telemetry engine (libtnrp) ────────────────────────────────────────
@@ -728,6 +768,9 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     const QString udpError = recreateEngine();
+    // Like Electron, listener and bridge failures surface as the titlebar's
+    // "UDP ERROR"; only the engine-startup failure also gets a dialog.
+    showUdpListenerStatus(udpError);
     if (udpError.startsWith("engine-startup:")) {
         const QString detail = udpError.mid(QStringLiteral("engine-startup:").size());
         const QString report = tnr::diagnostics::failureReport(
@@ -737,8 +780,6 @@ MainWindow::MainWindow(QWidget* parent)
             "Track N Race will continue without the native telemetry engine. However, "
             "pretty much nothing will work.\n\nThe full diagnostic report has been copied "
             "to your clipboard. Paste it into a message to the developer.\n\n" + report);
-    } else if (!udpError.isEmpty()) {
-        QMessageBox::critical(this, "UDP Error", udpError);
     }
 
     tnr::diagnostics::setFatalFlushHandler([this] {
@@ -1691,7 +1732,15 @@ QString MainWindow::applyUdpConfiguration(
     settings.setValue("udp/forwardTargets",
                       QJsonDocument(serializedTargets).toJson(QJsonDocument::Compact));
 
-    return recreateEngine();
+    const QString error = recreateEngine();
+    showUdpListenerStatus(error);
+    return error;
+}
+
+void MainWindow::showUdpListenerStatus(const QString& error) {
+    if (!toolbar_) return;
+    static const QString kEnginePrefix = QStringLiteral("engine-startup:");
+    toolbar_->setUdpError(error.startsWith(kEnginePrefix) ? error.mid(kEnginePrefix.size()) : error);
 }
 
 void MainWindow::receivePairState(const QByteArray& publicStateJson,
@@ -1953,7 +2002,107 @@ void MainWindow::showRecordingError(const QString& operation, const QString& mes
     recordingErrorDialog_->activateWindow();
 }
 
+// Electron's mergeRaceEventHistory(): identical events once, one retirement per
+// car (a PENA 16 reason replacing a plain RTMT), sorted by session time and
+// capped at the newest 1000.
+void MainWindow::loadPlaybackEvents() {
+    playbackEvents_.clear();
+    std::set<std::string> seen;
+    std::map<int, std::size_t> retiredCars;
+    std::vector<std::string> identities;
+    for (const glz::raw_json& raw : playback_->playbackLapCatalog().events) {
+        tnrp::RaceEventRow event;
+        if (glz::read<glz::opts{.error_on_unknown_keys = false}>(event, raw.str)) continue;
+        const bool retirement = event.code == "RTMT" ||
+            (event.code == "PENA" && event.penalty_type == 16);
+        if (retirement && event.car_idx) {
+            const auto previous = retiredCars.find(*event.car_idx);
+            if (previous != retiredCars.end()) {
+                if (playbackEvents_[previous->second].code == "RTMT" && event.code == "PENA") {
+                    seen.erase(identities[previous->second]);
+                    playbackEvents_[previous->second] = event;
+                    identities[previous->second] = raw.str;
+                    seen.insert(raw.str);
+                }
+                continue;
+            }
+            retiredCars[*event.car_idx] = playbackEvents_.size();
+        }
+        if (!seen.insert(raw.str).second) continue;
+        playbackEvents_.push_back(std::move(event));
+        identities.push_back(raw.str);
+    }
+    std::stable_sort(playbackEvents_.begin(), playbackEvents_.end(),
+        [](const tnrp::RaceEventRow& a, const tnrp::RaceEventRow& b) {
+            return a.session_time < b.session_time;
+        });
+    constexpr std::size_t kMaxRaceEvents = 1000;
+    if (playbackEvents_.size() > kMaxRaceEvents)
+        playbackEvents_.erase(playbackEvents_.begin(),
+                              playbackEvents_.end() - static_cast<std::ptrdiff_t>(kMaxRaceEvents));
+    playbackEventCount_ = std::numeric_limits<std::size_t>::max();   // force a refresh
+    updatePlaybackEventCursor();
+}
+
+// Electron shows every recorded event at or before the playhead, so the list is
+// right after any seek without relying on streamed rows.
+void MainWindow::updatePlaybackEventCursor() {
+    if (!inPlayback_ || !playback_) return;
+    const float t = playback_->currentTime();
+    const auto end = std::upper_bound(playbackEvents_.begin(), playbackEvents_.end(), t,
+        [](float time, const tnrp::RaceEventRow& e) { return time < e.session_time; });
+    const std::size_t count = static_cast<std::size_t>(end - playbackEvents_.begin());
+    if (count == playbackEventCount_) return;
+    playbackEventCount_ = count;
+    refreshSafetyCarBanner();
+    dirtyEvents_ = true; scheduleUiRefresh();
+}
+
+std::vector<tnrp::RaceEventRow> MainWindow::shownEvents() const {
+    if (!inPlayback_) return streamedEvents_;
+    const std::size_t count = std::min(playbackEventCount_, playbackEvents_.size());
+    return {playbackEvents_.begin(),
+            playbackEvents_.begin() + static_cast<std::ptrdiff_t>(count)};
+}
+
+void MainWindow::updateWindowTitle() {
+    QString session = titleSessionType_ >= 0 ? sessionTypeName(titleSessionType_) : QString();
+    if (inPlayback_) {
+        if (session.isEmpty()) session = playbackSessionName_;
+        setWindowTitle(QStringLiteral("Track N Race — %1 %2 [Playback]").arg(playbackTrackName_, session));
+    } else {
+        setWindowTitle(session.isEmpty() ? QStringLiteral("Track N Race - Qt")
+                                         : QStringLiteral("Track N Race - Qt — %1").arg(session));
+    }
+}
+
+void MainWindow::refreshSafetyCarBanner() {
+    if (!toasts_) return;
+    const tnrp::RaceEventRow* latestScar = nullptr;
+    if (inPlayback_) {
+        const std::size_t count = std::min(playbackEventCount_, playbackEvents_.size());
+        for (std::size_t i = count; i-- > 0;)
+            if (playbackEvents_[i].code == "SCAR") { latestScar = &playbackEvents_[i]; break; }
+    } else {
+        for (auto it = streamedEvents_.rbegin(); it != streamedEvents_.rend(); ++it)
+            if (it->code == "SCAR") { latestScar = &*it; break; }
+    }
+    const std::optional<int> status = lastSessionData
+        ? std::optional<int>(lastSessionData->safety_car_status) : std::nullopt;
+    const std::optional<ToastSpec> banner = safetyCarBanner(status, latestScar);
+
+    std::optional<std::pair<QString, QString>> text;
+    if (banner) text = std::make_pair(banner->label, banner->sub);
+    if (text == shownSafetyCarBanner_) return;
+    shownSafetyCarBanner_ = text;
+    if (banner) toasts_->show(*banner);   // persistent: replaces the previous one
+    else        toasts_->dismissPersistent();
+}
+
 void MainWindow::resetSeekGate() {
+    // Every path that ends a pending seek (install, gate reset, playback exit)
+    // comes through here.
+    if (seekOverlay_) seekOverlay_->disarm();
     playbackSeekInstalling_ = false;
     playbackSeekFlushReceived_ = false;
     playbackSeekReplay_.clear();
@@ -2071,8 +2220,10 @@ void MainWindow::onEngineRow(const QByteArray& json) {
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
             if (powerPage_) powerPage_->setMguhVisible(ps->capabilities.hasMguh);
             // Overtaking-aid overlay follows the format: DRS (F1 24/25) vs SLM (F1 26).
+            const bool slm = tnrp::aeroMode(fmt) == "slm";
             if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
-                map->setAeroMode(tnrp::aeroMode(fmt) == "slm");
+                map->setAeroMode(slm);
+            if (analyzePage_) analyzePage_->setAeroMode(slm);
         }
         if (!inPlayback_) return;
     }
@@ -2214,44 +2365,64 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row,
         dirtyTrackMapPositions_ = true; scheduleUiRefresh();
     } else if (const auto* session = std::get_if<tnrp::SessionRow>(&row)) {
         lastSessionData = *session;
-        // Safety-car state changes update the persistent banner. SC/VSC/FL show a
-        // persistent toast; returning to green (sc=0) silently dismisses it — no
-        // "Track Clear" notification, matching the Electron app. Seeks are suppressed
-        // via the one-shot flag set in seeked().
-        const int sc = session->safety_car_status;
-        const bool suppress = scSuppressOnce_;
-        scSuppressOnce_ = false;
-        if (!suppress && sc != lastSafetyCarStatus_) {
-            if (auto spec = safetyCarToast(lastSafetyCarStatus_, sc)) {
-                toasts_->show(*spec);
-            } else if (sc == 0) {
-                toasts_->dismissPersistent();
-            }
+        if (titleSessionType_ != session->session_type) {
+            titleSessionType_ = session->session_type;
+            updateWindowTitle();
         }
-        lastSafetyCarStatus_ = sc;
+        refreshSafetyCarBanner();
         dirtySession_ = true; dirtyTrackMapSession_ = true; scheduleUiRefresh();
     } else if (const auto* ev = std::get_if<tnrp::RaceEventRow>(&row)) {
-        // Electron resets its live store on session end, blanking the cards.
-        if (ev->code == "SEND" && !inPlayback_ && overviewPage_) overviewPage_->resetLiveData();
         if (ev->code == "SSTA") {
-            if (sessionPage_) sessionPage_->clearEvents();
             if (standingsPage_) standingsPage_->resetForNewSession();
             // Electron keeps Strategy across SSTA; in playback the engine's
             // rebuilt snapshot is what replaces it.
             if (strategyPage_ && !inPlayback_) strategyPage_->resetForNewSession();
-            lastSafetyCarStatus_ = 0;
             lastRaceLeader_.reset();
         }
         // Electron truncates the old event timeline before publishing the FLBK
-        // event itself, so the flashback remains visible but later events do not.
+        // event itself, so the flashback remains (hidden from the list) but later
+        // events do not.
         if (!inPlayback_ && ev->code == "FLBK" && ev->flashback_session_time &&
             std::isfinite(*ev->flashback_session_time) &&
-            *ev->flashback_session_time >= 0.0f && sessionPage_)
-            sessionPage_->truncateEventsAfter(*ev->flashback_session_time);
-        if (sessionPage_) sessionPage_->addEvent(*ev);
+            *ev->flashback_session_time >= 0.0f) {
+            const float target = *ev->flashback_session_time;
+            std::erase_if(streamedEvents_, [target](const tnrp::RaceEventRow& e) {
+                return e.session_time > target;
+            });
+        }
+        // One retirement per car: a later PENA 16 (the retirement reason)
+        // replaces an earlier plain RTMT; any other repeat is dropped, toast too.
+        const auto isRetirement = [](const tnrp::RaceEventRow& e) {
+            return e.code == "RTMT" || (e.code == "PENA" && e.penalty_type == 16);
+        };
+        if (isRetirement(*ev) && ev->car_idx) {
+            const auto prior = std::find_if(streamedEvents_.begin(), streamedEvents_.end(),
+                [&](const tnrp::RaceEventRow& e) { return isRetirement(e) && e.car_idx == ev->car_idx; });
+            if (prior != streamedEvents_.end()) {
+                if (prior->code == "RTMT" && ev->code == "PENA") {
+                    streamedEvents_.erase(prior);
+                    streamedEvents_.push_back(*ev);
+                    dirtyEvents_ = true; scheduleUiRefresh();
+                }
+                return;
+            }
+        }
         // Transient notification for the event, both live and during playback.
         // race_events are never replayed on seek, so scrubbing won't re-fire them.
         if (auto spec = buildToast(*ev, optPtr(lastParticipantsData))) toasts_->show(*spec);
+        constexpr std::size_t kMaxRaceEvents = 1000;
+        streamedEvents_.push_back(*ev);
+        if (streamedEvents_.size() > kMaxRaceEvents)
+            streamedEvents_.erase(streamedEvents_.begin());
+        // Electron resets its live store on session end: cards blank, the
+        // title drops the session and the events list empties.
+        if (ev->code == "SEND" && !inPlayback_) {
+            if (overviewPage_) overviewPage_->resetLiveData();
+            titleSessionType_ = -1;
+            updateWindowTitle();
+            streamedEvents_.clear();
+        }
+        if (ev->code == "SCAR" || ev->code == "SEND" || ev->code == "FLBK") refreshSafetyCarBanner();
         dirtyEvents_ = true; scheduleUiRefresh();
     } else if (const auto* timing = std::get_if<TimingRow>(&row)) {
         lastTimingData = *timing;
@@ -2398,7 +2569,11 @@ void MainWindow::flushUiRefresh() {
         case Session:
             if (dirtyProximity_) { sessionPage_->updateProximity(optPtr(lastTimingData), optPtr(lastParticipantsData)); dirtyProximity_ = false; }
             if (dirtySession_)   { sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));        dirtySession_   = false; }
-            if (dirtyEvents_)    { sessionPage_->updateEvents(optPtr(lastParticipantsData));                            dirtyEvents_    = false; }
+            if (dirtyEvents_) {
+                sessionPage_->setEvents(shownEvents());
+                sessionPage_->updateEvents(optPtr(lastParticipantsData));
+                dirtyEvents_ = false;
+            }
             if (dirtyTrackMapSession_ || dirtyTrackMapParticipants_ || dirtyTrackMapPositions_) {
                 sessionPage_->updateTrackMap(
                     dirtyTrackMapSession_ ? optPtr(lastSessionData) : nullptr,
@@ -2440,7 +2615,10 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
         // wiped all live data). A genuine restart rewinds to ~0, which truncates to empty
         // anyway. Same 0.2s guard as the recording-side truncate above.
         if (!inPlayback_ && t->session_time < model_->data().latestTime - 0.2f) {
-            if (sessionPage_) sessionPage_->truncateEventsAfter(t->session_time);
+            const float target = t->session_time;
+            std::erase_if(streamedEvents_, [target](const tnrp::RaceEventRow& e) {
+                return e.session_time > target;
+            });
             dirtyEvents_ = true;
             model_->truncateAfter(t->session_time);
         }

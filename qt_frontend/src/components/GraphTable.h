@@ -9,6 +9,7 @@
 class QGridLayout;
 class ChartView;
 class GraphTableModel;
+class QToolButton;
 
 // A read-only raw-values table used to replace a telemetry graph (see the
 // per-graph Chart/Table toggle in the Settings "Graphs" tab). One column per
@@ -16,6 +17,12 @@ class GraphTableModel;
 // bottom, holding every sample in the visible window (no row cap — the toolbar's
 // time window is the only bound). Auto-scrolls to the newest row unless the user
 // has scrolled up to inspect history.
+//
+// As Electron's GraphTable: scrolling more than 1.5 rows above the bottom unpins
+// the table and freezes it (rebuilds stop accepting rows, so nothing shifts under
+// the reader). Only the floating "Scroll to Bottom" button re-pins it — scrolling
+// back down by hand does not — as do a column/coordinate change and a lap or
+// history change (the requested range jumping rather than sliding).
 //
 // It's a QTableView over a lightweight model that stores rows as raw numbers and
 // formats a cell only when it's actually on screen — so only the handful of
@@ -65,9 +72,22 @@ public:
     bool full() const { return !acceptingRows_; }
     void endRebuild();
 
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+    void changeEvent(QEvent* event) override;
+
 private:
     void addRowImpl(const double* values, int n);
+    void setPinned(bool pinned);
+    void onScrolled();
+    void placeScrollButton();
+    void styleScrollButton();
     GraphTableModel* model_ = nullptr;
+    QToolButton* scrollButton_ = nullptr;   // "Scroll to Bottom", shown while unpinned
+    bool pinned_ = true;
+    bool autoScrolling_ = false;            // our own scrollToBottom(), not the user
+    bool haveSeenRange_ = false;
+    double seenUpperTime_ = 0.0;            // last requested range, frozen or not
     QElapsedTimer refreshClock_;
     double lastLowerTime_ = 0.0;
     double lastUpperTime_ = 0.0;

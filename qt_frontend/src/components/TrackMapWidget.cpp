@@ -931,12 +931,18 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
 
     // Labels drawn after dots so they sit on top.
     p.setFont(labelFont);
+    const QFontMetricsF labelMetrics(labelFont, this);
     for (const LabelJob& job : labels) {
-        const double bx = job.c.x() - LABEL_W / 2.0;
-        const double by = labelMode_ == LabelMode::LabelsOnly 
-            ? job.c.y() - LABEL_H / 2.0 
+        // Electron: at least LABEL_W, else wide enough for the text plus 6px a
+        // side, so longer names ("Current", custom lap labels) are not clipped.
+        constexpr double kTextPadX = 6.0;
+        const double w = std::max<double>(LABEL_W,
+            std::ceil(labelMetrics.horizontalAdvance(job.text) + kTextPadX * 2));
+        const double bx = job.c.x() - w / 2.0;
+        const double by = labelMode_ == LabelMode::LabelsOnly
+            ? job.c.y() - LABEL_H / 2.0
             : job.c.y() - DOT_R - LABEL_GAP - LABEL_H;
-        const QRectF box(bx, by, LABEL_W, LABEL_H);
+        const QRectF box(bx, by, w, LABEL_H);
 
         p.setPen(Qt::NoPen);
         p.setBrush(job.color);

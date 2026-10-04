@@ -278,13 +278,18 @@ void AnalysisPage::buildToolBar() {
                                     QStringLiteral("Sector Delta"),
                                     QStringLiteral("Restarts the delta at every sector instead of "
                                                    "accumulating it over the lap."));
+    splitCursorsAction_ = makeToggle(this, themed(this, {"distribute-horizontal-center", "object-columns"},
+                                                  QStyle::SP_ToolBarHorizontalExtensionButton),
+                                     QStringLiteral("Split Cursors"),
+                                     QStringLiteral("In Split Mode while comparing, shows where both "
+                                                    "cars are on the lap as lines on the graphs."));
     inputsAction_ = makeToggle(this, themed(this, {"input-gaming", "view-list-details"},
                                             QStyle::SP_FileDialogDetailedView),
                                QStringLiteral("Data Comparison"),
                                QStringLiteral("Shows a card on the map with both laps' steering, "
                                               "pedals, ERS, speed and gear at the map cursor."));
     for (QAction* action : {stackedAction_, syncedTooltipAction_, sectorBoundariesAction_,
-                            sectorDeltaAction_}) {
+                            sectorDeltaAction_, splitCursorsAction_}) {
         toolBar_->addAction(action);
         if (action == syncedTooltipAction_) toolBar_->addSeparator();
     }
@@ -315,7 +320,7 @@ void AnalysisPage::buildToolBar() {
         if (!on) sectorDeltaAction_->setChecked(false);
     });
     for (QAction* action : {stackedAction_, syncedTooltipAction_, sectorBoundariesAction_,
-                            sectorDeltaAction_, inputsAction_})
+                            sectorDeltaAction_, splitCursorsAction_, inputsAction_})
         connect(action, &QAction::triggered, this, [this] {
             saveSettings();
             applyState();
@@ -613,6 +618,7 @@ void AnalysisPage::loadSettings() {
     const bool boundaries = settings_.value("analyze/sectorBoundaries", false).toBool();
     setChecked(sectorBoundariesAction_, boundaries);
     setChecked(sectorDeltaAction_, boundaries && settings_.value("analyze/sectorDelta", false).toBool());
+    setChecked(splitCursorsAction_, settings_.value("analyze/splitCursors", true).toBool());
     setChecked(inputsAction_, settings_.value("analyze/inputsPanel", true).toBool());
     sidebar_->setVisible(sidebarAction_->isChecked());
 
@@ -670,6 +676,7 @@ void AnalysisPage::saveSettings() {
     settings_.setValue("analyze/syncedTooltip", syncedTooltipAction_->isChecked());
     settings_.setValue("analyze/sectorBoundaries", sectorBoundariesAction_->isChecked());
     settings_.setValue("analyze/sectorDelta", sectorDeltaAction_->isChecked());
+    settings_.setValue("analyze/splitCursors", splitCursorsAction_->isChecked());
     settings_.setValue("analyze/inputsPanel", inputsAction_->isChecked());
     settings_.setValue("analyze/showYAxis", seriesModel_->allYAxesShown());
     settings_.setValue("analyze/mapCurrentColor", primaryColor_.name());
@@ -890,6 +897,7 @@ void AnalysisPage::applyState() {
     syncedTooltipAction_->setEnabled(stackedAction_->isChecked());
     sectorBoundariesAction_->setEnabled(!mismatch);
     sectorDeltaAction_->setEnabled(!mismatch && sectorBoundariesAction_->isChecked());
+    splitCursorsAction_->setEnabled(view == View::Split && fixed);
     inputsAction_->setEnabled(showMap);
 
     // ── Sidebar ──
@@ -945,7 +953,8 @@ void AnalysisPage::applyState() {
     chart_->setSectorOptions(!mismatch && sectorBoundariesAction_->isChecked(),
                              !mismatch && sectorDeltaAction_->isChecked());
     chart_->setSelectedLaps(fixed, primary.data, primary.lap, comparison.data, comparison.lap);
-    chart_->setMapCursors(showMap && showChart && fixed, primaryColor_, comparisonColor_);
+    chart_->setMapCursors(showMap && showChart && fixed && splitCursorsAction_->isChecked(),
+                          primaryColor_, comparisonColor_);
 
     // ── Map ──
     showFollowedLap(primary.lap);
@@ -1207,6 +1216,10 @@ void AnalysisPage::setMapAppearance(bool sectorColors, int opacityPercent) {
     map_->setMapAppearance(sectorColors, opacityPercent);
 }
 
+void AnalysisPage::setAeroMode(bool slm) {
+    map_->setAeroMode(slm);
+}
+
 void AnalysisPage::resetPlaybackSelections() {
     {
         QSignalBlocker guard(modeTabs_);
@@ -1386,7 +1399,7 @@ void AnalysisPage::showControlsHelp() {
     QFormLayout* views = section(QStringLiteral("Tool Bar"));
     for (QAction* action : {graphsAction_, splitAction_, mapAction_, stackedAction_,
                             syncedTooltipAction_, sectorBoundariesAction_, sectorDeltaAction_,
-                            inputsAction_, sidebarAction_})
+                            splitCursorsAction_, inputsAction_, sidebarAction_})
         row(views, action->icon(), action->text(), action->whatsThis());
 
     QFormLayout* laps = section(QStringLiteral("Laps"));
