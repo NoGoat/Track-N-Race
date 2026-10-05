@@ -34,15 +34,6 @@ const rangeOptions = [{ value: 'stint' as const, label: 'Stint Laps' }, { value:
 const wearOptions = [{ value: 'wear' as const, label: 'Wear' }, { value: 'life' as const, label: 'Life' }]
 const chartSelectStyles = buildSelectStyles(true, { controlHeight: 22, menuWidth: '7rem' })
 
-function Section({ title, children, controls, className = '' }: { title: string; children: ReactNode; controls?: ReactNode; className?: string }) {
-  return <section className={`flex flex-col min-w-0 min-h-0 ${className}`} aria-label={title}>
-    <div className="shrink-0 flex items-center justify-between gap-3 px-4 pt-3 pb-2">
-      <h2 className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
-      {controls}
-    </div>
-    <div className="flex-1 min-h-0">{children}</div>
-  </section>
-}
 function ChartSection({ title, controls, ...chart }: ComponentProps<typeof StintChart> & { controls?: ReactNode }) {
   const [hidden, setHidden] = useState<Record<string, boolean>>({})
   const series = useMemo(() => chart.series.map(item => ({ ...item, visible: !hidden[item.label] })), [chart.series, hidden])
@@ -94,7 +85,6 @@ export default memo(function StintPanel({ isDark, compact, wearMode, onWearModeC
   const pushedHistory = useTelemetryStore(s => s.driverLapHistory)
   const currentLap = useTelemetryStore(s => s.lap?.lap_num ?? null)
   const status = useTelemetryStore(s => s.status)
-  const damage = useTelemetryStore(s => s.damage)
   const tyreSets = useTelemetryStore(s => s.tyreSets)
   const statusHistory = useTelemetryStore(s => s.statusHistory)
   // Bumped when a backfill rewrites rows already held, such as V6 ERS fields
@@ -150,16 +140,6 @@ export default memo(function StintPanel({ isDark, compact, wearMode, onWearModeC
   }
 
   const tyreCompound = status?.tyre_compound ?? 0
-  const damageCell = (key: 'wing_fl' | 'wing_fr' | 'wing_rear' | 'floor_damage' | 'sidepod_damage' | 'diffuser_damage' | 'engine_damage' | 'gearbox_damage', label: string, className = '') => {
-    const value = damage?.[key]
-    const shown = typeof value === 'number' && Number.isFinite(value) ? value : null
-    return <div className={`min-w-0 min-h-0 flex flex-col justify-center bg-[var(--bg-card)] border border-[var(--border)] px-2 py-1 text-center ${className}`}>
-      <div className="text-[9px] uppercase tracking-wider text-[var(--text-secondary)] mb-1">{label}</div>
-      <div className="text-lg font-bold tabular-nums" style={{ color: shown === null ? 'var(--text-muted)' : shown > 0 ? '#C4162A' : isDark ? '#37872D' : '#137333' }}>
-        {shown === null ? missing : `${shown}%`}
-      </div>
-    </div>
-  }
   return <div className="h-full min-h-0 overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)] flex flex-col">
     <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
       <Summary compact={compact} label="Stint Laps" value={history ? String(stintLaps.length) : missing} title={history ? `Current stint starts on lap ${stintStart}` : undefined}
@@ -176,34 +156,19 @@ export default memo(function StintPanel({ isDark, compact, wearMode, onWearModeC
       <Summary compact={compact} label="Tyre" value={tyreCompound > 0 ? tn('tyre.actual', tyreCompound) : missing} color={tyreCompound > 0 ? tyreCompoundColor(tyreCompound, status?.visual_compound ?? 0) : undefined}
         sub={status && Number.isFinite(status.tyre_age_laps) ? `${status.tyre_age_laps}L age` : undefined} />
     </div>
-    <div className="flex-1 min-h-0 grid grid-cols-[minmax(0,1fr)_200px] xl:grid-cols-[minmax(0,1fr)_220px]">
-      <div className="min-w-0 min-h-0 grid grid-rows-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)] divide-y divide-[var(--border)]">
-        <ChartSection title="Lap Times · Stint" points={lapPoints} series={lapSeries} isDark={isDark} discrete formatX={lapX} formatY={lapAxisY} formatTooltipY={lapTooltipY} />
-        <div className="grid grid-cols-2 divide-x divide-[var(--border)] min-h-0">
-          <ChartSection title="ERS Usage · Stint" points={energyPoints('deployedMj')} series={deploymentSeries} isDark={isDark} discrete zeroBaselineHeadroom={0.5} formatX={lapX} formatY={energyAxisY} formatTooltipY={energyTooltipY} />
-          <ChartSection title="Recharge · Stint" points={energyPoints('harvestedMj')} series={rechargeSeries} isDark={isDark} discrete zeroBaselineHeadroom={0.5} formatX={lapX} formatY={energyAxisY} formatTooltipY={energyTooltipY} />
-        </div>
-        <ChartCoordinatesProvider mode={range === 'all' ? 'AL' : 'SL'} referenceLapNum={null} rowTypeMask={DATA_ROW.damage} sectorBoundaries={false} stintStartLap={history?.stint_start_lap || undefined}>
-          <StintTyreWearChart isDark={isDark} wearMode={wearMode}
-            controls={<div className="flex shrink-0 items-center gap-1 normal-case tracking-normal">
-              <Select aria-label="Tyre graph range" options={rangeOptions} value={rangeOptions.find(option => option.value === range)} onChange={option => { if (option) setRange(option.value) }} styles={chartSelectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} menuPosition="fixed" menuShouldScrollIntoView={false} />
-              <Select aria-label="Tyre wear or life" options={wearOptions} value={wearOptions.find(option => option.value === wearMode)} onChange={option => { if (option) onWearModeChange(option.value) }} styles={chartSelectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} menuPosition="fixed" menuShouldScrollIntoView={false} />
-            </div>} />
-        </ChartCoordinatesProvider>
+    <div className="flex-1 min-w-0 min-h-0 grid grid-rows-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)] divide-y divide-[var(--border)]">
+      <ChartSection title="Lap Times · Stint" points={lapPoints} series={lapSeries} isDark={isDark} discrete formatX={lapX} formatY={lapAxisY} formatTooltipY={lapTooltipY} />
+      <div className="grid grid-cols-2 divide-x divide-[var(--border)] min-h-0">
+        <ChartSection title="ERS Usage · Stint" points={energyPoints('deployedMj')} series={deploymentSeries} isDark={isDark} discrete zeroBaselineHeadroom={0.5} formatX={lapX} formatY={energyAxisY} formatTooltipY={energyTooltipY} />
+        <ChartSection title="Recharge · Stint" points={energyPoints('harvestedMj')} series={rechargeSeries} isDark={isDark} discrete zeroBaselineHeadroom={0.5} formatX={lapX} formatY={energyAxisY} formatTooltipY={energyTooltipY} />
       </div>
-      <aside className="min-h-0 border-l border-[var(--border)] grid grid-rows-[minmax(0,2fr)_minmax(0,1fr)]" aria-label="Car condition">
-        <Section title="Damage">
-          <div className="h-full min-h-0 grid grid-cols-2 grid-rows-[repeat(4,minmax(0,1fr))] gap-2 px-3 pt-1 pb-3">
-            {damageCell('wing_fl', 'Wing L')}{damageCell('wing_fr', 'Wing R')}
-            {damageCell('floor_damage', 'Floor', 'col-span-2 mx-6')}
-            {damageCell('sidepod_damage', 'Sidepod')}{damageCell('diffuser_damage', 'Diffuser')}
-            {damageCell('wing_rear', 'Rear Wing', 'col-span-2 mx-6')}
-          </div>
-        </Section>
-        <Section title="Engine Wear" className="border-t border-[var(--border)]">
-          <div className="h-full min-h-0 grid grid-rows-2 gap-2 px-3 pt-1 pb-3">{damageCell('engine_damage', 'Engine')}{damageCell('gearbox_damage', 'Gearbox')}</div>
-        </Section>
-      </aside>
+      <ChartCoordinatesProvider mode={range === 'all' ? 'AL' : 'SL'} referenceLapNum={null} rowTypeMask={DATA_ROW.damage} sectorBoundaries={false} stintStartLap={history?.stint_start_lap || undefined}>
+        <StintTyreWearChart isDark={isDark} wearMode={wearMode}
+          controls={<div className="flex shrink-0 items-center gap-1 normal-case tracking-normal">
+            <Select aria-label="Tyre graph range" options={rangeOptions} value={rangeOptions.find(option => option.value === range)} onChange={option => { if (option) setRange(option.value) }} styles={chartSelectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} menuPosition="fixed" menuShouldScrollIntoView={false} />
+            <Select aria-label="Tyre wear or life" options={wearOptions} value={wearOptions.find(option => option.value === wearMode)} onChange={option => { if (option) onWearModeChange(option.value) }} styles={chartSelectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} menuPosition="fixed" menuShouldScrollIntoView={false} />
+          </div>} />
+      </ChartCoordinatesProvider>
     </div>
   </div>
 })

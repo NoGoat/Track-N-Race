@@ -732,12 +732,13 @@ internal class TelemetryStore {
                 mapPositions.lazySet(MapPositions())
                 val year = row.optionalInt("protocol_year")
                 val formula = row.optionalInt("formula")
+                val regulations2026 = row.optionalBoolean("regulations_2026")
                 post {
                     resetAllLapComparison()
                     cold = cold.copy(
                         protocolYear = year,
                         formula = formula,
-                        aeroMode = resolveAeroMode(year, formula, null),
+                        aeroMode = resolveAeroMode(year, regulations2026, formula, null),
                         labels = emptyMap(),
                         trackId = -1,
                         sessionType = null,
@@ -781,6 +782,7 @@ internal class TelemetryStore {
             "protocol_status" -> {
                 val year = row.optionalInt("active_format") ?: row.optionalInt("detected_format")
                 val formula = row.optionalInt("formula")
+                val regulations2026 = row.optionalBoolean("regulations_2026")
                 val fallbackAero = row.optString("aero_mode").takeIf { it.isNotEmpty() }
                 val labelsObject = row.optJSONObject("labels")
                 val labels = buildMap {
@@ -795,7 +797,7 @@ internal class TelemetryStore {
                     cold = cold.copy(
                         protocolYear = year,
                         formula = formula,
-                        aeroMode = resolveAeroMode(year, formula, fallbackAero),
+                        aeroMode = resolveAeroMode(year, regulations2026, formula, fallbackAero),
                         labels = labels,
                     )
                 }
@@ -1347,7 +1349,11 @@ internal class TelemetryStore {
             null
         }
 
-    private fun resolveAeroMode(year: Int?, formula: Int?, fallback: String?): String = when {
+    // Mirrors tnrp::presentationFormat: on the 2026 protocol the cars' regulations
+    // decide (Car Telemetry 2 m_2026Regulations), then Formula (13 = F1 26), then
+    // the protocol alone.
+    private fun resolveAeroMode(year: Int?, regulations2026: Boolean?, formula: Int?, fallback: String?): String = when {
+        year == 2026 && regulations2026 != null -> if (regulations2026) "slm" else "drs"
         year == 2026 && (formula == null || formula == 13) -> "slm"
         year != null -> "drs"
         fallback == "slm" -> "slm"

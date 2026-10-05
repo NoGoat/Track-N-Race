@@ -175,6 +175,7 @@ export function useAppConfiguration() {
       powerCards:        normalizeDensity(raw.powerCards),
       strategySummary:   normalizeDensity(raw.strategySummary),
       stintSummary:      normalizeDensity(raw.stintSummary),
+      damageSummary:     normalizeDensity(raw.damageSummary),
       playbackBar:       normalizeDensity(raw.playbackBar),
     }
   }, [rawCompact])

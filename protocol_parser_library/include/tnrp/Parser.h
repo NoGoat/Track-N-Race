@@ -71,7 +71,8 @@ public:
     // parser state. Playback uses this to label a recorded clip with its own
     // format's i18n catalog / capabilities / aero mode.
     static std::string statusRowForFormat(uint16_t format,
-                                          std::optional<int> formula = std::nullopt);
+                                          std::optional<int> formula = std::nullopt,
+                                          std::optional<bool> regulations2026 = std::nullopt);
 
     // Reset duplicate-frame / debounce state (e.g. on UDP restart).
     void reset();
@@ -82,6 +83,8 @@ private:
     uint16_t  detectedFormat_    = 0;
     uint16_t  activeFormat_      = 0;
     std::optional<int> formula_;
+    // Car Telemetry 2 m_2026Regulations, once a 2026 packet has carried it.
+    std::optional<bool> regulations2026_;
     uint16_t  debounceCandidate_ = 0;
     int       debounceCount_     = 0;
 

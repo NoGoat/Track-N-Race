@@ -20,9 +20,8 @@ supplied sketch and the existing Electron design language.
 - Consumption averages include completed invalid laps and in/out laps when
   measurements are available. Exclude the unfinished lap from averages.
 - Reuse the Tyres page's four-wheel wear/life graph presentation.
-- The right sidebar arranges body damage spatially, with Engine and Gearbox
-  percentages below. These are presented as wear percentages using the existing
-  engine/gearbox damage fields; individual engine-component wear is deferred.
+- Car damage and engine/gearbox wear are not on this page; they live on the
+  Damage page (`DAMAGE_PAGE_DESIGN.md`). The earlier condition sidebar was removed.
 - All panels follow the streamed driver: the player in live, and the driver
   selector's car in V6 playback. There is no driver selector in live.
 - The page updates in realtime, as rows arrive; nothing polls.
@@ -30,19 +29,17 @@ supplied sketch and the existing Electron design language.
 
 ## 2. Layout and visual language
 
-The summary strip spans the full page width. Below it, use a broad main column
-and a narrower right sidebar, separated by the existing panel border treatment.
+The summary strip spans the full page width. Below it, the charts fill a single
+full-width column.
 
 ```text
 Stint Laps | Wear/Lap | Rec/Lap | ERS/Lap | Fuel/Lap | FL | PL | Tyre
 -----------------------------------------------------------------
-Lap times: current stint                         | Wing L  Wing R
-                                                 |     Floor
--------------------------------------------------| Sidepod Diffuser
-ERS usage: per lap      | Recharge: per lap       |    Rear wing
-                        |                        |---------------
--------------------------------------------------| Engine
-Tyre wear / life: current stint or all laps       | Gearbox
+Lap times: current stint
+-----------------------------------------------------------------
+ERS usage: per lap              | Recharge: per lap
+-----------------------------------------------------------------
+Tyre wear / life: current stint or all laps
 ```
 
 Use Cascadia Code, tabular numeric values, compact uppercase labels, existing
@@ -54,9 +51,8 @@ Keep chart controls beside the title and use the shared animated select,
 select styles, and indicators with menus portalled outside the panel.
 
 Fit the available window height without page scrolling. Keep the summary in
-one row, the condition sidebar beside the charts, and the two ERS charts side
-by side. Chart rows and condition cells share the remaining height using
-shrinkable grid tracks rather than fixed minimum heights.
+one row and the two ERS charts side by side. Chart rows share the remaining
+height using shrinkable grid tracks rather than fixed minimum heights.
 
 ## 3. Metric definitions
 
@@ -127,9 +123,6 @@ partial. Include invalid and pit laps when measurements are available.
   provide the existing Stint Laps / All Laps range semantics. The range switch
   affects this graph only; summary metrics and the other graphs remain scoped
   to the current stint. Preserve tyre-change discontinuities in All Laps view.
-- **Sidebar:** latest values at the live time or playback cursor. Use wing
-  left/right, floor, sidepod, diffuser, and rear wing in the sketch's positions,
-  then Engine and Gearbox. Reuse percentage formatting and colour rules.
 
 ## 5. Driver, stint, and timeline model
 

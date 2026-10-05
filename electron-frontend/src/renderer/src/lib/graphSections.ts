@@ -141,6 +141,7 @@ export interface CompactState {
   powerCards:        DensityMode
   strategySummary:   DensityMode
   stintSummary:      DensityMode
+  damageSummary:     DensityMode
   playbackBar:       DensityMode
 }
 
@@ -160,6 +161,7 @@ export const DEFAULT_COMPACT: CompactState = {
   powerCards:        'normal',
   strategySummary:   'normal',
   stintSummary:      'normal',
+  damageSummary:     'normal',
   playbackBar:       'normal',
 }
 
@@ -194,6 +196,9 @@ export const COMPACT_GROUPS: { group: string; sections: { key: CompactDensityKey
   ] },
   { group: 'Stint', sections: [
     { key: 'stintSummary', label: 'Summary Cards' },
+  ] },
+  { group: 'Damage', sections: [
+    { key: 'damageSummary', label: 'Summary Cards' },
   ] },
   { group: 'Playback', sections: [
     { key: 'playbackBar', label: 'Playback Bar' },

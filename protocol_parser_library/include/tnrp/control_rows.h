@@ -256,6 +256,8 @@ struct ProtocolStatusRow {
     std::optional<int> presentation_format;
     // Raw PacketSessionData::m_formula value when known.
     std::optional<int> formula;
+    // Car Telemetry 2 m_2026Regulations (one car decides for the session) when known.
+    std::optional<bool> regulations_2026;
     std::string        override_;   // mapped to "override" below
     Capabilities       capabilities;
     // Library-owned i18n label catalog for the active format (see tnrp/Labels.h).
@@ -297,6 +299,10 @@ struct HeaderRow {
     std::string track_name;
     std::optional<int> track_length_m;         // V3; omitted by V1/V2
     std::optional<int> formula;                // V5; omitted by V1–V4
+    // V6, from Car Telemetry 2 m_2026Regulations. Learned after the stream opens,
+    // so it is stored in the metadata written when the file is finished; absent
+    // in older and recovered recordings, which fall back to `formula`.
+    std::optional<bool> regulations_2026;
     int         session_type{};
     std::string session_name;
     int64_t     start_time{};
@@ -461,6 +467,7 @@ struct glz::meta<tnrp::ProtocolStatusRow> {
         "active_format",   &T::active_format,
         "presentation_format", &T::presentation_format,
         "formula",         &T::formula,
+        "regulations_2026", &T::regulations_2026,
         "override",        &T::override_,
         "capabilities",    &T::capabilities,
         "labels",          &T::labels,

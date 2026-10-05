@@ -38,6 +38,9 @@ export interface TyreWearCar {
   floor_damage?: number | null; diffuser_damage?: number | null; sidepod_damage?: number | null
   gearbox_damage?: number | null; engine_damage?: number | null
   drs_fault?: number | null; ers_fault?: number | null
+  engine_mguh_wear?: number | null; engine_es_wear?: number | null; engine_ce_wear?: number | null
+  engine_ice_wear?: number | null; engine_mguk_wear?: number | null; engine_tc_wear?: number | null
+  engine_blown?: number | null; engine_seized?: number | null
 }
 
 export interface TelemetryRow {
@@ -167,6 +170,15 @@ export interface DamageRow {
   ers_fault: number   // 0=OK 1=fault
   gearbox_damage: number
   engine_damage: number
+  // Power-unit component wear (%); absent in recordings made before these were parsed.
+  engine_mguh_wear?: number
+  engine_es_wear?: number
+  engine_ce_wear?: number
+  engine_ice_wear?: number
+  engine_mguk_wear?: number
+  engine_tc_wear?: number
+  engine_blown?: number   // 0=OK 1=fault
+  engine_seized?: number  // 0=OK 1=fault
   cars?: TyreWearCar[]
 }
 
@@ -530,7 +542,7 @@ export interface PlaybackSeekFlushMsg {
 export interface PlaybackLoadedMsg {
   type: 'playback_loaded'
   ok: boolean
-  header: { track_id: number; track_name: string; formula?: number } | null
+  header: { track_id: number; track_name: string; formula?: number; regulations_2026?: boolean } | null
 }
 
 export interface PlaybackControlMsg {
@@ -634,6 +646,7 @@ export interface ProtocolStatusMsg {
   active_format:   2024 | 2025 | 2026 | null
   presentation_format?: 2024 | 2025 | 2026 | null // Formula-gated UI format
   formula?:        number | null // Raw PacketSessionData::m_formula
+  regulations_2026?: boolean | null // Car Telemetry 2 m_2026Regulations, one car for the session
   override:        'auto' | 'f1_24' | 'f1_25' | 'f1_26'
   capabilities:    ProtocolCapabilities
   labels?:         Record<string, string>

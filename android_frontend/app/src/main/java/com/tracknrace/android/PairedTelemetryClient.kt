@@ -354,6 +354,9 @@ internal class PairedTelemetryClient(
             if (message.has("formula") && !message.isNull("formula")) {
                 protocolContext.put("formula", message.getInt("formula"))
             }
+            if (message.has("regulations2026") && !message.isNull("regulations2026")) {
+                protocolContext.put("regulations_2026", message.getBoolean("regulations2026"))
+            }
             listener.onRow(protocolContext.toString())
         }
 

@@ -473,6 +473,9 @@ struct TyreWearCar {
     std::optional<int> wing_fl{}, wing_fr{}, wing_rear{};
     std::optional<int> floor_damage{}, diffuser_damage{}, sidepod_damage{};
     std::optional<int> gearbox_damage{}, engine_damage{}, drs_fault{}, ers_fault{};
+    std::optional<int> engine_mguh_wear{}, engine_es_wear{}, engine_ce_wear{};
+    std::optional<int> engine_ice_wear{}, engine_mguk_wear{}, engine_tc_wear{};
+    std::optional<int> engine_blown{}, engine_seized{};
 };
 
 template <>
@@ -494,7 +497,11 @@ struct glz::meta<TyreWearCar> {
         "floor_damage", &T::floor_damage, "diffuser_damage", &T::diffuser_damage,
         "sidepod_damage", &T::sidepod_damage,
         "gearbox_damage", &T::gearbox_damage, "engine_damage", &T::engine_damage,
-        "drs_fault", &T::drs_fault, "ers_fault", &T::ers_fault
+        "drs_fault", &T::drs_fault, "ers_fault", &T::ers_fault,
+        "engine_mguh_wear", &T::engine_mguh_wear, "engine_es_wear", &T::engine_es_wear,
+        "engine_ce_wear", &T::engine_ce_wear, "engine_ice_wear", &T::engine_ice_wear,
+        "engine_mguk_wear", &T::engine_mguk_wear, "engine_tc_wear", &T::engine_tc_wear,
+        "engine_blown", &T::engine_blown, "engine_seized", &T::engine_seized
     );
 };
 
@@ -529,6 +536,15 @@ struct DamageRow {
     int         engine_damage{};
     int         drs_fault{};
     int         ers_fault{};
+    // Power-unit component wear (percentage) and the blown/seized flags (0 = OK, 1 = fault).
+    int         engine_mguh_wear{};
+    int         engine_es_wear{};
+    int         engine_ce_wear{};
+    int         engine_ice_wear{};
+    int         engine_mguk_wear{};
+    int         engine_tc_wear{};
+    int         engine_blown{};
+    int         engine_seized{};
     std::optional<std::vector<TyreWearCar>> cars; // V6
 };
 
@@ -566,6 +582,14 @@ struct glz::meta<DamageRow> {
         "engine_damage",    &T::engine_damage,
         "drs_fault",        &T::drs_fault,
         "ers_fault",        &T::ers_fault,
+        "engine_mguh_wear", &T::engine_mguh_wear,
+        "engine_es_wear",   &T::engine_es_wear,
+        "engine_ce_wear",   &T::engine_ce_wear,
+        "engine_ice_wear",  &T::engine_ice_wear,
+        "engine_mguk_wear", &T::engine_mguk_wear,
+        "engine_tc_wear",   &T::engine_tc_wear,
+        "engine_blown",     &T::engine_blown,
+        "engine_seized",    &T::engine_seized,
         "cars", &T::cars
     );
 };

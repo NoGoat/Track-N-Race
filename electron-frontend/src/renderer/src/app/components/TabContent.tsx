@@ -17,6 +17,7 @@ import TyresPanel from '../../components/TyresPanel'
 import SessionPanel from '../../components/SessionPanel'
 import StrategyPanel from '../../components/StrategyPanel'
 import StintPanel from '../../components/StintPanel'
+import DamagePage from '../../components/DamagePage'
 import AnalyzeScreen, { type AnalysisDriverSelection, type AnalyzeFixedLapMode, type SecondaryFileData } from '../../components/AnalyzeScreen'
 import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
 import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
@@ -159,6 +160,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
   return (
     <>
       {tab === 'stint' && <StintPanel isDark={isDark} compact={compact.stintSummary} wearMode={tyreWearMode} onWearModeChange={onTyreWearModeChange} />}
+      {tab === 'damage' && <DamagePage isDark={isDark} compact={compact.damageSummary} />}
       {tab === 'core' && (() => {
         const visibleDamageCount = Object.values(coreLayout.damageItems).filter(Boolean).length
         const damageTwoRow = visibleDamageCount > 8

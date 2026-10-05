@@ -579,11 +579,11 @@ MainWindow::MainWindow(QWidget* parent)
         playbackSparseRebuildPending_ = false;
         strategyRebuilding_ = false;
         resetPlaybackDriverSelection();
-        // Resolve labels against the recorded clip's Formula-gated presentation
-        // format (DRS vs Straight Line Mode, etc.) for playback.
+        // Resolve labels against the recorded clip's presentation format
+        // (regulations, else Formula; DRS vs Straight Line Mode, etc.).
         if (hdr.protocol > 0) {
             const uint16_t fmt = tnrp::presentationFormat(
-                (uint16_t)hdr.protocol, hdr.formula);
+                (uint16_t)hdr.protocol, hdr.regulations_2026, hdr.formula);
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
             if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));

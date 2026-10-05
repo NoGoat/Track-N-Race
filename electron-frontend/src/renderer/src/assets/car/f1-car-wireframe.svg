@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Track N Race · F1 car wireframe, top view, nose pointing right (driver's left side on top).
+  Shared by the Electron and Qt frontends; keep both copies identical:
+    electron-frontend/src/renderer/src/assets/car/f1-car-wireframe.svg
+    qt_frontend/assets/car/f1-car-wireframe.svg  (:/car/f1-car-wireframe.svg)
+
+  Drawn from top-view reference photos of current cars (2.0 m wide, 5.2 m to the rear wing);
+  the inner geometry is authored nose-up and rotated by the #car group transform.
+  Uses only plain SVG (no <use>, CSS, variables or patterns) so QtSvg renders it as-is.
+
+  Styling: presentation attributes give the dark-theme look. Electron CSS overrides them by class
+  (.wire / .solid / .detail / .tube); Qt rewrites the attributes by element id before loading.
+  .solid shapes must be filled with the panel background so hidden lines drop out.
+
+  Damage zones (recolour these):
+    z-fw-l, z-fw-r   front wing left/right       z-rw     rear wing
+    z-floor          floor                       z-diff   diffuser
+    z-sp-l, z-sp-r   sidepods left/right
+    t-fl, t-fr, t-rl, t-rr   tyres
+  Not damage zones: body (survival cell, nose, engine cover), cockpit, suspension.
+  Callout anchors: a-* (invisible points on each part, in viewBox units).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 952 370" width="952" height="370">
+  <g id="car" transform="matrix(0 1 -1 0 924 10)">
+    <!-- floor: sharp leading tips, diagonal leading-edge bar to the chassis, edge-wing plates, then flush with the sidepods -->
+    <g id="z-floor" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none">
+      <path class="solid" fill="#11141f" d="M26 292 L25 310 Q30 360 44 395 Q48 404 54 410 L54 690 L88 690 L88 822 L262 822 L262 690 L296 690 L296 410 Q302 404 306 395 Q320 360 325 310 L324 292 L219 311 L131 311 Z"></path>
+      <path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M29 298 L131 317 M46 305 L56 395 M321 298 L219 317 M304 305 L294 395"></path>
+    </g>
+    <!-- diffuser: strakes between the rear wheels -->
+    <g id="z-diff" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none">
+      <path class="solid" fill="#11141f" d="M96 744 L254 744 L258 830 L92 830 Z"></path>
+      <path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M94 778 Q175 772 256 778 M94 790 Q175 784 256 790 M120 812 V828 M230 812 V828"></path>
+    </g>
+    <!-- suspension: wishbones, pushrods and track rods as tubes -->
+    <g id="suspension" class="tube" fill="none" stroke="#4a5175" stroke-width="1.8" stroke-linecap="round">
+      <path d="M86 180 L151 150 M86 186 L152 157 M86 198 L149 262 M86 204 L147 269 M86 192 L150 224 M86 170 L152 172"></path>
+      <path d="M88 738 L162 722 M88 744 L162 729 M88 782 L162 800 M88 788 L162 807 M88 760 L160 760"></path>
+      <g transform="matrix(-1 0 0 1 350 0)">
+        <path d="M86 180 L151 150 M86 186 L152 157 M86 198 L149 262 M86 204 L147 269 M86 192 L150 224 M86 170 L152 172"></path>
+        <path d="M88 738 L162 722 M88 744 L162 729 M88 782 L162 800 M88 788 L162 807 M88 760 L160 760"></path>
+      </g>
+    </g>
+    <!-- sidepods: inlet behind the mirrors, shoulder and downwash-ramp contours, coke-bottle taper -->
+    <g id="z-sp-l" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none">
+      <path class="solid" fill="#11141f" d="M130 352 L70 354 Q56 356 54 372 L52 440 Q52 520 62 562 Q80 622 110 668 Q128 696 146 714 L140 600 L132 470 Z"></path>
+      <path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M64 362 Q96 368 128 364 M68 372 Q96 378 128 374 M66 380 Q60 470 76 560 Q96 625 130 682 M92 384 Q84 470 96 560 Q110 612 134 652"></path>
+    </g>
+    <g id="z-sp-r" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none" transform="matrix(-1 0 0 1 350 0)">
+      <path class="solid" fill="#11141f" d="M130 352 L70 354 Q56 356 54 372 L52 440 Q52 520 62 562 Q80 622 110 668 Q128 696 146 714 L140 600 L132 470 Z"></path>
+      <path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M64 362 Q96 368 128 364 M68 372 Q96 378 128 374 M66 380 Q60 470 76 560 Q96 625 130 682 M92 384 Q84 470 96 560 Q110 612 134 652"></path>
+    </g>
+    <!-- survival cell, nose and engine cover -->
+    <g id="body" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none">
+      <path class="solid" fill="#11141f" d="M160 -8 Q175 -18 190 -8 L198 160 L207 290 L217 330 L220 470 Q222 560 210 640 Q200 720 185 790 L180 802 L170 802 L165 790 Q150 720 140 640 Q128 560 130 470 L133 330 L143 290 L152 160 Z"></path>
+      <path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M175 -10 V290 M166 228 H184 V246 H166 Z M175 522 V796 M150 522 Q160 660 171 790 M200 522 Q190 660 179 790"></path>
+    </g>
+    <!-- front wing: main plane and three flaps between the nose and swept endplates -->
+    <g id="z-fw-l" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none" transform="translate(0 -14)">
+      <path class="solid" fill="#11141f" d="M157 2 L68 13 L36 30 Q32 33 32 37 L32 126 L73 126 L73 109 Q74 101 83 100 L148 48 L157 46 Z"></path>
+      <path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M56 27 V126 M64 20 V108 M80 13 V67 L145 11 M81 85 L146 33"></path>
+    </g>
+    <g id="z-fw-r" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none" transform="matrix(-1 0 0 1 350 -14)">
+      <path class="solid" fill="#11141f" d="M157 2 L68 13 L36 30 Q32 33 32 37 L32 126 L73 126 L73 109 Q74 101 83 100 L148 48 L157 46 Z"></path>
+      <path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M56 27 V126 M64 20 V108 M80 13 V67 L145 11 M81 85 L146 33"></path>
+    </g>
+    <!-- tyres: tread outline with the sidewall line inside -->
+    <g id="t-fl" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none"><rect class="solid" fill="#11141f" x="20" y="128" width="66" height="123" rx="18"></rect><rect class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" x="27" y="135" width="52" height="109" rx="13"></rect></g>
+    <g id="t-fr" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none"><rect class="solid" fill="#11141f" x="264" y="128" width="66" height="123" rx="18"></rect><rect class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" x="271" y="135" width="52" height="109" rx="13"></rect></g>
+    <g id="t-rl" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none"><rect class="solid" fill="#11141f" x="2" y="693" width="86" height="129" rx="20"></rect><rect class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" x="9" y="700" width="72" height="115" rx="15"></rect></g>
+    <g id="t-rr" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none"><rect class="solid" fill="#11141f" x="262" y="693" width="86" height="129" rx="20"></rect><rect class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" x="269" y="700" width="72" height="115" rx="15"></rect></g>
+    <!-- cockpit, halo, roll hoop, mirrors -->
+    <g id="cockpit" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none">
+      <rect class="solid" fill="#11141f" x="148" y="352" width="54" height="110" rx="24"></rect>
+      <path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M156 440 Q175 452 194 440"></path>
+      <path class="solid" fill="#11141f" d="M171 290 H179 V320 Q219 330 218 468 Q215 476 211 466 Q211 342 175 332 Q139 342 139 466 Q135 476 132 468 Q131 330 171 320 Z"></path>
+      <rect class="solid" fill="#11141f" x="156" y="478" width="38" height="42" rx="10"></rect>
+      <ellipse class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" cx="175" cy="494" rx="11" ry="9"></ellipse>
+      <path class="solid" fill="#11141f" d="M58 336 L82 330 L84 342 L60 348 Z"></path><path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M83 337 L134 352"></path>
+      <path class="solid" fill="#11141f" d="M292 336 L268 330 L266 342 L290 348 Z"></path><path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M267 337 L216 352"></path>
+    </g>
+    <!-- rear wing behind the rear wheels: main plane, DRS flap, actuator pod, endplates with curled tips -->
+    <g id="z-rw" class="wire" stroke="#8a93c4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="none">
+      <path class="solid" fill="#11141f" d="M68 806 L282 806 L282 848 L68 848 Z"></path>
+      <path class="solid" fill="#11141f" d="M68 852 L282 852 L282 896 Q175 900 68 896 Z"></path>
+      <path class="detail" fill="none" stroke-width="1.4" stroke-opacity="0.6" d="M70 828 H280 M70 874 H280"></path>
+      <rect class="solid" fill="#11141f" x="170" y="846" width="10" height="22" rx="5"></rect>
+      <path class="solid" fill="#11141f" d="M60 796 L67 796 L68 900 Q65 910 54 914 L52 908 Q60 902 60 896 Z"></path>
+      <path class="solid" fill="#11141f" d="M290 796 L283 796 L282 900 Q285 910 296 914 L298 908 Q290 902 290 896 Z"></path>
+    </g>
+  </g>
+  <g id="anchors">
+    <circle id="a-fw-l" cx="890" cy="120" r="1" fill="none" stroke="none"/>
+    <circle id="a-fw-r" cx="890" cy="250" r="1" fill="none" stroke="none"/>
+    <circle id="a-fl" cx="734" cy="42" r="1" fill="none" stroke="none"/>
+    <circle id="a-fr" cx="734" cy="328" r="1" fill="none" stroke="none"/>
+    <circle id="a-floor" cx="594" cy="42" r="1" fill="none" stroke="none"/>
+    <circle id="a-sp" cx="444" cy="298" r="1" fill="none" stroke="none"/>
+    <circle id="a-rl" cx="150" cy="50" r="1" fill="none" stroke="none"/>
+    <circle id="a-rr" cx="150" cy="330" r="1" fill="none" stroke="none"/>
+    <circle id="a-rw" cx="50" cy="170" r="1" fill="none" stroke="none"/>
+    <circle id="a-diff" cx="150" cy="250" r="1" fill="none" stroke="none"/>
+  </g>
+</svg>

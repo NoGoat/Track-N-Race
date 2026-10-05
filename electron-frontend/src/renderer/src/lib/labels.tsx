@@ -24,6 +24,7 @@ const FALLBACK_LABELS: Record<string, string> = {
   'ui.overview.throttle': 'Throttle', 'ui.overview.brake': 'Brake', 'ui.overview.drs': 'DRS',
   'ui.overview.engine': 'Engine', 'ui.overview.ers': 'ERS', 'ui.overview.fuel': 'Fuel',
   'ui.overview.pos': 'Pos', 'ui.overview.tyre': 'Tyre',
+  'ui.damage.wing_fault': 'DRS',
 }
 
 const LabelsContext = createContext<Record<string, string>>(FALLBACK_LABELS)

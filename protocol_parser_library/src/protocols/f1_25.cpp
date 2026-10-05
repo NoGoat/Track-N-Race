@@ -421,6 +421,10 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             dr.floor_damage   = data[o++]; dr.diffuser_damage = data[o++]; dr.sidepod_damage = data[o++];
             dr.drs_fault      = data[o++]; dr.ers_fault = data[o++];
             dr.gearbox_damage = data[o++]; dr.engine_damage = data[o++];
+            dr.engine_mguh_wear = data[o++]; dr.engine_es_wear  = data[o++];
+            dr.engine_ce_wear   = data[o++]; dr.engine_ice_wear = data[o++];
+            dr.engine_mguk_wear = data[o++]; dr.engine_tc_wear  = data[o++];
+            dr.engine_blown     = data[o++]; dr.engine_seized   = data[o++];
 
             // Restricted data (Your Telemetry): local car is exempt. Unknown
             // opponent access leaves wear unavailable instead of inventing zero.
@@ -430,11 +434,12 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                     if (!hot.hasCar(i, hdr.playerCarIndex)) continue;
                     TyreWearCar car;
                     car.idx = i;
-                    // Blisters and ERS fault are not in the restricted-data list.
+                    // Blisters, ERS fault and engine blown/seized are not in the restricted-data list.
                     const int publicBase = HEADER_SIZE + i * damageSize;
                     car.blisters_rl = data[publicBase + 24]; car.blisters_rr = data[publicBase + 25];
                     car.blisters_fl = data[publicBase + 26]; car.blisters_fr = data[publicBase + 27];
                     car.ers_fault = data[publicBase + 35];
+                    car.engine_blown = data[publicBase + 44]; car.engine_seized = data[publicBase + 45];
                     if (hot.hasPrivateTelemetry(i, hdr.playerCarIndex)) {
                         const int cBase = HEADER_SIZE + i * damageSize;
                         car.tyre_wear_rl = FiniteFloat(data, cBase);
@@ -449,6 +454,9 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                         car.floor_damage = data[cBase + 31]; car.diffuser_damage = data[cBase + 32]; car.sidepod_damage = data[cBase + 33];
                         car.drs_fault = data[cBase + 34];
                         car.gearbox_damage = data[cBase + 36]; car.engine_damage = data[cBase + 37];
+                        car.engine_mguh_wear = data[cBase + 38]; car.engine_es_wear = data[cBase + 39];
+                        car.engine_ce_wear = data[cBase + 40]; car.engine_ice_wear = data[cBase + 41];
+                        car.engine_mguk_wear = data[cBase + 42]; car.engine_tc_wear = data[cBase + 43];
                     }
                     dr.cars->push_back(std::move(car));
                 }

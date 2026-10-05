@@ -20,10 +20,10 @@ void putFloat(std::vector<uint8_t>& packet, size_t offset, float value) {
 }
 
 int main() {
-    assert(tnrp::presentationFormat(2026, std::nullopt) == 2026);
-    assert(tnrp::presentationFormat(2026, 13) == 2026);
-    assert(tnrp::presentationFormat(2026, 0) == 2025);
-    assert(tnrp::presentationFormat(2025, 13) == 2025);
+    assert(tnrp::presentationFormat(2026, std::nullopt, std::nullopt) == 2026);
+    assert(tnrp::presentationFormat(2026, std::nullopt, 13) == 2026);
+    assert(tnrp::presentationFormat(2026, std::nullopt, 0) == 2025);
+    assert(tnrp::presentationFormat(2025, std::nullopt, 13) == 2025);
 
     const std::string missingFormula = tnrp::Parser::statusRowForFormat(2026);
     assert(missingFormula.find("\"active_format\":2026") != std::string::npos);

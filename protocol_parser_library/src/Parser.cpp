@@ -25,6 +25,7 @@ static constexpr int PID_MOTION       = 0;
 static constexpr int PID_SESSION      = 1;
 static constexpr int PID_CAR_TEL      = 6;
 static constexpr int PID_MOTION_EX    = 13;
+static constexpr int PID_CAR_TEL2     = 16;
 
 // Packet IDs are a tiny dense range (0..13); fixed arrays indexed by id avoid a
 // hash + pointer-chase per datagram. The game controls packet cadence through
@@ -56,6 +57,7 @@ void Parser::reset() {
     lastFrameId_.fill(0);
     haveFrameId_.fill(false);
     formula_.reset();
+    regulations2026_.reset();
     knownCars_.fill(false);
     telemetryAccess_.fill(std::nullopt);
     tyreSetBaselines_ = {};
@@ -84,7 +86,7 @@ uint16_t Parser::effectiveFormat(uint16_t incoming) const {
 }
 
 std::string Parser::statusRow() const {
-    const uint16_t displayFormat = presentationFormat(activeFormat_, formula_);
+    const uint16_t displayFormat = presentationFormat(activeFormat_, regulations2026_, formula_);
     int gameYear = displayFormat == 2026 ? 26
                  : (displayFormat == 2025 ? 25
                  : (displayFormat == 2024 ? 24 : -1));
@@ -100,6 +102,7 @@ std::string Parser::statusRow() const {
     if (activeFormat_)   row.active_format   = activeFormat_;
     if (displayFormat)   row.presentation_format = displayFormat;
     row.formula = formula_;
+    row.regulations_2026 = regulations2026_;
     row.override_ = toString(override_v_);
     // Ship the i18n catalog for the active format (default to 2025 before any
     // packet is seen) so the renderer always has labels to resolve against.
@@ -110,8 +113,9 @@ std::string Parser::statusRow() const {
     return writeJsonNullable(row);
 }
 
-std::string Parser::statusRowForFormat(uint16_t format, std::optional<int> formula) {
-    const uint16_t displayFormat = presentationFormat(format, formula);
+std::string Parser::statusRowForFormat(uint16_t format, std::optional<int> formula,
+                                       std::optional<bool> regulations2026) {
+    const uint16_t displayFormat = presentationFormat(format, regulations2026, formula);
     int gameYear = displayFormat == 2026 ? 26
                  : (displayFormat == 2025 ? 25
                  : (displayFormat == 2024 ? 24 : -1));
@@ -126,6 +130,7 @@ std::string Parser::statusRowForFormat(uint16_t format, std::optional<int> formu
     row.active_format   = format;
     row.presentation_format = displayFormat;
     row.formula = formula;
+    row.regulations_2026 = regulations2026;
     row.override_ = toString(Override::Auto);
     const auto& cat = labelsFor(displayFormat);
     row.labels.insert(cat.all().begin(), cat.all().end());
@@ -202,16 +207,23 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
         rosterFormat_ = eff;
     }
 
-    // Formula is presentation state, not a wire-format selector. A known
-    // non-F1-26 formula on the 2026 protocol switches labels/capabilities back
-    // to the legacy presentation; no captured value preserves the 2026 default.
+    // Regulations and Formula are presentation state, not wire-format selectors.
+    // On the 2026 protocol, pre-2026 cars switch labels/capabilities back to the
+    // legacy presentation (see presentationFormat for the order of evidence).
     if (eff == 2026 && packetId == PID_SESSION && length > 37) {
-        const uint16_t previousPresentation = presentationFormat(activeFormat_, formula_);
+        const uint16_t previousPresentation = presentationFormat(activeFormat_, regulations2026_, formula_);
         const std::optional<int> previousFormula = formula_;
         formula_ = static_cast<int>(data[37]);
         if (formula_ != previousFormula ||
-            presentationFormat(activeFormat_, formula_) != previousPresentation)
+            presentationFormat(activeFormat_, regulations2026_, formula_) != previousPresentation)
             r.control.push_back(statusRow());
+    }
+    if (eff == 2026 && packetId == PID_CAR_TEL2) {
+        if (const auto regulations = regulations2026FromCarTelemetry2(data, length);
+            regulations && regulations != regulations2026_) {
+            regulations2026_ = regulations;
+            r.control.push_back(statusRow());
+        }
     }
 
     if (packetId < PID_TABLE_SIZE && kFrameSampled[packetId]) {

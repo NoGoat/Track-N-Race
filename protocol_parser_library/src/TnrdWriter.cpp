@@ -1,6 +1,7 @@
 #include "tnrp/TnrdWriter.h"
 #include "tnrp/Labels.h"
 #include "tnrp/TimeUtils.h"
+#include "tnrp/Capabilities.h"
 #include "tnrp/control_rows.h"
 #include "TnrdCodec.h"
 #include "tnrd/TNRD_V1.h"
@@ -26,6 +27,7 @@
 namespace tnrp {
 
 static constexpr int PID_SESSION = 1;
+static constexpr int PID_CAR_TEL2 = 16;
 
 // Pulls just session_time out of a stored row for flashback truncation. A row
 // without the key keeps the default 0.0f, so it is always kept (matching the
@@ -337,6 +339,9 @@ void TnrdWriter::notePacket(uint16_t format, uint8_t packetId, float sessionTime
     // parsers have already extracted all measurement fields into rows.
     if (packetId == PID_SESSION)
         ev.packetData.assign(data, data + length);
+    // The recording header keeps which regulations the cars follow.
+    if (format == 2026 && packetId == PID_CAR_TEL2)
+        ev.regulations2026 = regulations2026FromCarTelemetry2(data, length);
     pushEventLocked(std::move(ev));
     cv_.notify_one();
 }
@@ -411,6 +416,7 @@ void TnrdWriter::writerLoop() {
                 std::string error;
                 if (!v6Writer_->advanceSessionTime(ev.sessionTime, &error))
                     reportError("session-time advance", error, activePath_);
+                if (ev.regulations2026) v6Writer_->setRegulations2026(*ev.regulations2026);
             }
 
             if (ev.packetId == PID_SESSION && ev.packetData.size() >= 708) {

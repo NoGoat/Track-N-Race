@@ -2,5 +2,6 @@
 <RCC version="1.0">
 <qresource prefix="/">
     <file alias="icon.ico">assets/icon_transparent.ico</file>
+    <file alias="car/f1-car-wireframe.svg">assets/car/f1-car-wireframe.svg</file>
 </qresource>
 </RCC>

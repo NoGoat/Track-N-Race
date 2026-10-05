@@ -159,6 +159,7 @@ struct PairWelcomeFrame {
     std::string source{"desktop"};
     std::optional<int> protocolYear;
     std::optional<int> formula;
+    std::optional<bool> regulations2026;
     std::vector<std::string> capabilities{
         "subscribe", "latest-state", "playback-state", "lap-delta",
         "v6-requirements", "driver-restriction", "lap-data"
@@ -178,6 +179,7 @@ struct PairProtocolPeek {
     std::optional<int> active_format;
     std::optional<int> detected_format;
     std::optional<int> formula;
+    std::optional<bool> regulations_2026;
 };
 
 namespace {
@@ -1106,6 +1108,7 @@ struct PairServer::Impl {
                         welcome.protocolYear = status.active_format
                             ? status.active_format : status.detected_format;
                         welcome.formula = status.formula;
+                        welcome.regulations2026 = status.regulations_2026;
                     }
                 }
                 accepted = true;

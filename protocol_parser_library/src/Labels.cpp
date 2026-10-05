@@ -45,6 +45,9 @@ static std::unordered_map<std::string, std::string> baseLayer() {
         // Format-aware data key for the overview "wing" card: 2025 reads the `drs`
         // telemetry field, 2026 reads the dedicated `slm` field (see overrides).
         {"card.wing.key", "drs"},
+        // Damage page title for CarDamageData::m_drsFault. The field keeps its
+        // name in every spec; 2026 cars have no DRS, so it is the rear wing there.
+        {"ui.damage.wing_fault", "DRS"},
 
         // Fuel mix
         {"fuel.mix.0", "Lean"}, {"fuel.mix.1", "Standard"},
@@ -196,6 +199,7 @@ static std::unordered_map<std::string, std::string> overrideLayer(uint16_t forma
             {"ui.overview.drs", "SLM"},
             // Wing card reads the dedicated active-aero field under 2026.
             {"card.wing.key", "slm"},
+            {"ui.damage.wing_fault", "Rear Wing"},
         };
     }
     return {};

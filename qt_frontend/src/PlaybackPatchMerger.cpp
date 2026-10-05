@@ -46,7 +46,10 @@ void forEachPatchField(int type, Fn&& fn) {
                          "wing_fl", "wing_fr", "wing_rear", "floor_damage",
                          "diffuser_damage", "sidepod_damage", "gearbox_damage",
                          "engine_damage", "drs_fault", "ers_fault", "blisters_fl",
-                         "blisters_fr", "blisters_rl", "blisters_rr"}); break;
+                         "blisters_fr", "blisters_rl", "blisters_rr",
+                         "engine_mguh_wear", "engine_es_wear", "engine_ce_wear",
+                         "engine_ice_wear", "engine_mguk_wear", "engine_tc_wear",
+                         "engine_blown", "engine_seized"}); break;
         case 15: fields({"fuel_kg", "fuel_laps", "fuel_mix"}); break;
         case 16: fields({"ers_j", "ers_pct", "ers_mode"}); break;
         case 17: fields({"ers_harvested_mguk_j", "ers_harvested_mguh_j"}); break;
@@ -183,6 +186,10 @@ void markMissing(tnrp::AnyRow& row, const QJsonObject& object) {
         TNR_MISSING_DAMAGE(diffuser_damage); TNR_MISSING_DAMAGE(gearbox_damage);
         TNR_MISSING_DAMAGE(engine_damage); TNR_MISSING_DAMAGE(drs_fault);
         TNR_MISSING_DAMAGE(ers_fault);
+        TNR_MISSING_DAMAGE(engine_mguh_wear); TNR_MISSING_DAMAGE(engine_es_wear);
+        TNR_MISSING_DAMAGE(engine_ce_wear); TNR_MISSING_DAMAGE(engine_ice_wear);
+        TNR_MISSING_DAMAGE(engine_mguk_wear); TNR_MISSING_DAMAGE(engine_tc_wear);
+        TNR_MISSING_DAMAGE(engine_blown); TNR_MISSING_DAMAGE(engine_seized);
 #undef TNR_MISSING_DAMAGE
     } else if (auto* value = std::get_if<MotionRow>(&row)) {
         if (!has(object, "g_lat")) value->g_lat = nan;

@@ -262,6 +262,9 @@ public:
     // back to the default of 9; see docs/TNRD_V6_WRITER_EFFICIENCY_DESIGN.md.
     void setCompressionLevel(int);
     int compressionLevel() const;
+    // Car Telemetry 2 m_2026Regulations; stored in the session header when the
+    // file is finished (the opening session record cannot know it yet).
+    void setRegulations2026(bool);
     bool rewind(float, std::string*);
     void abort();
     bool finish(std::string*);

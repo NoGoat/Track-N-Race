@@ -136,6 +136,37 @@ float scanTime(std::string_view json) {
     const auto key = json.find("\"session_time\":");
     return key == json.npos ? -1.0f : std::strtof(json.data() + key + 15, nullptr);
 }
+// The row without its top-level "ts" and "session_time" fields, for spotting a
+// session or participants row that repeats the last one stored. Both values are
+// a plain string or number, so they end at the next top-level ',' or '}'.
+std::string withoutTimestamps(std::string_view json) {
+    std::string out; out.reserve(json.size());
+    int depth = 0; bool inString = false, escaped = false;
+    for (size_t i = 0; i < json.size(); ++i) {
+        const char c = json[i];
+        if (inString) {
+            out.push_back(c);
+            if (escaped) escaped = false; else if (c == '\\') escaped = true; else if (c == '"') inString = false;
+            continue;
+        }
+        if (depth == 1 && (json.compare(i, 5, "\"ts\":") == 0 || json.compare(i, 15, "\"session_time\":") == 0)) {
+            size_t end = json.find(':', i) + 1;
+            bool quoted = false;
+            while (end < json.size() && (quoted || (json[end] != ',' && json[end] != '}'))) {
+                if (json[end] == '"' && (end == 0 || json[end - 1] != '\\')) quoted = !quoted;
+                ++end;
+            }
+            if (end < json.size() && json[end] == ',') ++end;
+            i = end - 1;
+            continue;
+        }
+        if (c == '"') inString = true;
+        else if (c == '{' || c == '[') ++depth;
+        else if (c == '}' || c == ']') --depth;
+        out.push_back(c);
+    }
+    return out;
+}
 std::string rowType(std::string_view json) {
     auto at = json.find("\"type\":\"");
     if (at == json.npos) return {};
@@ -1050,6 +1081,18 @@ struct TnrdV6Writer::Impl {
     std::vector<V6SharedRecord> pendingShared;
     std::vector<PendingRestriction> pendingRestrictions;
     std::vector<PendingTyreHistory> pendingTyreHistory;
+    // The game resends Session twice a second and Participants every 5 s, mostly
+    // unchanged. Only a row whose content (timestamps aside) differs from the last
+    // one stored in the same phase is kept; playback restores the latest stored
+    // row before the cursor, which is then still the current one.
+    struct LastShared { bool known{}; V6Phase phase{}; float time{}; std::string content; };
+    LastShared lastSession, lastParticipants;
+    bool changedShared(LastShared& last, std::string_view json, float time) {
+        std::string content = withoutTimestamps(json);
+        if (last.known && last.phase == phase && last.content == content) return false;
+        last = {true, phase, time, std::move(content)};
+        return true;
+    }
     std::optional<uint8_t> player;
     uint32_t nextLapId{1};
     uint64_t nextSequence{1};
@@ -1652,6 +1695,9 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
             ADD_OPT(values,wing_fl); ADD_OPT(values,wing_fr); ADD_OPT(values,wing_rear); ADD_OPT(values,floor_damage);
             ADD_OPT(values,diffuser_damage); ADD_OPT(values,sidepod_damage); ADD_OPT(values,gearbox_damage);
             ADD_OPT(values,engine_damage); ADD_OPT(values,drs_fault); ADD_OPT(values,ers_fault);
+            ADD_OPT(values,engine_mguh_wear); ADD_OPT(values,engine_es_wear); ADD_OPT(values,engine_ce_wear);
+            ADD_OPT(values,engine_ice_wear); ADD_OPT(values,engine_mguk_wear); ADD_OPT(values,engine_tc_wear);
+            ADD_OPT(values,engine_blown); ADD_OPT(values,engine_seized);
 #undef ADD_OPT
             if (!wear.empty()) addFields(index,V6DataType::TyreWear,time,wear);
             if (!values.empty()) addFields(index,V6DataType::Damage,time,values);
@@ -1686,7 +1732,7 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
                     unavailable(index,time);
             }
         }
-        pendingShared.push_back({phase,time,std::string(json)});
+        if (changedShared(lastParticipants, json, time)) pendingShared.push_back({phase,time,std::string(json)});
     } else if (kind == "session") {
         SessionRow row; if (!glz::read<kPartialRead>(row,json)) {
             if (row.safety_car_status == 3 && phase != V6Phase::Formation && phaseTime[1] < 0.0f) {
@@ -1704,7 +1750,7 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
                     for (auto& lap : state.pending) lap.summary.phase = phase;
                 }
             }
-            pendingShared.push_back({phase,time,std::string(json)});
+            if (changedShared(lastSession, json, time)) pendingShared.push_back({phase,time,std::string(json)});
         }
     } else if (kind == "race_event") {
         RaceEventRow row; if (glz::read<kPartialRead>(row,json)) return true;
@@ -1792,6 +1838,10 @@ bool TnrdV6Writer::Impl::rewind(float time, std::string* errorOut) {
     pendingShared.erase(std::remove_if(pendingShared.begin(),pendingShared.end(),[&](const auto& row) {
         return row.phase == phase && row.sessionTime >= time;
     }),pendingShared.end());
+    // A rewind drops rows from its time on; the last stored row still applies
+    // unless it was one of them.
+    for (auto* last : {&lastSession, &lastParticipants})
+        if (last->known && last->phase == phase && last->time >= time) last->known = false;
     pendingRestrictions.erase(std::remove_if(pendingRestrictions.begin(),pendingRestrictions.end(),[&](const auto& row) {
         return row.change.phase == phase && row.change.sessionTime >= time;
     }),pendingRestrictions.end());
@@ -1833,6 +1883,9 @@ void TnrdV6Writer::setCompressionLevel(int level) {
         ? DEFAULT_COMPRESSION_LEVEL : level;
 }
 int TnrdV6Writer::compressionLevel() const { return impl_ ? impl_->compressionLevel : DEFAULT_COMPRESSION_LEVEL; }
+void TnrdV6Writer::setRegulations2026(bool value) {
+    if (impl_) impl_->session.regulations_2026 = value;
+}
 bool TnrdV6Writer::appendRow(std::string_view row,float time,std::string* errorOut) {
     if (!isOpen()) { fail(errorOut,"V6 writer is not open"); return false; }
     return impl_->appendRow(row,time,errorOut);

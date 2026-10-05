@@ -17,6 +17,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <optional>
 
 #include "tnrp/TnrdFormat.h"
 #include "tnrp/control_rows.h"
@@ -172,6 +173,8 @@ private:
         uint64_t              wallClockMs{};
         uint64_t              queuedAtMs{};
         std::vector<uint8_t>  packetData;
+        // 2026 Car Telemetry 2 m_2026Regulations, read on the receive thread.
+        std::optional<bool>   regulations2026;
         std::string           json;   // serialised JSON row
         std::shared_ptr<std::promise<void>> completion;
     };
