@@ -19,6 +19,7 @@
 #endif
 
 #include "tnrp/BinaryRows.h"
+#include "tnrp/TyreStints.h"
 #include "TnrdCodec.h"
 #include "tnrd/TNRD_V1.h"
 #include "tnrd/TNRD_V2.h"
@@ -56,6 +57,12 @@ struct SessionHistoryScanFields {
 };
 namespace {
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
+
+std::vector<TyreStintRange> v6TyreStints(const detail::V6DriverHeader& driver) {
+    return tyreStintRanges(driver.tyreStints, [](const detail::V6TyreStintSummary& stint) {
+        return SessionHistoryTyreStint{stint.endLap, stint.actualCompound, stint.visualCompound};
+    });
+}
 
 // Recordings made before the parser filled avg_wear_per_lap carry only the raw
 // sets. Derive it against the car's first recorded sets, the same session
@@ -1240,21 +1247,15 @@ bool TnrdReader::rebuildV6LapCatalog() {
         const auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
         const auto* driver = v6 ? v6->driverHeader(static_cast<uint8_t>(playbackDriverIndex_)) : nullptr;
         if (driver) {
-            int stintStartLap = 1;
-            for (const auto& stint : driver->tyreStints) {
-                const int stintEndLap = stint.endLap == 255
-                    ? std::numeric_limits<int>::max()
-                    : stint.endLap;
+            for (const auto& stint : v6TyreStints(*driver)) {
+                if (stint.actual_compound <= 0) continue;
                 for (auto& [lapNum, block] : lapBlocks_) {
-                    if (lapNum < stintStartLap || lapNum > stintEndLap ||
-                        stint.actualCompound <= 0) continue;
+                    if (!stint.contains(lapNum)) continue;
                     block.slimStatus.push_back({
                         "status", block.endSessionTime, 0.0,
-                        stint.actualCompound, stint.visualCompound,
+                        stint.actual_compound, stint.visual_compound,
                     });
                 }
-                if (stintEndLap == std::numeric_limits<int>::max()) break;
-                stintStartLap = stintEndLap + 1;
             }
         }
     }
@@ -1477,28 +1478,17 @@ std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
                 const auto* driver = v6->driverHeader(
                     static_cast<uint8_t>(playbackDriverIndex_));
                 if (!hasSelectedTyreState && driver) {
-                    int stintStartLap = 1;
-                    const detail::V6TyreStintSummary* currentStint = nullptr;
-                    for (const auto& stint : driver->tyreStints) {
-                        const int stintEndLap = stint.endLap == 255
-                            ? std::numeric_limits<int>::max()
-                            : stint.endLap;
-                        if (selectedLap >= stintStartLap && selectedLap <= stintEndLap) {
-                            currentStint = &stint;
-                            break;
-                        }
-                        if (stintEndLap == std::numeric_limits<int>::max()) break;
-                        stintStartLap = stintEndLap + 1;
-                    }
-                    if (currentStint && currentStint->actualCompound > 0) {
+                    const auto stints = v6TyreStints(*driver);
+                    const auto* currentStint = tyreStintForLap(stints, selectedLap);
+                    if (currentStint && currentStint->actual_compound > 0) {
                         std::string status =
                             "{\"type\":\"status\",\"_v6_type\":13,\"player_idx\":" +
                             std::to_string(playbackDriverIndex_) +
                             ",\"session_time\":" + std::to_string(selectedTime) +
-                            ",\"tyre_compound\":" + std::to_string(currentStint->actualCompound) +
-                            ",\"visual_compound\":" + std::to_string(currentStint->visualCompound) +
+                            ",\"tyre_compound\":" + std::to_string(currentStint->actual_compound) +
+                            ",\"visual_compound\":" + std::to_string(currentStint->visual_compound) +
                             ",\"tyre_age_laps\":" +
-                            std::to_string(std::max(0, selectedLap - stintStartLap)) + "}";
+                            std::to_string(std::max(0, selectedLap - currentStint->start_lap)) + "}";
                         projectedSnapshot.push_back({
                             2, selectedTime, projectedOrder++, std::move(status),
                         });
@@ -1530,28 +1520,17 @@ std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
                             ? v6->driverHeader(static_cast<uint8_t>(timingCar.idx))
                             : nullptr;
                         if (!driver) continue;
-                        int stintStartLap = 1;
-                        const detail::V6TyreStintSummary* currentStint = nullptr;
-                        for (const auto& stint : driver->tyreStints) {
-                            const int stintEndLap = stint.endLap == 255
-                                ? std::numeric_limits<int>::max()
-                                : stint.endLap;
-                            if (timingCar.lap_num >= stintStartLap && timingCar.lap_num <= stintEndLap) {
-                                currentStint = &stint;
-                                break;
-                            }
-                            if (stintEndLap == std::numeric_limits<int>::max()) break;
-                            stintStartLap = stintEndLap + 1;
-                        }
-                        if (!currentStint || currentStint->actualCompound <= 0) continue;
+                        const auto stints = v6TyreStints(*driver);
+                        const auto* currentStint = tyreStintForLap(stints, timingCar.lap_num);
+                        if (!currentStint || currentStint->actual_compound <= 0) continue;
                         AllStatusRow status{};
                         status.session_time = projected.sessionTime;
                         status.cars.push_back({});
                         auto& statusCar = status.cars.back();
                         statusCar.idx = timingCar.idx;
-                        statusCar.tyre_compound = currentStint->actualCompound;
-                        statusCar.visual_compound = currentStint->visualCompound;
-                        statusCar.tyre_age_laps = std::max(0, timingCar.lap_num - stintStartLap);
+                        statusCar.tyre_compound = currentStint->actual_compound;
+                        statusCar.visual_compound = currentStint->visual_compound;
+                        statusCar.tyre_age_laps = std::max(0, timingCar.lap_num - currentStint->start_lap);
                         std::string json;
                         if (!glz::write_json(status, json)) {
                             tagV6StoredType(json, 13);
@@ -2105,6 +2084,12 @@ DriverLapHistoryRow TnrdReader::driverLapHistory(int driver, float throughTime) 
             lap.isValid, lap.s1Ms > 0, lap.s2Ms > 0, lap.s3Ms > 0};
     }
     for (auto& [_, lap] : byLap) out.laps.push_back(lap);
+    // The header holds the whole session's stints; the lap in progress at the
+    // cursor decides which of them was in use then.
+    if (const auto* header = v6->driverHeader(static_cast<uint8_t>(driver))) {
+        const int currentLap = byLap.empty() ? 1 : static_cast<int>(byLap.rbegin()->first) + 1;
+        out.stint_start_lap = tyreStintStartLap(v6TyreStints(*header), currentLap);
+    }
     return out;
 }
 
@@ -2322,20 +2307,15 @@ std::string TnrdReader::lapBlocksMessage() const {
                         catalog.fastestLapNum = lapNumber;
                     }
                 }
-                int stintStartLap = 1;
-                for (const auto& stint : driver.tyreStints) {
-                    const int stintEndLap = stint.endLap == 255
-                        ? std::numeric_limits<int>::max() : stint.endLap;
+                for (const auto& stint : v6TyreStints(driver)) {
+                    if (stint.actual_compound <= 0) continue;
                     for (auto& block : catalog.blocks) {
-                        if (block.lapNum < stintStartLap || block.lapNum > stintEndLap ||
-                            stint.actualCompound <= 0) continue;
+                        if (!stint.contains(block.lapNum)) continue;
                         block.statusHistory.push_back({
                             "status", block.endSessionTime, 0.0,
-                            stint.actualCompound, stint.visualCompound,
+                            stint.actual_compound, stint.visual_compound,
                         });
                     }
-                    if (stintEndLap == std::numeric_limits<int>::max()) break;
-                    stintStartLap = stintEndLap + 1;
                 }
                 msg.analysisDrivers.push_back(std::move(catalog));
             }

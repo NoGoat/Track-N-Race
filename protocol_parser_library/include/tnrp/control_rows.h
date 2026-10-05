@@ -203,6 +203,9 @@ struct DriverLapHistoryRow {
     int car_idx{-1};
     std::optional<int> best_lap_num;
     std::vector<SessionHistoryLap> laps;
+    // First lap of the tyre stint in use, from Session History (0 = unknown).
+    // In playback this is the stint in use at the cursor.
+    int stint_start_lap{};
     // Fastest valid sector times across every car (0 = none yet).
     int overall_best_s1_ms{};
     int overall_best_s2_ms{};

@@ -4,6 +4,7 @@ import type { DriverInfo, DriverLapHistoryLap } from '../types'
 import { useModalPresenceValue } from '../lib/useModalPresence'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { fmtMs, fmtSector } from '../lib/lapTimeFormat'
+import { claimLapHistoryCar } from '../lib/lapHistoryCar'
 
 interface Target {
   carIdx: number
@@ -24,10 +25,7 @@ export default function DriverLapsDialog({ target, fastestLapCarIdx, onClose }: 
   // now and again only when they change; nothing here polls.
   useEffect(() => {
     if (carIdx === null) return
-    // A row left from an earlier opening may describe another cursor.
-    useTelemetryStore.setState({ driverLapHistory: null })
-    window.playerBridge.setLapHistoryCar(carIdx)
-    return () => window.playerBridge.setLapHistoryCar(-1)
+    return claimLapHistoryCar(carIdx)
   }, [carIdx])
   const pushed = useTelemetryStore(s => s.driverLapHistory)
   const shownCar = shown?.carIdx ?? null

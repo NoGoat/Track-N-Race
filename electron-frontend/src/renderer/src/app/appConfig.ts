@@ -7,7 +7,7 @@ export const WINDOWS: { label: string; value: number }[] = [
   { label: '10m', value: 600 },
 ]
 
-export type Tab = 'core' | 'analyze' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session' | 'strategy'
+export type Tab = 'core' | 'analyze' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session' | 'strategy' | 'stint'
 export type Theme = 'dark' | 'midnight' | 'light'
 export type TitlebarUpdateInterval = 0 | 250 | 500 | 1000
 export type DistanceChartMode = 'CL' | 'PL' | 'FL' | 'RL'
@@ -171,10 +171,10 @@ export const DEFAULT_STANDINGS_LAYOUT: StandingsLayout = {
 }
 
 export const TAB_LABELS: Record<Tab, string> = {
-  core: 'Overview', analyze: 'Analysis', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy'
+  core: 'Overview', analyze: 'Analysis', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy', stint: 'Stint'
 }
 
-export const TAB_OPTIONS = (['core', 'analyze', 'session', 'strategy', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[])
+export const TAB_OPTIONS = (['core', 'analyze', 'session', 'strategy', 'stint', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[])
   .map(value => ({ value, label: TAB_LABELS[value] }))
 export interface ChartWindowOption { value: ChartWindow; label: string }
 export interface ChartWindowOptionGroup { label: string; options: ChartWindowOption[] }

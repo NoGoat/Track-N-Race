@@ -22,6 +22,7 @@ const TAB_ICONS: Record<Tab, LucideIcon> = {
   analyze: ChartNoAxesCombined,
   session: CalendarDays,
   strategy: Lightbulb,
+  stint: ChartNoAxesCombined,
   timing_tower: ListOrdered,
   input: GamepadDirectional,
   power: Zap,

@@ -22,7 +22,8 @@ interface Props {
   compact?: DensityMode | boolean
 }
 
-const Card = memo(function Card({
+// Also the Stint page's summary cards, so both rows share one set of densities.
+export const StatCard = memo(function Card({
   label,
   value,
   unit,
@@ -150,7 +151,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
   if (!isConnected || !latest) {
     return (
       <div className="flex divide-x divide-[var(--border)]">
-        {shown.map(d => <Card key={d.vis} label={d.label} value="-" compact={compact} />)}
+        {shown.map(d => <StatCard key={d.vis} label={d.label} value="-" compact={compact} />)}
       </div>
     )
   }
@@ -198,7 +199,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
           }
         }
         return (
-          <Card key={d.vis} label={d.label} value={v.value} unit={v.unit}
+          <StatCard key={d.vis} label={d.label} value={v.value} unit={v.unit}
                 textColor={v.color} sub={sub} subTextColor={v.subColor} compact={compact} />
         )
       })}

@@ -16,6 +16,7 @@ import PowerStatsBar from '../../components/PowerStatsBar'
 import TyresPanel from '../../components/TyresPanel'
 import SessionPanel from '../../components/SessionPanel'
 import StrategyPanel from '../../components/StrategyPanel'
+import StintPanel from '../../components/StintPanel'
 import AnalyzeScreen, { type AnalysisDriverSelection, type AnalyzeFixedLapMode, type SecondaryFileData } from '../../components/AnalyzeScreen'
 import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
 import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
@@ -56,6 +57,7 @@ interface TabContentProps {
   chartYAxis: ChartYAxisState
   tyreView: 'cards' | 'graphs'
   tyreWearMode: 'wear' | 'life'
+  onTyreWearModeChange: (mode: 'wear' | 'life') => void
   selectedIdx: number | null
   onSelectDriver: (idx: number) => void
   reduceAnimations: boolean
@@ -78,7 +80,7 @@ interface TabContentProps {
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
   tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, inputLayout, inputCursorSyncEnabled, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, pageLayouts,
-  graphView, compact, chartYAxis, tyreView, tyreWearMode,
+  graphView, compact, chartYAxis, tyreView, tyreWearMode, onTyreWearModeChange,
   selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
   mapDimmed,
 }: TabContentProps) {
@@ -156,6 +158,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
 
   return (
     <>
+      {tab === 'stint' && <StintPanel isDark={isDark} compact={compact.stintSummary} wearMode={tyreWearMode} onWearModeChange={onTyreWearModeChange} />}
       {tab === 'core' && (() => {
         const visibleDamageCount = Object.values(coreLayout.damageItems).filter(Boolean).length
         const damageTwoRow = visibleDamageCount > 8

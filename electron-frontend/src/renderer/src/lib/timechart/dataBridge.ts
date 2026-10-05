@@ -80,6 +80,17 @@ export class TimeChartDataBridge<T extends { session_time: number }> {
       else lo = mid + 1
     }
     const appendStart = lo
+    // A V6 patch or lap-history reconciliation can update the newest sample
+    // without advancing X. Upload just that sample instead of rebuilding.
+    let tailPatched = false
+    if (appendStart > sourceStart && this.data.length > 0 && this.getX(rows, appendStart - 1) === this.lastX) {
+      for (let channel = 0; channel < this.getYs.length; channel++) {
+        const value = this.getYs[channel](rows, appendStart - 1)
+        this.yScratch[channel] = Number.isFinite(value) ? value : NaN
+        if (!Object.is(this.yScratch[channel], this.data.yAt(channel, this.data.length - 1))) tailPatched = true
+      }
+      if (tailPatched) this.data.replaceLast(this.yScratch)
+    }
     for (let i = appendStart; i < n; i++) this.appendRow(rows, i)
     if (appendStart < n) this.lastX = lastRowX
 
@@ -88,8 +99,8 @@ export class TimeChartDataBridge<T extends { session_time: number }> {
     const trim = this.data.lowerBoundX(firstX)
     if (trim > 0) this.data.evictFront(trim)
     return {
-      changed: appendStart < n || trim > 0,
-      syncedFrom: appendStart < n ? appendStart : null,
+      changed: tailPatched || appendStart < n || trim > 0,
+      syncedFrom: tailPatched ? appendStart - 1 : appendStart < n ? appendStart : null,
     }
   }
 

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData, LapProgressPoint, PlaybackLapBlock } from '../types'
 import { buildLapProgressMap, buildLapProgressMapFromPoints, findSectorSplitsFromProgress, interpolateLapElapsed, type LapProgressMap, type SectorSplit } from './lapDelta'
@@ -50,6 +50,10 @@ const DEFAULT: ChartCoordinates = {
 }
 
 const Context = createContext(DEFAULT)
+/** Charts with their own complete dataset keep their own axes. */
+export function LocalChartCoordinatesProvider({ children }: { children: React.ReactNode }) {
+  return <Context.Provider value={DEFAULT}>{children}</Context.Provider>
+}
 const EMPTY_PROGRESS = emptyView<LapProgressPoint>('lap')
 function interpolateDistance(points: readonly LapProgressPoint[], sessionTime: number): number {
   if (points.length === 0 || sessionTime > points[points.length - 1].session_time) return NaN
@@ -75,7 +79,36 @@ export function formatChartDistance(metres: number): string {
   return `${Math.round(metres)} m`
 }
 
-export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, sectorBoundaries, children }: { mode: ChartMode | null; referenceLapNum: number | null; rowTypeMask: number; sectorBoundaries: boolean; children: React.ReactNode }) {
+export type LapBoundary = { lapNum: number; sessionTime: number }
+
+/** Lap start times of the streamed driver, as the chart axes label them. */
+export function useLapBoundaries(allLapsMode: boolean): readonly LapBoundary[] {
+  const isPlayback = useTelemetryStore(state => state.speedRpmBlocks !== null)
+  const lapBlocks = useTelemetryStore(state => state.speedRpmBlocks) as PlaybackLapBlock[] | null
+  const liveLapBoundaries = useTelemetryStore(state => state.lapBoundaries)
+  const allLapsLapBoundaries = useTelemetryStore(state => state.allLapsLapBoundaries)
+  return useMemo(() => isPlayback
+    ? (lapBlocks ?? [])
+      .map(block => ({ lapNum: block.lapNum, sessionTime: block.startSessionTime }))
+      .sort((a, b) => a.sessionTime - b.sessionTime)
+    : allLapsMode && allLapsLapBoundaries.length > 0
+      ? allLapsLapBoundaries
+      : liveLapBoundaries,
+  [allLapsLapBoundaries, allLapsMode, isPlayback, lapBlocks, liveLapBoundaries])
+}
+
+/** Session time at which `lapNum` began, using the latest attempt of a reused lap number. */
+export function lapStartSessionTime(boundaries: readonly LapBoundary[], lapNum: number): number | undefined {
+  for (let i = boundaries.length - 1; i >= 0; i--)
+    if (boundaries[i].lapNum === lapNum) return boundaries[i].sessionTime
+  return undefined
+}
+
+/**
+ * `stintStartLap` replaces the store's tyre-change heuristic as the Stint Laps
+ * origin when the caller knows the stint from Session History.
+ */
+export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, sectorBoundaries, children, stintStartLap }: { mode: ChartMode | null; referenceLapNum: number | null; rowTypeMask: number; sectorBoundaries: boolean; children: React.ReactNode; stintStartLap?: number }) {
   const currentProgress = useTelemetryStore(state => state.analyzeLapProgress)
   const currentLapStartTime = useTelemetryStore(state => state.analyzeLapStartTime)
   const trackLengthM = useTelemetryStore(state => state.analyzeTrackLengthM)
@@ -87,8 +120,6 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
   const liveFastestLap = useTelemetryStore(state => state.liveFastestLapData)
   const liveSectorSplits = useTelemetryStore(state => state.liveSectorSplits)
   const fastestLapNum = useTelemetryStore(state => state.fastestLapNum)
-  const liveLapBoundaries = useTelemetryStore(state => state.lapBoundaries)
-  const allLapsLapBoundaries = useTelemetryStore(state => state.allLapsLapBoundaries)
   const currentStintStartTime = useTelemetryStore(state => state.currentStintStartTime)
   const lapBlocks = useTelemetryStore(state => state.speedRpmBlocks) as PlaybackLapBlock[] | null
   const playbackCurrentLap = isPlayback && currentLapNum !== null
@@ -154,14 +185,9 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
     const delta = currentElapsed - comparisonElapsed
     return Number.isFinite(delta) ? delta : NaN
   }, [])
-  const lapBoundaries = isPlayback
-    ? (lapBlocks ?? [])
-      .map(block => ({ lapNum: block.lapNum, sessionTime: block.startSessionTime }))
-      .sort((a, b) => a.sessionTime - b.sessionTime)
-    : allLapsMode && allLapsLapBoundaries.length > 0
-      ? allLapsLapBoundaries
-      : liveLapBoundaries
-  const stintStartTime = stintLapsMode ? currentStintStartTime : -Infinity
+  const lapBoundaries = useLapBoundaries(allLapsMode)
+  const knownStintStartTime = stintStartLap ? lapStartSessionTime(lapBoundaries, stintStartLap) : undefined
+  const stintStartTime = stintLapsMode ? knownStintStartTime ?? currentStintStartTime : -Infinity
   const boundaryLabelsRef = useRef(new Map<number, string>())
   const boundaryValuesRef = useRef<number[]>([])
   // Published during render for the same reason as the progress maps above.

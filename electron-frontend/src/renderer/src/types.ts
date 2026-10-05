@@ -337,6 +337,8 @@ export interface DriverLapHistory {
   car_idx: number
   best_lap_num?: number
   laps: DriverLapHistoryLap[]
+  // First lap of the tyre stint in use (at the cursor in playback); 0 = unknown.
+  stint_start_lap: number
   // Fastest valid sector times across every car (0 = none yet).
   overall_best_s1_ms: number
   overall_best_s2_ms: number

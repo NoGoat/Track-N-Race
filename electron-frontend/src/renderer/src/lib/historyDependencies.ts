@@ -74,6 +74,14 @@ export const DATA_CONSUMERS = {
   gForceHistory: { stream: DATA_ROW.motion, history: DATA_ROW.motion, types: [V6_DATA.gForce] },
   rideHeightHistory: { stream: DATA_ROW.motionEx, history: DATA_ROW.motionEx, types: [V6_DATA.rideHeight] },
   analyzeLapCoordinates: { stream: DATA_ROW.lap, history: DATA_ROW.lap, types: [V6_DATA.lapTiming] },
+  // Per-lap ERS/fuel come from the whole status history and the tyre graph
+  // from damage history; the summary and condition cards read current rows.
+  stintPage: {
+    stream: DATA_ROW.status | DATA_ROW.damage | DATA_ROW.lap | DATA_ROW.tyreSets | DATA_ROW.session,
+    history: DATA_ROW.status | DATA_ROW.damage | DATA_ROW.lap,
+    types: [V6_DATA.fuel, V6_DATA.ersHarvest, V6_DATA.ersDeployment, V6_DATA.tyreState,
+      V6_DATA.tyreWear, V6_DATA.damage, V6_DATA.lapTiming],
+  },
   analyzeMap: {
     stream: DATA_ROW.positions | DATA_ROW.lap | DATA_ROW.telemetry | DATA_ROW.status,
     history: DATA_ROW.positions | DATA_ROW.lap | DATA_ROW.telemetry | DATA_ROW.status,
@@ -155,6 +163,8 @@ export function dataRequirementsForUi(
     if (tyres.charts.tyreLife) add(result, DATA_CONSUMERS.tyreWearHistory)
   } else if (tab === 'strategy') {
     add(result, DATA_CONSUMERS.strategyPage)
+  } else if (tab === 'stint') {
+    add(result, DATA_CONSUMERS.stintPage)
   } else if (tab === 'misc') {
     const showGForce = pageLayouts?.miscGForce === 'split'
       ? misc.showGLateral || misc.showGLongitudinal

@@ -140,6 +140,7 @@ export interface CompactState {
   sessionHeader:     number
   powerCards:        DensityMode
   strategySummary:   DensityMode
+  stintSummary:      DensityMode
   playbackBar:       DensityMode
 }
 
@@ -158,6 +159,7 @@ export const DEFAULT_COMPACT: CompactState = {
   sessionHeader:     0,
   powerCards:        'normal',
   strategySummary:   'normal',
+  stintSummary:      'normal',
   playbackBar:       'normal',
 }
 
@@ -189,6 +191,9 @@ export const COMPACT_GROUPS: { group: string; sections: { key: CompactDensityKey
   ] },
   { group: 'Strategy', sections: [
     { key: 'strategySummary', label: 'Summary Header' },
+  ] },
+  { group: 'Stint', sections: [
+    { key: 'stintSummary', label: 'Summary Cards' },
   ] },
   { group: 'Playback', sections: [
     { key: 'playbackBar', label: 'Playback Bar' },

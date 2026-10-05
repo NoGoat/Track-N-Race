@@ -174,6 +174,7 @@ export function useAppConfiguration() {
       sessionHeader,
       powerCards:        normalizeDensity(raw.powerCards),
       strategySummary:   normalizeDensity(raw.strategySummary),
+      stintSummary:      normalizeDensity(raw.stintSummary),
       playbackBar:       normalizeDensity(raw.playbackBar),
     }
   }, [rawCompact])

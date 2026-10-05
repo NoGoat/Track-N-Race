@@ -1,5 +1,5 @@
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import type { AlignedTable, TelemetryRow, DamageRow } from '../types'
 import type { GraphSection, TyreYAxisGroupState } from '../lib/graphSections'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
@@ -31,7 +31,7 @@ const TYRE_CURSOR_ORDER: Partial<Record<GraphSection, number>> = {
 }
 
 // Corner colours differ slightly in light mode for contrast. FL is shared.
-function cornerColors(isDark: boolean) {
+export function cornerColors(isDark: boolean) {
   return {
     fl: FL,
     fr: isDark ? FR : '#0B57D0',
@@ -42,7 +42,7 @@ function cornerColors(isDark: boolean) {
 
 // Tyre charts are smaller/denser than the Misc charts: 9px axis font, dashed
 // grid on both axes, x tick marks, tighter padding.
-const TYRE_AXIS_LOOK: AxisLook = {
+export const TYRE_AXIS_LOOK: AxisLook = {
   font: '9px "Cascadia Code", ui-monospace, monospace',
   xAxisSize: 18,
   paddingRight: 4,
@@ -55,7 +55,7 @@ const TYRE_AXIS_LOOK: AxisLook = {
   xTickSize: 3,
 }
 
-function tyreColorsFor(isDark: boolean): ChartColors {
+export function tyreColorsFor(isDark: boolean): ChartColors {
   return {
     axis: isDark ? '#7c8098' : '#596168',
     grid: isDark ? '#1e2136' : '#afb1ae',
@@ -64,7 +64,7 @@ function tyreColorsFor(isDark: boolean): ChartColors {
   }
 }
 
-const TYRE_TOOLTIP_STYLE: CSSProperties = {
+export const TYRE_TOOLTIP_STYLE: CSSProperties = {
   position: 'absolute',
   display: 'none',
   background: 'var(--bg-panel)',
@@ -90,7 +90,7 @@ const DYNAMIC_Y_RANGE: YRangeSpec = { kind: 'auto' }
 const TEMP_FIXED_Y_RANGE: YRangeSpec = { kind: 'expand', initialLower: 0, initialUpper: 125, lowerPad: 0, upperPad: 0, expandLower: false }
 const BRAKE_FIXED_Y_RANGE: YRangeSpec = { kind: 'expand', initialLower: 0, initialUpper: 1250, lowerPad: 0, upperPad: 0, expandLower: false }
 const WEAR_FIXED_Y_RANGE: YRangeSpec = { kind: 'fixed', min: 0, max: 100 }
-const tyreYTicks = (min: number, max: number) => {
+export const tyreYTicks = (min: number, max: number) => {
   const ticks = niceTicks(min, max, 6)
   if (ticks.length === 0 || ticks[0] !== min) ticks.unshift(min)
   if (ticks[ticks.length - 1] !== max) ticks.push(max)
@@ -153,6 +153,7 @@ interface ChartProps<T extends { session_time: number }> {
   title: string
   unit: string
   rows: ColumnView<T>
+  controls?: ReactNode
   comparisonRows?: ColumnView<T>
   series: SeriesDef<T>[]
   isDark: boolean
@@ -237,7 +238,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
       <div className="tyre-chart-header flex h-[22px] items-center justify-between mb-2 shrink-0">
         <div ref={controlsRef} className="tyre-chart-controls flex min-w-0 flex-1 items-center gap-0">
           <span ref={titleRef} className="chart-panel-title tyre-chart-title min-w-min shrink-0 whitespace-normal text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</span>
-          <ChartWindowOverrideSelect />
+          {props.controls ?? <ChartWindowOverrideSelect />}
         </div>
         {view !== 'table' && <div className="tyre-chart-legend flex shrink-0 items-center gap-3">
             {series.map((s) => {
@@ -296,6 +297,23 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
 // In particular, keep the sparse Tyre Life leaf cold during 60 Hz telemetry
 // publications when its damage rows and configuration have not changed.
 const TyreLineChart = memo(TyreLineChartImpl) as typeof TyreLineChartImpl
+
+/** The Stint page's tyre graph: the Tyres page wear chart with its own header controls. */
+export function StintTyreWearChart({ isDark, wearMode, controls }: {
+  isDark: boolean; wearMode: 'wear' | 'life'; controls: ReactNode
+}) {
+  const rows = useTelemetryStore(s => s.damageHistory)
+  const series = useMemo<SeriesDef<DamageRow>[]>(() => {
+    const colors = cornerColors(isDark)
+    return (['fl', 'fr', 'rl', 'rr'] as const).map(corner => ({
+      label: corner.toUpperCase(), color: colors[corner],
+      getY: (source, i) => wearMode === 'life' ? 100 - source.num(`tyre_wear_${corner}`, i) : source.num(`tyre_wear_${corner}`, i),
+    }))
+  }, [isDark, wearMode])
+  return <TyreLineChart<DamageRow> key={wearMode} section="tyreWear" source="damage" title={wearMode === 'life' ? 'Tyre Life' : 'Tyre Wear'}
+    unit="%" rows={rows} series={series} isDark={isDark} controls={controls}
+    fastScroll followSessionClock minScrollStallS={1} yRange={WEAR_FIXED_Y_RANGE} />
+}
 
 function ScopedTyreLineChart<T extends { session_time: number }>(props: ChartProps<T>) {
   return <ChartWindowScope section={props.section}><TyreLineChart<T> {...props} /></ChartWindowScope>

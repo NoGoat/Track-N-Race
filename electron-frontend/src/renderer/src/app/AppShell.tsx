@@ -339,11 +339,15 @@ export default function AppShell() {
   const visibleChartSections = useMemo(() => visibleChartSectionsForUi(
     tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView,
   ), [tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView])
-  const visibleChartScopes = useMemo(() => visibleChartSections.map(section => ({
-    mask: GRAPH_SECTION_ROW_MASK[section],
-    window: chartWindowOverrides[section] ?? chartWindow,
-  })),
-  [chartWindow, chartWindowOverrides, visibleChartSections])
+  const visibleChartScopes = useMemo((): Array<{ mask: number; window: ChartWindow }> => tab === 'stint'
+    // Stint's per-lap measurements and tyre graph cover the whole stint,
+    // whatever the title-bar window. Its own range choice only crops the graph.
+    ? [{ mask: DATA_ROW.status | DATA_ROW.damage, window: 'AL' }]
+    : visibleChartSections.map(section => ({
+      mask: GRAPH_SECTION_ROW_MASK[section],
+      window: chartWindowOverrides[section] ?? chartWindow,
+    })),
+  [chartWindow, chartWindowOverrides, tab, visibleChartSections])
   useEffect(() => {
     // Analysis is always scoped to the current lap. Its distance-axis charts
     // consume the store's dedicated analyzeLap* slices, so the title-bar time
@@ -654,6 +658,7 @@ export default function AppShell() {
           chartYAxis={chartYAxis}
           tyreView={tyreView}
           tyreWearMode={tyreWearMode}
+          onTyreWearModeChange={setTyreWearMode}
           selectedIdx={selectedIdx}
           onSelectDriver={handleSelectDriver}
           reduceAnimations={reduceAnimations}

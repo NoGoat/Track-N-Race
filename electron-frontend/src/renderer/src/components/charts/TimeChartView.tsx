@@ -186,6 +186,8 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
   getX: ColumnAccessor<T>
   series: SeriesDef<T>[]
   windowSeconds: number
+  /** Complete datasets can use a fixed X domain instead of the session clock. */
+  fixedXRange?: { min: number; max: number }
   yRange: YRangeSpec
   /** width reserved for the y-axis labels (uPlot axis `size`). */
   yAxisSize: number
@@ -193,6 +195,8 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
   yTickValues?: (min: number, max: number) => number[]
   yTickFormat: (v: number) => string
   xTickFormat: (seconds: number) => string
+  /** X tick positions when the chart's coordinates supply none (e.g. lap numbers). */
+  xTickValues?: (min: number, max: number) => number[]
   refLines?: RefLine[]
   /** Builds tooltip HTML from the cursor x, current values, and optional comparison-lap values. */
   tooltipFormat: (x: number, values: number[], comparisonValues?: number[]) => string
@@ -218,8 +222,8 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
 
 export default function TimeChartView<T extends { session_time: number }>(props: TimeChartViewProps<T>) {
   const {
-    isDark, rows, comparisonRows, getX, series, windowSeconds, yRange, yAxisSize,
-    yTickValues, yTickFormat, xTickFormat, refLines, tooltipFormat,
+    isDark, rows, comparisonRows, getX, series, windowSeconds, fixedXRange, yRange, yAxisSize,
+    yTickValues, yTickFormat, xTickFormat, xTickValues, refLines, tooltipFormat,
     colorsFor = defaultColors, axisLook, tooltipStyle = TOOLTIP_STYLE, fastScroll,
     followSessionClock, minScrollStallS, allLapsDataMask = HISTORY_ROW.telemetry, cursorSync,
   } = props
@@ -231,6 +235,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     : getX
   const effectiveWindow = coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds
   const effectiveXTickFormat = coordinates.distanceMode || coordinates.allLapsMode ? coordinates.formatX : xTickFormat
+  const effectiveXTickValues = coordinates.xTickValues ?? xTickValues
   const font = look.font ?? DEFAULT_FONT
   const padFraction = yRange.kind === 'auto' ? (yRange.padFraction ?? 0.1) : 0.1
   const tickCount = yRange.kind === 'auto' ? (yRange.tickCount ?? 5) : 5
@@ -297,7 +302,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     font,
     xTickSpacePx: look.xTickSpacePx ?? 80,
     xTickFormat: effectiveXTickFormat,
-    xTickValues: coordinates.xTickValues,
+    xTickValues: effectiveXTickValues,
     cullXTickLabels: coordinates.cullXTickLabels,
     xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
     xLabelOffset: coordinates.allLapsMode ? 4 : 0,
@@ -328,7 +333,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const latestT = rows.length > historyStartIndex ? effectiveGetX(rows, rows.length - 1) : null
   const firstT = rows.length > historyStartIndex ? effectiveGetX(rows, historyStartIndex) : null
   const { attach, detach, wake, acceptDataRange } = useTimeChartScroll(
-    !coordinates.distanceMode, latestT, firstT, effectiveWindow, dataDirtyRef,
+    !coordinates.distanceMode && !fixedXRange, latestT, firstT, effectiveWindow, dataDirtyRef,
     // All Laps deliberately runs the complete model/plugin pipeline on every
     // display frame. Its growing range must not put axes or overlays on a
     // separate, capped cadence from the WebGL traces.
@@ -726,6 +731,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     if (changed) {
       autoRef.current = { min: Infinity, max: -Infinity, lastFull: 0 }
       dataDirtyRef.current = true
+      if (fixedXRange) chart.model.requestRedraw()
       wake()
     }
     // `visibilityKey` is the stable primitive dependency; series arrays are
@@ -833,9 +839,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         dataDirtyRef.current = true
         wake()
       }
-      if (changed && chart && coordinates.distanceMode) {
+      if (changed && chart && (coordinates.distanceMode || fixedXRange)) {
         const max = coordinates.trackLengthM > 0 ? coordinates.trackLengthM : (bridge.length ? bridge.xAt(bridge.length - 1) : 1)
-        chart.options.xRange = { min: 0, max: Math.max(max, 1) }
+        chart.options.xRange = fixedXRange ?? { min: 0, max: Math.max(max, 1) }
         chart.model.requestRedraw()
         dataDirtyRef.current = false
       }
@@ -929,12 +935,20 @@ export default function TimeChartView<T extends { session_time: number }>(props:
           dataDirtyRef.current = true
         }
       }
+      if (chart && fixedXRange) chart.model.requestRedraw()
     }
   })
 
   useEffect(() => {
     scheduleRowsSync()
   }, [rows, wake, coordinates.allLapsMode, coordinates.distanceMode, coordinates.historyRevision, coordinates.historyStartTime, coordinates.lapRevision, coordinates.progressRevision, coordinates.stintLapsMode, coordinates.trackLengthM])
+
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart || !fixedXRange) return
+    chart.options.xRange = fixedXRange
+    chart.model.requestRedraw()
+  }, [fixedXRange?.min, fixedXRange?.max])
 
   useEffect(() => {
     // The store publishes full-history arrays by mutating them in place whenever
@@ -947,13 +961,13 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     axisCfgRef.current = {
       ...axisCfgRef.current,
       xTickFormat: effectiveXTickFormat,
-      xTickValues: coordinates.xTickValues,
+      xTickValues: effectiveXTickValues,
       cullXTickLabels: coordinates.cullXTickLabels,
       xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
       xLabelOffset: coordinates.allLapsMode ? 4 : 0,
     }
     chartRef.current?.model.requestRedraw()
-  }, [coordinates.allLapsMode, coordinates.axisRevision, coordinates.cullXTickLabels, coordinates.xTickValues, effectiveXTickFormat])
+  }, [coordinates.allLapsMode, coordinates.axisRevision, coordinates.cullXTickLabels, effectiveXTickValues, effectiveXTickFormat])
 
   // Apply Y-axis policy changes in place so a Settings toggle never recreates
   // the WebGL chart. Fixed bounds may also be data-derived (for example Fuel).
@@ -1003,6 +1017,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       }
     }
     dataDirtyRef.current = true
+    if (fixedXRange) chart.model.requestRedraw()
     wake()
     // `yRangeKey` contains every policy primitive; objects are deliberately not
     // dependencies because thin consumers often construct them during render.

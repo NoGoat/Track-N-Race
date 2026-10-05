@@ -2,6 +2,7 @@
 #include "tnrp/BinaryRows.h"
 #include "tnrp/LapDelta.h"
 #include "tnrp/TimeUtils.h"
+#include "tnrp/TyreStints.h"
 #include "tnrp/control_rows.h"
 #include "LiveHistoryStore.h"
 #include "PairLapData.h"
@@ -1956,8 +1957,12 @@ DriverLapHistoryRow Engine::driverLapHistoryLocked(int carIdx) const {
     out.car_idx = carIdx;
     {
         const bool playback = inPlayback_.load();
-        const auto lapsFor = [&](int car) {
-            if (playback) return reader_.driverLapHistory(car, currentTime_).laps;
+        const auto lapsFor = [&](int car, int* stintStartLap) {
+            if (playback) {
+                auto row = reader_.driverLapHistory(car, currentTime_);
+                if (stintStartLap) *stintStartLap = row.stint_start_lap;
+                return std::move(row.laps);
+            }
             std::vector<SessionHistoryLap> laps;
             SessionHistoryFastestRow history;
             if (!liveLapHistoryRows_[car].empty() &&
@@ -1965,12 +1970,15 @@ DriverLapHistoryRow Engine::driverLapHistoryLocked(int carIdx) const {
                     history, liveLapHistoryRows_[car])) {
                 for (const auto& lap : history.laps)
                     if (lap.lap_time_ms > 0) laps.push_back(lap);
+                // Live Session History ends with the stint in use.
+                if (stintStartLap) *stintStartLap = tyreStintStartLap(
+                    tyreStintRanges(history.tyre_stints), std::numeric_limits<int>::max());
             }
             return laps;
         };
         // Every car's laps, for the session's fastest valid sectors.
         for (int car = 0; car < static_cast<int>(liveLapHistoryRows_.size()); ++car) {
-            auto laps = lapsFor(car);
+            auto laps = lapsFor(car, car == carIdx ? &out.stint_start_lap : nullptr);
             for (const auto& lap : laps) {
                 const int ms[3] = {lap.s1_ms, lap.s2_ms, lap.s3_ms};
                 const bool valid[3] = {lap.s1_valid, lap.s2_valid, lap.s3_valid};
