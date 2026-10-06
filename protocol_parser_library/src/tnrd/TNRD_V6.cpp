@@ -1052,6 +1052,10 @@ struct TnrdV6Writer::Impl {
         bool terminal{};
         V6Phase terminalPhase{V6Phase::Race};
         float terminalTime{-1.0f};
+        // Last Damage sample stored. The game reports a retirement's cause
+        // (engine blown/seized, final wear) just after the retirement event, so
+        // a finished car still records Damage, but only when it changes.
+        std::vector<V6Field> lastDamage;
         V6LapSummary current;
         std::map<V6DataType, Builder> chunks;
         std::vector<PendingLap> pending;
@@ -1142,8 +1146,13 @@ struct TnrdV6Writer::Impl {
                    bool updateState = true) {
         if (index >= drivers.size() || type == V6DataType::Unknown || !std::isfinite(time)) return;
         // Once a car's race is over its telemetry is stale, but the game keeps
-        // reclassifying it, so LapTiming is the one family that still records.
-        if (drivers[index].terminal && type != V6DataType::LapTiming) return;
+        // reclassifying it, so LapTiming still records; so does Damage when it
+        // changes, which is how a retirement's cause arrives.
+        if (drivers[index].terminal && type != V6DataType::LapTiming) {
+            const auto& last = drivers[index].lastDamage;
+            if (type != V6DataType::Damage ||
+                std::equal(last.begin(), last.end(), fields.begin(), fields.end())) return;
+        }
         if ((!player || index != *player) && !drivers[index].known) return;
         auto& state = ensure(index, time);
         if (!state.open) return;
@@ -1157,6 +1166,7 @@ struct TnrdV6Writer::Impl {
             }
             state.lastState[type][std::move(signature)] = V6Sample{time, std::vector<V6Field>(fields.begin(), fields.end())};
         }
+        if (type == V6DataType::Damage) state.lastDamage.assign(fields.begin(), fields.end());
         auto& builder = state.chunks[type];
         builder.columns.append(time, fields);
         builder.first = std::min(builder.first, time); builder.last = std::max(builder.last, time); ++builder.count;

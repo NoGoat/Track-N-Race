@@ -64,7 +64,7 @@ TC is the turbocharger, ES the energy store, and CE the control electronics.
 | Metric | Definition | Display |
 |---|---|---|
 | Damage and wear values | Latest reported value at the live time or playback cursor | Integer % |
-| Engine status | Seized if `engine_seized`, else Blown if `engine_blown`, else OK | Text, coloured |
+| Engine status | SEIZED if `engine_seized`, else BLOWN if `engine_blown`, else FAIL if overall engine wear (`engine_damage`) is 100% (the game leaves both flags unset for some failures, e.g. an MGU-H failure), else OK | Text, coloured |
 | Faults | `drs_fault` / `ers_fault`, 0 = OK, 1 = fault. The `drs_fault` card's title is the catalog label `ui.damage.wing_fault`: DRS, or Rear Wing when the session presents as 2026, the same gate as the Overview DRS/SLM card (see below) | OK / Fault |
 
 Colours:

@@ -171,7 +171,10 @@ export default memo(function DamagePage({ isDark, compact }: { isDark: boolean; 
   const flag = (key: DamageKey) => num(damage, key)
   const drs = flag('drs_fault'), ers = flag('ers_fault')
   const blown = flag('engine_blown'), seized = flag('engine_seized')
-  const engineStatus = seized === null && blown === null ? null : seized ? 'SEIZED' : blown ? 'BLOWN' : 'OK'
+  // The game sets blown/seized for some failures only (e.g. not an MGU-H failure), so
+  // overall engine wear at 100% without either flag reads as FAIL.
+  const engineStatus = seized ? 'SEIZED' : blown ? 'BLOWN' : engine !== null && engine >= 100 ? 'FAIL'
+    : seized === null && blown === null ? null : 'OK'
 
   const fault = (v: number | null) => v === null ? missing : v ? 'FAULT' : 'OK'
   const faultColor = (v: number | null) => v === null ? undefined : v ? colors.crit : colors.ok
@@ -184,7 +187,7 @@ export default memo(function DamagePage({ isDark, compact }: { isDark: boolean; 
         // m_drsFault: titled DRS, or Rear Wing for F1 26 sessions (format catalog, like the Overview wing card).
         { label: t('ui.damage.wing_fault'), value: fault(drs), color: faultColor(drs), sub: 'Fault flag' },
         { label: 'ERS', value: fault(ers), color: faultColor(ers), sub: 'Fault flag' },
-        { label: 'Engine status', value: engineStatus ?? missing, color: engineStatus === null ? undefined : engineStatus === 'OK' ? colors.ok : colors.crit, sub: 'Blown / seized' },
+        { label: 'Engine status', value: engineStatus ?? missing, color: engineStatus === null ? undefined : engineStatus === 'OK' ? colors.ok : colors.crit, sub: 'Blown / seized / fail' },
       ].map(card => <StatCard key={card.label} label={card.label} value={card.value} unit={card.value === missing ? undefined : card.unit}
         textColor={card.color} sub={compact === 'spacious' ? card.sub : undefined} compact={compact} />)}
     </div>
