@@ -5,6 +5,7 @@ import { useLabels } from '../lib/labels'
 import carSvgSource from '../assets/car/f1-car-wireframe.svg?raw'
 import type { DensityMode } from '../lib/graphSections'
 import type { DamageRow } from '../types'
+import type { DamageLayout } from '../app/appConfig'
 
 const missing = '—'
 
@@ -67,19 +68,20 @@ const WHEELS = [
 
 // ICE combustion engine, MGU-H heat / MGU-K kinetic motor-generators, ES energy store,
 // CE control electronics, TC turbocharger.
-const PU_PARTS: { key: DamageKey; name: string }[] = [
-  { key: 'engine_ice_wear', name: 'ICE' },
-  { key: 'engine_mguh_wear', name: 'MGU-H' },
-  { key: 'engine_mguk_wear', name: 'MGU-K' },
-  { key: 'engine_es_wear', name: 'ES' },
-  { key: 'engine_ce_wear', name: 'CE' },
-  { key: 'engine_tc_wear', name: 'TC' },
+type WearTileId = keyof DamageLayout['wearTiles']
+const PU_PARTS: { id: WearTileId; key: DamageKey; name: string }[] = [
+  { id: 'ice', key: 'engine_ice_wear', name: 'ICE' },
+  { id: 'mguh', key: 'engine_mguh_wear', name: 'MGU-H' },
+  { id: 'mguk', key: 'engine_mguk_wear', name: 'MGU-K' },
+  { id: 'es', key: 'engine_es_wear', name: 'ES' },
+  { id: 'ce', key: 'engine_ce_wear', name: 'CE' },
+  { id: 'tc', key: 'engine_tc_wear', name: 'TC' },
 ]
 // engine_damage / gearbox_damage are reported as "damage" but behave as wear.
-const WEAR_TILES: { key: DamageKey; name: string }[] = [
+const WEAR_TILES: { id: WearTileId; key: DamageKey; name: string }[] = [
   ...PU_PARTS,
-  { key: 'engine_damage', name: 'Engine' },
-  { key: 'gearbox_damage', name: 'Gearbox' },
+  { id: 'engine', key: 'engine_damage', name: 'Engine' },
+  { id: 'gearbox', key: 'gearbox_damage', name: 'Gearbox' },
 ]
 
 // Leader lines (page drawing units), each ending in a dot on its part. Front tyres use
@@ -160,7 +162,7 @@ function CarDiagram({ damage, isDark }: { damage: DamageRow | null; isDark: bool
 
 // The page follows the streamed driver: the player live, the driver selector's car in
 // V6 playback. Everything comes from the latest damage row.
-export default memo(function DamagePage({ isDark, compact }: { isDark: boolean; compact: DensityMode }) {
+export default memo(function DamagePage({ isDark, compact, visible }: { isDark: boolean; compact: DensityMode; visible: DamageLayout }) {
   const damage = useTelemetryStore(s => s.damage)
   const { t } = useLabels()
   const colors = palette(isDark)
@@ -179,28 +181,32 @@ export default memo(function DamagePage({ isDark, compact }: { isDark: boolean; 
   const fault = (v: number | null) => v === null ? missing : v ? 'FAULT' : 'OK'
   const faultColor = (v: number | null) => v === null ? undefined : v ? colors.crit : colors.ok
 
+  const statusCards = ([
+    { id: 'engine', label: 'Engine', value: pctText(engine), unit: '%', color: engine === null ? undefined : colors[wearSeverity(engine)], sub: 'Overall wear' },
+    { id: 'gearbox', label: 'Gearbox', value: pctText(gearbox), unit: '%', color: gearbox === null ? undefined : colors[wearSeverity(gearbox)], sub: 'Wear' },
+    // m_drsFault: titled DRS, or Rear Wing for F1 26 sessions (format catalog, like the Overview wing card).
+    { id: 'wingFault', label: t('ui.damage.wing_fault'), value: fault(drs), color: faultColor(drs), sub: 'Fault flag' },
+    { id: 'ersFault', label: 'ERS', value: fault(ers), color: faultColor(ers), sub: 'Fault flag' },
+    { id: 'engineStatus', label: 'Engine status', value: engineStatus ?? missing, color: engineStatus === null ? undefined : engineStatus === 'OK' ? colors.ok : colors.crit, sub: 'Blown / seized / fail' },
+  ] as { id: keyof DamageLayout['statusCards']; label: string; value: string; unit?: string; color?: string; sub: string }[])
+    .filter(card => visible.statusCards[card.id])
+  const wearTiles = WEAR_TILES.filter(tile => visible.wearTiles[tile.id])
+
   return <div className="h-full min-h-0 overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)] flex flex-col">
-    <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
-      {[
-        { label: 'Engine', value: pctText(engine), unit: '%', color: engine === null ? undefined : colors[wearSeverity(engine)], sub: 'Overall wear' },
-        { label: 'Gearbox', value: pctText(gearbox), unit: '%', color: gearbox === null ? undefined : colors[wearSeverity(gearbox)], sub: 'Wear' },
-        // m_drsFault: titled DRS, or Rear Wing for F1 26 sessions (format catalog, like the Overview wing card).
-        { label: t('ui.damage.wing_fault'), value: fault(drs), color: faultColor(drs), sub: 'Fault flag' },
-        { label: 'ERS', value: fault(ers), color: faultColor(ers), sub: 'Fault flag' },
-        { label: 'Engine status', value: engineStatus ?? missing, color: engineStatus === null ? undefined : engineStatus === 'OK' ? colors.ok : colors.crit, sub: 'Blown / seized / fail' },
-      ].map(card => <StatCard key={card.label} label={card.label} value={card.value} unit={card.value === missing ? undefined : card.unit}
+    {statusCards.length > 0 && <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
+      {statusCards.map(card => <StatCard key={card.id} label={card.label} value={card.value} unit={card.value === missing ? undefined : card.unit}
         textColor={card.color} sub={compact === 'spacious' ? card.sub : undefined} compact={compact} />)}
-    </div>
-    <div className="flex-1 min-h-0 px-3 pt-3 pb-2" aria-label="Car damage">
+    </div>}
+    {visible.showDiagram ? <div className="flex-1 min-h-0 px-3 pt-3 pb-2" aria-label="Car damage">
       <CarDiagram damage={damage} isDark={isDark} />
-    </div>
+    </div> : <div className="flex-1 min-h-0" />}
     {/* One row of Overview stat cards, laid out like the Overview stats row. */}
-    <div className="shrink-0 flex divide-x divide-[var(--border)] border-t border-[var(--border)]" aria-label="Power unit and gearbox wear">
-      {WEAR_TILES.map(tile => {
+    {wearTiles.length > 0 && <div className="shrink-0 flex divide-x divide-[var(--border)] border-t border-[var(--border)]" aria-label="Power unit and gearbox wear">
+      {wearTiles.map(tile => {
         const value = num(damage, tile.key)
         return <StatCard key={tile.key} label={`${tile.name} (Wear)`} value={pctText(value)} unit={value === null ? undefined : '%'}
           textColor={value === null ? undefined : colors[wearSeverity(value)]} compact={compact} />
       })}
-    </div>
+    </div>}
   </div>
 })

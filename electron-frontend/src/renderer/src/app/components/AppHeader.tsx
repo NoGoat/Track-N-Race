@@ -61,8 +61,10 @@ export default memo(function AppHeader({
   titlebarUpdateInterval, udpListenerError,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
-  const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower'
-  const cursorSyncAvailable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
+  const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower' || tab === 'stint' || tab === 'damage'
+  const sectorBoundariesAvailable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
+  // Trends plots per-lap graphs: no sectors, but its graphs share a tooltip.
+  const cursorSyncAvailable = sectorBoundariesAvailable || tab === 'stint'
   const accent = sessionType !== undefined ? sessionAccent(sessionType, theme !== 'light') : null
   const usesTitleBarOverlay = (window.platform === 'win32' || window.platform === 'linux') && !actualNativeTitlebar
   const headerPadding = actualNativeTitlebar
@@ -193,13 +195,13 @@ export default memo(function AppHeader({
 
         <button onClick={() => setSettingsOpen(true)} title="Settings" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${settingsOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Settings2 size={13} /></button>
         <button
-          onClick={() => cursorSyncAvailable && setSectorBoundariesEnabled(!sectorBoundariesEnabled)}
-          disabled={!cursorSyncAvailable}
+          onClick={() => sectorBoundariesAvailable && setSectorBoundariesEnabled(!sectorBoundariesEnabled)}
+          disabled={!sectorBoundariesAvailable}
           aria-label="Sector Boundaries"
-          aria-pressed={cursorSyncAvailable && sectorBoundariesEnabled}
-          title={cursorSyncAvailable ? 'Sector Boundaries' : undefined}
+          aria-pressed={sectorBoundariesAvailable && sectorBoundariesEnabled}
+          title={sectorBoundariesAvailable ? 'Sector Boundaries' : undefined}
           style={{ WebkitAppRegion: 'no-drag' }}
-          className={`p-1.5 rounded transition-colors ${!cursorSyncAvailable ? 'text-[var(--text-inactive)] cursor-not-allowed' : sectorBoundariesEnabled ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}
+          className={`p-1.5 rounded transition-colors ${!sectorBoundariesAvailable ? 'text-[var(--text-inactive)] cursor-not-allowed' : sectorBoundariesEnabled ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}
         ><Columns3 size={13} /></button>
         <button
           onClick={() => cursorSyncAvailable && setInputCursorSyncEnabled(!inputCursorSyncEnabled)}

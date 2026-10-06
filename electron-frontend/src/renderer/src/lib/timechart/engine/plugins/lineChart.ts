@@ -79,6 +79,17 @@ void main() {
     outColor = uColor;
 }`;
 
+// Native lines and points share a program; points are drawn as round dots.
+const NATIVE_FS_SOURCE = `#version 300 es
+precision lowp float;
+uniform vec4 uColor;
+uniform bool uRoundPoints;
+out vec4 outColor;
+void main() {
+    if (uRoundPoints && length(gl_PointCoord - vec2(.5)) > .5) discard;
+    outColor = uColor;
+}`;
+
 class NativeLineProgram extends LinkedWebGLProgram {
     locations;
     static VS_SOURCE = `${VS_HEADER}
@@ -92,13 +103,14 @@ void main() {
 `;
 
     constructor(gl: WebGL2RenderingContext, debug: boolean) {
-        super(gl, NativeLineProgram.VS_SOURCE, LINE_FS_SOURCE, debug);
+        super(gl, NativeLineProgram.VS_SOURCE, NATIVE_FS_SOURCE, debug);
         this.link();
         this.locations = {
             uXPoints: this.getUniformLocation('uXPoints'),
             uYPoints: this.getUniformLocation('uYPoints'),
             uYChannel: this.getUniformLocation('uYChannel'),
             uPointSize: this.getUniformLocation('uPointSize'),
+            uRoundPoints: this.getUniformLocation('uRoundPoints'),
             uColor: this.getUniformLocation('uColor'),
         };
         this.use();
@@ -626,7 +638,7 @@ export class LineChartRenderer {
     drawFrame() {
         this.syncBuffer();
         this.syncDomain();
-        const hasSeriesViewports = this.options.series.some(series => series.visible && series.viewport);
+        const hasSeriesViewports = this.options.series.some(series => series.visible && (series.viewport || series.yRange));
         if (!hasSeriesViewports) this.applyFullViewport();
         const gl = this.gl;
         const renderMin = this.xDomainMin +
@@ -670,8 +682,10 @@ export class LineChartRenderer {
                     gl.uniform1i(program.locations.uStepSegments, series.stepLocation === 0 || series.stepLocation === 1 ? 2 : 3);
                 }
             } else if (series.lineType === LineType.NativeLine) {
+                gl.uniform1i(program.locations.uRoundPoints, 0);
                 gl.lineWidth(lineWidth * this.options.pixelRatio);
             } else {
+                gl.uniform1i(program.locations.uRoundPoints, 1);
                 gl.uniform1f(program.locations.uPointSize, lineWidth * this.options.pixelRatio);
             }
 
@@ -746,15 +760,16 @@ export class LineChartRenderer {
 
     private applySeriesViewport(series: TimeChartSeriesOptions) {
         const viewport = series.viewport;
-        if (!viewport) {
+        const yRange = series.yRange && series.yRange.max > series.yRange.min ? series.yRange : undefined;
+        if (!viewport && !yRange) {
             this.applyFullViewport();
             return;
         }
 
         const plotLeft = this.options.renderPaddingLeft;
         const plotTop = this.options.renderPaddingTop;
-        const panelTop = plotTop + viewport.top * this.renderHeight;
-        const panelBottom = plotTop + viewport.bottom * this.renderHeight - (viewport.gapAfter ?? 0);
+        const panelTop = plotTop + (viewport?.top ?? 0) * this.renderHeight;
+        const panelBottom = plotTop + (viewport?.bottom ?? 1) * this.renderHeight - (viewport?.gapAfter ?? 0);
         const panelHeight = panelBottom - panelTop;
         const ratio = this.options.pixelRatio;
         this.gl.viewport(
@@ -764,15 +779,17 @@ export class LineChartRenderer {
             panelHeight * ratio,
         );
 
+        const yMin = yRange?.min ?? this.yDomainMin;
+        const yMax = yRange?.max ?? this.yDomainMax;
         const xScale = this.renderWidth / (this.xDomainMax - this.xDomainMin);
-        const yScale = panelHeight / (this.yDomainMax - this.yDomainMin);
+        const yScale = panelHeight / (yMax - yMin);
         const uniforms = this.uniformBuffer;
         uniforms.projectionScale[0] = 2 / this.renderWidth;
         uniforms.projectionScale[1] = 2 / panelHeight;
         uniforms.modelScale[0] = xScale;
         uniforms.modelScale[1] = yScale;
         uniforms.modelTranslate[0] = -this.renderWidth / (2 * xScale) - this.xDomainMin;
-        uniforms.modelTranslate[1] = -panelHeight / (2 * yScale) - this.yDomainMin;
+        uniforms.modelTranslate[1] = -panelHeight / (2 * yScale) - yMin;
         uniforms.upload();
     }
 

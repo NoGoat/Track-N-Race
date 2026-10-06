@@ -1680,6 +1680,14 @@ void MainWindow::setChartDynamicYAxis(tnr::GraphSection section, bool dynamic) {
     if (model_) model_->setDynamicYAxis(section, dynamic);
 }
 
+bool MainWindow::chartAnalysisDynamicYAxis(const QString& scaleKey) const {
+    return model_ && model_->analysisDynamicYAxis(scaleKey);
+}
+
+void MainWindow::setChartAnalysisDynamicYAxis(const QString& scaleKey, bool dynamic) {
+    if (model_) model_->setAnalysisDynamicYAxis(scaleKey, dynamic);
+}
+
 bool MainWindow::chartSecondaryVerticalCrosshair() const {
     return model_ && model_->secondaryVerticalCrosshair();
 }

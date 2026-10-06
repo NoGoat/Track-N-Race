@@ -116,6 +116,17 @@ export interface TimeChartSeriesOptions {
      * canvas and WebGL context.
      */
     viewport?: { top: number; bottom: number; gapAfter?: number };
+    /**
+     * Optional value range drawn across this series' plot area (or viewport)
+     * instead of the chart's shared y domain, so series on one canvas can each
+     * keep their own y scale.
+     */
+    yRange?: { min: number; max: number };
+    /**
+     * Which point the hover marker picks: the nearest (default), the first at
+     * or after the pointer, such as the value closing the lap under it, or none.
+     */
+    nearestSnap?: 'nearest' | 'next' | 'none';
 }
 
 export function resolveColorRGBA(color: ColorSpecifier): [number, number, number, number] {

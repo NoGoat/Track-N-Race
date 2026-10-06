@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { X } from 'lucide-react'
-import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
+import type { CoreLayout, DamageLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TrendsLayout, TyresLayout } from '../appConfig'
 import { useModalPresence } from '../../lib/useModalPresence'
 
 interface LayoutEditorProps {
@@ -20,7 +20,11 @@ interface LayoutEditorProps {
   setSessionLayout: (layout: SessionLayout) => void
   setStandingsLayout: (layout: StandingsLayout) => void
   setTyresLayout: (layout: TyresLayout) => void
+  setTrendsLayout: (layout: TrendsLayout) => void
+  damageLayout: DamageLayout
+  setDamageLayout: (layout: DamageLayout) => void
   tab: Tab
+  trendsLayout: TrendsLayout
   tyreView: 'cards' | 'graphs'
   tyreWearMode: 'wear' | 'life'
   tyresLayout: TyresLayout
@@ -28,9 +32,9 @@ interface LayoutEditorProps {
 
 export default function LayoutEditor(props: LayoutEditorProps) {
   const { coreLayout, editOpen, inputLayout, pageLayouts, miscLayout, powerLayout, sessionLayout, standingsLayout, setCoreLayout,
-    setEditOpen, setInputLayout, setMiscLayout, setPowerLayout, setSessionLayout, setStandingsLayout, setTyresLayout,
-    tab, tyreView, tyreWearMode, tyresLayout } = props
-  const editableTab = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower'
+    setEditOpen, setInputLayout, setMiscLayout, setPowerLayout, setSessionLayout, setStandingsLayout, setTrendsLayout, setTyresLayout,
+    damageLayout, setDamageLayout, tab, trendsLayout, tyreView, tyreWearMode, tyresLayout } = props
+  const editableTab = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower' || tab === 'stint' || tab === 'damage'
   const { mounted, visible, transitionTargetRef } = useModalPresence(editOpen && editableTab)
 
   const sessionMainAreaRef = useRef<HTMLDivElement>(null)
@@ -109,7 +113,7 @@ export default function LayoutEditor(props: LayoutEditorProps) {
             <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
               <div>
                 <div className="text-xs font-mono font-bold text-[var(--text-primary)] uppercase tracking-widest">
-                  {tab === 'input' ? 'Edit Input Layout' : tab === 'misc' ? 'Edit Misc Layout' : tab === 'power' ? 'Edit Power Layout' : tab === 'tyres' ? 'Edit Tyres Layout' : tab === 'session' ? 'Edit Session Layout' : tab === 'timing_tower' ? 'Edit Standings Layout' : 'Edit Overview Layout'}
+                  {tab === 'input' ? 'Edit Input Layout' : tab === 'misc' ? 'Edit Misc Layout' : tab === 'power' ? 'Edit Power Layout' : tab === 'tyres' ? 'Edit Tyres Layout' : tab === 'session' ? 'Edit Session Layout' : tab === 'timing_tower' ? 'Edit Standings Layout' : tab === 'stint' ? 'Edit Trends Layout' : tab === 'damage' ? 'Edit Damage Layout' : 'Edit Overview Layout'}
                 </div>
                 <div className="text-[10px] font-mono text-[var(--text-secondary)] mt-1 uppercase tracking-wider">Toggle sections to show or hide</div>
               </div>
@@ -375,6 +379,148 @@ export default function LayoutEditor(props: LayoutEditorProps) {
                       </div>
 
                     </div>
+                  </div>
+                </div>
+
+              </>) : tab === 'damage' ? (<>
+
+                {(() => {
+                  const toggleClass = (on: boolean) => on
+                    ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                    : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                  const cardRow = <K extends string>(title: string, items: { key: K; label: string }[], values: Record<K, boolean>, set: (key: K, on: boolean) => void) => (
+                    <div className="flex flex-col gap-2">
+                      <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">{title}</div>
+                      <div className="w-full flex rounded-none overflow-hidden border border-[var(--border)] divide-x divide-[var(--border)] bg-[var(--bg-input)]">
+                        {items.map(({ key, label }) => {
+                          const on = values[key]
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => set(key, !on)}
+                              className={`flex-1 py-6 flex flex-col items-center justify-center rounded-none font-mono text-[11px] font-semibold transition-all relative ${toggleClass(on)}`}
+                            >
+                              <span className="font-bold">{label}</span>
+                              <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${on ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                                {on ? 'ON' : 'OFF'}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                  return <div className="flex flex-col gap-6">
+                    {cardRow<keyof DamageLayout['statusCards']>('Status Bar', [
+                      { key: 'engine',       label: 'Engine'        },
+                      { key: 'gearbox',      label: 'Gearbox'       },
+                      { key: 'wingFault',    label: 'DRS / Wing'    },
+                      { key: 'ersFault',     label: 'ERS'           },
+                      { key: 'engineStatus', label: 'Engine Status' },
+                    ], damageLayout.statusCards, (key, on) => setDamageLayout({ ...damageLayout, statusCards: { ...damageLayout.statusCards, [key]: on } }))}
+
+                    <div className="flex flex-col gap-2">
+                      <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Car Diagram</div>
+                      <button
+                        onClick={() => setDamageLayout({ ...damageLayout, showDiagram: !damageLayout.showDiagram })}
+                        className={`w-full h-40 flex flex-col items-center justify-center rounded-none border border-[var(--border)] font-mono text-xs font-semibold transition-all relative ${toggleClass(damageLayout.showDiagram)}`}
+                      >
+                        <span className="font-bold">Car Damage Diagram</span>
+                        <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${damageLayout.showDiagram ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                          {damageLayout.showDiagram ? 'ACTIVE' : 'HIDDEN'}
+                        </span>
+                      </button>
+                    </div>
+
+                    {cardRow<keyof DamageLayout['wearTiles']>('Wear Bar', [
+                      { key: 'ice',     label: 'ICE'     },
+                      { key: 'mguh',    label: 'MGU-H'   },
+                      { key: 'mguk',    label: 'MGU-K'   },
+                      { key: 'es',      label: 'ES'      },
+                      { key: 'ce',      label: 'CE'      },
+                      { key: 'tc',      label: 'TC'      },
+                      { key: 'engine',  label: 'Engine'  },
+                      { key: 'gearbox', label: 'Gearbox' },
+                    ], damageLayout.wearTiles, (key, on) => setDamageLayout({ ...damageLayout, wearTiles: { ...damageLayout.wearTiles, [key]: on } }))}
+                  </div>
+                })()}
+
+              </>) : tab === 'stint' ? (<>
+
+                <div className="flex flex-col gap-6">
+                  {/* Summary Cards Preview */}
+                  <div className="flex flex-col gap-2">
+                    <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Stats Bar</div>
+                    <div className="w-full flex rounded-none overflow-hidden border border-[var(--border)] divide-x divide-[var(--border)] bg-[var(--bg-input)]">
+                      {([
+                        { key: 'stintLaps',   label: 'Stint Laps'   },
+                        { key: 'wearPerLap',  label: 'Wear/Lap'     },
+                        { key: 'recPerLap',   label: 'Rec/Lap'      },
+                        { key: 'ersPerLap',   label: 'ERS/Lap'      },
+                        { key: 'fuelPerLap',  label: 'Fuel/Lap'     },
+                        { key: 'fastestLap',  label: 'Fastest Lap'  },
+                        { key: 'previousLap', label: 'Previous Lap' },
+                        { key: 'tyre',        label: 'Tyre'         },
+                      ] as { key: keyof TrendsLayout['statsCards']; label: string }[]).map(({ key, label }) => {
+                        const on = trendsLayout.statsCards[key]
+                        return (
+                          <button
+                            key={key}
+                            onClick={() => setTrendsLayout({ ...trendsLayout, statsCards: { ...trendsLayout.statsCards, [key]: !on } })}
+                            className={`flex-1 py-6 flex flex-col items-center justify-center rounded-none font-mono text-[11px] font-semibold transition-all relative ${
+                              on
+                                ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                            }`}
+                          >
+                            <span className="font-bold">{label}</span>
+                            <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${on ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                              {on ? 'ON' : 'OFF'}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Charts Preview: the Separate layout's arrangement */}
+                  <div className="flex flex-col gap-2">
+                    <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Charts</div>
+                    {(() => {
+                      const chartButton = (key: keyof TrendsLayout['charts'], label: string, className: string) => {
+                        const on = trendsLayout.charts[key]
+                        return (
+                          <button
+                            key={key}
+                            onClick={() => setTrendsLayout({ ...trendsLayout, charts: { ...trendsLayout.charts, [key]: !on } })}
+                            className={`${className} flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
+                              on
+                                ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                            }`}
+                          >
+                            <span className="font-bold">{label}</span>
+                            <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${on ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                              {on ? 'ACTIVE' : 'HIDDEN'}
+                            </span>
+                          </button>
+                        )
+                      }
+                      const tyreLabel = tyreWearMode === 'life' ? 'Tyre Life' : 'Tyre Wear'
+                      // The combined and bar layouts are one chart each.
+                      if (pageLayouts.trends !== 'separate') {
+                        const single = pageLayouts.trends === 'bars'
+                          ? chartButton('bars', `${tyreLabel} · ERS · Lap Times`, 'w-full h-40')
+                          : chartButton('combined', `Lap Times · ERS · ${tyreLabel}`, 'w-full h-40')
+                        return <div className="w-full flex rounded-none overflow-hidden border border-[var(--border)] bg-[var(--bg-input)]">{single}</div>
+                      }
+                      return <div className="w-full grid grid-cols-2 gap-px rounded-none overflow-hidden border border-[var(--border)] bg-[var(--border)]">
+                        {chartButton('lapTimes', 'Lap Times', 'col-span-2 h-24')}
+                        {chartButton('ersUsage', 'ERS Usage', 'h-24')}
+                        {chartButton('recharge', 'Recharge', 'h-24')}
+                        {chartButton('tyreWear', tyreLabel, 'col-span-2 h-24')}
+                      </div>
+                    })()}
                   </div>
                 </div>
 

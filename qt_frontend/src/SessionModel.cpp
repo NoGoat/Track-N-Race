@@ -460,6 +460,10 @@ SessionModel::SessionModel(QObject* parent) : QObject(parent) {
         referenceLaps_[i] = s.value(chartReferenceLapKey(section), 0).toInt();
         dynamicYAxes_[i] = s.value(chartYAxisKey(section), false).toBool();
     }
+    s.beginGroup(QStringLiteral("ui/chartYAxis/analysis"));
+    for (const QString& scaleKey : s.childKeys())
+        if (s.value(scaleKey, false).toBool()) analysisDynamicYAxes_.insert(scaleKey);
+    s.endGroup();
     discardUnavailableChartOverrides();
 }
 
@@ -816,6 +820,15 @@ void SessionModel::setDynamicYAxis(tnr::GraphSection section, bool dynamic) {
     if (i < 0 || i >= dynamicYAxes_.size() || dynamicYAxes_[i] == dynamic) return;
     dynamicYAxes_[i] = dynamic;
     QSettings("TrackNRace", "NativeRecorder").setValue(chartYAxisKey(section), dynamic);
+    emit chartConfigurationChanged();
+}
+
+void SessionModel::setAnalysisDynamicYAxis(const QString& scaleKey, bool dynamic) {
+    if (scaleKey.isEmpty() || analysisDynamicYAxes_.contains(scaleKey) == dynamic) return;
+    if (dynamic) analysisDynamicYAxes_.insert(scaleKey);
+    else analysisDynamicYAxes_.remove(scaleKey);
+    QSettings("TrackNRace", "NativeRecorder")
+        .setValue(QStringLiteral("ui/chartYAxis/analysis/") + scaleKey, dynamic);
     emit chartConfigurationChanged();
 }
 

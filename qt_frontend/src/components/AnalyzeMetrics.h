@@ -25,6 +25,25 @@ struct AnalyzeMetric {
 
 const QVector<AnalyzeMetric>& analyzeMetrics();
 const AnalyzeMetric* analyzeMetric(const QString& id);
+
+// One Analysis value axis per scale key. Fixed uses the range the live page
+// charts use for the same values (Electron is the reference): `expand` axes
+// grow once the data comes within the pad of an edge, like Electron's
+// 'expand' y range; the rest never move. Dynamic (Settings ▸ Y Axis) fits the
+// visible data instead. Harvest and fuel resolve their upper bound at runtime.
+struct AnalyzeScale {
+    QString key;
+    QString label;
+    QString fixedRange;     // Settings hint
+    double lower = 0;
+    double upper = 1;
+    bool expand = false;
+    double lowerPad = 0;
+    double upperPad = 0;
+    bool expandLower = false;
+};
+const QVector<AnalyzeScale>& analyzeScales();
+const AnalyzeScale* analyzeScale(const QString& key);
 // Tooltip value text, matching Electron's per-metric `format` ("123 km/h",
 // "12,345 rpm", "Gear 7", "L 23%", "1.25 g"...). Non-finite values print "—".
 QString analyzeFormatValue(const AnalyzeMetric& metric, double value);

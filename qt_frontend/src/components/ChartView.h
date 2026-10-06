@@ -230,6 +230,9 @@ public:
     void fitAxisToVisibleSeries(int axisId, const QVector<int>& seriesIds,
                                 double fixedMin, double fixedMax, bool dynamic,
                                 bool expandFixedUpper = false);
+    // Min/max of the visible series' samples inside each one's x-axis window.
+    // Returns false when none of them has a finite sample there.
+    bool visibleSeriesRange(const QVector<int>& seriesIds, double& lo, double& hi) const;
     void setXNavigation(int axisId, bool enabled, double fullMin, double fullMax, double minSpan = 0.5);
     void setLinkedXAxes(const QVector<int>& axisIds);
     void zoomX(double factor);
@@ -244,6 +247,8 @@ protected:
     // Replace the default tooltip for a hover over panelId at x = key. Return
     // true to use `out` (empty hides the tooltip); false keeps the default.
     virtual bool customTooltip(int panelId, double key, TooltipContent& out) const;
+    // The navigation x axis (setXNavigation) changed range: zoom, pan or reset.
+    virtual void navigationRangeChanged() {}
     // Value of the sample nearest x = key (NaN when the series is empty).
     double seriesValueAt(int seriesId, double key) const;
     QColor tooltipTextColor() const;

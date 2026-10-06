@@ -149,7 +149,7 @@ Reuse the existing pipelines; the page adds no transport of its own.
   with `stint_start_lap`. The engine pushes it when Session History changes
   (live), and on load, seek and each lap end (playback). The page claims the
   lap-history car through `lib/lapHistoryCar.ts`, shared with the laps dialog.
-- **Per-lap ERS and fuel:** `lib/stintMeasures.ts`, an incremental scan of the
+- **Per-lap ERS and fuel:** `lib/trendMeasures.ts`, an incremental scan of the
   full-session status history (the existing All Laps history pipeline) against
   the store's lap boundaries. A counter drop closes the lap whose line is
   nearest; MGU-K and MGU-H are tracked separately and summed per lap. Fuel is

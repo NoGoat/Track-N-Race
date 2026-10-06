@@ -19,7 +19,7 @@ import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
 import { HISTORY_ROW } from '../../lib/historyDependencies'
 import { themeSeriesColor } from '../../lib/themeColors'
-import { useChartCursorSync } from '../../lib/chartCursorSync'
+import { useChartCursorSync, type ChartCursorAxisKind } from '../../lib/chartCursorSync'
 
 // Reusable WebGL chart. This is the migration target that replaces per-chart
 // <UPlotReact> usage: it owns TimeChart creation/disposal, the incremental data
@@ -162,13 +162,15 @@ export interface SeriesDef<T extends { session_time: number }> {
   /** Toggle a series in place without rebuilding the WebGL chart. */
   visible?: boolean
   lineWidth?: number
-  /** TimeChart line type: 0 = line, 1 = step. */
-  lineType?: 0 | 1
+  /** TimeChart line type: 0 = line, 1 = step, 3 = round dots (`lineWidth` is their diameter). */
+  lineType?: 0 | 1 | 3
   /** Step position within an interval (0 = before, 1 = after). */
   stepLocation?: number
   /** Optional translucent area fill from this baseline to the series. */
   fill?: string
   fillBaseline?: number
+  /** Hover marker: the nearest point, the first at or after the pointer, or none. */
+  nearestSnap?: 'nearest' | 'next' | 'none'
 }
 
 export type YRangeSpec =
@@ -194,6 +196,16 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
   /** required for fixed/expand ranges; ignored for `auto` (nice ticks derived). */
   yTickValues?: (min: number, max: number) => number[]
   yTickFormat: (v: number) => string
+  /** Colours the main y-axis labels after the series they measure. */
+  yAxisColor?: string
+  /** More y scales beside the plot; series sharing them are pre-normalized. */
+  extraYAxes?: AxisConfig['extraYAxes']
+  /**
+   * A second dataset on the same axes, drawn above `series`, with its own rows
+   * so sparse values (one per lap) join each other directly across a dense
+   * trace. Its series are fixed at mount; its rows are replaced as they change.
+   */
+  overlay?: { rows: ColumnView<T>; series: SeriesDef<T>[] }
   xTickFormat: (seconds: number) => string
   /** X tick positions when the chart's coordinates supply none (e.g. lap numbers). */
   xTickValues?: (min: number, max: number) => number[]
@@ -217,13 +229,18 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
     id: string
     order: number
     formatRow: (rows: ColumnView<T>, i: number) => string
+    /** Rows plot one point per lap: sync through each lap's start session time. */
+    lapAxis?: {
+      lapStartAt: (rows: ColumnView<T>, i: number) => number
+      rowAtSessionTime: (rows: ColumnView<T>, sessionTime: number) => number
+    }
   }
 }
 
 export default function TimeChartView<T extends { session_time: number }>(props: TimeChartViewProps<T>) {
   const {
     isDark, rows, comparisonRows, getX, series, windowSeconds, fixedXRange, yRange, yAxisSize,
-    yTickValues, yTickFormat, xTickFormat, xTickValues, refLines, tooltipFormat,
+    yTickValues, yTickFormat, yAxisColor, extraYAxes, overlay, xTickFormat, xTickValues, refLines, tooltipFormat,
     colorsFor = defaultColors, axisLook, tooltipStyle = TOOLTIP_STYLE, fastScroll,
     followSessionClock, minScrollStallS, allLapsDataMask = HISTORY_ROW.telemetry, cursorSync,
   } = props
@@ -257,7 +274,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const cursorSyncConfigRef = useRef(cursorSync)
   const rowsRef = useRef(rows)
   const comparisonRowsRef = useRef(comparisonRows)
-  const axisKindRef = useRef<'time' | 'distance'>(coordinates.distanceMode ? 'distance' : 'time')
+  const axisKindRef = useRef<ChartCursorAxisKind>(cursorSync?.lapAxis ? 'lap' : coordinates.distanceMode ? 'distance' : 'time')
   const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode))
   const comparisonKeyRef = useRef('')
   const comparisonLapNum = coordinates.lapData?.lapNum
@@ -271,6 +288,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const chartRef = useRef<TChart | null>(null)
   const bridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
   const comparisonBridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
+  const overlayBridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
+  const overlaySeriesDefs = useRef(overlay?.series ?? [])
   const comparisonLapRef = useRef<number | null>(null)
   const lapRevisionRef = useRef(coordinates.lapRevision)
   const historyRevisionRef = useRef(coordinates.historyRevision)
@@ -289,6 +308,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       ? `expand:${yRange.initialLower}:${yRange.initialUpper}:${yRange.lowerPad}:${yRange.upperPad}:${yRange.expandLower !== false}`
       : `auto:${yRange.padFraction ?? 0.1}:${yRange.tickCount ?? 5}:${yRange.fixedMin ?? ''}`
   const visibilityKey = series.map(s => s.visible !== false ? '1' : '0').join('')
+  const overlayVisibilityKey = overlay?.series.map(s => s.visible !== false ? '1' : '0').join('') ?? ''
   const visibilityRef = useRef(series.map(s => s.visible !== false))
   const debugChartName = series.map(s => s.label).join('+')
 
@@ -308,6 +328,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     xLabelOffset: coordinates.allLapsMode ? 4 : 0,
     yTickValues: effYTickValues,
     yTickFormat,
+    yAxisColor,
+    extraYAxes,
     xGap: look.xGap ?? 4,
     yGap: look.yGap ?? 6,
     gridDash: look.gridDash,
@@ -351,7 +373,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     cursorSyncConfigRef.current = cursorSync
     rowsRef.current = rows
     comparisonRowsRef.current = comparisonRows
-    axisKindRef.current = coordinates.distanceMode ? 'distance' : 'time'
+    axisKindRef.current = cursorSync?.lapAxis ? 'lap' : coordinates.distanceMode ? 'distance' : 'time'
     comparisonLabelRef.current = comparisonLabel
     comparisonKeyRef.current = comparisonKey
     tooltipFormatRef.current = tooltipFormat
@@ -382,6 +404,11 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     }
     const bridge = new TimeChartDataBridge<T>((source, i) => getXRef.current(source, i), defs.map((s) => s.getY))
     const comparisonBridge = new TimeChartDataBridge<T>((source, i) => coordinates.getComparisonX(source.time(i)), defs.map((s) => s.getY))
+    const overlayDefs = overlaySeriesDefs.current
+    // A data buffer needs at least one channel, so a chart without an overlay has no overlay bridge.
+    const overlayBridge = overlayDefs.length > 0
+      ? new TimeChartDataBridge<T>((source, i) => getXRef.current(source, i), overlayDefs.map((s) => s.getY))
+      : null
     const plugins: Record<string, unknown> = {
       lineChart: corePlugins.lineChart,
       crosshair: corePlugins.crosshair,
@@ -429,9 +456,20 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         stepLocation: s.stepLocation ?? 1,
         visible: s.visible !== false,
         data: bridge.series[index],
-        fill: s.fill,
+        fill: s.fill && themeSeriesColor(s.fill, isDark),
         fillBaseline: s.fillBaseline ?? 0,
+        nearestSnap: s.nearestSnap,
         })),
+        ...(overlayBridge ? overlayDefs.map((s, index) => ({
+          name: `overlay:${s.label}`,
+          color: themeSeriesColor(s.color, isDark),
+          lineWidth: s.lineWidth ?? 1.5,
+          lineType: lineTypeFor(s),
+          stepLocation: s.stepLocation ?? 1,
+          visible: s.visible !== false,
+          data: overlayBridge.series[index],
+          nearestSnap: s.nearestSnap,
+        })) : []),
       ],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       plugins: plugins as any,
@@ -442,6 +480,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     seriesBuffersRef.current = bridge.series
     bridgeRef.current = bridge
     comparisonBridgeRef.current = comparisonBridge
+    overlayBridgeRef.current = overlayBridge
 
     const hideSyncPoints = () => {
       for (const point of syncPointRefs.current) {
@@ -455,6 +494,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     }
     const syncManager = cursorSyncContextRef.current
     const syncConfig = cursorSyncConfigRef.current
+    const syncSessionTimeAt = (source: ColumnView<T>, i: number) =>
+      cursorSyncConfigRef.current?.lapAxis?.lapStartAt(source, i) ?? source.time(i)
     const unregisterSync = syncManager && syncConfig
       ? syncManager.register({
           id: syncConfig.id,
@@ -467,7 +508,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
             const sampledAxisX = getXRef.current(currentRows, index)
             if (!Number.isFinite(sampledAxisX)) return null
             return {
-              sessionTime: currentRows.time(index),
+              sessionTime: syncSessionTimeAt(currentRows, index),
               sampledAxisX,
             }
           },
@@ -477,7 +518,14 @@ export default function TimeChartView<T extends { session_time: number }>(props:
             const line = syncCrosshairRef.current
             const horizontalLine = syncHorizontalCrosshairRef.current
             const currentRows = rowsRef.current
-            const index = nearestRowIndexBySessionTime(currentRows, sessionTime)
+            const lapAxis = cursorSyncConfigRef.current?.lapAxis
+            // Lap charts match each other by lap number, which also covers
+            // laps whose start time is not known.
+            const index = !lapAxis
+              ? nearestRowIndexBySessionTime(currentRows, sessionTime)
+              : sourceAxisKind === 'lap'
+                ? nearestRowIndexByX(currentRows, getXRef.current, sourceAxisX)
+                : lapAxis.rowAtSessionTime(currentRows, sessionTime)
             if (index < 0) {
               clearSyncedCursor()
               return { current: '' }
@@ -493,8 +541,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
             const axisDataCovered = axisXIsCovered(bridgeRef.current, cursorAxisX)
             const sessionDataCovered = valueIsCovered(
               sessionTime,
-              currentRows.time(0),
-              currentRows.time(currentRows.length - 1),
+              syncSessionTimeAt(currentRows, 0),
+              syncSessionTimeAt(currentRows, currentRows.length - 1),
             )
             // A shared distance/time axis can extend beyond the newest live
             // sample. Keep the cursor at the hovered X and use the source's
@@ -508,7 +556,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
               && cursorAxisX > bridge.xAt(bridge.length - 1) + AXIS_COVERAGE_EPSILON
             const mixedAxisEndpointFallback = sourceAxisKind !== syncAxisKind
               && visibleRangeCovered
-              && sessionTime > currentRows.time(currentRows.length - 1) + AXIS_COVERAGE_EPSILON
+              && sessionTime > syncSessionTimeAt(currentRows, currentRows.length - 1) + AXIS_COVERAGE_EPSILON
             // Mixed axes synchronize through the authoritative row timestamp.
             // The WebGL bridge can trail those rows by one cooperative task;
             // using it as the content gate made peer tooltip sections flicker
@@ -710,6 +758,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       chartRef.current = null
       bridgeRef.current = null
       comparisonBridgeRef.current = null
+      overlayBridgeRef.current = null
     }
     // Created once; all live updates happen through refs/other effects.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -725,7 +774,10 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     let changed = false
     const count = series.length
     chart.options.series.forEach((s, i) => {
-      const visible = visibility[i % count] && (i >= count || comparisonRows != null)
+      // Overlay series follow the main and comparison pairs.
+      const visible = i < 2 * count
+        ? visibility[i % count] && (i >= count || comparisonRows != null)
+        : overlay?.series[i - 2 * count]?.visible !== false
       if (s.visible !== visible) { s.visible = visible; changed = true }
     })
     if (changed) {
@@ -737,7 +789,18 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     // `visibilityKey` is the stable primitive dependency; series arrays are
     // commonly rebuilt by thin chart consumers on ordinary telemetry renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comparisonRows, visibilityKey, wake])
+  }, [comparisonRows, visibilityKey, overlayVisibilityKey, wake])
+
+  // The overlay is small (one row per lap), so a change replaces it whole.
+  const overlayRows = overlay?.rows
+  useEffect(() => {
+    const chart = chartRef.current
+    const overlayBridge = overlayBridgeRef.current
+    if (!chart || !overlayBridge) return
+    overlayBridge.clear()
+    if (overlayRows) overlayBridge.sync(overlayRows)
+    chart.model.requestRedraw()
+  }, [overlayRows])
 
   useEffect(() => {
     const bridge = comparisonBridgeRef.current
@@ -943,12 +1006,14 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     scheduleRowsSync()
   }, [rows, wake, coordinates.allLapsMode, coordinates.distanceMode, coordinates.historyRevision, coordinates.historyStartTime, coordinates.lapRevision, coordinates.progressRevision, coordinates.stintLapsMode, coordinates.trackLengthM])
 
+  // Keyed on the bounds: callers may pass a fresh object with the same range.
+  const fixedXMin = fixedXRange?.min, fixedXMax = fixedXRange?.max
   useEffect(() => {
     const chart = chartRef.current
-    if (!chart || !fixedXRange) return
-    chart.options.xRange = fixedXRange
+    if (!chart || fixedXMin === undefined || fixedXMax === undefined) return
+    chart.options.xRange = { min: fixedXMin, max: fixedXMax }
     chart.model.requestRedraw()
-  }, [fixedXRange?.min, fixedXRange?.max])
+  }, [fixedXMin, fixedXMax])
 
   useEffect(() => {
     // The store publishes full-history arrays by mutating them in place whenever
@@ -1024,6 +1089,14 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [yRangeKey, wake])
 
+  // The main tick format is read at creation (callers often pass it inline);
+  // a caller whose scales change remounts the chart.
+  useEffect(() => {
+    if (axisCfgRef.current.yAxisColor === yAxisColor && axisCfgRef.current.extraYAxes === extraYAxes) return
+    axisCfgRef.current = { ...axisCfgRef.current, yAxisColor, extraYAxes }
+    chartRef.current?.model.requestRedraw()
+  }, [yAxisColor, extraYAxes])
+
   // --- resize ---
   useEffect(() => {
     const chart = chartRef.current
@@ -1060,6 +1133,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   // FR/RL/RR differ in light vs dark). Push new colours to the live series and
   // redraw; the WebGL renderer re-reads series.color each frame. ---
   const seriesColorKey = series.map((s) => s.color).join('|')
+  const overlaySeriesColorKey = overlay?.series.map((s) => s.color).join('|') ?? ''
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
@@ -1071,9 +1145,13 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       if (comparison) comparison.color = blendColor(color)
       if (current) current.color = color
     })
+    overlay?.series.forEach((s, i) => {
+      const target = chart.options.series[2 * count + i]
+      if (target) target.color = themeSeriesColor(s.color, isDark)
+    })
     chart.model.requestRedraw()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDark, seriesColorKey])
+  }, [isDark, seriesColorKey, overlaySeriesColorKey])
 
   return <>
     <div className="absolute inset-0" ref={sizeRef}>

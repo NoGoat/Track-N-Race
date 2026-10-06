@@ -23,12 +23,12 @@ const QVector<AnalyzeMetric>& analyzeMetrics() {
             M("ers","Driving","ERS",AnalyzeSource::Status,"ers","#FADE2A","percent",0,100,"%",1),
             M("g-lateral","Motion","Lateral G",AnalyzeSource::Motion,"g_lat","#F0A500","g-force",-6,6,"g",2),
             M("g-longitudinal","Motion","Longitudinal G",AnalyzeSource::Motion,"g_long","#5794F2","g-force",-6,6,"g",2),
-            M("ride-front","Motion","Front Ride Height",AnalyzeSource::MotionEx,"front","#73BF69","ride-height",-2,20,"mm",1),
-            M("ride-rear","Motion","Rear Ride Height",AnalyzeSource::MotionEx,"rear","#B877DB","ride-height",-2,20,"mm",1),
-            M("power-ice","Power","ICE Power",AnalyzeSource::Status,"ice","#5794F2","power",0,1000,"kW",1),
-            M("power-mguk","Power","MGU-K Power",AnalyzeSource::Status,"mguk","#FADE2A","power",0,1000,"kW",1),
-            M("harvest-mguk","Power","MGU-K Harvest",AnalyzeSource::Status,"harvest_k","#37872D","harvest",0,2000,"kJ",1),
-            M("harvest-mguh","Power","MGU-H Harvest",AnalyzeSource::Status,"harvest_h","#C4162A","harvest",0,2000,"kJ",1),
+            M("ride-front","Motion","Front Ride Height",AnalyzeSource::MotionEx,"front","#73BF69","ride-height",0,50,"mm",1),
+            M("ride-rear","Motion","Rear Ride Height",AnalyzeSource::MotionEx,"rear","#B877DB","ride-height",0,50,"mm",1),
+            M("power-ice","Power","ICE Power",AnalyzeSource::Status,"ice","#5794F2","power",0,500,"kW",1),
+            M("power-mguk","Power","MGU-K Power",AnalyzeSource::Status,"mguk","#FADE2A","power",0,500,"kW",1),
+            M("harvest-mguk","Power","MGU-K Harvest",AnalyzeSource::Status,"harvest_k","#37872D","harvest",0,4000,"kJ",1),
+            M("harvest-mguh","Power","MGU-H Harvest",AnalyzeSource::Status,"harvest_h","#C4162A","harvest",0,4000,"kJ",1),
             M("fuel","Power","Fuel",AnalyzeSource::Status,"fuel","#F0A500","fuel",0,110,"kg",2),
         };
         const struct { const char* key; const char* label; const char* color; } corners[] = {
@@ -51,6 +51,31 @@ const QVector<AnalyzeMetric>& analyzeMetrics() {
 
 const AnalyzeMetric* analyzeMetric(const QString& id) {
     for (const auto& m : analyzeMetrics()) if (m.id == id) return &m;
+    return nullptr;
+}
+
+const QVector<AnalyzeScale>& analyzeScales() {
+    // Qt stores throttle, brake and steering as percentages (Electron 0..1).
+    static const QVector<AnalyzeScale> scales{
+        {"speed", "Speed:", "Always 0–380 km/h", 0, 380},
+        {"rpm", "RPM:", "Always 0–16,000 rpm", 0, 16000},
+        {"gear", "Gear:", "Always gears 1–8", 0.5, 8.5},
+        {"input-positive", "Throttle / brake:", "Always 0–100%", 0, 100},
+        {"input-signed", "Steering:", "Always −100–100%", -100, 100},
+        {"percent", "ERS / tyre wear / life:", "Always 0–100%", 0, 100},
+        {"g-force", "G-force:", "Always −6–6 g", -6, 6},
+        {"ride-height", "Ride height:", "0–50 mm; expands when needed", 0, 50, true, 2, 5, true},
+        {"power", "ICE / MGU-K power:", "0–500 kW; expands above 500 kW when needed", 0, 500, true},
+        {"harvest", "MGU-K / MGU-H harvest:", "0–4000/8000 kJ by Formula; expands above when needed", 0, 4000, true},
+        {"fuel", "Fuel:", "Always 0 kg to the session's fuel load + 1 kg", 0, 110},
+        {"tyre-temp", "Surface / inner temp:", "0–125°C; expands above 125°C when needed", 0, 125, true},
+        {"brake-temp", "Brake temp:", "0–1250°C; expands above 1250°C when needed", 0, 1250, true},
+    };
+    return scales;
+}
+
+const AnalyzeScale* analyzeScale(const QString& key) {
+    for (const AnalyzeScale& scale : analyzeScales()) if (scale.key == key) return &scale;
     return nullptr;
 }
 

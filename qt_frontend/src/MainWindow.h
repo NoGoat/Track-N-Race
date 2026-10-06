@@ -134,6 +134,8 @@ public:
     void    setGraphView(tnr::GraphSection s, bool table);
     bool    chartDynamicYAxis(tnr::GraphSection s) const;
     void    setChartDynamicYAxis(tnr::GraphSection s, bool dynamic);
+    bool    chartAnalysisDynamicYAxis(const QString& scaleKey) const;
+    void    setChartAnalysisDynamicYAxis(const QString& scaleKey, bool dynamic);
     bool    chartSecondaryVerticalCrosshair() const;
     bool    chartSecondaryHorizontalCrosshair() const;
     void    setChartSecondaryCrosshairs(bool vertical, bool horizontal);

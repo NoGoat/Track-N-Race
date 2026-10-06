@@ -148,9 +148,9 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                     pr.cars[i].idx = i;
                     pr.cars[i].x   = Round2(ReadFloat(data, cBase));
                     pr.cars[i].z   = Round2(ReadFloat(data, cBase + 8));
-                    pr.cars[i].g_lat = FiniteFloat(data, cBase + 36);
-                    pr.cars[i].g_long = FiniteFloat(data, cBase + 40);
-                    pr.cars[i].g_vert = FiniteFloat(data, cBase + 44);
+                    if (const auto g = FiniteFloat(data, cBase + 36)) pr.cars[i].g_lat = Round3(*g);
+                    if (const auto g = FiniteFloat(data, cBase + 40)) pr.cars[i].g_long = Round3(*g);
+                    if (const auto g = FiniteFloat(data, cBase + 44)) pr.cars[i].g_vert = Round3(*g);
                 }
                 bin::encodePositions(hot.binary, pr);
                 if (hot.wantHotJson) {

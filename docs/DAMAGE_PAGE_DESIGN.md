@@ -157,8 +157,8 @@ carry the flag, and the Android client resolves its aero mode in the same order.
 - **Data**: a `damagePage` consumer streams `DATA_ROW.damage` (V6 type 14).
   The page draws no history, so it requests none.
 - **Stint page**: remove the Damage and Engine Wear sidebar from
-  `StintPanel.tsx`. The main grid becomes a single full-width column. Update
-  `STINT_PAGE_DESIGN.md` sections 1, 2 and 4 to match.
+  `TrendPanel.tsx`. The main grid becomes a single full-width column. Update
+  `TREND_PAGE_DESIGN.md` sections 1, 2 and 4 to match.
 - **Qt**: check whether `PlaybackPatchMerger.cpp` lists damage fields
   explicitly; if so, add the new ones so Qt playback does not drop them, even
   though Qt gets no Damage page yet.

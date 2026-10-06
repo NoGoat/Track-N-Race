@@ -4,6 +4,7 @@
 #include <QVector>
 #include <QTimer>
 #include <QHash>
+#include <QSet>
 #include <QJsonObject>
 #include <climits>
 #include <cstdint>
@@ -215,6 +216,9 @@ public:
     void setSecondaryCrosshairs(bool vertical, bool horizontal);
     bool dynamicYAxis(tnr::GraphSection section) const;
     void setDynamicYAxis(tnr::GraphSection section, bool dynamic);
+    // Analysis value axes, one per AnalyzeScale key (see analyzeScales()).
+    bool analysisDynamicYAxis(const QString& scaleKey) const { return analysisDynamicYAxes_.contains(scaleKey); }
+    void setAnalysisDynamicYAxis(const QString& scaleKey, bool dynamic);
 
 signals:
     void telemetryAppended();   // coalesced per event-loop pass — default/current-lap views refresh
@@ -255,6 +259,7 @@ private:
     QVector<int> referenceLaps_;            // 0 = global reference lap
     int globalReferenceLap_ = 0;
     QVector<bool> dynamicYAxes_;
+    QSet<QString> analysisDynamicYAxes_;
     bool playbackMode_ = false;
     bool playbackCatalogReady_ = false;
     bool playbackLapDistanceAvailable_ = false;

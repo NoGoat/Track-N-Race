@@ -44,14 +44,14 @@ type AppPageTransition = {
 export default function AppShell() {
   const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
   const {
-    actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
+    actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, damageLayout, driversMode,
     fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
     nativeTitlebar, powerLayout, reduceAnimations, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, seconds, sectorBoundariesEnabled, sectorColors, titlebarUpdateInterval,
-    setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
+    setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDamageLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
-    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorBoundariesEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
-    sessionLayout, standingsLayout, theme, tyreView, tyreWearMode, tyresLayout,
+    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorBoundariesEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTrendsLayout, setTyreView, setTyreWearMode, setTyresLayout,
+    sessionLayout, standingsLayout, theme, trendsLayout, tyreView, tyreWearMode, tyresLayout,
   } = useAppConfiguration()
   const [tab, setTab] = useState<Tab>('core')
   const [mountedTab, setMountedTab] = useState<Tab | null>('core')
@@ -340,8 +340,8 @@ export default function AppShell() {
     tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView,
   ), [tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView])
   const visibleChartScopes = useMemo((): Array<{ mask: number; window: ChartWindow }> => tab === 'stint'
-    // Stint's per-lap measurements and tyre graph cover the whole stint,
-    // whatever the title-bar window. Its own range choice only crops the graph.
+    // Trends' per-lap measurements and graphs cover the whole session,
+    // whatever the title-bar window. Each graph's range choice only crops it.
     ? [{ mask: DATA_ROW.status | DATA_ROW.damage, window: 'AL' }]
     : visibleChartSections.map(section => ({
       mask: GRAPH_SECTION_ROW_MASK[section],
@@ -569,7 +569,11 @@ export default function AppShell() {
         setSessionLayout={setSessionLayout}
         setStandingsLayout={setStandingsLayout}
         setTyresLayout={setTyresLayout}
+        setTrendsLayout={setTrendsLayout}
+        damageLayout={damageLayout}
+        setDamageLayout={setDamageLayout}
         tab={tab}
+        trendsLayout={trendsLayout}
         tyreView={tyreView}
         tyreWearMode={tyreWearMode}
         tyresLayout={tyresLayout}
@@ -647,6 +651,8 @@ export default function AppShell() {
           sessionLayout={sessionLayout}
           standingsLayout={standingsLayout}
           tyresLayout={tyresLayout}
+          trendsLayout={trendsLayout}
+          damageLayout={damageLayout}
           inputLayout={inputLayout}
           inputCursorSyncEnabled={inputCursorSyncEnabled}
           secondaryHorizontalCrosshairEnabled={secondaryHorizontalCrosshairEnabled}
@@ -658,7 +664,6 @@ export default function AppShell() {
           chartYAxis={chartYAxis}
           tyreView={tyreView}
           tyreWearMode={tyreWearMode}
-          onTyreWearModeChange={setTyreWearMode}
           selectedIdx={selectedIdx}
           onSelectDriver={handleSelectDriver}
           reduceAnimations={reduceAnimations}

@@ -9,7 +9,7 @@ function normalizeDensity(val: unknown): DensityMode {
   if (val === 'spacious') return 'spacious'
   return 'normal'
 }
-import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_PAGE_LAYOUTS, DEFAULT_POWER_LAYOUT, DEFAULT_SESSION_LAYOUT, DEFAULT_STANDINGS_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type InputLayout, type MiscLayout, type PageLayouts, type PowerLayout, type SessionLayout, type StandingsLayout, type Theme, type TitlebarUpdateInterval, type TyresLayout } from '../appConfig'
+import { DEFAULT_CORE_LAYOUT, DEFAULT_DAMAGE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_PAGE_LAYOUTS, DEFAULT_POWER_LAYOUT, DEFAULT_SESSION_LAYOUT, DEFAULT_STANDINGS_LAYOUT, DEFAULT_TRENDS_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type DamageLayout, type InputLayout, type MiscLayout, type PageLayouts, type PowerLayout, type SessionLayout, type StandingsLayout, type Theme, type TitlebarUpdateInterval, type TrendsLayout, type TyresLayout } from '../appConfig'
 
 export function useAppConfiguration() {
   const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
@@ -28,6 +28,8 @@ export function useAppConfiguration() {
   const [rawPageLayouts, setPageLayouts] = useAppConfig<PageLayouts>('pageLayouts', DEFAULT_PAGE_LAYOUTS)
   const [rawMiscLayout, setMiscLayout] = useAppConfig<MiscLayout>('miscLayout', DEFAULT_MISC_LAYOUT)
   const [rawPowerLayout, setPowerLayout] = useAppConfig<PowerLayout>('powerLayout', DEFAULT_POWER_LAYOUT)
+  const [rawTrendsLayout, setTrendsLayout] = useAppConfig<TrendsLayout>('trendsLayout', DEFAULT_TRENDS_LAYOUT)
+  const [rawDamageLayout, setDamageLayout] = useAppConfig<DamageLayout>('damageLayout', DEFAULT_DAMAGE_LAYOUT)
   const [rawSessionLayout, setSessionLayout] = useAppConfig<SessionLayout>('sessionLayout', DEFAULT_SESSION_LAYOUT)
   const [rawStandingsLayout, setStandingsLayout] = useAppConfig<StandingsLayout>('standingsLayout', DEFAULT_STANDINGS_LAYOUT)
   const [rawTyresLayout, setTyresLayout] = useAppConfig<TyresLayout>('tyresLayout', DEFAULT_TYRES_LAYOUT)
@@ -111,6 +113,15 @@ export function useAppConfiguration() {
     statsCards: { ...DEFAULT_POWER_LAYOUT.statsCards, ...(rawPowerLayout?.statsCards ?? {}) },
     charts: { ...DEFAULT_POWER_LAYOUT.charts, ...(rawPowerLayout?.charts ?? {}) },
   }), [rawPowerLayout])
+  const trendsLayout = useMemo<TrendsLayout>(() => ({
+    statsCards: { ...DEFAULT_TRENDS_LAYOUT.statsCards, ...(rawTrendsLayout?.statsCards ?? {}) },
+    charts: { ...DEFAULT_TRENDS_LAYOUT.charts, ...(rawTrendsLayout?.charts ?? {}) },
+  }), [rawTrendsLayout])
+  const damageLayout = useMemo<DamageLayout>(() => ({
+    statusCards: { ...DEFAULT_DAMAGE_LAYOUT.statusCards, ...(rawDamageLayout?.statusCards ?? {}) },
+    showDiagram: typeof rawDamageLayout?.showDiagram === 'boolean' ? rawDamageLayout.showDiagram : DEFAULT_DAMAGE_LAYOUT.showDiagram,
+    wearTiles: { ...DEFAULT_DAMAGE_LAYOUT.wearTiles, ...(rawDamageLayout?.wearTiles ?? {}) },
+  }), [rawDamageLayout])
   const tyresLayout = useMemo<TyresLayout>(() => ({ charts: { ...DEFAULT_TYRES_LAYOUT.charts, ...(rawTyresLayout?.charts ?? {}) } }), [rawTyresLayout])
   const sessionLayout = useMemo<SessionLayout>(() => ({
     ...DEFAULT_SESSION_LAYOUT,
@@ -139,6 +150,9 @@ export function useAppConfiguration() {
     miscRideHeight: rawPageLayouts?.miscRideHeight === 'split' ? 'split' : DEFAULT_PAGE_LAYOUTS.miscRideHeight,
     power: rawPageLayouts?.power === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.power,
     tyres: rawPageLayouts?.tyres === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.tyres,
+    trends: rawPageLayouts?.trends === 'combined' || rawPageLayouts?.trends === 'combinedNoRecharge' || rawPageLayouts?.trends === 'bars'
+      ? rawPageLayouts.trends
+      : DEFAULT_PAGE_LAYOUTS.trends,
   }), [rawPageLayouts])
   const miscLayout = useMemo<MiscLayout>(() => {
     const legacyGForce = typeof rawMiscLayout?.showGForce === 'boolean' ? rawMiscLayout.showGForce : DEFAULT_MISC_LAYOUT.showGForce
@@ -190,17 +204,18 @@ export function useAppConfiguration() {
       overview: { ...DEFAULT_CHART_Y_AXIS.overview, ...legacy, ...(rawChartYAxis?.overview ?? {}) },
       tyres: { ...DEFAULT_CHART_Y_AXIS.tyres, ...legacy, ...(rawChartYAxis?.tyres ?? {}) },
       power: { ...DEFAULT_CHART_Y_AXIS.power, ...(rawChartYAxis?.power ?? {}) },
+      analysis: { ...DEFAULT_CHART_Y_AXIS.analysis, ...(rawChartYAxis?.analysis ?? {}) },
     }
   }, [rawChartYAxis])
 
   return {
-    actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
+    actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, damageLayout, driversMode,
     fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, sectorBoundariesEnabled,
     nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, sessionLayout, standingsLayout, titlebarUpdateInterval,
-    setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
+    setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDamageLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
-    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorBoundariesEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
-    theme, tyreView, tyreWearMode, tyresLayout,
+    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorBoundariesEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTrendsLayout, setTyreView, setTyreWearMode, setTyresLayout,
+    theme, trendsLayout, tyreView, tyreWearMode, tyresLayout,
   }
 }

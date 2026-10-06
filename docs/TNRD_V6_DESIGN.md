@@ -157,18 +157,36 @@ Each chunk is a Zstandard-compressed column table. Each sample stores its sessio
 time and that type's values for one driver. Driver, lap and type are stored in
 the directory rather than repeated as all-car arrays in every sample.
 
-A chunk with flag bit `0x01` (set in both its prefix and its directory entry) is
-columnar: a `V6C1` header with row and column counts, a float32 session-time
-array, one descriptor per field (name, kind, width, dense), then one array per
-field. Integers use the narrowest signed width that fits the chunk's values;
-floats are float32 unless a value would lose precision, which stores float64;
-booleans take one byte; tyre sets stay raw JSON text. A field that is missing
-from some rows, such as `available:false` markers or optional damage values,
-carries a presence bitmap. Numeric arrays are byte-planed, so zstd sees runs
-of similar high bytes. Field names are stored once per chunk, not once per sample.
+A chunk holds a header with row and column counts, the session-time column,
+one descriptor per field (name, kind, width, dense, encoding), then one array
+per field. Every numeric column, and session time, is stored as a zigzag series
+of order 1 (differences between samples) or order 2 (differences between those
+differences), whichever has fewer significant bits, at the narrowest width (1,
+2, 4 or 8 bytes) that holds it. Floats are differenced as their bit patterns,
+so session time and float columns come back bit for bit. A float field whose
+values are all exactly `n / 10^k` for some `k` up to 6, as the parsers' rounding
+produces for position, G-force, steering, fuel, ERS and engine power, is a
+decimal: it stores the integers `n`, plus a bitmap of any `-0.0` values, and
+decodes to the identical doubles. Other floats are float32 unless a value would
+lose precision, which stores float64; booleans take one byte; tyre sets stay
+raw JSON text. A field that is missing from some rows, such as
+`available:false` markers or optional damage values, carries a presence bitmap.
+Numeric arrays are byte-planed, so zstd sees runs of similar high bytes. Field
+names are stored once per chunk, not once per sample.
+
+Car Telemetry, Car Status, Lap Data and Motion are sent together on each frame
+at the menu send rate with the same session time, so most of a driver-lap's
+chunks share one set of timestamps. The writer stores that set once, as a lap
+clock: a time-only chunk of type 0 written ahead of the lap's data chunks. A
+chunk whose times are all clock rows stores no times of its own, only, when it
+lacks some rows (a dropped packet, a 10 Hz Car Damage sample), a bitmap over the
+clock; its flag `0x01` (in the chunk prefix and the directory entry) says so. Sparse state types keep their own
+times. Clocks are not data: they take no sequence number and the reader keeps
+them out of `v6Chunks()`. Reading such a chunk also reads its clock, which the
+chunk cache holds like any other chunk.
+
 The encoder and decoder live in `TNRD_V6.cpp`.
 
-A chunk without the flag is JSONL, written before the change, and still reads.
 The archive hands rows to callers as JSON, rendered only for the rows a request
 selects; `loadChunkPlain` and `forEachChunk` render a whole chunk as JSONL for
 export and inspection. Shared session/event records remain JSON.
@@ -195,6 +213,14 @@ fit the new groups.
 Retain a shared session area for session settings, weather, participant updates
 and race events. These records keep their timestamps where applicable and are
 stored once, independently of driver laps. They are not duplicated 24 times.
+Each record is still written on its own, but compressed against the previous
+record of the same type (zstd raw-content prefix; prefix byte 5 names the
+type), since a Session record differs from the last one mostly
+in its time left. The reader loads every record at open, in file order, which
+is the order they chain in.
+
+The metadata JSON and the chunk directory are written as zstd frames; the
+header also records the metadata's plain size and the directory's stored size.
 
 ### Packet ownership: shared versus per driver
 

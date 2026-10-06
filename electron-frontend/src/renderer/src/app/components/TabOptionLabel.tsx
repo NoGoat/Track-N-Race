@@ -8,6 +8,7 @@ import {
   ListOrdered,
   Wrench,
   Shapes,
+  TrendingUp,
   Zap,
   type LucideIcon,
 } from 'lucide-react'
@@ -23,7 +24,7 @@ const TAB_ICONS: Record<Tab, LucideIcon> = {
   analyze: ChartNoAxesCombined,
   session: CalendarDays,
   strategy: Lightbulb,
-  stint: ChartNoAxesCombined,
+  stint: TrendingUp,
   damage: Wrench,
   timing_tower: ListOrdered,
   input: GamepadDirectional,

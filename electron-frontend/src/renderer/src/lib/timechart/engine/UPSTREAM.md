@@ -47,3 +47,6 @@ the fork.
   rewinding, and playback extrapolation respects the selected playback speed.
 - Removed the legacy point-array ingestion path, per-chart animation loops,
   the unused uPlot scrolling hook, and the obsolete domain-search helper.
+- Added an optional per-series `yRange`, drawn across the series' plot area or
+  panel viewport in place of the shared y domain, so series on one canvas can
+  keep independent y scales (WebGL projection and nearest-point pixels).

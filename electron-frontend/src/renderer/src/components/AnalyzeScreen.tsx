@@ -11,6 +11,7 @@ import {
   DEFAULT_DELTA_NEGATIVE_COLOR, DEFAULT_DELTA_POSITIVE_COLOR, sanitizeAnalyzeConfig,
   type AnalyzeConfig, type AnalyzeSeriesConfig,
 } from '../lib/analyzeMetrics'
+import type { AnalysisYAxisState } from '../lib/graphSections'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
 import { BUTTON_CLASS, PRIMARY_BUTTON_CLASS } from '../lib/buttonStyles'
@@ -51,6 +52,7 @@ interface Props {
   reduceAnimations: boolean
   sectorColors: boolean
   onDataMaskChange: (mask: number) => void
+  yAxis: AnalysisYAxisState
 }
 
 export interface AnalyzeFixedLapMode {
@@ -730,7 +732,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   currentLapNum, comparison, comparisonSelected, currentLabel, comparisonLabel, fixedMode, primaryOverride, distanceMode,
   analysisView, syncedTooltip, sectorBoundaries, sectorDelta,
   deltaData, graphControlsRef, stackedControlsRef, onInspectMap,
-  showMapCursors, mapCurrentColor, mapComparisonColor,
+  showMapCursors, mapCurrentColor, mapComparisonColor, yAxis,
 }: {
   isDark: boolean
   selected: AnalyzeSeriesConfig[]
@@ -755,6 +757,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   showMapCursors: boolean
   mapCurrentColor: string
   mapComparisonColor: string
+  yAxis: AnalysisYAxisState
 }) {
   const stackedPresence = useModalPresence(analysisView === 'charts', ANALYSIS_PRESENCE_DURATION, {
     animateInitialEnter: false,
@@ -833,6 +836,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
     syncedTooltip, sectorBoundaries, sectorDelta,
     onInspectMap,
     showMapCursors, mapCurrentColor, mapComparisonColor,
+    yAxis,
   }
 
   return <div className="absolute inset-0">
@@ -866,7 +870,7 @@ export default function AnalyzeScreen({
   compareDriver, onCompareDriverChange,
   secondaryFile, onSecondaryFileChange,
   fixedLapMode, onFixedLapModeChange, mapDimmed, reduceAnimations, sectorColors,
-  onDataMaskChange,
+  onDataMaskChange, yAxis,
 }: Props) {
   const [rawConfig, setRawConfig] = useAppConfig<AnalyzeConfig>('analyze', DEFAULT_ANALYZE_CONFIG)
   const config = useMemo(() => sanitizeAnalyzeConfig(rawConfig), [rawConfig])
@@ -2012,6 +2016,7 @@ export default function AnalyzeScreen({
               showMapCursors={splitView && fixedLapMode.enabled && config.splitCursors}
               mapCurrentColor={config.mapCurrentColor}
               mapComparisonColor={config.mapComparisonColor}
+              yAxis={yAxis}
             />
           </div>
           {splitView && <AnalysisSplitHandle

@@ -58,6 +58,7 @@ export type InputPedalLayout = 'combined' | 'combined2' | 'split'
 export type PowerPageLayout = 'grid' | 'vertical'
 export type TyresPageLayout = 'grid' | 'vertical'
 export type MiscSeriesLayout = 'combined' | 'split'
+export type TrendsPageLayout = 'separate' | 'combined' | 'combinedNoRecharge' | 'bars'
 export interface PageLayouts {
   input: InputPageLayout
   inputPedals: InputPedalLayout
@@ -65,6 +66,7 @@ export interface PageLayouts {
   miscRideHeight: MiscSeriesLayout
   power: PowerPageLayout
   tyres: TyresPageLayout
+  trends: TrendsPageLayout
 }
 export const DEFAULT_PAGE_LAYOUTS: PageLayouts = {
   input: 'grid',
@@ -73,6 +75,7 @@ export const DEFAULT_PAGE_LAYOUTS: PageLayouts = {
   miscRideHeight: 'combined',
   power: 'grid',
   tyres: 'grid',
+  trends: 'separate',
 }
 
 export interface MiscLayout {
@@ -99,6 +102,28 @@ export interface PowerLayout {
 export const DEFAULT_POWER_LAYOUT: PowerLayout = {
   statsCards: { totalPower: true, ice: true, mguk: true, split: true, ersStore: true, ersPct: true, fuel: true },
   charts: { powerSplit: true, ersHarvest: true, ersStore: true, fuelHistory: true },
+}
+
+export interface TrendsLayout {
+  statsCards: { stintLaps: boolean; wearPerLap: boolean; recPerLap: boolean; ersPerLap: boolean; fuelPerLap: boolean; fastestLap: boolean; previousLap: boolean; tyre: boolean }
+  // The Separate layout's four charts, then the single chart of the combined
+  // layouts and of the bar layout.
+  charts: { lapTimes: boolean; ersUsage: boolean; recharge: boolean; tyreWear: boolean; combined: boolean; bars: boolean }
+}
+export const DEFAULT_TRENDS_LAYOUT: TrendsLayout = {
+  statsCards: { stintLaps: true, wearPerLap: true, recPerLap: true, ersPerLap: true, fuelPerLap: true, fastestLap: true, previousLap: true, tyre: true },
+  charts: { lapTimes: true, ersUsage: true, recharge: true, tyreWear: true, combined: true, bars: true },
+}
+
+export interface DamageLayout {
+  statusCards: { engine: boolean; gearbox: boolean; wingFault: boolean; ersFault: boolean; engineStatus: boolean }
+  showDiagram: boolean
+  wearTiles: { ice: boolean; mguh: boolean; mguk: boolean; es: boolean; ce: boolean; tc: boolean; engine: boolean; gearbox: boolean }
+}
+export const DEFAULT_DAMAGE_LAYOUT: DamageLayout = {
+  statusCards: { engine: true, gearbox: true, wingFault: true, ersFault: true, engineStatus: true },
+  showDiagram: true,
+  wearTiles: { ice: true, mguh: true, mguk: true, es: true, ce: true, tc: true, engine: true, gearbox: true },
 }
 
 export interface TyresLayout { charts: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean } }
@@ -171,7 +196,7 @@ export const DEFAULT_STANDINGS_LAYOUT: StandingsLayout = {
 }
 
 export const TAB_LABELS: Record<Tab, string> = {
-  core: 'Overview', analyze: 'Analysis', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy', stint: 'Stint', damage: 'Damage'
+  core: 'Overview', analyze: 'Analysis', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy', stint: 'Trends', damage: 'Damage'
 }
 
 export const TAB_OPTIONS = (['core', 'analyze', 'session', 'strategy', 'stint', 'damage', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[])

@@ -298,9 +298,9 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
 // publications when its damage rows and configuration have not changed.
 const TyreLineChart = memo(TyreLineChartImpl) as typeof TyreLineChartImpl
 
-/** The Stint page's tyre graph: the Tyres page wear chart with its own header controls. */
-export function StintTyreWearChart({ isDark, wearMode, controls }: {
-  isDark: boolean; wearMode: 'wear' | 'life'; controls: ReactNode
+/** The Trends page's tyre graph: the Tyres page wear chart, following its settings, with its own header controls. */
+export function StintTyreWearChart({ isDark, wearMode, yAxis, controls }: {
+  isDark: boolean; wearMode: 'wear' | 'life'; yAxis: TyreYAxisGroupState['tyreLife']; controls: ReactNode
 }) {
   const rows = useTelemetryStore(s => s.damageHistory)
   const series = useMemo<SeriesDef<DamageRow>[]>(() => {
@@ -312,7 +312,7 @@ export function StintTyreWearChart({ isDark, wearMode, controls }: {
   }, [isDark, wearMode])
   return <TyreLineChart<DamageRow> key={wearMode} section="tyreWear" source="damage" title={wearMode === 'life' ? 'Tyre Life' : 'Tyre Wear'}
     unit="%" rows={rows} series={series} isDark={isDark} controls={controls}
-    fastScroll followSessionClock minScrollStallS={1} yRange={WEAR_FIXED_Y_RANGE} />
+    fastScroll followSessionClock minScrollStallS={1} yRange={yAxis === 'fixed' ? WEAR_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
 }
 
 function ScopedTyreLineChart<T extends { session_time: number }>(props: ChartProps<T>) {

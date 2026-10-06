@@ -1,13 +1,17 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { ChartTooltipPortal, useChartTooltip } from '../hooks/useChartTooltip'
 
+// 'lap' charts plot one point per lap number and map laps to session time
+// through their own rows.
+export type ChartCursorAxisKind = 'time' | 'distance' | 'lap'
+
 export interface ChartCursorSyncParticipant {
   id: string
   order: number
-  axisKind: 'time' | 'distance'
+  axisKind: ChartCursorAxisKind
   resolveAxisX: (axisX: number) => { sessionTime: number; sampledAxisX: number } | null
   formatAxisX: (axisX: number) => string
-  syncToSessionTime: (sessionTime: number, axisX: number, plotYRatio: number | null, sourceAxisKind: 'time' | 'distance', source: boolean, secondaryVerticalCrosshair: boolean) => {
+  syncToSessionTime: (sessionTime: number, axisX: number, plotYRatio: number | null, sourceAxisKind: ChartCursorAxisKind, source: boolean, secondaryVerticalCrosshair: boolean) => {
     current: string
     comparison?: string
     comparisonLabel?: string

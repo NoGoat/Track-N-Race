@@ -43,6 +43,7 @@ protected:
     // "<label> · L<n>" section per lap and the delta row; stacked graphs list
     // only the hovered graph unless the synced tooltip is on.
     bool customTooltip(int panelId, double key, TooltipContent& out) const override;
+    void navigationRangeChanged() override;
 
 private:
     struct Handles { int current=-1, comparison=-1; };
@@ -92,5 +93,10 @@ private:
 
     void requestRefresh();
     void refresh();
+    // Fit every value axis to the samples in the visible x window: the
+    // metric's preset range widened to the data, or the data alone when its
+    // scale is Dynamic in Settings ▸ Y Axis ▸ Analysis.
+    void fitYAxes();
+    bool refreshing_ = false;
     void refreshMapCursorGuides();
 };

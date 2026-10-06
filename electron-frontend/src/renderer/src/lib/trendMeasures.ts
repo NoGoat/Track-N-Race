@@ -63,6 +63,23 @@ export class StintStatusScan {
   }
 }
 
+/**
+ * One scan kept across renders: extends it as the history grows, and starts
+ * again when held rows were replaced or rewritten (a new `revision`).
+ */
+export class StintStatusScanner {
+  private revision: number | null = null
+  private scan = new StintStatusScan()
+  scanFor(rows: ColumnView<StatusRow>, revision: number): StintStatusScan {
+    if (this.revision !== revision || !this.scan.update(rows)) {
+      this.revision = revision
+      this.scan = new StintStatusScan()
+      this.scan.update(rows)
+    }
+    return this.scan
+  }
+}
+
 export interface LapMeasure {
   deployedMj: number | null
   harvestedMj: number | null

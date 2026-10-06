@@ -13,12 +13,15 @@ export function seriesPointToPixels(
 ) {
     const pxX = model.xScale(x)!;
     const viewport = series.viewport;
-    if (!viewport) return { x: pxX, y: model.yScale(y)! };
+    const yRange = series.yRange && series.yRange.max > series.yRange.min ? series.yRange : undefined;
+    if (!viewport && !yRange) return { x: pxX, y: model.yScale(y)! };
 
     const [plotBottom, plotTop] = model.yScale.range().map(Number);
-    const [yMin, yMax] = model.yScale.domain().map(Number);
-    const panelTop = plotTop + viewport.top * (plotBottom - plotTop);
-    const panelBottom = plotTop + viewport.bottom * (plotBottom - plotTop) - (viewport.gapAfter ?? 0);
+    const [domainMin, domainMax] = model.yScale.domain().map(Number);
+    const yMin = yRange?.min ?? domainMin;
+    const yMax = yRange?.max ?? domainMax;
+    const panelTop = plotTop + (viewport?.top ?? 0) * (plotBottom - plotTop);
+    const panelBottom = plotTop + (viewport?.bottom ?? 1) * (plotBottom - plotTop) - (viewport?.gapAfter ?? 0);
     const normalized = (y - yMin) / (yMax - yMin);
     return {
         x: pxX,
@@ -70,13 +73,19 @@ export class NearestPointModel {
             const width = this.canvas.canvas.width / this.options.pixelRatio;
             const height = this.canvas.canvas.height / this.options.pixelRatio;
             for (const s of this.options.series) {
-                if (s.data.length == 0 || !s.visible) {
+                if (s.data.length == 0 || !s.visible || s.nearestSnap === 'none') {
                     this.dataPoints.delete(s);
                     continue;
                 }
                 const pos = s.data.lowerBoundX(domain);
                 let nearestIndex: number;
-                if (pos === 0) nearestIndex = 0;
+                if (s.nearestSnap === 'next') {
+                    if (pos === s.data.length) {
+                        this.dataPoints.delete(s);
+                        continue;
+                    }
+                    nearestIndex = pos;
+                } else if (pos === 0) nearestIndex = 0;
                 else if (pos === s.data.length) nearestIndex = pos - 1;
                 else {
                     const beforeX = s.data.xAt(pos - 1);

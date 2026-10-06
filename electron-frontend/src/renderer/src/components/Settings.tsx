@@ -5,7 +5,7 @@ import QRCode from 'qrcode'
 import type { PairServiceState } from '../types'
 import {
   GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, DENSITY_OPTIONS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS, HEADER_LEVEL_OPTIONS,
-  TYRE_Y_AXIS_SECTIONS, POWER_Y_AXIS_SECTIONS,
+  TYRE_Y_AXIS_SECTIONS, POWER_Y_AXIS_SECTIONS, ANALYSIS_Y_AXIS_SECTIONS,
   type GraphViewState, type GraphView, type CompactState, type DensityMode, type ChartYAxisState, type YAxisBehavior,
 } from '../lib/graphSections'
 import iconTransparent from '../assets/icon_transparent.png'
@@ -21,6 +21,13 @@ import { selectComponents } from '../lib/selectComponents'
 import ColorPicker from './ColorPicker'
 
 declare const __APP_VERSION__: string | undefined
+
+const TRENDS_LAYOUT_OPTIONS = [
+  { value: 'separate' as const, label: 'Separate' },
+  { value: 'combined' as const, label: 'Combined' },
+  { value: 'combinedNoRecharge' as const, label: 'Combined (without Recharge)' },
+  { value: 'bars' as const, label: 'Bars' },
+]
 
 interface Props {
   isOpen: boolean
@@ -688,6 +695,25 @@ const Settings = memo(function Settings({
           onChange={(tyres) => onPageLayoutsChange({ ...pageLayouts, tyres })}
         />
       </Row>
+      <GroupLabel>Trends</GroupLabel>
+      <Row
+        label="Chart Layout"
+        description="Show lap times, ERS usage, recharge and tyre wear as separate charts, or together on one chart with a scale for each unit, with or without recharge, or as three bars per lap: average tyre wear, ERS used and lap time."
+      >
+        <Select
+          aria-label="Trends chart layout"
+          className="w-60 shrink-0"
+          options={TRENDS_LAYOUT_OPTIONS}
+          value={TRENDS_LAYOUT_OPTIONS.find(option => option.value === pageLayouts.trends) ?? null}
+          onChange={option => { if (option) onPageLayoutsChange({ ...pageLayouts, trends: option.value }) }}
+          styles={buildSelectStyles(theme !== 'light', { solidBg: true })}
+          components={selectComponents}
+          isSearchable={false}
+          menuPortalTarget={document.body}
+          menuPosition="fixed"
+          menuPlacement="auto"
+        />
+      </Row>
       <GroupLabel>Shared Tooltip</GroupLabel>
       <Row
         label="Secondary Vertical Crosshair"
@@ -813,10 +839,12 @@ const Settings = memo(function Settings({
     const anyDynamic = tyreGroups.some(group =>
       TYRE_Y_AXIS_SECTIONS.some(section => chartYAxis[group.key][section.key] === 'dynamic'),
     ) || POWER_Y_AXIS_SECTIONS.some(section => chartYAxis.power[section.key] === 'dynamic')
+      || ANALYSIS_Y_AXIS_SECTIONS.some(section => chartYAxis.analysis[section.key] === 'dynamic')
     const setAll = (value: YAxisBehavior) => {
       const tyres = Object.fromEntries(TYRE_Y_AXIS_SECTIONS.map(s => [s.key, value])) as ChartYAxisState['overview']
       const power = Object.fromEntries(POWER_Y_AXIS_SECTIONS.map(s => [s.key, value])) as ChartYAxisState['power']
-      onChartYAxisChange({ overview: { ...tyres }, tyres: { ...tyres }, power })
+      const analysis = Object.fromEntries(ANALYSIS_Y_AXIS_SECTIONS.map(s => [s.key, value])) as ChartYAxisState['analysis']
+      onChartYAxisChange({ overview: { ...tyres }, tyres: { ...tyres }, power, analysis })
     }
     return (
       <div className="flex flex-col gap-1">
@@ -853,6 +881,21 @@ const Settings = memo(function Settings({
                 onChange={(value) => onChartYAxisChange({
                   ...chartYAxis,
                   power: { ...chartYAxis.power, [section.key]: value },
+                })}
+              />
+            </Row>
+          ))}
+        </div>
+        <div>
+          <GroupLabel>Analysis</GroupLabel>
+          {ANALYSIS_Y_AXIS_SECTIONS.map(section => (
+            <Row key={section.key} label={section.label} description={`Fixed: ${section.fixedRange}`}>
+              <SegmentedControl
+                options={[{ value: 'fixed' as const, label: 'Fixed' }, { value: 'dynamic' as const, label: 'Dynamic' }]}
+                value={chartYAxis.analysis[section.key]}
+                onChange={(value) => onChartYAxisChange({
+                  ...chartYAxis,
+                  analysis: { ...chartYAxis.analysis, [section.key]: value },
                 })}
               />
             </Row>

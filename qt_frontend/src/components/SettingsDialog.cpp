@@ -6,6 +6,7 @@
 #include "../GraphViewSettings.h"
 #include "../IconUtils.h"
 #include "../PresentationScheduler.h"
+#include "AnalyzeMetrics.h"
 #include "PairingQrCode.h"
 
 #include <QVBoxLayout>
@@ -884,13 +885,22 @@ QWidget* SettingsDialog::buildYAxisPage() {
     QFormLayout* form;
     QWidget* page = makePage(form);
 
-    struct Ctl { tnr::GraphSection s; QButtonGroup* group; };
+    // An empty scale is a live chart section; otherwise an Analysis axis scale.
+    struct Ctl { tnr::GraphSection s; QString scale; QButtonGroup* group; };
     auto controls = std::make_shared<QList<Ctl>>();
 
     auto* setAll = new QPushButton;
-    auto anyDynamic = [this, controls] {
+    auto isDynamic = [this](const Ctl& c) {
+        return c.scale.isEmpty() ? mainWindow_->chartDynamicYAxis(c.s)
+                                 : mainWindow_->chartAnalysisDynamicYAxis(c.scale);
+    };
+    auto setDynamic = [this](const Ctl& c, bool dynamic) {
+        if (c.scale.isEmpty()) mainWindow_->setChartDynamicYAxis(c.s, dynamic);
+        else mainWindow_->setChartAnalysisDynamicYAxis(c.scale, dynamic);
+    };
+    auto anyDynamic = [controls, isDynamic] {
         for (const Ctl& c : *controls)
-            if (mainWindow_->chartDynamicYAxis(c.s)) return true;
+            if (isDynamic(c)) return true;
         return false;
     };
     auto refreshSetAll = [setAll, anyDynamic] { setAll->setText(anyDynamic() ? "Set All Fixed" : "Set All Dynamic"); };
@@ -927,13 +937,26 @@ QWidget* SettingsDialog::buildYAxisPage() {
                 mainWindow_->setChartDynamicYAxis(s, id == 1);
                 refreshSetAll();
             });
-            controls->push_back({row.s, axis});
+            controls->push_back({row.s, QString(), axis});
         }
     }
-    connect(setAll, &QPushButton::clicked, this, [this, controls, anyDynamic, refreshSetAll] {
+    addSection(form, "Analysis");
+    for (const AnalyzeScale& scale : analyzeScales()) {
+        QButtonGroup* axis = nullptr;
+        form->addRow(scale.label, segmented(axis, {{"Fixed", 0}, {"Dynamic", 1}}));
+        form->addRow(QString(), hint(QStringLiteral("Fixed: %1").arg(scale.fixedRange)));
+        const Ctl ctl{tnr::GraphSection::Count_, scale.key, axis};
+        axis->button(isDynamic(ctl) ? 1 : 0)->setChecked(true);
+        connect(axis, &QButtonGroup::idClicked, this, [setDynamic, ctl, refreshSetAll](int id) {
+            setDynamic(ctl, id == 1);
+            refreshSetAll();
+        });
+        controls->push_back(ctl);
+    }
+    connect(setAll, &QPushButton::clicked, this, [controls, anyDynamic, setDynamic, refreshSetAll] {
         const bool dynamic = !anyDynamic();
         for (const Ctl& c : *controls) {
-            mainWindow_->setChartDynamicYAxis(c.s, dynamic);
+            setDynamic(c, dynamic);
             c.group->button(dynamic ? 1 : 0)->setChecked(true);
         }
         refreshSetAll();

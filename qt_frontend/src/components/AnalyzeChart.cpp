@@ -1,6 +1,7 @@
 #include "AnalyzeChart.h"
 #include "../SessionModel.h"
 #include "../PresentationScheduler.h"
+#include "../Labels.h"
 
 #include <QPalette>
 #include <QShowEvent>
@@ -88,7 +89,7 @@ AnalyzeChart::AnalyzeChart(QWidget* parent):ChartView(parent) {
     setLegendVisible(false);setHoverReadout(true);
 }
 
-void AnalyzeChart::setModel(SessionModel* m){if(model_)disconnect(model_,nullptr,this,nullptr);model_=m;if(m){connect(m,&SessionModel::telemetryAppended,this,&AnalyzeChart::requestRefresh);connect(m,&SessionModel::tyreAppended,this,&AnalyzeChart::requestRefresh);connect(m,&SessionModel::lapsChanged,this,&AnalyzeChart::requestRefresh);connect(m,&SessionModel::wasReset,this,&AnalyzeChart::requestRefresh);}requestRefresh();}
+void AnalyzeChart::setModel(SessionModel* m){if(model_)disconnect(model_,nullptr,this,nullptr);model_=m;if(m){connect(m,&SessionModel::telemetryAppended,this,&AnalyzeChart::requestRefresh);connect(m,&SessionModel::tyreAppended,this,&AnalyzeChart::requestRefresh);connect(m,&SessionModel::lapsChanged,this,&AnalyzeChart::requestRefresh);connect(m,&SessionModel::wasReset,this,&AnalyzeChart::requestRefresh);connect(m,&SessionModel::chartConfigurationChanged,this,&AnalyzeChart::requestRefresh);}requestRefresh();}
 void AnalyzeChart::setConfig(const QVector<AnalyzeSeriesSetting>& s,bool y){selected_=s;showYAxis_=y;requestRefresh();}
 void AnalyzeChart::setPlaybackMode(bool on){playback_=on;requestRefresh();}
 void AnalyzeChart::setCurrentTime(float t){currentTime_=t;requestRefresh();}
@@ -131,7 +132,7 @@ void AnalyzeChart::showEvent(QShowEvent* e){ChartView::showEvent(e);requestRefre
 void AnalyzeChart::requestRefresh(){dirty_=true;if(!isVisible())return;PresentationScheduler::instance().request(this,[this]{refresh();},PresentationScheduler::Policy::Chart);}
 
 void AnalyzeChart::refresh(){
-    if(!model_||!dirty_||!isVisible())return;dirty_=false;const SessionData&d=model_->data();
+    if(!model_||!dirty_||!isVisible())return;dirty_=false;refreshing_=true;const SessionData&d=model_->data();
     const LapBlock*primary=nullptr,*compare=nullptr;const SessionData*primaryData=&d,*compareData=&d;float primaryEnd=0;
     if(fixed_){primary=selectedPrimary_;primaryData=selectedPrimaryData_;compare=selectedComparison_;compareData=selectedComparisonData_;if(primary)primaryEnd=lapEnd(*primary);}else{const float now=playback_?currentTime_:d.latestTime;primary=playback_?model_->chartPrimaryLap(now):(d.curLapNum>=0?&d.curLap:d.lapAtTime(now));primaryEnd=now;compare=selectedComparison_;if(selectedComparisonData_)compareData=selectedComparisonData_;}
     const auto&defs=analyzeMetrics();double fullMax=distanceMode_?qMax(1.0,double(d.trackLengthM)):1.0;if(distanceMode_){if(primary&&!primary->progress.isEmpty())fullMax=qMax(fullMax,double(primary->progress.last().distanceM));if(compare&&!compare->progress.isEmpty())fullMax=qMax(fullMax,double(compare->progress.last().distanceM));}else{if(primary)fullMax=qMax(fullMax,double(qMin(primaryEnd,lapEnd(*primary))-lapStart(*primary)));if(compare)fullMax=qMax(fullMax,double(lapEnd(*compare)-lapStart(*compare)));}
@@ -177,7 +178,39 @@ void AnalyzeChart::refresh(){
     activePanels.clear();activeXAxes.clear();if(individualGraphs_)for(const auto&s:selected_)if(s.visible){if(s.metricId=="delta"){if(showDelta){activePanels<<stackedDelta_.panel;activeXAxes<<stackedDelta_.xAxis;}}else if(const auto*r=analyzeCombinedRow(s.metricId)){if(!s.corners.isEmpty()){const int ri=int(r-analyzeTyreRows().constData());activePanels<<combined_[ri].panel;activeXAxes<<combined_[ri].xAxis;}}else if(const auto*m=analyzeMetric(s.metricId)){const int i=int(m-defs.constData());activePanels<<stacked_[i].panel;activeXAxes<<stacked_[i].xAxis;}}
     setAxisVisible(xAxis_,!individualGraphs_);for(const auto&h:stacked_)setAxisVisible(h.xAxis,false);for(const auto&h:combined_)setAxisVisible(h.xAxis,false);setAxisVisible(stackedDelta_.xAxis,false);if(individualGraphs_&&!activeXAxes.isEmpty())setAxisVisible(activeXAxes.last(),true);
     QVector<QVector<int>>rows;if(individualGraphs_){for(int panel:activePanels)rows.push_back({panel});if(rows.isEmpty())rows.push_back({0});}else rows={{0}};QStringList panelKeys;for(int panel:activePanels)panelKeys<<QString::number(panel);const QString layoutKey=QString::number(individualGraphs_)+":"+panelKeys.join(',');if(layoutKey!=panelLayoutKey_){panelLayoutKey_=layoutKey;layoutPanelsRows(rows);}activeXAxes.prepend(xAxis_);setLinkedXAxes(individualGraphs_?activeXAxes:QVector<int>{xAxis_});
-    const int navAxis=individualGraphs_&&!activeXAxes.isEmpty()&&activeXAxes.size()>1?activeXAxes[1]:xAxis_;const bool fixedNavigation=fixed_&&primary;setXNavigation(navAxis,fixedNavigation,0,fullMax,distanceMode_?25.0:0.5);if(fixedNavigation){const QString key=QString("%1:%2:%3:%4:%5:%6").arg(distanceMode_).arg(individualGraphs_).arg(primary?primary->lapNum:-1).arg(compare?compare->lapNum:-1).arg(lapStart(*primary),0,'f',3).arg(lapEnd(*primary),0,'f',3);if(key!=fixedDomainKey_){fixedDomainKey_=key;resetX();}}else{fixedDomainKey_.clear();setXRange(navAxis,0,fullMax);}requestReplot();
+    const int navAxis=individualGraphs_&&!activeXAxes.isEmpty()&&activeXAxes.size()>1?activeXAxes[1]:xAxis_;const bool fixedNavigation=fixed_&&primary;setXNavigation(navAxis,fixedNavigation,0,fullMax,distanceMode_?25.0:0.5);if(fixedNavigation){const QString key=QString("%1:%2:%3:%4:%5:%6").arg(distanceMode_).arg(individualGraphs_).arg(primary?primary->lapNum:-1).arg(compare?compare->lapNum:-1).arg(lapStart(*primary),0,'f',3).arg(lapEnd(*primary),0,'f',3);if(key!=fixedDomainKey_){fixedDomainKey_=key;resetX();}}else{fixedDomainKey_.clear();setXRange(navAxis,0,fullMax);}
+    refreshing_=false;fitYAxes();requestReplot();
+}
+
+void AnalyzeChart::navigationRangeChanged(){if(!refreshing_)fitYAxes();}
+
+void AnalyzeChart::fitYAxes(){
+    const auto&defs=analyzeMetrics();
+    // Upper bounds the live Power page resolves at runtime: harvest follows the
+    // Formula (8 MJ in 2026), fuel the session's fuel load + 1 kg.
+    const double harvestUpper=tnr::Labels::instance().format()>=2026?8000.0:4000.0;
+    double fuelUpper=model_?double(model_->data().fuelUpperLimit):-1.0;
+    if(!(fuelUpper>0)){const double first=model_&&!model_->data().stsBuf.isEmpty()?double(model_->data().stsBuf.first().fuel_kg):0.0;fuelUpper=qMax(1.0,(std::isfinite(first)?first:0.0)+1.0);}
+    // Electron TimeChartView's y-range policies. Dynamic (Settings ▸ Y Axis ▸
+    // Analysis) is its 'auto' range; Fixed is the scale's 'fixed' or 'expand' range.
+    auto fit=[&](int axis,const QVector<int>&ids,const QString&scaleKey){
+        const AnalyzeScale*scale=analyzeScale(scaleKey);if(!scale)return;
+        double lower=scale->lower,upper=scaleKey==QLatin1String("harvest")?harvestUpper:scaleKey==QLatin1String("fuel")?fuelUpper:scale->upper;
+        double lo=0,hi=0;const bool found=visibleSeriesRange(ids,lo,hi);
+        if(found&&model_&&model_->analysisDynamicYAxis(scaleKey)){const double pad=hi==lo?std::abs(hi)*.05+1:(hi-lo)*.1;lower=lo-pad;upper=hi+pad;}
+        else if(found&&scale->expand){if(hi>upper-scale->upperPad)upper=std::ceil(hi+scale->upperPad);if(scale->expandLower&&lo<lower+scale->lowerPad)lower=std::floor(lo-scale->lowerPad);}
+        setAxisRange(axis,lower,upper);
+    };
+    // Overlay: one axis per scale.
+    for(auto it=axes_.cbegin();it!=axes_.cend();++it){
+        QVector<int>ids;for(int i=0;i<defs.size();++i)if(defs[i].scaleKey==it.key())ids<<handles_[i].current<<handles_[i].comparison;
+        fit(it.value(),ids,it.key());
+    }
+    for(int i=0;i<defs.size();++i)fit(stacked_[i].yAxis,{stacked_[i].current,stacked_[i].comparison},defs[i].scaleKey);
+    for(int r=0;r<combined_.size();++r){
+        const AnalyzeMetric*m=analyzeScaleMetric(analyzeTyreRows()[r].combinedId());if(!m)continue;
+        fit(combined_[r].yAxis,combined_[r].current+combined_[r].comparison,m->scaleKey);
+    }
 }
 
 QString AnalyzeChart::metricForPanel(int panelId) const {

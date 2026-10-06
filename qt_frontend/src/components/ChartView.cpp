@@ -2011,10 +2011,31 @@ void ChartView::setXRange(int id,double lo,double hi){
     if(id<0||id>=d_->axes.size()||!std::isfinite(lo)||!std::isfinite(hi)||hi<=lo)return;
     // An unchanged range skips the label re-measure; a changed one only
     // relayouts when the widest y label actually changes width.
-    auto apply=[&](int axisId){if(axisId<0||axisId>=d_->axes.size())return;Axis&a=d_->axes[axisId];if(a.lo==lo&&a.hi==hi)return;const int oldWidth=a.labelWidth;a.lo=lo;a.hi=hi;if(a.side!=Side::Bottom){if(measuredYAxisLabelWidth(a,TextWidths::of(chartLabelFont(font()),d_->overlay))!=oldWidth)d_->geometry(rect());}};
-    apply(id);if(d_->linkedXAxes.contains(id))for(int linked:d_->linkedXAxes)if(linked!=id)apply(linked);
+    auto apply=[&](int axisId){if(axisId<0||axisId>=d_->axes.size())return false;Axis&a=d_->axes[axisId];if(a.lo==lo&&a.hi==hi)return false;const int oldWidth=a.labelWidth;a.lo=lo;a.hi=hi;if(a.side!=Side::Bottom){if(measuredYAxisLabelWidth(a,TextWidths::of(chartLabelFont(font()),d_->overlay))!=oldWidth)d_->geometry(rect());}return true;};
+    bool changed=apply(id);if(d_->linkedXAxes.contains(id))for(int linked:d_->linkedXAxes)if(linked!=id)changed=apply(linked)||changed;
+    if(changed&&id==d_->navAxis)navigationRangeChanged();
 }
 void ChartView::setAxisRange(int id,double lo,double hi){setXRange(id,lo,hi);}
+
+bool ChartView::visibleSeriesRange(const QVector<int>& ids, double& lo, double& hi) const {
+    bool found = false;
+    for (int sid : ids) {
+        if (sid < 0 || sid >= d_->series.size()) continue;
+        const Series& s = d_->series[sid];
+        if (!s.visible || s.empty() || s.spec.xAxisId < 0 || s.spec.xAxisId >= d_->axes.size()) continue;
+        const Axis& x = d_->axes[s.spec.xAxisId];
+        qsizetype begin = lowerBound(s, x.lo);
+        if (begin > s.first) --begin;
+        const qsizetype end = qMin(lowerBound(s, x.hi) + 1, qsizetype(s.data.size()));
+        for (qsizetype i = begin; i < end; ++i) {
+            const double value = s.data[size_t(i)].y;
+            if (!std::isfinite(value)) continue;
+            if (!found) { lo = hi = value; found = true; }
+            else { lo = qMin(lo, value); hi = qMax(hi, value); }
+        }
+    }
+    return found;
+}
 
 void ChartView::fitAxisToVisibleSeries(int id, const QVector<int>& ids, double fixedLo,
                                        double fixedHi, bool dynamic, bool expand) {

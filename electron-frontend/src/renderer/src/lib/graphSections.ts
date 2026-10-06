@@ -85,10 +85,16 @@ export type TyreYAxisKey = 'surfaceTemp' | 'innerTemp' | 'brakeTemp' | 'tyreLife
 export type TyreYAxisGroupState = Record<TyreYAxisKey, YAxisBehavior>
 export type PowerYAxisKey = 'ersHarvest'
 export type PowerYAxisState = Record<PowerYAxisKey, YAxisBehavior>
+/** Analysis value axes, one per analyze metric scale key. */
+export type AnalysisYAxisKey =
+  | 'speed' | 'rpm' | 'gear' | 'input-positive' | 'input-signed' | 'percent' | 'g-force'
+  | 'ride-height' | 'power' | 'harvest' | 'fuel' | 'tyre-temp' | 'brake-temp'
+export type AnalysisYAxisState = Record<AnalysisYAxisKey, YAxisBehavior>
 export interface ChartYAxisState {
   overview: TyreYAxisGroupState
   tyres: TyreYAxisGroupState
   power: PowerYAxisState
+  analysis: AnalysisYAxisState
 }
 
 export const TYRE_Y_AXIS_SECTIONS: { key: TyreYAxisKey; label: string; fixedRange: string }[] = [
@@ -102,6 +108,33 @@ export const POWER_Y_AXIS_SECTIONS: { key: PowerYAxisKey; label: string; fixedRa
   { key: 'ersHarvest', label: 'ERS Harvest', fixedRange: '0–4000/8000 kJ by Formula; expands above when needed' },
 ]
 
+/**
+ * Fixed range of an Analysis axis: the y range the live page chart showing the
+ * same values uses ('fixed' never moves, 'expand' grows once data comes within
+ * a pad of an edge). Harvest and fuel resolve their upper bound at runtime.
+ */
+export interface AnalysisFixedYRange {
+  min: number
+  max: number
+  expand?: { lowerPad: number; upperPad: number; expandLower: boolean }
+}
+
+export const ANALYSIS_Y_AXIS_SECTIONS: { key: AnalysisYAxisKey; label: string; fixedRange: string; range: AnalysisFixedYRange }[] = [
+  { key: 'speed',          label: 'Speed',                  fixedRange: 'Always 0–380 km/h',            range: { min: 0, max: 380 } },
+  { key: 'rpm',            label: 'RPM',                    fixedRange: 'Always 0–16,000 rpm',          range: { min: 0, max: 16000 } },
+  { key: 'gear',           label: 'Gear',                   fixedRange: 'Always gears 1–8',             range: { min: 0.5, max: 8.5 } },
+  { key: 'input-positive', label: 'Throttle / Brake',       fixedRange: 'Always 0–100%',                range: { min: 0, max: 1 } },
+  { key: 'input-signed',   label: 'Steering',               fixedRange: 'Always −100–100%',             range: { min: -1, max: 1 } },
+  { key: 'percent',        label: 'ERS / Tyre Wear / Life', fixedRange: 'Always 0–100%',                range: { min: 0, max: 100 } },
+  { key: 'g-force',        label: 'G-Force',                fixedRange: 'Always −6–6 g',                range: { min: -6, max: 6 } },
+  { key: 'ride-height',    label: 'Ride Height',            fixedRange: '0–50 mm; expands when needed', range: { min: 0, max: 50, expand: { lowerPad: 2, upperPad: 5, expandLower: true } } },
+  { key: 'power',          label: 'ICE / MGU-K Power',      fixedRange: '0–500 kW; expands above 500 kW when needed', range: { min: 0, max: 500, expand: { lowerPad: 0, upperPad: 0, expandLower: false } } },
+  { key: 'harvest',        label: 'MGU-K / MGU-H Harvest',  fixedRange: '0–4000/8000 kJ by Formula; expands above when needed', range: { min: 0, max: 4000, expand: { lowerPad: 0, upperPad: 0, expandLower: false } } },
+  { key: 'fuel',           label: 'Fuel',                   fixedRange: "Always 0 kg to the session's fuel load + 1 kg", range: { min: 0, max: 110 } },
+  { key: 'tyre-temp',      label: 'Surface / Inner Temp',   fixedRange: '0–125°C; expands above 125°C when needed', range: { min: 0, max: 125, expand: { lowerPad: 0, upperPad: 0, expandLower: false } } },
+  { key: 'brake-temp',     label: 'Brake Temp',             fixedRange: '0–1250°C; expands above 1250°C when needed', range: { min: 0, max: 1250, expand: { lowerPad: 0, upperPad: 0, expandLower: false } } },
+]
+
 const DEFAULT_TYRE_Y_AXIS_GROUP: TyreYAxisGroupState = {
   surfaceTemp: 'fixed',
   innerTemp:   'fixed',
@@ -113,6 +146,7 @@ export const DEFAULT_CHART_Y_AXIS: ChartYAxisState = {
   overview: { ...DEFAULT_TYRE_Y_AXIS_GROUP },
   tyres:    { ...DEFAULT_TYRE_Y_AXIS_GROUP },
   power:    { ersHarvest: 'fixed' },
+  analysis: Object.fromEntries(ANALYSIS_Y_AXIS_SECTIONS.map(section => [section.key, 'fixed'])) as AnalysisYAxisState,
 }
 
 // ── Compact / Spacious density ───────────────────────────────────────────────
@@ -194,7 +228,7 @@ export const COMPACT_GROUPS: { group: string; sections: { key: CompactDensityKey
   { group: 'Strategy', sections: [
     { key: 'strategySummary', label: 'Summary Header' },
   ] },
-  { group: 'Stint', sections: [
+  { group: 'Trends', sections: [
     { key: 'stintSummary', label: 'Summary Cards' },
   ] },
   { group: 'Damage', sections: [

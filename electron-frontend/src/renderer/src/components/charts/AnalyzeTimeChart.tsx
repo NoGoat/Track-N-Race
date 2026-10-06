@@ -4,6 +4,8 @@ import {
   ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, analyzeSeriesHasLines, analyzeSeriesLineColor, analyzeSeriesMemberIds, analyzeSeriesScaleDef,
   type AnalyzeSeriesConfig, type AnalyzeSource,
 } from '../../lib/analyzeMetrics'
+import { ANALYSIS_Y_AXIS_SECTIONS, DEFAULT_CHART_Y_AXIS, type AnalysisFixedYRange, type AnalysisYAxisKey, type AnalysisYAxisState } from '../../lib/graphSections'
+import { useTelemetryStore } from '../../stores/telemetryStore'
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { createCursorLinesPlugin, type CursorLine, type CursorLinesConfig, type CursorLinesHandle } from '../../lib/timechart/cursorLines'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
@@ -53,6 +55,8 @@ export interface AnalyzeTimeChartProps {
   showMapCursors?: boolean
   mapCurrentColor?: string
   mapComparisonColor?: string
+  /** Settings ▸ Y Axis ▸ Analysis: Fixed or Dynamic per metric scale. */
+  yAxis?: AnalysisYAxisState
 }
 
 export interface AnalyzeChartControls {
@@ -92,6 +96,13 @@ const ANALYSIS_MOTION_DURATION = 260
 const COLLAPSED_PANEL_SPAN = 0.0001
 const MIN_ZOOM_SECONDS = 0.5
 const MIN_ZOOM_METRES = 25
+/** Dynamic Y axes pad the visible data by this fraction of its span, as the live charts' auto range. */
+const DYNAMIC_Y_PAD = 0.1
+const ANALYSIS_FIXED_Y_RANGES = new Map<AnalysisYAxisKey, AnalysisFixedYRange>(
+  ANALYSIS_Y_AXIS_SECTIONS.map(section => [section.key, section.range]))
+
+/** A value axis' drawn range, in the metric's normalized units (preset min..max = 0..1). */
+type YAxisRange = { lo: number; hi: number }
 
 function collapsedViewportAt(boundary: number): StackedViewport {
   const top = Math.max(0, Math.min(1 - COLLAPSED_PANEL_SPAN, boundary - COLLAPSED_PANEL_SPAN / 2))
@@ -424,6 +435,7 @@ export default function AnalyzeTimeChart({
   metricScope, showXAxis = true, interactionEnabled = true, stackedMode = false,
   tooltipEnabled = true, syncedTooltip = false, sectorBoundaries = false,
   showMapCursors = false, mapCurrentColor = '#ffffff', mapComparisonColor = '#ffffff',
+  yAxis = DEFAULT_CHART_Y_AXIS.analysis,
 }: AnalyzeTimeChartProps) {
   // Series topology is fixed for the lifetime of this chart. Stacked mode
   // includes every metric as channels on one shared WebGL canvas.
@@ -488,6 +500,10 @@ export default function AnalyzeTimeChart({
   const lastRealtimeCutoffRef = useRef(-Infinity)
   const syncPlaybackCursorRef = useRef<(() => void) | null>(null)
   const scratchRef = useRef(topology.scratch)
+  // Fitted value-axis ranges keyed by scale (overlay) or panel metric (stacked).
+  const yRangesRef = useRef(new Map<string, YAxisRange>())
+  const fitYRangesRef = useRef<(() => void) | null>(null)
+  const yAxisRef = useRef(yAxis)
 
   // Latest render values for the chart's imperative handlers and plugins.
   // Declared ahead of every effect below, so each of them sees this render.
@@ -506,6 +522,7 @@ export default function AnalyzeTimeChart({
     distanceModeRef.current = distanceMode
     onInspectMapRef.current = onInspectMap
     deltaColorsRef.current = { positive: themedDeltaPositive, negative: themedDeltaNegative }
+    yAxisRef.current = yAxis
   })
 
   useEffect(() => {
@@ -582,6 +599,7 @@ export default function AnalyzeTimeChart({
     const commitXDomain = ([min, max]: [number, number]) => {
       chart.options.xRange = null
       chart.model.xScale.domain([min, max])
+      fitYRangesRef.current?.()
       chart.model.requestRedraw()
     }
     const applyXDomain = (requestedMin: number, requestedMax: number) => {
@@ -745,6 +763,79 @@ export default function AnalyzeTimeChart({
     }
     seriesRef.current = records
 
+    // Fit each value axis to the samples inside the visible x window with the
+    // live charts' TimeChartView policies: Settings ▸ Y Axis ▸ Analysis
+    // Dynamic is its 'auto' range; Fixed is the range the live page chart for
+    // the same values uses ('fixed' or 'expand'). Values are stored normalized
+    // to the metric's preset range, so the result is applied as a per-series
+    // y range in those normalized units.
+    const fitYRanges = () => {
+      const xRange = chart.options.xRange
+      const [xMin, xMax] = xRange && xRange !== 'auto'
+        ? [Number(xRange.min), Number(xRange.max)]
+        : chart.model.xScale.domain().map(Number)
+      // Upper bounds the live Power page resolves at runtime: harvest follows
+      // the Formula (8 MJ in 2026), fuel the session's fuel load + 1 kg.
+      const store = useTelemetryStore.getState()
+      const protocol = store.protocolStatus
+      const harvestUpper = (protocol?.presentation_format ?? protocol?.active_format) === 2026 ? 8000 : 4000
+      const status = currentRef.current.statusHistory
+      const firstFuel = status.length ? status.num('fuel_kg', 0) : NaN
+      const fuelUpper = store.fuelUpperLimit ?? Math.max(1, (firstFuel === firstFuel ? firstFuel : 0) + 1)
+      const groups = new Map<string, { def: (typeof ANALYZE_METRICS)[number]; options: TimeChartSeriesOptions[] }>()
+      for (const item of selectedRef.current) {
+        if (item.metricId === 'delta' || !item.visible || !analyzeSeriesHasLines(item)) continue
+        const def = analyzeSeriesScaleDef(item.metricId)
+        if (!def) continue
+        const key = stackedMode ? item.metricId : def.scaleKey
+        let group = groups.get(key)
+        if (!group) groups.set(key, group = { def, options: [] })
+        for (const id of analyzeSeriesMemberIds(item)) {
+          const currentOption = records.current.get(id)
+          const comparisonOption = records.comparison.get(id)
+          if (currentOption) group.options.push(currentOption)
+          if (comparisonOption && comparisonRef.current) group.options.push(comparisonOption)
+        }
+      }
+      const ranges = new Map<string, YAxisRange>()
+      for (const [key, { def, options }] of groups) {
+        const span = def.max - def.min
+        let lo = Infinity, hi = -Infinity
+        for (const option of options) {
+          const data = option.data
+          if (data.length === 0) continue
+          const begin = Math.max(0, data.lowerBoundX(xMin) - 1)
+          const end = Math.min(data.length, data.lowerBoundX(xMax) + 1)
+          for (let index = begin; index < end; index++) {
+            const value = data.yAt(index)
+            if (value < lo) lo = value
+            if (value > hi) hi = value
+          }
+        }
+        const found = hi >= lo
+        lo = def.min + lo * span
+        hi = def.min + hi * span
+        const scaleKey = def.scaleKey as AnalysisYAxisKey
+        const fixed = ANALYSIS_FIXED_Y_RANGES.get(scaleKey) ?? { min: def.min, max: def.max }
+        let lower = fixed.min
+        let upper = scaleKey === 'harvest' ? harvestUpper : scaleKey === 'fuel' ? fuelUpper : fixed.max
+        if (found && yAxisRef.current[scaleKey] === 'dynamic') {
+          const pad = hi === lo ? Math.abs(hi) * 0.05 + 1 : (hi - lo) * DYNAMIC_Y_PAD
+          lower = lo - pad
+          upper = hi + pad
+        } else if (found && fixed.expand) {
+          if (hi > upper - fixed.expand.upperPad) upper = Math.ceil(hi + fixed.expand.upperPad)
+          if (fixed.expand.expandLower && lo < lower + fixed.expand.lowerPad) lower = Math.floor(lo - fixed.expand.lowerPad)
+        }
+        const range = { lo: (lower - def.min) / span, hi: (upper - def.min) / span }
+        ranges.set(key, range)
+        // Options leaving the chart keep their last range while they fade out.
+        for (const option of options) option.yRange = { min: range.lo, max: range.hi }
+      }
+      yRangesRef.current = ranges
+    }
+    fitYRangesRef.current = fitYRanges
+
     const move = (contentX: number, contentY: number) => {
       if (!tooltipEnabledRef.current) { hide(); return }
       const x = chart.model.xScale.invert(contentX + chart.options.paddingLeft) as number
@@ -816,6 +907,7 @@ export default function AnalyzeTimeChart({
       interactionNode.removeEventListener('contextmenu', preventContextMenu)
       interactionNode.removeEventListener('dblclick', onDoubleClick)
       if (controlsRef.current === controls) controlsRef.current = null
+      if (fitYRangesRef.current === fitYRanges) fitYRangesRef.current = null
       if (xDomainAnimationFrame) cancelAnimationFrame(xDomainAnimationFrame)
       stopTooltipSync(); chart.dispose()
       if (stackedViewportAnimationRef.current) cancelAnimationFrame(stackedViewportAnimationRef.current)
@@ -1143,6 +1235,13 @@ export default function AnalyzeTimeChart({
     chart.options.series.splice(0, chart.options.series.length, ...drawOrder, ...hidden)
 
     const axis = isDark ? '#7c8098' : '#596168'
+    // Tick positions stay at fixed fractions of the axis; their labels follow
+    // the fitted range, read at draw time so zoom and new data relabel them.
+    const axisValue = (key: string, fraction: number) => {
+      const range = yRangesRef.current.get(key)
+      return range ? range.lo + fraction * (range.hi - range.lo) : fraction
+    }
+    fitYRangesRef.current?.()
     if (stackedMode) {
       const left = panelItems.some(item => item.showYAxis) ? 48 : 12
       const renderedPanelItems = [...panelItems, ...exitingItems]
@@ -1150,6 +1249,7 @@ export default function AnalyzeTimeChart({
       const axisPanels = renderedPanelItems.map((item): StackedAxisPanel => {
         const def = analyzeSeriesScaleDef(item.metricId)
         const isDelta = item.metricId === 'delta'
+        const panelKey = item.metricId
         const transition = panelViewportAnimation.get(item.metricId)!
         // During an existing animation, `from` is the series' current
         // interpolated viewport. This keeps frequent telemetry-driven effect
@@ -1166,7 +1266,7 @@ export default function AnalyzeTimeChart({
             : undefined,
           yTickFormat: (normalized: number) => isDelta
             ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
-            : def ? def.axisFormat(def.min + normalized * (def.max - def.min)) : '',
+            : def ? def.axisFormat(def.min + axisValue(panelKey, normalized) * (def.max - def.min)) : '',
         }
       })
       stackedAxisPanelsRef.current = new Map(renderedPanelItems.map((item, index) => [item.metricId, axisPanels[index]]))
@@ -1281,7 +1381,7 @@ export default function AnalyzeTimeChart({
         values: Y_TICKS,
         format: (normalized: number) => entry.kind === 'delta'
           ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
-          : entry.def.axisFormat(entry.def.min + normalized * (entry.def.max - entry.def.min)),
+          : entry.def.axisFormat(entry.def.min + axisValue(entry.def.scaleKey, normalized) * (entry.def.max - entry.def.min)),
       }
     })
     axisHolder.current = {
@@ -1298,7 +1398,7 @@ export default function AnalyzeTimeChart({
         : undefined,
       yTickFormat: normalized => first?.kind === 'delta'
         ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
-        : first?.kind === 'metric' ? first.def.axisFormat(first.def.min + normalized * (first.def.max - first.def.min)) : '',
+        : first?.kind === 'metric' ? first.def.axisFormat(first.def.min + axisValue(first.def.scaleKey, normalized) * (first.def.max - first.def.min)) : '',
       xGap: 2, yGap: 4, showYGrid: axisCount > 0,
       extraYAxes,
     }
@@ -1312,7 +1412,7 @@ export default function AnalyzeTimeChart({
     if (hostRef.current) hostRef.current.style.color = axis
     chart.update()
     chart.model.resize(chart.clientWidth, chart.clientHeight)
-  }, [comparison, comparisonSelected, current, distanceMode, isDark, sectorBoundaries, selected, showXAxis, stackedMode, themedDeltaNegative, themedDeltaPositive, trackLengthM])
+  }, [comparison, comparisonSelected, current, distanceMode, isDark, sectorBoundaries, selected, showXAxis, stackedMode, themedDeltaNegative, themedDeltaPositive, trackLengthM, yAxis])
 
   useEffect(() => {
     let animationFrame = 0
@@ -1499,6 +1599,7 @@ export default function AnalyzeTimeChart({
       }
       chart.options.xRange = { min: 0, max }
       fullXRangeRef.current = { min: 0, max }
+      fitYRangesRef.current?.()
       chart.model.requestRedraw()
     }
     syncPlaybackCursorRef.current = syncData
