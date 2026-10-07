@@ -2,149 +2,149 @@
 
 ## Purpose
 
-Reduce telemetry memory growth during a live UDP session without changing the
-existing chart and lap-selector behaviour.
+Hold a live UDP session in memory the way a TNRD V6 file holds a recording, so
+live mode and playback share one data model, one reader and one renderer
+decode path, and so the session is processed once whether it is recorded or
+not.
 
-The TNRD Monaco experiment represented about 6.29 GiB of decompressed rows. The
-current realtime retention path held about 1.1 GiB of telemetry data near the
-end of the race. The proposed model keeps recent and selected laps immediately
-available and stores older history compressed in memory.
-
-In this document, a **family** means one telemetry row/packet family such as
-Telemetry, Status, Damage, Lap, Motion, or Motion Ex.
+The first version of this store (`LiveHistoryStore`, 2026-09-11) predated the
+V6 overhaul. It kept the player's laps only, by the old row families, as packed
+records and JSON strings, and compressed old laps as opaque zstd blobs, while
+the recorder ran its own V6 writer beside it. Both jobs are now done by one V6
+writer.
 
 ## Storage model
 
-Split live data by lap and family, following the same useful boundary as the
-TNRD container:
+The recorder, `TnrdWriter`, owns the session's one `TnrdV6Writer`. On hosts
+that read live history it is opened with `openMemory()` for the whole session
+(`TnrdWriter::setRetainSession`), recording or not. It is the V6 file
+architecture of [TNRD_V6_DESIGN.md](TNRD_V6_DESIGN.md), held in memory:
 
 ```text
-Lap
-├─ Telemetry
-├─ Status
-├─ Damage
-├─ Lap
-├─ Motion
-└─ Motion Ex
+Driver (every participating car, by vehicle index)
+└─ Lap (file-local lap ID, game lap number, phase, summary)
+   └─ Data type (Speed, RPM, … LapTiming)
 ```
 
-Keep these lap roles uncompressed:
+- Open laps, and completed laps still inside the 30 s write delay, are
+  `SampleColumns` builders: typed columns at their encoded widths.
+- When a lap's delay passes it is committed exactly as a file commits it: lap
+  clock, V6C1 column chunks, Zstandard level 9. The frames stay in memory,
+  indexed by `V6ChunkInfo::offset`.
+- Shared records (session, participants, race events) are deduplicated and
+  delayed as in a file. Committed ones stay plain JSON in memory rather than
+  zstd-chained, so a deep rewind can drop them without re-decoding the chain.
+- Driver headers and lap summaries are the writer's own committed and live
+  metadata.
 
-- Current lap
-- Previous lap
-- Previous-previous lap
-- Fastest lap
+## Recording
 
-Roles reference laps rather than owning copies. If the fastest lap is also the
-previous lap, there is only one uncompressed lap in memory for both roles.
+Recording attaches a file to that same writer (`TnrdV6Writer::attachFile`)
+when the session packet that starts a recording arrives, exactly where a file
+used to be opened:
 
-Older laps are stored compressed by family. Compression happens away from the
-UDP thread after a lap is no longer part of the uncompressed working set.
+- The file first receives everything committed so far, frame for frame, and
+  the shared records compressed and chained as a file holds them. A recording
+  switched on part-way through a session therefore starts at the session's
+  beginning.
+- Each later commit is compressed once and kept in memory, and the same frame is
+  appended to the file.
+- `detachFile` (recording switched off, session end, a new session, playback
+  opening the file) writes the laps still being built and the pending shared
+  records to the file alone, open laps as partial, then the index, as
+  `finish()` does. The session carries on in memory.
+- A failed write closes the file where it stands (recovery scan still reads it)
+  and is reported; the session is unaffected, and the next session packet
+  starts another file holding all of it.
+- Checkpoints (`flushToDisk`, before playback opens the active recording) index
+  the file as before.
 
-## Normal lap rollover
+Hosts that do not read live history (Android, the minimal frontend, the capture
+converter) keep the previous behaviour: one file writer per recording, nothing
+held while not recording.
 
-Before crossing from lap `N` to lap `N+1`:
+## Ingestion
 
-```text
-Current             N
-Previous            N-1
-Previous-previous   N-2
-```
+Each datagram's rows reach `TnrdWriter` once, with its timeline time, when it
+records or retains the session. The engine then parses every packet family
+with the hot rows also serialised as JSON, because the all-car arrays exist
+only there.
 
-After the boundary:
+## Rewinds and sessions
 
-```text
-Current             N+1
-Previous            N
-Previous-previous   N-1
-```
+- Only an FLBK event rewinds the writer, as for any recording. A bare clock
+  reset, such as the formation lap ending, is a phase change for the writer.
+  The engine still invalidates in-flight reads for it.
+- A rewind into laps still being built is the writer's normal rewind.
+- A rewind that reaches committed laps is refused by a plain file writer.
+  Memory can take them back: `TnrdV6Writer::Impl::uncommit` decodes every
+  committed lap of the phase with a sample at or after the target back into
+  builders, returns it to its driver's pending laps, and drops committed shared
+  records and restriction changes from the target on. The normal rewind then
+  reopens or drops those laps, and each affected driver's committed state is
+  replayed from the laps that remain. An attached file is then rewritten from
+  memory beside the original and swapped in, so it never holds the abandoned
+  timeline.
+- A new session UID drops the retained session (`TnrdWriter::resetSession`),
+  finishing its file.
 
-Lap `N-2` can be compressed unless it is also the fastest lap or is currently
-decompressed for an onscreen All Laps graph.
+## Reads
 
-## Rewind behaviour
+`LiveV6Store` is the read side. It asks the writer thread for a
+`V6MemoryImage` (committed chunk frames shared by pointer, laps still being
+built encoded for the image, lap summaries, driver headers and the requested
+shared records), built after every event queued before the request. Its own
+read thread opens the image with `TnrdV6Archive::openMemory()` and reads it as
+playback reads a file.
 
-A rewind is short enough that crossing at most the immediately preceding lap
-boundary is the case this design needs to keep ready.
+| Consumer | Read |
+| --- | --- |
+| Chart backfill (`applyDataRequirements`) | `columnarHistory` for the player, seeded at the range start, plus race events as JSON lines |
+| Host restore (`issueLiveRestoreLocked`) | The same, with separate chart and event starts |
+| Live fastest lap (`liveGetFastestLap`) | The player's fastest completed lap from its lap summaries, its chart families as V6H1 (base64 in `live_fastest_lap_data`) |
+| Live Previous / Fastest (`liveGetLapData`) | One lap by number, read the same way (`live_lap_data`). Electron asks on every lap change, restore, rewind and whenever a chart shows Previous or Fastest, and replaces its own snapshot, which has holes for anything received while the window was hidden |
+| Deep Strategy rollback | `TnrdReader::loadV6ArchiveForStrategy` on an image of the Strategy types, then `strategySnapshotAt`, as a V6 recording's playback rebuild |
 
-Before a rewind from lap `N` into lap `N-1`:
+A read requested before the timeline moved reports stale, as before.
 
-```text
-Current             N
-Previous            N-1
-Previous-previous   N-2
-```
+The archive normally exposes the race phase only. An image taken while the
+session is still on its formation lap exposes that phase instead.
 
-After the rewind:
+## Frontends
 
-```text
-Current             N-1   (truncate to the rewind target)
-Previous            N-2
-Previous-previous   empty
-```
+- **Electron:** live backfills and restores arrive as V6H1, decoded by
+  `decodeV6History`. A backfill is merged by time with the rows held (laps
+  missed while hidden sit between held ones, so a prefix install would leave
+  them empty); a restore replaces its range. Race events are read from the
+  cold JSON beside the blocks. Live Previous and Fastest decode their base64
+  V6H1 laps from the store. The engine delivers a backfill whose families are
+  still subscribed even when newer requirements arrived meanwhile, since those
+  would not ask for them again.
+- **Qt:** live backfills already pass through `TnrdPlayer::decodeHistory`,
+  whose V6H1 path (`decodeColumnarHistory`) now serves them too. Qt shows no
+  race events from history.
+- The store's bytes are counted once, under the recording writer's diagnostics.
+  `live_history` / `native_live_history` show its figures with a zero
+  `retained_bytes`.
 
-Discard invalid future data from lap `N`. Do not decode lap `N-3` merely to
-refill Previous-previous. That role exists only so the Previous selector remains
-available immediately when a rewind crosses the lap boundary.
+## Threads
 
-When the session rolls forward into lap `N` again, the normal roles are restored
-from the laps already in memory:
+- The UDP thread queues each packet's events on `TnrdWriter`, as recording did.
+- The writer thread owns the V6 writer: rows, the write delay, compression,
+  the attached file, rewinds and image building.
+- `LiveV6Store`'s read thread decodes images and runs read callbacks. A long
+  All Laps read never holds up ingestion.
+- Strategy's deep rollback blocks the Strategy worker until its image is built.
 
-```text
-Current             N
-Previous            N-1
-Previous-previous   N-2
-```
+## Costs
 
-If a rewind invalidates the recorded fastest lap, select the previous valid
-fastest from lap-time metadata and decode that lap only if it is not already in
-the uncompressed working set.
+- On the desktop hosts, live parsing always produces every family and the hot
+  JSON rows, recording or not.
+- Every car is held, not only the player.
 
-## All Laps mode
+These were accepted without measurement.
 
-All Laps decompression is driven only by onscreen graph requirements.
+## Status
 
-- Build the requested-family mask from the visible graphs.
-- Decompress only those families across historical laps.
-- Share one decompressed family between every visible graph that requests it.
-- Reuse the already-uncompressed Current, Previous, Previous-previous, and
-  Fastest laps rather than creating copies.
-- When no onscreen graph requests a family, release its decompressed historical
-  data while retaining the compressed copy.
-- A hidden or disabled graph must not keep its family decompressed.
-
-For example, an All Laps tyre-wear graph decompresses Damage history only. It
-does not also decompress Telemetry, Status, Motion, or Motion Ex.
-
-## Performance requirements
-
-- UDP parsing and delivery must not wait for compression or decompression.
-- Seal a completed lap quickly and perform compression on a worker.
-- Decompression requests must be cancellable or safely ignored when the visible
-  graph requirements change before the work finishes.
-- Compressed data remains the canonical historical copy so decoded All Laps
-  data can be released immediately.
-- Existing hot-row batching and chart rendering behaviour remains unchanged.
-
-## Scope
-
-This is an in-memory retention change for live UDP sessions. It does not require
-a new TNRD file-format version and does not change normal playback storage.
-
-## Implementation status
-
-The first implementation slice is in place:
-
-- `LiveHistoryStore` owns live rows by lap and family.
-- Current, Previous, Previous-previous, and Fastest are role references to lap
-  segments; older eligible laps are compressed with Zstandard on a worker.
-- live range backfills are asynchronous and family-selective.
-- stale range results are ignored after a reset, rewind, or newer renderer
-  requirements request.
-- the renderer trims ordinary live source buffers to three laps and keeps the
-  existing Previous/Fastest snapshots for selectors.
-- rewind truncates the target lap, promotes the two recent roles, leaves
-  Previous-previous empty, and invalidates a future Fastest role.
-
-Runtime memory counters and fixture-driven end-to-end profiling remain follow-up
-validation work; they are not part of the storage mechanism itself.
+Implemented 2026-10-07; not built or run. `LiveHistoryStore` and its test were
+removed.

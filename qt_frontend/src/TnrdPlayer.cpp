@@ -928,7 +928,8 @@ TnrdPlayer::decodeHistory(const std::shared_ptr<EngineSeekFlush>& flush,
         binaryLength = flush->binaryEnd - flush->binaryBegin;
     }
     // TNRD V6 with columnar history: typed column blocks straight from the
-    // recording, no JSON. Like Electron, the cold JSON is not consulted.
+    // recording, or in live mode from the engine's V6 store, no JSON. The cold
+    // JSON beside them holds only live race events, which history never shows.
     if (isV6HistoryPayload(binary, binaryLength)) {
         decodeColumnarHistory(*result, binary, binaryLength);
         sortAndCap(result->data.telBuf);

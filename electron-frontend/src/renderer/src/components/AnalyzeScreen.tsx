@@ -20,7 +20,7 @@ import { tyreCompoundColor } from '../lib/tyreCompounds'
 import { useModalPresence, useModalPresenceValue } from '../lib/useModalPresence'
 import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
-import { buildLapProgressMap, findSectorSplits, type LapProgressMap } from '../lib/lapDelta'
+import { buildLapProgressMap, findSectorSplits, interpolateDistanceAtTime, type LapProgressMap } from '../lib/lapDelta'
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../lib/playbackCursor'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { emptyView, viewOfRows } from '../lib/columnStore'
@@ -186,19 +186,8 @@ function interpolateDeltaAtDistance(samples: readonly AnalyzeDeltaSample[], dist
 }
 
 function interpolateDistanceAtSessionTime(progress: LapProgressMap, sessionTime: number): number | null {
-  const points = progress.points
-  if (sessionTime < points[0].session_time || sessionTime > progress.maxSessionTime) return null
-  let lo = 1, hi = points.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (points[mid].session_time < sessionTime) lo = mid + 1
-    else hi = mid
-  }
-  if (lo >= points.length) return points[points.length - 1].lap_distance_m
-  const before = points[lo - 1], after = points[lo]
-  const span = after.session_time - before.session_time
-  const ratio = span > 0 ? (sessionTime - before.session_time) / span : 1
-  return before.lap_distance_m + (after.lap_distance_m - before.lap_distance_m) * ratio
+  if (sessionTime < progress.time[0] || sessionTime > progress.maxSessionTime) return null
+  return interpolateDistanceAtTime(progress, sessionTime)
 }
 
 function splitSectorDeltaSamples(samples: readonly AnalyzeDeltaSample[]): AnalyzeDeltaSample[][] {

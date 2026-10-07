@@ -346,7 +346,7 @@ result = held[t < from] ++ incoming[from ≤ t ≤ through] ++ held[t > through]
 | Area | File |
 | --- | --- |
 | Engine | `protocol_parser_library/include/tnrp/Engine.h`, `protocol_parser_library/src/Engine.cpp` (`setHostVisible`, hidden tracking, restore request, rewind floor) |
-| Live store | `protocol_parser_library/src/LiveHistoryStore.h/.cpp` (multi-range request) |
+| Live store | `protocol_parser_library/src/LiveV6Store.h/.cpp` (history request with events; replaced `LiveHistoryStore`, see [LIVE_TELEMETRY_MEMORY_DESIGN.md](LIVE_TELEMETRY_MEMORY_DESIGN.md)) |
 | Addon | `electron-frontend/node_addon/addon.cpp` (`setHostVisible`, new `onSeekFlush` arguments) |
 | Main | `electron-frontend/src/main/bridgeManager.ts` (remove cache, call engine, payload fields), `electron-frontend/src/main/binaryRows.ts` (remove `chartHistoryRecords` if unused), `electron-frontend/src/main/diagnostics.ts` (remove resume fields) |
 | Preload | `electron-frontend/src/preload/index.ts` (remove `onResume`) |
@@ -381,7 +381,7 @@ Implemented; not yet built or tested.
 | Area | Where |
 | --- | --- |
 | Restore callback | `Sink::onRestoreFlush` + `Sink::RestoreFlushInfo` (`include/tnrp/Sink.h`). The default is a no-op, so Qt is unaffected |
-| Multi-range read | `LiveHistoryStore::requestRanges` (with an `onStale` callback) |
+| Multi-range read | `LiveV6Store::requestHistory`: chart families from one start, race events from another (with a `stale` callback) |
 | Engine | `Engine::setHostVisible`, `noteHostTimelineMovedLocked`, `issueLiveRestoreLocked`, `runPlaybackRestore`, `hostLatestRowsLocked`, `resetLiveSessionHistoryLocked` |
 | Addon | `setHostVisible(visible, sequence)` runs on an `EngineCallWorker`. Restores share the seek-flush TSFN, with an 11th `restore` argument |
 | Main | Resume cache, `chartHistoryRecords` and the resume diagnostics removed. `setRendererVisible` calls the engine |
@@ -400,9 +400,8 @@ Differences from the design above:
   - Hiding again before a live restore is delivered folds its start and its
     session change into the new hidden period.
 - **Session change.** On a header `m_sessionUID` change the live history store
-  is reset. A new session's times restart near zero, and
-  `LiveHistoryStore::rewind` can't trim the old session for that, because no
-  old lap starts early enough.
+  is reset. A new session's times restart near zero, and a rewind can't trim
+  the old session for that, because no old lap starts early enough.
 - **Lap times after a gap.** `onLap` now files `last_lap_ms` under
   `lap_num - 1` rather than the previous lap the renderer saw. The two are
   only different after a hidden gap.
@@ -414,8 +413,8 @@ Differences from the design above:
   payload, that row was the last one held before hiding, so ERS and tyre wear
   began at their pre-hide values (100% and 100/100/99/99 after a formation
   lap).
-  - **Live:** `RangeSpec::seedMask` makes the history store add the newest
-    status and damage row strictly before the chart range, with its real time.
+  - **Live:** the live V6 store's history is read as V6 playback's is, so
+    each field is seeded at the range start (see V6 below).
   - **V1–V5 playback:** the restore adds the same rows from
     `latestOfTypesTagged`. V1–V5 status is cut strictly at the range start, and
     their damage is resampled from it.

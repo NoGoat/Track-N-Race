@@ -44,6 +44,15 @@ public:
         nextOrdinal_ = 0;
     }
 
+    // Continues from a processor rebuilt elsewhere at `time`, e.g. replayed
+    // from the live V6 store after a rewind deeper than the journal. Its
+    // checkpoints start again from here.
+    void adopt(StrategyProcessor processor, float time) {
+        reset();
+        processor_ = std::move(processor);
+        if (std::isfinite(time)) time_ = time;
+    }
+
     void ingest(float time, std::shared_ptr<const std::string> json) {
         if (!json) return;
         // An initial state is saved after the caller applies configuration.

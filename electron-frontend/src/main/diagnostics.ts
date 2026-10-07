@@ -36,6 +36,7 @@ let memoryLogSubscriptionInstalled = false
 let fatalFlushHandler: (() => boolean) | null = null
 let telemetryRetentionProvider: (() => Record<string, unknown>) | null = null
 let latestRendererTelemetryRetention: Record<string, unknown> | null = null
+let latestRendererRuntimeMemory: Record<string, unknown> | null = null
 let telemetryRetentionCaptureInstalled = false
 
 export function setTelemetryRetentionProvider(
@@ -117,7 +118,11 @@ function installTelemetryRetentionCapture(): void {
       // Electron IPC wrapper or an unexpectedly large renderer-owned object.
       const json = JSON.stringify(value)
       if (json.length > 256 * 1024) return
-      latestRendererTelemetryRetention = JSON.parse(json) as Record<string, unknown>
+      const { runtime_memory: runtime, ...retention } = JSON.parse(json) as Record<string, unknown>
+      latestRendererTelemetryRetention = retention
+      latestRendererRuntimeMemory = runtime && typeof runtime === 'object' && !Array.isArray(runtime)
+        ? runtime as Record<string, unknown>
+        : null
     } catch {
       // Diagnostics input is best-effort and must never affect the application.
     }
@@ -231,6 +236,33 @@ function writeRamUsageSample(): void {
       main: mainTelemetryRetention,
       renderer: rendererTelemetryRetention,
     }
+    const rendererRuntime = latestRendererRuntimeMemory
+    const rendererProcessMetric = rendererRuntime
+      ? processes.find(metric => metric.pid === rendererRuntime.pid) ?? null
+      : null
+    const rendererPrivateBytes = rendererProcessMetric?.private_kb === null || rendererProcessMetric?.private_kb === undefined
+      ? null
+      : rendererProcessMetric.private_kb * 1024
+    const rendererV8 = rendererRuntime?.v8 as Record<string, unknown> | undefined
+    const rendererBlink = rendererRuntime?.blink as Record<string, unknown> | undefined
+    const rendererRuntimeMemory = rendererRuntime ? {
+      type: 'RendererRuntimeMemory',
+      name: 'Renderer V8/Blink runtime',
+      already_included_in_process_totals: true,
+      sample_age_ms: Number.isFinite(rendererSampledAt) ? Math.max(0, Date.now() - rendererSampledAt) : null,
+      ...rendererRuntime,
+      process_metric: {
+        working_set_bytes: rendererProcessMetric ? rendererProcessMetric.working_set_kb * 1024 : null,
+        private_bytes: rendererPrivateBytes,
+        // As for main: a trend, not an ownership total. What is left after the
+        // V8 heap and Blink's allocations is mostly compositor, raster and
+        // allocator overhead.
+        private_minus_v8_heap_and_blink_bytes: rendererPrivateBytes === null
+          ? null
+          : Math.max(0, rendererPrivateBytes -
+            finiteNumber(rendererV8?.total_heap_size_bytes) - finiteNumber(rendererBlink?.total_bytes)),
+      },
+    } : null
     const sample = {
       timestamp: new Date().toISOString(),
       elapsed_ms: Date.now() - ramUsageStartedAt,
@@ -240,14 +272,16 @@ function writeRamUsageSample(): void {
         : null,
       process_count: processes.length,
       processes,
-      category_count: processes.length + 2,
+      category_count: processes.length + 2 + (rendererRuntimeMemory ? 1 : 0),
       categories: [
         ...processes.map(processMetric => ({ category: 'process', ...processMetric })),
         { category: 'telemetry_data', ...telemetryData },
         { category: 'main_runtime_memory', ...mainRuntimeMemory },
+        ...(rendererRuntimeMemory ? [{ category: 'renderer_runtime_memory', ...rendererRuntimeMemory }] : []),
       ],
       telemetry_data: telemetryData,
       main_runtime_memory: mainRuntimeMemory,
+      renderer_runtime_memory: rendererRuntimeMemory,
     }
 
     fs.writeSync(ramUsageLogFd, `${JSON.stringify(sample)}\n`)
@@ -300,6 +334,7 @@ function stopRamUsageProfiler(): void {
     ramUsageLogFd = null
   }
   latestRendererTelemetryRetention = null
+  latestRendererRuntimeMemory = null
 }
 
 function configureMemoryLog(enabled: boolean): void {

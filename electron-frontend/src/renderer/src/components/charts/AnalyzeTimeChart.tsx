@@ -11,7 +11,7 @@ import { createCursorLinesPlugin, type CursorLine, type CursorLinesConfig, type 
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/core/alignedData'
 import type { TimeChartSeriesOptions } from '../../lib/timechart/engine/options'
-import { buildLapProgressMap, findSectorSplits, interpolateLapElapsed, type LapProgressMap, type SectorSplit } from '../../lib/lapDelta'
+import { buildLapProgressMap, findSectorSplits, interpolateDistanceAtTime, interpolateLapElapsed, type LapProgressMap, type SectorSplit } from '../../lib/lapDelta'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { themeSeriesColor } from '../../lib/themeColors'
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../../lib/playbackCursor'
@@ -140,22 +140,6 @@ function makeBuffers(
   }
 }
 
-function interpolateDistance(progress: LapProgressMap, sessionTime: number): number {
-  const points = progress.points
-  if (sessionTime < points[0].session_time || sessionTime > progress.maxSessionTime) return NaN
-  let lo = 1, hi = points.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (points[mid].session_time < sessionTime) lo = mid + 1
-    else hi = mid
-  }
-  if (lo >= points.length) return points[points.length - 1].lap_distance_m
-  const before = points[lo - 1], after = points[lo]
-  const span = after.session_time - before.session_time
-  const ratio = span > 0 ? (sessionTime - before.session_time) / span : 1
-  return before.lap_distance_m + (after.lap_distance_m - before.lap_distance_m) * ratio
-}
-
 function nearestIndex(data: SeriesData, x: number): number {
   if (data.length === 0) return -1
   const after = data.lowerBoundX(x)
@@ -263,7 +247,7 @@ function syncSourceDistance(
     const sessionTime = rows.time(row)
     if (sessionTime > progress.maxSessionTime || sessionTime > maxSessionTime) break
     cursor.value = sessionTime
-    const distance = interpolateDistance(progress, sessionTime)
+    const distance = interpolateDistanceAtTime(progress, sessionTime)
     if (!Number.isFinite(distance)) { i = next; continue }
     for (let channel = 0; channel < defs.length; channel++) {
       const def = defs[channel]
@@ -1468,7 +1452,7 @@ export default function AnalyzeTimeChart({
         const x = Number.isNaN(clamped)
           ? NaN
           : distanceMode
-            ? progress ? interpolateDistance(progress, lap.startSessionTime + clamped) : NaN
+            ? progress ? interpolateDistanceAtTime(progress, lap.startSessionTime + clamped) : NaN
             : clamped
         if (x === lines[index].x || (Number.isNaN(x) && Number.isNaN(lines[index].x))) continue
         lines[index].x = x
@@ -1558,7 +1542,7 @@ export default function AnalyzeTimeChart({
       if (distanceMode) {
         const currentProgress = progressByRole.current
         const cursorDistance = realtimeCurrent && currentProgress
-          ? interpolateDistance(currentProgress, currentCutoff)
+          ? interpolateDistanceAtTime(currentProgress, currentCutoff)
           : Infinity
         const currentMaxDistance = realtimeCurrent
           ? Number.isFinite(cursorDistance) ? cursorDistance : 0

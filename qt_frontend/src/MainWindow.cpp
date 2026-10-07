@@ -1543,16 +1543,22 @@ QJsonObject MainWindow::memoryDiagnosticsSnapshot() const {
         runtimeJson["parser_binary_bytes_produced"] = number(runtime.parserBinaryBytesProduced);
         snapshot["native_engine_runtime"] = runtimeJson;
 
+        // The engine's live V6 store: laps being built, and committed chunks.
+        // It is the recording writer's V6 writer, so its bytes are counted
+        // under native_recording_writer and retained_bytes here is 0.
         QJsonObject historyJson;
         historyJson["retained_bytes"] = number(history.retainedBytes);
-        historyJson["lap_count"] = number(history.lapCount);
-        historyJson["pinned_lap_count"] = number(history.pinnedLapCount);
-        historyJson["compressed_lap_count"] = number(history.compressedLapCount);
-        historyJson["packed_capacity_bytes"] = number(history.packedCapacityBytes);
-        historyJson["json_rows"] = number(history.jsonRows);
-        historyJson["json_payload_capacity_bytes"] = number(history.jsonPayloadCapacityBytes);
-        historyJson["compressed_capacity_bytes"] = number(history.compressedCapacityBytes);
+        historyJson["builder_capacity_bytes"] = number(history.builderCapacityBytes);
+        historyJson["pending_lap_count"] = number(history.pendingLapCount);
+        historyJson["pending_lap_bytes"] = number(history.pendingLapBytes);
+        historyJson["committed_lap_count"] = number(history.committedLapCount);
+        historyJson["chunk_count"] = number(history.chunkCount);
+        historyJson["chunk_bytes"] = number(history.chunkBytes);
+        historyJson["shared_records"] = number(history.sharedRecords);
+        historyJson["shared_bytes"] = number(history.sharedBytes);
         historyJson["queued_jobs"] = number(history.queuedJobs);
+        historyJson["queued_row_bytes"] = number(history.queuedRowBytes);
+        historyJson["queued_reads"] = number(history.queuedReads);
         snapshot["native_live_history"] = historyJson;
 
         QJsonObject strategyJson;

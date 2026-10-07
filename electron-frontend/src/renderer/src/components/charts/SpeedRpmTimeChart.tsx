@@ -514,14 +514,15 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       }
       if (manager?.isEnabled()) {
         hide()
-        const rect = hostRef.current?.getBoundingClientRect()
-        if (!rect) return
         const axisX = chart.model.xScale.invert(pointer.x) as number
         const plotHeight = chart.clientHeight - chart.options.paddingTop - chart.options.paddingBottom
         const plotYRatio = plotHeight > 0
           ? Math.max(0, Math.min(1, (pointer.y - chart.options.paddingTop) / plotHeight))
           : 0
-        manager.publish('overviewTelemetry', axisX, plotYRatio, rect.left + pointer.x, rect.top + pointer.y)
+        // The detector's cached client position avoids measuring the host
+        // here; this runs on every chart frame while hovered.
+        const detector = chart.contentBoxDetector
+        manager.publish('overviewTelemetry', axisX, plotYRatio, detector.clientX, detector.clientY)
         return
       }
       const px = pointer.x - chart.options.paddingLeft + 44

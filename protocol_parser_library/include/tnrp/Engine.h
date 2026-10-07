@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,7 +25,7 @@
 
 namespace tnrp {
 
-namespace detail { class LiveHistoryStore; class TnrdV6Archive; }
+namespace detail { class LiveV6Store; class TnrdV6Archive; }
 
 // Orchestrates the whole telemetry pipeline and is the only class consumers
 // (the bridge, later the native app) construct directly. It wires:
@@ -67,42 +68,38 @@ public:
         float consumerWindowSeconds = 0.0f;
     };
 
+    // The live session's V6 store, which is the recorder's V6 writer kept in
+    // memory (TnrdWriter::setRetainSession). Its bytes are already part of
+    // writerMemoryStats().retainedBytes, so retainedBytes here stays 0 and
+    // nothing is counted twice.
     struct LiveHistoryMemoryStats {
         size_t retainedBytes{};
-        size_t lapCount{};
-        size_t pinnedLapCount{};
-        size_t compressedLapCount{};
-        size_t busyLapCount{};
-        size_t packedBytes{};
-        size_t packedCapacityBytes{};
-        size_t jsonRows{};
-        size_t jsonPayloadBytes{};
-        size_t jsonPayloadCapacityBytes{};
-        size_t jsonContainerCapacityBytes{};
-        size_t sequenceEntries{};
-        size_t sequenceCapacityBytes{};
-        size_t compressedPlainBytes{};
-        size_t compressedBytes{};
-        size_t compressedCapacityBytes{};
+        bool sessionRetained{};
+        bool fileAttached{};
+        size_t builderCount{};
+        size_t builderBytes{};
+        size_t builderCapacityBytes{};
+        size_t pendingLapCount{};
+        size_t pendingLapBytes{};
+        size_t committedLapCount{};
+        size_t chunkCount{};
+        size_t chunkBytes{};
+        size_t sharedRecords{};
+        size_t sharedBytes{};
+        uint64_t uncommittedLaps{};
+        uint64_t chunkWrites{};
+        uint64_t chunkPlainBytesProcessed{};
+        uint64_t chunkCompressedBytes{};
+        size_t compressionScratchCapacityBytes{};
+        size_t compressionContextBytes{};
         size_t queuedJobs{};
-        int activeJobKind{};
-        uint64_t compressionJobs{};
-        uint64_t compressedFamilies{};
-        uint64_t compressionPlainBytesProcessed{};
-        uint64_t compressionPlainBufferBytesAllocated{};
-        uint64_t compressionBufferBytesAllocated{};
-        uint64_t compressedOutputBytesAllocated{};
-        size_t lastCompressionPlainBytes{};
-        size_t lastCompressionBufferBytes{};
-        size_t lastCompressionScratchBytes{};
-        size_t peakCompressionPlainBytes{};
-        size_t peakCompressionBufferBytes{};
-        size_t peakCompressionScratchBytes{};
-        uint64_t decompressionJobs{};
-        uint64_t decompressionBufferBytesAllocated{};
-        size_t lastDecompressionBufferBytes{};
-        size_t peakDecompressionBufferBytes{};
-        uint64_t rangeJobs{};
+        size_t queuedRows{};
+        size_t queuedRowBytes{};
+        size_t queuedReads{};
+        uint64_t imagesReceived{};
+        uint64_t readsCompleted{};
+        size_t lastImageEncodedBytes{};
+        size_t peakImageEncodedBytes{};
     };
 
     struct StrategyRollbackMemoryStats {
@@ -231,6 +228,11 @@ public:
     std::string playerGetAnalysisLapData(int lapNum, uint32_t rowTypeMask,
                                          int driverIndex) const;
     void liveGetFastestLap(uint64_t requestId);
+    // One of the player's laps from the live V6 store, answered with a
+    // live_lap_data row: its chart families as V6 column blocks (base64), the
+    // committed lap decompressed, or the lap still inside the write delay read
+    // from its builders. Live Previous and Fastest read their laps this way.
+    void liveGetLapData(uint64_t requestId, int lapNum);
     // The car whose lap-times view is open (-1 when none). While set, the
     // engine emits that car's driver_lap_history row now and again only when
     // it changes: a completed lap (live), the cursor passing a lap end or a
@@ -346,10 +348,13 @@ private:
         uint64_t sequence{};
         std::shared_ptr<const std::string> json;
     };
-    std::unique_ptr<detail::LiveHistoryStore> liveHistory_;
-    uint64_t          liveHistorySequence_ = 0;
-    std::array<float, 16> liveHistoryLastSample_{};
-    std::array<int, 16> liveHistoryLastLap_{};
+    // Reads of the live session, which writer_'s one V6 writer holds as a
+    // TNRD V6 file holds it: every car, by lap and data type
+    // (Config::binaryPlayback hosts only).
+    std::unique_ptr<detail::LiveV6Store> liveV6_;
+    uint64_t          liveStrategySequence_ = 0;
+    // The player's lap starts, for putting the lap back after a rewind.
+    std::map<int, float> liveLapStarts_;
     // Event vehicle indices are uint8. A finite entry means that car already
     // retired on the surviving live timeline.
     std::array<float, 256> liveRetirementTimes_{};

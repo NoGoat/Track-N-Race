@@ -143,6 +143,21 @@ export function useChartTooltip(boundaryRef: React.RefObject<HTMLElement | null>
     placeTooltip(el, state)
   }, [boundaryRef])
 
+  // Viewport-coordinate variant of `show` for synced cursors. It reuses the
+  // boundary origin cached on show/resize/scroll instead of measuring the
+  // boundary on every pointer frame.
+  const showAtClient = useCallback((html: string, clientX: number, clientY: number) => {
+    const state = stateRef.current
+    if (!state.visible) {
+      const rect = boundaryRef.current?.getBoundingClientRect()
+      if (rect) {
+        state.boundaryLeft = rect.left
+        state.boundaryTop = rect.top
+      }
+    }
+    show(html, clientX - state.boundaryLeft, clientY - state.boundaryTop)
+  }, [boundaryRef, show])
+
   const hide = useCallback(() => {
     const el = tooltipRef.current
     if (el && stateRef.current.visible) {
@@ -151,5 +166,5 @@ export function useChartTooltip(boundaryRef: React.RefObject<HTMLElement | null>
     }
   }, [])
 
-  return { tooltipRef, show, hide }
+  return { tooltipRef, show, showAtClient, hide }
 }

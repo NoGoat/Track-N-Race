@@ -20,7 +20,7 @@
 
 namespace tnrp {
 
-namespace detail { class TnrdIndexedArchive; struct V4TimedRow; class V6RowSource; }
+namespace detail { class TnrdIndexedArchive; class TnrdV6Archive; struct V4TimedRow; class V6RowSource; }
 
 // Reads TNRD V1/gzip, V2/V3 monolithic Zstandard, and V4/V5 indexed chunked
 // Zstandard files. load() detects the container signature; the legacy JSON
@@ -45,6 +45,12 @@ public:
     bool load(const std::string& path, HeaderRow& outHeader);
     bool loadZstd(const std::string& path, HeaderRow& outHeader);
     bool loadGzip(const std::string& path, HeaderRow& outHeader);
+    // Adopts a V6 archive that is already open, such as one over a live
+    // session's memory image (TnrdV6Archive::openMemory), for Strategy
+    // reconstruction only: no playback cursor or sector metadata is prepared,
+    // so strategySnapshotAt() is the one meaningful call afterwards.
+    bool loadV6ArchiveForStrategy(std::unique_ptr<detail::TnrdV6Archive> archive,
+                                  const HeaderRow& header);
     void close();
     bool isLoaded() const;
     TnrdFormat loadedFormat() const { return loadedFormat_; }

@@ -224,6 +224,14 @@ void TnrdWriter::publishMemoryStatsOnWriterThread(bool force) {
         stats.v6LastCheckpointRowIndexBytes = v6.lastCheckpointRowIndexBytes;
         stats.v6PeakCheckpointRowIndexBytes = std::max(
             stats.v6PeakCheckpointRowIndexBytes, v6.peakCheckpointRowIndexBytes);
+        stats.sessionRetained = retainSession_;
+        stats.sessionFileAttached = v6Writer_->hasFile();
+        stats.v6PendingLapCount = v6.pendingLapCount;
+        stats.v6PendingLapBytes = v6.pendingLapPlainBytes;
+        stats.v6MemoryChunkBytes = v6.memoryChunkBytes;
+        stats.v6MemorySharedRecords = v6.memorySharedRecords;
+        stats.v6MemorySharedBytes = v6.memorySharedBytes;
+        stats.v6UncommittedLaps = v6.uncommittedLaps;
     }
     stats.retainedBytes = stats.rollingPayloadCapacityBytes +
         stats.rollingContainerCapacityBytes + stats.dedupePayloadCapacityBytes +
@@ -311,6 +319,124 @@ void TnrdWriter::setLoggingZstd(bool enabled, const std::string& outputDir) {
 
 void TnrdWriter::setLoggingGzip(bool enabled, const std::string& outputDir) {
     setLoggingForFormat(enabled, outputDir, TnrdFormat::GzipV1);
+}
+
+void TnrdWriter::setRetainSession(bool retain) {
+    retainRequested_.store(retain, std::memory_order_relaxed);
+    {
+        std::unique_lock<std::mutex> lk(mu_);
+        WriterEvent ev;
+        ev.type = EventType::SetRetain;
+        ev.enabled = retain;
+        pushEventLocked(std::move(ev));
+    }
+    cv_.notify_one();
+}
+
+void TnrdWriter::resetSession() {
+    {
+        std::unique_lock<std::mutex> lk(mu_);
+        WriterEvent ev;
+        ev.type = EventType::ResetSession;
+        pushEventLocked(std::move(ev));
+    }
+    cv_.notify_one();
+}
+
+void TnrdWriter::requestMemoryImage(const detail::V6ImageFilter& filter, MemoryImageCallback done) {
+    {
+        std::unique_lock<std::mutex> lk(mu_);
+        WriterEvent ev;
+        ev.type = EventType::MemoryImage;
+        ev.imageFilter = std::make_shared<const detail::V6ImageFilter>(filter);
+        ev.imageDone = std::move(done);
+        pushEventLocked(std::move(ev));
+    }
+    cv_.notify_one();
+}
+
+bool TnrdWriter::streamActive() const {
+    return activeStream_ != nullptr ||
+        (v6Writer_ != nullptr && (!retainSession_ || v6Writer_->hasFile()));
+}
+
+// The retained session's memory writer, opened with the session's first packet.
+void TnrdWriter::ensureSessionWriter(uint16_t format) {
+    if (v6Writer_) {
+        if (format != 0) v6Writer_->setProtocol(format);
+        return;
+    }
+    HeaderRow header;
+    header.protocol = format;
+    auto writer = std::make_unique<detail::TnrdV6Writer>();
+    writer->setCompressionLevel(compressionLevel_);
+    std::string error;
+    if (!writer->openMemory(header, &error)) { reportError("open", error, {}); return; }
+    v6Writer_ = std::move(writer);
+}
+
+// The retained session's file was closed where a write failed. The session
+// carries on; the next session packet starts another file holding all of it.
+void TnrdWriter::noteV6FileError() {
+    if (!retainSession_ || !v6Writer_) return;
+    const std::string error = v6Writer_->takeFileError();
+    if (error.empty()) return;
+    reportError("data write", error, activePath_);
+    if (!activeStream_) activePath_.clear();
+}
+
+// Drops the retained session for a new one, finishing its file. A damaged
+// session (a rewind it could not take) leaves its file as it stands for the
+// reader's recovery scan instead of indexing what memory now holds.
+void TnrdWriter::dropSession(bool damaged) {
+    if (v6Writer_) {
+        const bool hadFile = v6Writer_->hasFile();
+        std::string error;
+        if (damaged) v6Writer_->abort();
+        else if (!v6Writer_->finish(&error)) reportError("close", error, activePath_);
+        accumulateV6Activity();
+        v6Writer_.reset();
+        if (hadFile && !activeStream_) {
+            activePath_.clear();
+            currentTrackId_ = -1;
+            currentSessionType_ = -1;
+        }
+    }
+    sessionLatest_ = -std::numeric_limits<float>::infinity();
+    sessionEnded_ = false;
+}
+
+void TnrdWriter::accumulateV6Activity() {
+    if (!v6Writer_) return;
+    const auto v6 = v6Writer_->memoryStats();
+    closedV6Activity_.chunkWrites += v6.chunkWrites;
+    closedV6Activity_.chunkPlainBytesProcessed += v6.chunkPlainBytesProcessed;
+    closedV6Activity_.chunkCompressedBytesWritten += v6.chunkCompressedBytesWritten;
+    closedV6Activity_.compressionBufferBytesAllocated += v6.compressionBufferBytesAllocated;
+    closedV6Activity_.lastChunkPlainBytes = v6.lastChunkPlainBytes;
+    closedV6Activity_.lastChunkCompressedBytes = v6.lastChunkCompressedBytes;
+    closedV6Activity_.lastCompressionBufferCapacityBytes =
+        v6.lastCompressionBufferCapacityBytes;
+    closedV6Activity_.peakCompressionBufferCapacityBytes = std::max(
+        closedV6Activity_.peakCompressionBufferCapacityBytes,
+        v6.peakCompressionBufferCapacityBytes);
+    closedV6Activity_.checkpointWrites += v6.checkpointWrites;
+    closedV6Activity_.checkpointScratchBytesAllocated +=
+        v6.checkpointScratchBytesAllocated;
+    closedV6Activity_.lastCheckpointScratchBytes = v6.lastCheckpointScratchBytes;
+    closedV6Activity_.peakCheckpointScratchBytes = std::max(
+        closedV6Activity_.peakCheckpointScratchBytes,
+        v6.peakCheckpointScratchBytes);
+    closedV6Activity_.lastCheckpointDirectoryBytes =
+        v6.lastCheckpointDirectoryBytes;
+    closedV6Activity_.peakCheckpointDirectoryBytes = std::max(
+        closedV6Activity_.peakCheckpointDirectoryBytes,
+        v6.peakCheckpointDirectoryBytes);
+    closedV6Activity_.lastCheckpointRowIndexBytes =
+        v6.lastCheckpointRowIndexBytes;
+    closedV6Activity_.peakCheckpointRowIndexBytes = std::max(
+        closedV6Activity_.peakCheckpointRowIndexBytes,
+        v6.peakCheckpointRowIndexBytes);
 }
 
 void TnrdWriter::setLoggingForFormat(bool enabled, const std::string& outputDir,
@@ -403,20 +529,53 @@ void TnrdWriter::writerLoop() {
             // directory, instead of requiring an application restart.
             if (!ev.enabled || formatChanged || directoryChanged)
                 closeActiveStreamOnWriterThread();
+        } else if (ev.type == EventType::SetRetain) {
+            // Only before a session or file exists; the engine sets it first.
+            if (!v6Writer_) retainSession_ = ev.enabled;
+        } else if (ev.type == EventType::ResetSession) {
+            if (retainSession_) dropSession(false);
+        } else if (ev.type == EventType::MemoryImage) {
+            std::shared_ptr<const detail::V6MemoryImage> image;
+            if (retainSession_ && v6Writer_ && ev.imageFilter)
+                image = v6Writer_->memoryImage(*ev.imageFilter);
+            if (ev.imageDone) ev.imageDone(std::move(image));
         } else if (ev.type == EventType::Rewind) {
-            if (streamActive() && (lastSessionTime_ < 0.0f || ev.sessionTime < lastSessionTime_))
+            const bool retained = retainSession_ && v6Writer_;
+            if (retained && ev.sessionTime < sessionLatest_) {
+                std::string error;
+                if (!v6Writer_->rewind(ev.sessionTime, &error)) {
+                    // Memory reopens committed laps, so this is a damaged
+                    // session; it starts afresh.
+                    reportError("flashback", error, activePath_);
+                    dropSession(true);
+                } else {
+                    noteV6FileError();
+                }
+                sessionLatest_ = ev.sessionTime;
+            }
+            // A file of its own (a legacy stream, or V6 without a retained
+            // session) rewinds its own timeline.
+            const bool ownFile = activeStream_ || (!retainSession_ && v6Writer_);
+            if (ownFile && (lastSessionTime_ < 0.0f || ev.sessionTime < lastSessionTime_))
                 truncateTimeline(ev.sessionTime, ev.wallClockMs);
+            else if (retained && lastSessionTime_ > ev.sessionTime)
+                lastSessionTime_ = ev.sessionTime;
         } else if (ev.type == EventType::NotePacket) {
-            if (streamActive() && !v6Writer_ && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
+            if (activeStream_ && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
                 truncateTimeline(ev.sessionTime, wallClockMilliseconds());
             else if (ev.sessionTime > lastSessionTime_)
                 lastSessionTime_ = ev.sessionTime;
 
+            if (retainSession_) {
+                ensureSessionWriter(ev.format);
+                if (std::isfinite(ev.sessionTime)) sessionLatest_ = std::max(sessionLatest_, ev.sessionTime);
+            }
             if (v6Writer_) {
                 std::string error;
                 if (!v6Writer_->advanceSessionTime(ev.sessionTime, &error))
                     reportError("session-time advance", error, activePath_);
                 if (ev.regulations2026) v6Writer_->setRegulations2026(*ev.regulations2026);
+                noteV6FileError();
             }
 
             if (ev.packetId == PID_SESSION && ev.packetData.size() >= 708) {
@@ -424,33 +583,37 @@ void TnrdWriter::writerLoop() {
                 int8_t  trackId     = ReadInt8(ev.packetData.data(), 36);
                 uint8_t sessionType = ev.packetData[35];
                 uint8_t formula     = ev.packetData[37];
-                if (wantRecord_ && (trackId != currentTrackId_ ||
-                                    sessionType != currentSessionType_ || !streamActive()))
+                if (wantRecord_ && !(retainSession_ && sessionEnded_) &&
+                    (trackId != currentTrackId_ || sessionType != currentSessionType_ || !streamActive()))
                     startNewStream(trackId, trackLengthM, formula, sessionType, ev.format);
             }
         } else if (ev.type == EventType::Record) {
-            if (!streamActive()) continue;
+            if (!streamActive() && !(retainSession_ && v6Writer_)) continue;
             std::string type = extractType(ev.json);
-            // V6 is an exact packet-history format: retain every parsed row at
-            // the UDP cadence, including unchanged 10 Hz damage packets. The
-            // legacy formats keep their historical state-row deduplication and
-            // their readers reconstruct the omitted cadence during playback.
-            if (writeFormat_ != TnrdFormat::ChunkedV6 && isDuplicate(type, ev.json)) continue;
             const bool sessionEnd = type == "race_event" &&
                 ev.json.find("\"code\":\"SEND\"") != std::string::npos;
             const float entryTime = (ev.sessionTime >= 0.0f) ? ev.sessionTime : lastSessionTime_;
+            // V6 is an exact packet-history format: retain every parsed row at
+            // the UDP cadence, including unchanged 10 Hz damage packets. A
+            // retained session takes every row whether or not it is recorded.
             if (v6Writer_) {
                 std::string error;
-                if (!v6Writer_->appendRow(ev.json, entryTime, &error)) {
+                if (!v6Writer_->appendRow(ev.json, entryTime, &error))
                     reportError("data write", error, activePath_);
+                noteV6FileError();
+                if (sessionEnd && retainSession_) sessionEnded_ = true;
+                // A legacy stream beside a retained session closes both below.
+                if (!activeStream_) {
+                    if (sessionEnd && streamActive()) {
+                        closeActiveStreamOnWriterThread();
+                        publishMemoryStatsOnWriterThread(true);
+                    }
                     continue;
                 }
-                if (sessionEnd) {
-                    closeActiveStreamOnWriterThread();
-                    publishMemoryStatsOnWriterThread(true);
-                }
-                continue;
             }
+            // The legacy formats keep their historical state-row deduplication
+            // and their readers reconstruct the omitted cadence during playback.
+            if (isDuplicate(type, ev.json)) continue;
             std::string line = std::move(ev.json);
             line.push_back('\n');
             rollingBuffer_.push_back({std::move(line), entryTime});
@@ -476,52 +639,29 @@ void TnrdWriter::writerLoop() {
 
 void TnrdWriter::flushToDiskOnWriterThread() {
     if (!streamActive()) return;
-    if (v6Writer_) {
+    if (v6Writer_ && v6Writer_->hasFile()) {
         std::string err;
         if (!v6Writer_->checkpoint(&err)) reportError("checkpoint", err, activePath_);
         else v4LastCheckpointTime_ = lastSessionTime_;
-        rowsSinceFlush_ = 0;
-        return;
+        noteV6FileError();
     }
-    if (flushBufferToDisk(rollingBuffer_.size())) rollingBuffer_.clear();
-    if (!activeStream_->flushRecoverable())
-        reportError("flush", activeStream_->error(), activePath_);
+    if (activeStream_) {
+        if (flushBufferToDisk(rollingBuffer_.size())) rollingBuffer_.clear();
+        if (!activeStream_->flushRecoverable())
+            reportError("flush", activeStream_->error(), activePath_);
+    }
     rowsSinceFlush_ = 0;
 }
 
 void TnrdWriter::closeActiveStreamOnWriterThread() {
-    if (v6Writer_) {
+    if (v6Writer_ && retainSession_) {
+        // The session stays in memory; only its file is finished.
+        std::string err;
+        if (v6Writer_->hasFile() && !v6Writer_->detachFile(&err)) reportError("close", err, activePath_);
+    } else if (v6Writer_) {
         std::string err;
         if (!v6Writer_->finish(&err)) reportError("close", err, activePath_);
-        const auto v6 = v6Writer_->memoryStats();
-        closedV6Activity_.chunkWrites += v6.chunkWrites;
-        closedV6Activity_.chunkPlainBytesProcessed += v6.chunkPlainBytesProcessed;
-        closedV6Activity_.chunkCompressedBytesWritten += v6.chunkCompressedBytesWritten;
-        closedV6Activity_.compressionBufferBytesAllocated += v6.compressionBufferBytesAllocated;
-        closedV6Activity_.lastChunkPlainBytes = v6.lastChunkPlainBytes;
-        closedV6Activity_.lastChunkCompressedBytes = v6.lastChunkCompressedBytes;
-        closedV6Activity_.lastCompressionBufferCapacityBytes =
-            v6.lastCompressionBufferCapacityBytes;
-        closedV6Activity_.peakCompressionBufferCapacityBytes = std::max(
-            closedV6Activity_.peakCompressionBufferCapacityBytes,
-            v6.peakCompressionBufferCapacityBytes);
-        closedV6Activity_.checkpointWrites += v6.checkpointWrites;
-        closedV6Activity_.checkpointScratchBytesAllocated +=
-            v6.checkpointScratchBytesAllocated;
-        closedV6Activity_.lastCheckpointScratchBytes = v6.lastCheckpointScratchBytes;
-        closedV6Activity_.peakCheckpointScratchBytes = std::max(
-            closedV6Activity_.peakCheckpointScratchBytes,
-            v6.peakCheckpointScratchBytes);
-        closedV6Activity_.lastCheckpointDirectoryBytes =
-            v6.lastCheckpointDirectoryBytes;
-        closedV6Activity_.peakCheckpointDirectoryBytes = std::max(
-            closedV6Activity_.peakCheckpointDirectoryBytes,
-            v6.peakCheckpointDirectoryBytes);
-        closedV6Activity_.lastCheckpointRowIndexBytes =
-            v6.lastCheckpointRowIndexBytes;
-        closedV6Activity_.peakCheckpointRowIndexBytes = std::max(
-            closedV6Activity_.peakCheckpointRowIndexBytes,
-            v6.peakCheckpointRowIndexBytes);
+        accumulateV6Activity();
         v6Writer_.reset();
     }
     if (activeStream_) {
@@ -581,7 +721,12 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int 
     prepareVersionHeader(writeFormat_, hdr);
 
     std::string openError;
-    if (writeFormat_ == TnrdFormat::ChunkedV6) {
+    if (writeFormat_ == TnrdFormat::ChunkedV6 && retainSession_) {
+        // The recording joins the session kept in memory: the file starts
+        // with everything held so far, then takes each commit with it.
+        if (!v6Writer_) openError = "there is no live session to record";
+        else (void)v6Writer_->attachFile(activePath_, hdr, &openError);
+    } else if (writeFormat_ == TnrdFormat::ChunkedV6) {
         v6Writer_ = std::make_unique<detail::TnrdV6Writer>();
         v6Writer_->setCompressionLevel(compressionLevel_);
         if (!v6Writer_->open(activePath_, hdr, &openError)) v6Writer_.reset();
@@ -612,7 +757,8 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int 
 
 bool TnrdWriter::flushBufferToDisk(size_t entryCount, bool allowV4Checkpoint) {
     entryCount = std::min(entryCount, rollingBuffer_.size());
-    if (v6Writer_) {
+    // A retained session's writer never takes the legacy stream's rows.
+    if (v6Writer_ && !retainSession_) {
         if (entryCount == 0) return true;
         v6SourceRowViews_.clear();
         v6SourceRowViews_.reserve(entryCount);
@@ -737,7 +883,7 @@ void TnrdWriter::truncateTimeline(float newSessionTime, uint64_t wallClockMs) {
     float bufStart = rollingBuffer_.empty()
         ? std::numeric_limits<float>::infinity() : rollingBuffer_[0].sessionTime;
 
-    if (v6Writer_) {
+    if (v6Writer_ && !retainSession_) {
         std::string err;
         if (!v6Writer_->rewind(newSessionTime,&err)) {
             reportError("flashback",err,activePath_);

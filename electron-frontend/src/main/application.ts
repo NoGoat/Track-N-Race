@@ -38,6 +38,7 @@ import {
   playerSetFocusDriver,
   playerGetLapData,
   liveGetFastestLap,
+  liveGetLapData,
   setLapHistoryCar,
   playerGetAllLapsData,
   playerGetWindowData,
@@ -312,6 +313,10 @@ ipcMain.on('player:setFocusDriver', (_event, driverIndex: number) => playerSetFo
 ipcMain.on('player:getLapData', (_event, lapNum: number, rowTypeMask?: number) => playerGetLapData(lapNum, rowTypeMask))
 ipcMain.on('live:getFastestLap', (_event, requestId: number) => {
   if (Number.isSafeInteger(requestId) && requestId > 0) liveGetFastestLap(requestId)
+})
+ipcMain.on('live:getLap', (_event, requestId: number, lapNum: number) => {
+  if (Number.isSafeInteger(requestId) && requestId > 0 && Number.isSafeInteger(lapNum) && lapNum > 0)
+    liveGetLapData(requestId, lapNum)
 })
 ipcMain.on('engine:lap-history-car', (_event, carIdx: number) => setLapHistoryCar(carIdx))
 ipcMain.on('player:getAllLapsData', (_event, rowTypeMask?: number) => playerGetAllLapsData(rowTypeMask))

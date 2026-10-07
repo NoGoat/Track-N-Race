@@ -5,17 +5,18 @@ import type {
   LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg, DriverLapHistory,
   AnalyzeLapData, AnalysisDriverLapCatalog, PlaybackLapDataMsg,
   StrategySnapshotMsg, PlaybackLapBlock, FastestLapMsg, PlaybackSeekFlushBinMsg, HostRestoreRanges,
+  LiveFastestLapDataMsg, LiveLapDataMsg,
 } from '../types'
 import { decodeBinaryBatchRange, forEachDecodedBinaryRow } from '../lib/decodeBinaryBatch'
 import { scheduleCooperativeTask, yieldToMainThread } from '../lib/cooperativeTask'
 import { playbackDebug } from '../lib/playbackDebug'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
-import { buildLapProgressMap, findSectorSplitsFromProgress, type SectorSplit } from '../lib/lapDelta'
+import { findSectorSplits, type SectorSplit } from '../lib/lapDelta'
 import { getTelemetryChartRetentionDiagnostics } from '../diagnostics/telemetryRetention'
 import { getDebugSettings, subscribeDebugSettings } from '../lib/debugSettings'
 import {
-  ColumnTable, V6_PATCH_FIELDS, concatAfter, decodeV6History, emptyView, installHistory,
+  ColumnTable, V6_PATCH_FIELDS, columnStorageBytes, concatAfter, decodeV6History, emptyView, installHistory,
   isV6HistoryPayload, viewOfRows, type ColumnView, type HistoryFamily,
 } from '../lib/columnStore'
 
@@ -452,30 +453,31 @@ function sumRowEstimates(estimates: readonly RowRetentionEstimate[]): RowRetenti
   }), { rows: 0, sampled_rows: 0, estimated_serialized_bytes: 0, estimated_array_reference_bytes: 0 })
 }
 
-// Columns are 8 bytes per field per row; one materialised row gives the width.
-function estimateView(view: ColumnView): RowRetentionEstimate {
-  if (view.length === 0) {
-    return { rows: 0, sampled_rows: 0, estimated_serialized_bytes: 0, estimated_array_reference_bytes: 0 }
-  }
-  const fields = Object.keys(view.row(view.length - 1)).length
+// The bytes a view's column storage allocates, unless an earlier holder in
+// `seen` already counted that storage. A view's rows are a slice; its storage
+// is what stays in memory while the view is referenced.
+function estimateView(view: ColumnView | ColumnTable, seen: Set<object>): RowRetentionEstimate {
   return {
     rows: view.length,
-    sampled_rows: 1,
-    estimated_serialized_bytes: view.length * fields * 8,
+    sampled_rows: 0,
+    estimated_serialized_bytes: columnStorageBytes(view, seen),
     estimated_array_reference_bytes: 0,
   }
 }
 
-function estimateLapData(data: AnalyzeLapData): RowRetentionEstimate {
+function lapDataViews(data: AnalyzeLapData): ColumnView[] {
+  return [data.telemetry, data.motion, data.motionEx, data.statusHistory, data.damageHistory, data.lapProgress]
+}
+
+function estimateLapData(data: AnalyzeLapData, seen: Set<object>): RowRetentionEstimate {
   return sumRowEstimates([
-    estimateView(data.telemetry),
-    estimateView(data.motion),
-    estimateView(data.motionEx),
-    estimateView(data.statusHistory),
-    estimateView(data.damageHistory),
-    estimateView(data.lapProgress),
+    ...lapDataViews(data).map(view => estimateView(view, seen)),
     estimateRows(data.playerPositions),
   ])
+}
+
+function storageBytesOf(views: readonly ColumnView[], seen: Set<object>): number {
+  return views.reduce((total, view) => total + columnStorageBytes(view, seen), 0)
 }
 
 function lapDataRowCount(data: AnalyzeLapData): number {
@@ -486,26 +488,20 @@ function lapDataRowCount(data: AnalyzeLapData): number {
 
 function getRendererTelemetryRetentionDiagnostics(): Record<string, unknown> {
   const state = useTelemetryStore.getState()
+  // Every column storage is counted once, by the first holder below: the
+  // working tables own theirs, and each later holder is charged only for
+  // storage nothing earlier keeps alive (older storages a view still pins).
+  const seen = new Set<object>()
   const workingCollections = {
-    telemetry: estimateView(telTable.frozen()),
-    motion: estimateView(motTable.frozen()),
-    motion_ex: estimateView(motExTable.frozen()),
-    status: estimateView(stsTable.frozen()),
-    damage: estimateView(dmgTable.frozen()),
-    lap_progress: estimateView(lapProgressTable.frozen()),
+    telemetry: estimateView(telTable, seen),
+    motion: estimateView(motTable, seen),
+    motion_ex: estimateView(motExTable, seen),
+    status: estimateView(stsTable, seen),
+    damage: estimateView(dmgTable, seen),
+    lap_progress: estimateView(lapProgressTable, seen),
   }
   const working = sumRowEstimates(Object.values(workingCollections))
 
-  // Published views share the working tables' columns; they hold no rows.
-  const publishedViews = [
-    state.telemetry, state.motion, state.motionEx, state.statusHistory, state.damageHistory,
-    state.analyzeLapTelemetry, state.analyzeLapMotion, state.analyzeLapMotionEx,
-    state.analyzeLapStatusHistory, state.analyzeLapDamageHistory, state.analyzeLapProgress,
-  ]
-  const publishedViewReferences = publishedViews.reduce((total, view) => total + view.length, 0)
-
-  const playbackLapCollections = Object.values(state.playbackLapDataCache).map(estimateLapData)
-  const playbackLapCache = sumRowEstimates(playbackLapCollections)
   const liveLapSnapshots = [...new Set(
     [state.livePreviousLapData, state.liveFastestLapData].filter(
       (value): value is AnalyzeLapData => value !== null,
@@ -515,6 +511,22 @@ function getRendererTelemetryRetentionDiagnostics(): Record<string, unknown> {
     (total, data) => total + lapDataRowCount(data),
     0,
   )
+  const liveLapSnapshotBytes = storageBytesOf(liveLapSnapshots.flatMap(lapDataViews), seen)
+
+  const publishedViews = [
+    state.telemetry, state.motion, state.motionEx, state.statusHistory, state.damageHistory,
+    state.analyzeLapTelemetry, state.analyzeLapMotion, state.analyzeLapMotionEx,
+    state.analyzeLapStatusHistory, state.analyzeLapDamageHistory, state.analyzeLapProgress,
+  ]
+  const publishedViewReferences = publishedViews.reduce((total, view) => total + view.length, 0)
+  const publishedViewBytes = storageBytesOf(publishedViews, seen)
+
+  const playbackLapCollections = Object.values(state.playbackLapDataCache).map(data => estimateLapData(data, seen))
+  const playbackLapCache = sumRowEstimates(playbackLapCollections)
+
+  const allLapsCachedViews = [...allLapsDriverCache.values(), ...(allLapsSnapshot ? [allLapsSnapshot.views] : [])]
+    .flatMap(views => Object.values(views))
+  const allLapsCacheBytes = storageBytesOf(allLapsCachedViews, seen)
 
   const playbackBlocks = speedRpmBlocksVal ?? []
   const blockRowEstimates = playbackBlocks.flatMap(block => [
@@ -562,22 +574,25 @@ function getRendererTelemetryRetentionDiagnostics(): Record<string, unknown> {
     raceEvents.estimated_serialized_bytes + raceEvents.estimated_array_reference_bytes +
     lapBoundaries.estimated_serialized_bytes + lapBoundaries.estimated_array_reference_bytes +
     currentState.estimated_serialized_bytes + currentState.estimated_array_reference_bytes +
-    liveLapSnapshotReferences * 8 +
+    liveLapSnapshotBytes + publishedViewBytes + allLapsCacheBytes +
     charts.cpuBytes + charts.gpuTextureBytes + seekRawBytes + seekDecodedBytes
 
   return {
     sampled_at: new Date().toISOString(),
     mode: isPlaybackFlag ? 'playback' : 'realtime',
     estimated_retained_bytes: estimatedRetainedBytes,
-    estimate_basis: 'history columns at 8 bytes per field per row; other state is sampled JSON size; GPU allocations are exact',
+    estimate_basis: 'history columns are their allocated storage (full capacity, every column), each storage counted once by its first holder; ' +
+      'other state is sampled JSON size; GPU allocations are exact',
     working_source_buffers: {
       ...working,
       collections: workingCollections,
     },
+    // Views share their table's storage; any bytes here are older storages
+    // that only these views keep alive.
     published_window_views: {
       arrays: publishedViews.length,
       row_references: publishedViewReferences,
-      estimated_reference_bytes: 0,
+      estimated_reference_bytes: publishedViewBytes,
     },
     playback_lap_cache: {
       laps: playbackLapCollections.length,
@@ -586,7 +601,17 @@ function getRendererTelemetryRetentionDiagnostics(): Record<string, unknown> {
     live_lap_snapshots: {
       snapshots: liveLapSnapshots.length,
       row_references: liveLapSnapshotReferences,
-      estimated_reference_bytes: liveLapSnapshotReferences * 8,
+      estimated_reference_bytes: liveLapSnapshotBytes,
+    },
+    all_laps_driver_cache: {
+      drivers: allLapsDriverCache.size,
+      seek_snapshot: allLapsSnapshot !== null,
+      estimated_reference_bytes: allLapsCacheBytes,
+    },
+    column_storage: {
+      storages: seen.size,
+      bytes: working.estimated_serialized_bytes + liveLapSnapshotBytes + publishedViewBytes +
+        playbackLapCache.estimated_serialized_bytes + allLapsCacheBytes,
     },
     playback_lap_blocks: {
       blocks: playbackBlocks.length,
@@ -864,6 +889,7 @@ function resetSession(): void {
   lapState = null; lapNum = null; lapStartTime = 0; lapTrackingActive = false
   fastestLapTime = Infinity; fastestLapSet = false
   cancelFastestRecovery()
+  forgetStoredLaps()
   sessionHistoryBest.clear()
   liveTyreSetsByCar.clear()
   raceEventsArr = []
@@ -1172,6 +1198,8 @@ function applyLiveRewind(target: number): void {
   if (invalidatesFastest || fastestRecoveryPending) {
     scheduleFastestRecovery()
   }
+  forgetStoredLaps()
+  requestStoredLiveLaps()
 }
 
 // Fill in any sector boundary not yet known for this session from a completed
@@ -1179,7 +1207,7 @@ function applyLiveRewind(target: number): void {
 function learnLiveSectorSplits(completed: AnalyzeLapData): void {
   const known = useTelemetryStore.getState().liveSectorSplits
   if (known.length >= 2) return
-  const learned = findSectorSplitsFromProgress(completed.lapProgress, buildLapProgressMap(completed))
+  const learned = findSectorSplits(completed)
   const merged = [...known]
   for (const split of learned) {
     if (!merged.some(existing => existing.afterSector === split.afterSector)) merged.push(split)
@@ -1312,9 +1340,107 @@ function onLap(lap: LapRow): void {
       cancelFastestRecovery()
       set({ fastestLapNum: prevLapNum, liveFastestLapData: completedLapData })
     }
+    // The snapshots above are what this window happened to receive; the
+    // store's copies replace them.
+    requestStoredLiveLaps()
   }
   lapStartTime = packetLapStart
   trimLiveWorkingSet()
+}
+
+function base64Bytes(text: string): Uint8Array {
+  const binary = atob(text)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
+// Live Previous and Fastest come from the engine's V6 store, which holds every
+// lap whole however the window was shown; committed laps are decompressed from
+// their chunks there. The renderer's own snapshot of a lap only stands in until
+// the store's arrives. Snapshots that came from the store, and the laps asked
+// for but not yet answered (with when), so a chart that keeps rendering asks
+// once and a lost answer is asked for again.
+const storedLapSnapshots = new WeakSet<AnalyzeLapData>()
+const pendingStoredLaps = new Map<number, number>()
+const STORED_LAP_RETRY_MS = 3000
+let nextStoredLapRequest = 0
+
+function forgetStoredLaps(): void {
+  pendingStoredLaps.clear()
+}
+
+export function requestStoredLiveLaps(): void {
+  if (isPlaybackFlag) return
+  const state = useTelemetryStore.getState()
+  const current = state.lap?.lap_num ?? null
+  const wanted: Array<[number | null, AnalyzeLapData | null]> = [
+    [current !== null && current > 1 ? current - 1 : null, state.livePreviousLapData],
+    [state.fastestLapNum, state.liveFastestLapData],
+  ]
+  const now = Date.now()
+  for (const [wantedLap, held] of wanted) {
+    if (wantedLap === null || wantedLap <= 0) continue
+    if (held && held.lapNum === wantedLap && storedLapSnapshots.has(held)) continue
+    const askedAt = pendingStoredLaps.get(wantedLap)
+    if (askedAt !== undefined && now - askedAt < STORED_LAP_RETRY_MS) continue
+    pendingStoredLaps.set(wantedLap, now)
+    window.playerBridge.getLiveLap(++nextStoredLapRequest, wantedLap)
+  }
+}
+
+// A lap from the engine's live V6 store: the same column blocks a V6
+// recording's seek delivers. Null when it holds no telemetry or lap progress.
+async function decodeStoredLap(msg: LiveFastestLapDataMsg | LiveLapDataMsg,
+                               keepGoing: () => boolean): Promise<AnalyzeLapData | null> {
+  const bytes = base64Bytes(msg.history || '')
+  if (!isV6HistoryPayload(bytes)) return null
+  const decoded = await decodeV6History(bytes, async () => {
+    await yieldToMainThread()
+    return keepGoing()
+  })
+  if (!decoded) return null
+  const view = <T extends { session_time: number }>(family: HistoryFamily): ColumnView<T> =>
+    (decoded.tables[family]?.frozen() as ColumnView<T> | undefined) ?? emptyView<T>(family)
+  const data: AnalyzeLapData = {
+    lapNum: msg.lapNum, startSessionTime: msg.startSessionTime,
+    endSessionTime: msg.endSessionTime,
+    telemetry: view<TelemetryRow>('telemetry'), motion: view<MotionRow>('motion'),
+    motionEx: view<MotionExRow>('motion_ex'), statusHistory: view<StatusRow>('status'),
+    damageHistory: view<DamageRow>('damage'), lapProgress: view<LapProgressPoint>('lap'),
+    playerPositions: [],
+  }
+  if (!data.telemetry.length || !data.lapProgress.length) return null
+  storedLapSnapshots.add(data)
+  return data
+}
+
+// The engine's fastest completed lap, asked for when the renderer has none.
+async function installLiveFastestLap(msg: LiveFastestLapDataMsg): Promise<void> {
+  const data = await decodeStoredLap(msg, () => msg.requestId === fastestRecoveryGeneration)
+  // A newer request, or a lap completed meanwhile that set its own data, wins.
+  if (!data || isPlaybackFlag || msg.requestId !== fastestRecoveryGeneration ||
+      useTelemetryStore.getState().liveFastestLapData) return
+  fastestLapTime = msg.lapTimeMs
+  cancelFastestRecovery()
+  set({ liveFastestLapData: data, fastestLapNum: data.lapNum })
+}
+
+// A lap asked for by requestStoredLiveLaps(): it replaces whichever of
+// Previous and Fastest it still is.
+async function installStoredLiveLap(msg: LiveLapDataMsg): Promise<void> {
+  const data = await decodeStoredLap(msg, () => !isPlaybackFlag)
+  pendingStoredLaps.delete(msg.lapNum)
+  if (!data || isPlaybackFlag) return
+  const state = useTelemetryStore.getState()
+  const current = state.lap?.lap_num ?? null
+  const update: Partial<TelemetryStoreState> = {}
+  if (current !== null && data.lapNum === current - 1) {
+    update.livePreviousLapData = data
+    learnLiveSectorSplits(data)
+  }
+  if (data.lapNum === state.fastestLapNum) update.liveFastestLapData = data
+  if (update.livePreviousLapData || update.liveFastestLapData) set(update)
 }
 
 function handleMsg(msg: GatewayMsg): void {
@@ -1501,34 +1627,17 @@ function handleMsg(msg: GatewayMsg): void {
     case 'live_fastest_lap_data': {
       if (isPlaybackFlag || msg.requestId !== fastestRecoveryGeneration ||
           useTelemetryStore.getState().liveFastestLapData) break
-      const lapTables = {
-        telemetry: new ColumnTable<TelemetryRow>('telemetry'),
-        motion: new ColumnTable<MotionRow>('motion'),
-        motion_ex: new ColumnTable<MotionExRow>('motion_ex'),
-        status: new ColumnTable<StatusRow>('status'),
-        damage: new ColumnTable<DamageRow>('damage'),
-        lap: new ColumnTable<LapRow>('lap'),
-      }
-      forEachDecodedBinaryRow(Uint8Array.from(msg.binary), row => {
-        if (row.type === 'telemetry' || row.type === 'motion' || row.type === 'motion_ex')
-          lapTables[row.type].append(row)
+      void installLiveFastestLap(msg).catch(error => {
+        console.error('Failed to decode the live fastest lap:', error)
       })
-      for (const row of msg.rows) {
-        if (row.type === 'status' || row.type === 'damage' || row.type === 'lap')
-          lapTables[row.type].append(row)
-      }
-      const data: AnalyzeLapData = {
-        lapNum: msg.lapNum, startSessionTime: msg.startSessionTime,
-        endSessionTime: msg.endSessionTime,
-        telemetry: lapTables.telemetry.frozen(), motion: lapTables.motion.frozen(),
-        motionEx: lapTables.motion_ex.frozen(), statusHistory: lapTables.status.frozen(),
-        damageHistory: lapTables.damage.frozen(), lapProgress: lapTables.lap.frozen(),
-        playerPositions: [],
-      }
-      if (!data.telemetry.length || !data.lapProgress.length) break
-      fastestLapTime = msg.lapTimeMs
-      cancelFastestRecovery()
-      set({ liveFastestLapData: data, fastestLapNum: data.lapNum })
+      break
+    }
+    case 'live_lap_data': {
+      if (isPlaybackFlag) break
+      void installStoredLiveLap(msg).catch(error => {
+        pendingStoredLaps.delete(msg.lapNum)
+        console.error('Failed to decode a live lap:', error)
+      })
       break
     }
     case 'playback_lap_data': {
@@ -1945,7 +2054,11 @@ function applyRestoredLapState(payload: PlaybackSeekFlushBinMsg, restore: HostRe
   set(update)
   // Laps completed while hidden can leave more boundaries than the live
   // working set keeps.
-  if (!isPlaybackFlag) trimLiveWorkingSet()
+  if (!isPlaybackFlag) {
+    trimLiveWorkingSet()
+    // The window holds no complete Previous lap for laps it missed.
+    requestStoredLiveLaps()
+  }
 }
 
 async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promise<void> {
@@ -2035,8 +2148,9 @@ async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promi
   const decodedV6Types: Record<string, number> = {}
 
   if (isV6HistoryPayload(binary)) {
-    // TNRD V6: typed column blocks straight from the recording. No JSON, no
-    // per-sample objects; the decode yields between slices like the old one.
+    // TNRD V6: typed column blocks straight from the recording, or from the
+    // engine's live V6 store. No JSON, no per-sample objects; the decode
+    // yields between slices like the old one.
     const decoded = await decodeV6History(binary, async () => {
       await yieldToMainThread()
       return !cancelled()
@@ -2044,7 +2158,22 @@ async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promi
     if (!decoded || cancelled()) return
     Object.assign(incoming, decoded.tables)
     Object.assign(decodedV6Types, decoded.typeCounts)
-    if (isPlaybackFlag) for (const family of Object.keys(decoded.tables) as HistoryFamily[]) overlay.add(family)
+    // Merged by time with what is held, recording or live alike. A live
+    // payload covers every lap from its start, and laps missed while the
+    // window was hidden sit between held ones; a prefix install would only
+    // add rows older than the oldest held row and leave those laps empty.
+    for (const family of Object.keys(decoded.tables) as HistoryFamily[]) overlay.add(family)
+    // Live history comes from the engine's V6 store, with the race events of
+    // its range as JSON lines beside the blocks. (A recording's events arrive
+    // with its lap catalog instead, so playback leaves this empty.)
+    const coldJson = (payload.coldJson as string) || ''
+    for (const line of coldJson.split('\n')) {
+      if (!line) continue
+      try {
+        const row = JSON.parse(line) as GatewayMsg
+        if (row.type === 'race_event') raceEvents.push(row)
+      } catch { /* malformed row: skip it */ }
+    }
   } else {
     // V1-V5 recordings (and V6 on hosts without columnar history): packed hot
     // rows plus JSON cold rows, appended into temporary tables.

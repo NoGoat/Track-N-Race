@@ -40,7 +40,7 @@ export function ChartCursorSyncProvider({ enabled, secondaryHorizontalCrosshair 
   const secondaryVerticalCrosshairRef = useRef(secondaryVerticalCrosshair)
   const participantsRef = useRef(new Map<string, ChartCursorSyncParticipant>())
   const activeSourceRef = useRef<string | null>(null)
-  const { tooltipRef, show, hide } = useChartTooltip(boundaryRef)
+  const { tooltipRef, showAtClient, hide } = useChartTooltip(boundaryRef)
   useLayoutEffect(() => {
     enabledRef.current = enabled
     secondaryHorizontalCrosshairRef.current = secondaryHorizontalCrosshair
@@ -89,19 +89,18 @@ export function ChartCursorSyncProvider({ enabled, secondaryHorizontalCrosshair 
           if (group) group.fragments.push(sample.comparison)
           else comparisonGroups.set(key, { label: sample.comparisonLabel, fragments: [sample.comparison] })
         }
-        const boundary = boundaryRef.current?.getBoundingClientRect()
-        if (!boundary || (fragments.length === 0 && comparisonGroups.size === 0)) return clearAll()
+        if (!boundaryRef.current || (fragments.length === 0 && comparisonGroups.size === 0)) return clearAll()
         const header = `<div style="color:var(--text-secondary);margin-bottom:4px">${source.formatAxisX(sampledAxisX)}</div>`
         const comparison = [...comparisonGroups.values()].map(group =>
           `<div style="color:var(--text-secondary);border-top:1px solid var(--border);margin-top:5px;padding-top:4px">${group.label}</div><div style="opacity:0.35">${group.fragments.join('')}</div>`,
         ).join('')
-        show(`${header}${fragments.join('')}${comparison}`, clientX - boundary.left, clientY - boundary.top)
+        showAtClient(`${header}${fragments.join('')}${comparison}`, clientX, clientY)
       },
       clear: sourceId => {
         if (activeSourceRef.current === sourceId) clearAll()
       },
     }
-  }, [hide, show])
+  }, [hide, showAtClient])
 
   useEffect(() => {
     if (enabled) return

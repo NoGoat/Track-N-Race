@@ -95,7 +95,7 @@ add_library(tnrp STATIC
     src/CardColors.cpp
     src/TeamColors.cpp
     src/LapDelta.cpp
-    src/LiveHistoryStore.cpp
+    src/LiveV6Store.cpp
     src/Strategy.cpp
     src/Parser.cpp
     src/AnyRow.cpp
@@ -192,10 +192,6 @@ if(TNRP_BUILD_TESTS)
     target_include_directories(strategy_rollback PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(strategy_rollback PRIVATE tnrp)
     add_test(NAME strategy_rollback COMMAND strategy_rollback)
-    add_executable(live_history_store tests/LiveHistoryStore.cpp)
-    target_include_directories(live_history_store PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(live_history_store PRIVATE tnrp)
-    add_test(NAME live_history_store COMMAND live_history_store)
 endif()
 
 # Offline length-prefixed UDP capture converter. Kept out of the default build;

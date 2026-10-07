@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -107,6 +108,40 @@ using V6ControlSummary = V4ControlSummary;
 using V6TimedRow = V4TimedRow;
 using V6RowTypeMask = V4RowTypeMask;
 
+// A live session held in memory by a TnrdV6Writer (openMemory) at one moment,
+// laid out as a V6 file's index would describe it. Each chunk's
+// V6ChunkInfo::offset indexes `payloads`: a committed chunk's zstd frame,
+// shared with the writer, or a lap still being built encoded for this image
+// alone. Immutable once built, so it can be read on any thread.
+struct V6MemoryChunk {
+    std::shared_ptr<const std::vector<uint8_t>> payload;
+    bool compressed{};
+};
+struct V6MemoryImage {
+    HeaderRow session;
+    // The phase being recorded; reads expose it instead of the race when the
+    // session is still on its formation lap.
+    V6Phase phase{V6Phase::Race};
+    std::vector<V6DriverHeader> drivers;
+    std::vector<V6LapSummary> laps;
+    std::vector<V6ChunkInfo> chunks;   // lap clocks included
+    std::vector<V6MemoryChunk> payloads;
+    std::vector<V6SharedRecord> shared;
+    size_t encodedBytes{};             // open laps encoded for this image
+};
+// What a memory image carries. Lap summaries and driver headers are always
+// complete; chunks only for the drivers and types asked for, plus lap clocks.
+struct V6ImageFilter {
+    bool chunks{true};
+    bool playerOnly{};
+    std::vector<uint8_t> drivers;      // empty: every driver
+    std::vector<uint8_t> types;        // empty: every type
+    bool shared{};
+    uint8_t sharedType{};              // legacy row type (5, 6, 8); 0: all
+    // Finite: only the recorded phase's records from this time on.
+    float sharedFrom{-std::numeric_limits<float>::infinity()};
+};
+
 struct TnrdV6WriterMemoryStats {
     bool open{};
     size_t retainedBytes{}, builderCount{}, builderPlainBytes{}, builderPlainCapacityBytes{};
@@ -125,6 +160,9 @@ struct TnrdV6WriterMemoryStats {
     size_t lastCheckpointScratchBytes{}, peakCheckpointScratchBytes{};
     size_t lastCheckpointDirectoryBytes{}, peakCheckpointDirectoryBytes{};
     size_t lastCheckpointRowIndexBytes{}, peakCheckpointRowIndexBytes{};
+    // openMemory() only: committed chunk frames and shared records held.
+    size_t memoryChunkBytes{}, memorySharedRecords{}, memorySharedBytes{};
+    uint64_t uncommittedLaps{};
 };
 
 // A decoded chunk whose rows are rendered one at a time, when asked for.
@@ -149,6 +187,9 @@ public:
     TnrdV6Archive& operator=(const TnrdV6Archive&) = delete;
 
     bool open(const std::string&, HeaderRow&, std::string*) override;
+    // Reads a live session's memory image as open() reads a file. The image
+    // stays alive with the archive.
+    bool openMemory(std::shared_ptr<const V6MemoryImage>, HeaderRow&, std::string*);
     void close() override;
     bool isOpen() const override;
     const std::vector<V6LapInfo>& laps() const override;
@@ -253,6 +294,25 @@ public:
     TnrdV6Writer(const TnrdV6Writer&) = delete;
     TnrdV6Writer& operator=(const TnrdV6Writer&) = delete;
     bool open(const std::string&, const HeaderRow&, std::string*);
+    // A live session's store: the laps, chunks, encoding and write delay of a
+    // file, kept in memory (see TnrdWriter's retained session). Unlike a file,
+    // a rewind may reach committed laps; they are decoded and reopened rather
+    // than refused.
+    bool openMemory(const HeaderRow&, std::string*);
+    // openMemory() only: the session as it stands, for TnrdV6Archive::openMemory.
+    std::shared_ptr<const V6MemoryImage> memoryImage(const V6ImageFilter&) const;
+    void setProtocol(int);
+    // openMemory() only: records the session to a file as well. The file
+    // starts with everything committed so far, then takes each commit as it
+    // happens. detachFile() writes the laps still being built and the index,
+    // as finish() would, and closes the file; the session carries on in
+    // memory. A rewind into committed laps rewrites the file from memory.
+    bool attachFile(const std::string& path, const HeaderRow&, std::string*);
+    bool detachFile(std::string*);
+    bool hasFile() const;
+    // openMemory() only: why the attached file was closed where it failed,
+    // once; empty otherwise. The session itself is unaffected.
+    std::string takeFileError();
     bool append(const std::vector<V6SourceRow>&, std::string*);
     bool appendViews(const std::vector<std::pair<std::string_view, float>>&, std::string*);
     bool appendRow(std::string_view, float, std::string*);

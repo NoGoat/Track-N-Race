@@ -734,15 +734,16 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       }
       if (manager?.isEnabled() && config) {
         hide()
-        const rect = containerRef.current?.getBoundingClientRect()
-        if (!rect) return
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const axisX = (chart.model.xScale as any).invert(pointer.x) as number
         const plotHeight = chart.clientHeight - chart.options.paddingTop - chart.options.paddingBottom
         const plotYRatio = plotHeight > 0
           ? Math.max(0, Math.min(1, (pointer.y - chart.options.paddingTop) / plotHeight))
           : 0
-        manager.publish(config.id, axisX, plotYRatio, rect.left + pointer.x, rect.top + pointer.y)
+        // The detector's cached client position avoids measuring the container
+        // here; this runs on every chart frame while hovered.
+        const detector = chart.contentBoxDetector
+        manager.publish(config.id, axisX, plotYRatio, detector.clientX, detector.clientY)
         return
       }
       onMove(pointer.x - paddingLeft, pointer.y - paddingTop)

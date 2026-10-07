@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,7 +23,9 @@
 #include "tnrp/TnrdFormat.h"
 #include "tnrp/control_rows.h"
 
-namespace tnrp::detail { class TnrdOutputStream; class TnrdV6Writer; }
+namespace tnrp::detail {
+class TnrdOutputStream; class TnrdV6Writer; struct V6MemoryImage; struct V6ImageFilter;
+}
 
 namespace tnrp {
 
@@ -32,6 +35,11 @@ namespace tnrp {
 //   - a 30s rolling buffer so common short flashbacks avoid disk-side branching,
 //   - V6 wall-clock branch cuts for append-only rewind/flashback recording,
 //   - per-type dedup of state rows.
+//
+// With setRetainSession() it is also the live session's V6 store: its one V6
+// writer keeps the whole session in memory whether or not anything is
+// recorded, and a recording attaches a file to that writer, starting with
+// everything held so far. Live history reads its memory images.
 //
 // Not thread-safe; the engine serializes all calls.
 class TnrdWriter {
@@ -115,7 +123,18 @@ public:
         size_t v6PeakCheckpointDirectoryBytes{};
         size_t v6LastCheckpointRowIndexBytes{};
         size_t v6PeakCheckpointRowIndexBytes{};
+        // The retained live session (setRetainSession), when there is one. Its
+        // memory is part of v6RetainedBytes.
+        bool sessionRetained{};
+        bool sessionFileAttached{};
+        size_t v6PendingLapCount{};
+        size_t v6PendingLapBytes{};
+        size_t v6MemoryChunkBytes{};
+        size_t v6MemorySharedRecords{};
+        size_t v6MemorySharedBytes{};
+        uint64_t v6UncommittedLaps{};
     };
+    using MemoryImageCallback = std::function<void(std::shared_ptr<const detail::V6MemoryImage>)>;
 
     explicit TnrdWriter(ErrorHandler errorHandler = {});
     ~TnrdWriter();
@@ -153,14 +172,28 @@ public:
     // Synchronous writer-thread barriers. They first drain all events queued by
     // the UDP thread. flushToDisk keeps the stream open; closeActiveStream also
     // finalizes it. Both are safe to call from Engine control/shutdown threads.
+    // A retained session survives closeActiveStream; only its file closes.
     void flushToDisk();
     void closeActiveStream();
     MemoryStats memoryStats() const;
 
+    // Keep the live session's V6 writer in memory (see the class comment).
+    // The engine then feeds every packet, recording or not. Set it before the
+    // first packet.
+    void setRetainSession(bool retain);
+    bool retainsSession() const { return retainRequested_.load(std::memory_order_relaxed); }
+    // A new live session: the retained one is dropped, its file finished.
+    void resetSession();
+    // A memory image of the retained session, built on the writer thread
+    // after every event queued before this call, and handed to `done` there.
+    // Null when no session is retained.
+    void requestMemoryImage(const detail::V6ImageFilter& filter, MemoryImageCallback done);
+
 private:
     struct BufferEntry { std::string line; float sessionTime; };
 
-    enum class EventType { SetLogging, Rewind, NotePacket, Record, Flush, Close };
+    enum class EventType { SetLogging, Rewind, NotePacket, Record, Flush, Close,
+                           SetRetain, ResetSession, MemoryImage };
 
     struct WriterEvent {
         EventType             type;
@@ -177,6 +210,8 @@ private:
         std::optional<bool>   regulations2026;
         std::string           json;   // serialised JSON row
         std::shared_ptr<std::promise<void>> completion;
+        std::shared_ptr<const detail::V6ImageFilter> imageFilter;
+        MemoryImageCallback   imageDone;
     };
 
     static constexpr float BUFFER_WINDOW_S = 30.0f;
@@ -196,8 +231,16 @@ private:
     std::thread             diskThread_;
     std::atomic<bool>       stop_{false};
     std::atomic<bool>       recording_{false};  // mirrors "logging enabled" intent
+    std::atomic<bool>       retainRequested_{false};  // mirrors setRetainSession
 
     bool        wantRecord_         = false;
+    // Writer thread: v6Writer_ is the retained session's memory writer, open
+    // for the whole session, rather than one per file.
+    bool        retainSession_      = false;
+    float       sessionLatest_      = -std::numeric_limits<float>::infinity();
+    // The retained session sent SEND. Its recording is finished, and a new
+    // file would only repeat all of it, so none starts until the next session.
+    bool        sessionEnded_       = false;
     int         compressionLevel_   = 9;
     TnrdFormat  writeFormat_        = TnrdFormat::ChunkedV6;
     std::string outputDirectory_;
@@ -279,7 +322,13 @@ private:
     void clearReportedError();
 
     void setLoggingForFormat(bool enabled, const std::string& outputDir, TnrdFormat format);
-    bool streamActive() const { return activeStream_ != nullptr || v6Writer_ != nullptr; }
+    // A file is being written: a legacy stream, a V6 file of its own, or a
+    // file attached to the retained session.
+    bool streamActive() const;
+    void ensureSessionWriter(uint16_t format);
+    void noteV6FileError();
+    void dropSession(bool damaged);
+    void accumulateV6Activity();
 };
 
 } // namespace tnrp

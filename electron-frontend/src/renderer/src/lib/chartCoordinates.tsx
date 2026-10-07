@@ -1,11 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react'
-import { useTelemetryStore } from '../stores/telemetryStore'
-import type { AnalyzeLapData, LapProgressPoint, PlaybackLapBlock } from '../types'
-import { buildLapProgressMap, buildLapProgressMapFromPoints, findSectorSplitsFromProgress, interpolateLapElapsed, type LapProgressMap, type SectorSplit } from './lapDelta'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { requestStoredLiveLaps, useTelemetryStore } from '../stores/telemetryStore'
+import type { AnalyzeLapData, PlaybackLapBlock } from '../types'
+import { buildLapProgressMap, findSectorSplits, interpolateDistanceAtTime, interpolateLapElapsed, LapProgressBuilder, type LapProgressMap, type SectorSplit } from './lapDelta'
 import type { ChartMode, DistanceChartMode } from '../app/appConfig'
 import { playbackDebug } from './playbackDebug'
 import { DATA_ROW } from './historyDependencies'
-import { emptyView } from './columnStore'
 
 interface ChartCoordinates {
   mode: DistanceChartMode | null
@@ -54,25 +53,15 @@ const Context = createContext(DEFAULT)
 export function LocalChartCoordinatesProvider({ children }: { children: React.ReactNode }) {
   return <Context.Provider value={DEFAULT}>{children}</Context.Provider>
 }
-const EMPTY_PROGRESS = emptyView<LapProgressPoint>('lap')
-function interpolateDistance(points: readonly LapProgressPoint[], sessionTime: number): number {
-  if (points.length === 0 || sessionTime > points[points.length - 1].session_time) return NaN
-  // Current-lap publications can intentionally include the preceding sparse
-  // status row, and binary session times are float32 while cached JSON lap
-  // boundaries are rounded decimals. Both belong at the lap origin. Returning
-  // NaN here made sync stop at the first row (or put NaN into a chart buffer).
-  if (sessionTime <= points[0].session_time) return points[0].lap_distance_m
-  let lo = 1, hi = points.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (points[mid].session_time < sessionTime) lo = mid + 1
-    else hi = mid
-  }
-  if (lo >= points.length) return points[points.length - 1].lap_distance_m
-  const before = points[lo - 1], after = points[lo]
-  const span = after.session_time - before.session_time
-  const ratio = span > 0 ? (sessionTime - before.session_time) / span : 1
-  return before.lap_distance_m + (after.lap_distance_m - before.lap_distance_m) * ratio
+// Current-lap publications can intentionally include the preceding sparse
+// status row, and binary session times are float32 while cached JSON lap
+// boundaries are rounded decimals. Both belong at the lap origin, so times
+// before the map clamp to it. Returning NaN there made sync stop at the first
+// row (or put NaN into a chart buffer). Without a map, a lap with a known start
+// is only that start point, at distance 0.
+function interpolateDistance(progress: LapProgressMap | null, lapStartTime: number | null, sessionTime: number): number {
+  if (progress) return interpolateDistanceAtTime(progress, sessionTime, true)
+  return lapStartTime === null || sessionTime > lapStartTime ? NaN : 0
 }
 
 export function formatChartDistance(metres: number): string {
@@ -143,6 +132,12 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
       window.playerBridge.getLapData(comparisonLapNum, requiredMask)
     }
   }, [comparisonLapNum, currentLapRevision, isPlayback, mode, playbackCache, rowTypeMask])
+  // Live Previous and Fastest are read from the engine's store, complete even
+  // for laps this window missed while hidden; the store dedupes the requests.
+  useEffect(() => {
+    if (isPlayback || (mode !== 'PL' && mode !== 'FL') || comparisonLapNum === null) return
+    requestStoredLiveLaps()
+  }, [comparisonLapData, comparisonLapNum, isPlayback, mode])
 
   const enabled = mode !== null && mode !== 'AL' && mode !== 'SL'
   const allLapsMode = mode === 'AL' || mode === 'SL'
@@ -155,12 +150,13 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
   const lapStartTime = playbackCurrentLap?.startSessionTime ?? currentLapStartTime
   const lapEndTime = playbackCurrentLap?.endSessionTime ?? Infinity
   const lapRevision = currentLapRevision
-  const pointsRef = useRef<readonly LapProgressPoint[]>([])
-  const comparisonPointsRef = useRef<readonly LapProgressPoint[]>([])
+  const currentLapStartRef = useRef<number | null>(null)
   const currentProgressMapRef = useRef<LapProgressMap | null>(null)
   const comparisonProgressMapRef = useRef<LapProgressMap | null>(null)
+  // The current lap grows with every lap row; its builder only reads new rows.
+  const [currentProgressBuilder] = useState(() => new LapProgressBuilder())
   // getX is the time identity outside distance modes; nothing reads these then.
-  const currentProgressMap = enabled ? buildLapProgressMapFromPoints(rawProgress, lapStartTime, lapEndTime) : null
+  const currentProgressMap = enabled ? currentProgressBuilder.update(rawProgress, lapStartTime, lapEndTime) : null
   const comparisonProgressMap = comparisonMode && comparisonLapData ? buildLapProgressMap(comparisonLapData) : null
   // The accessors below keep one identity for the provider's lifetime, because
   // charts rebuild their buffers whenever getX/getComparisonX change, yet
@@ -168,14 +164,13 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
   // here, during render, instead of an effect that would run after children.
   /* eslint-disable react-hooks/refs */
   currentProgressMapRef.current = currentProgressMap
-  pointsRef.current = enabled
-    ? currentProgressMap?.points ?? [{ session_time: lapStartTime, current_lap_ms: 0, lap_distance_m: 0 }]
-    : []
+  currentLapStartRef.current = enabled ? lapStartTime : null
   comparisonProgressMapRef.current = comparisonProgressMap
-  comparisonPointsRef.current = comparisonProgressMap?.points ?? []
   /* eslint-enable react-hooks/refs */
-  const getX = useCallback((sessionTime: number) => interpolateDistance(pointsRef.current, sessionTime), [])
-  const getComparisonX = useCallback((sessionTime: number) => interpolateDistance(comparisonPointsRef.current, sessionTime), [])
+  const getX = useCallback((sessionTime: number) =>
+    interpolateDistance(currentProgressMapRef.current, currentLapStartRef.current, sessionTime), [])
+  const getComparisonX = useCallback((sessionTime: number) =>
+    interpolateDistance(comparisonProgressMapRef.current, null, sessionTime), [])
   const getDeltaAtDistance = useCallback((distance: number) => {
     const current = currentProgressMapRef.current
     const comparison = comparisonProgressMapRef.current
@@ -225,13 +220,10 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
     }
   }
   if (sectorBoundaryMode && comparisonMode) {
-    for (const split of findSectorSplitsFromProgress(
-      comparisonLapData?.lapProgress ?? EMPTY_PROGRESS,
-      comparisonProgressMap,
-    )) sectorSplitsByNumber.set(split.afterSector, split)
+    for (const split of findSectorSplits(comparisonLapData)) sectorSplitsByNumber.set(split.afterSector, split)
   }
   if (sectorBoundaryMode) {
-    for (const split of findSectorSplitsFromProgress(rawProgress, currentProgressMap)) {
+    for (const split of currentProgressBuilder.sectorSplits()) {
       sectorSplitsByNumber.set(split.afterSector, split)
     }
   }

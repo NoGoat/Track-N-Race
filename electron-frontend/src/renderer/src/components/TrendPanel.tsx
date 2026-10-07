@@ -148,9 +148,10 @@ export default memo(function TrendPanel({ isDark, compact, layout, visible, wear
 
   // The status history grows in place every frame; scan only what is new, and
   // start again when held rows were rewritten. Rendering is driven by the
-  // `status` subscription above.
+  // `status` subscription above. Not memoized on the history: in All Laps mode
+  // it is the table's live view, whose identity never changes as it grows.
   const [scanner] = useState(() => new StintStatusScanner())
-  const scan = useMemo(() => scanner.scanFor(statusHistory, historyRevision), [scanner, statusHistory, historyRevision])
+  const scan = scanner.scanFor(statusHistory, historyRevision)
   const measures = measureLaps(scan, statusHistory, boundaries, allLaps.map(lap => lap.lap_num), hasMguh)
 
   const fastestLap = stintLaps.reduce<(typeof stintLaps)[number] | null>((best, lap) =>

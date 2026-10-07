@@ -58,6 +58,10 @@ struct Config {
     // per-lap chart points, and the playback loop re-emits the sparse panel
     // rows each tick. Off by default: JSON-only consumers (the Qt recorder,
     // the stdio pipe) keep the legacy all-JSON playback stream.
+    // It also gives live mode its history: the recorder's V6 writer keeps the
+    // whole session in memory, recording or not (TnrdWriter::setRetainSession),
+    // parsing every family for every car to do so, and charts are backfilled
+    // from it as V6 column blocks (detail::LiveV6Store).
     bool        binaryPlayback = false;
 
     // Electron understands TNRD V6's independently updated compatibility

@@ -786,6 +786,27 @@ bool TnrdReader::loadGzip(const std::string& path, HeaderRow& outHeader) {
     return loadWithFormat(path, outHeader, TnrdFormat::GzipV1);
 }
 
+bool TnrdReader::loadV6ArchiveForStrategy(std::unique_ptr<detail::TnrdV6Archive> archive,
+                                          const HeaderRow& header) {
+    close();
+    lastError_.clear();
+    if (!archive || !archive->isOpen()) return false;
+    const auto player = archive->playerDriverIndex();
+    indexedArchive_ = std::move(archive);
+    loadedFormat_ = TnrdFormat::ChunkedV6;
+    trackLengthM_ = header.track_length_m.value_or(0);
+    startTime_ = indexedArchive_->startTime();
+    totalTime_ = indexedArchive_->totalTime();
+    if (player) {
+        recordedDriverIndex_ = *player;
+        playbackDriverIndex_ = *player;
+        playbackDriverUsesRecordedRows_ = true;
+    }
+    (void)rebuildV6LapCatalog();
+    strategyProtocol_ = static_cast<uint16_t>(header.protocol >= 2024 ? header.protocol : 2025);
+    return true;
+}
+
 bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
                                 TnrdFormat format) {
     close();

@@ -450,6 +450,22 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
   }
 }
 
+/**
+ * Bytes allocated by the storage behind a table or view: every column at its
+ * full capacity, rows trimmed from the front included. A storage already in
+ * `seen` counts 0, so callers can total several holders without counting a
+ * shared storage twice. Non-numeric columns count their reference slots only.
+ */
+export function columnStorageBytes(source: ColumnTable | ColumnView, seen: Set<object>): number {
+  const storage = source instanceof ColumnTable ? source.storage : viewParts(source)?.storage
+  if (!storage || seen.has(storage)) return 0
+  seen.add(storage)
+  let bytes = storage.time.byteLength
+  for (const column of storage.nums.values()) bytes += column.byteLength
+  for (const column of storage.others.values()) bytes += column.length * 8
+  return bytes
+}
+
 function viewParts(view: ColumnView): { storage: Storage; start: number; end: number } | null {
   const frozen = view instanceof LiveView ? view.slice(0) : view
   if (!(frozen instanceof FrozenView)) return null

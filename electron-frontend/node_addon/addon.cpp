@@ -440,6 +440,7 @@ public:
             InstanceMethod("playerSetFocusDriver", &TNRPAddon::PlayerSetFocusDriver),
             InstanceMethod("playerGetLapData", &TNRPAddon::PlayerGetLapData),
             InstanceMethod("liveGetFastestLap", &TNRPAddon::LiveGetFastestLap),
+            InstanceMethod("liveGetLapData", &TNRPAddon::LiveGetLapData),
             InstanceMethod("setLapHistoryCar", &TNRPAddon::SetLapHistoryCar),
             InstanceMethod("playerGetAllLapsData", &TNRPAddon::PlayerGetAllLapsData),
             InstanceMethod("playerGetWindowData", &TNRPAddon::PlayerGetWindowData),
@@ -1389,52 +1390,48 @@ private:
         Napi::Object liveHistory = Napi::Object::New(info.Env());
         liveHistory.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.retainedBytes)));
         liveHistory.Set("estimate_basis", Napi::String::New(info.Env(),
-            "allocated vector/string capacities; transient compression/decompression activity is reported separately; lap/map/shared_ptr overhead excluded"));
-        liveHistory.Set("laps", Napi::Number::New(info.Env(), static_cast<double>(history.lapCount)));
-        liveHistory.Set("pinned_laps", Napi::Number::New(info.Env(), static_cast<double>(history.pinnedLapCount)));
-        liveHistory.Set("compressed_laps", Napi::Number::New(info.Env(), static_cast<double>(history.compressedLapCount)));
-        liveHistory.Set("busy_laps", Napi::Number::New(info.Env(), static_cast<double>(history.busyLapCount)));
-        liveHistory.Set("packed_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.packedBytes)));
-        liveHistory.Set("packed_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.packedCapacityBytes)));
-        liveHistory.Set("json_rows", Napi::Number::New(info.Env(), static_cast<double>(history.jsonRows)));
-        liveHistory.Set("json_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.jsonPayloadBytes)));
-        liveHistory.Set("json_payload_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.jsonPayloadCapacityBytes)));
-        liveHistory.Set("json_container_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.jsonContainerCapacityBytes)));
-        liveHistory.Set("sequence_entries", Napi::Number::New(info.Env(), static_cast<double>(history.sequenceEntries)));
-        liveHistory.Set("sequence_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.sequenceCapacityBytes)));
-        liveHistory.Set("compressed_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.compressedPlainBytes)));
-        liveHistory.Set("compressed_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.compressedBytes)));
-        liveHistory.Set("compressed_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.compressedCapacityBytes)));
-        liveHistory.Set("queued_jobs", Napi::Number::New(info.Env(), static_cast<double>(history.queuedJobs)));
-        liveHistory.Set("active_job_kind", Napi::Number::New(info.Env(), history.activeJobKind));
-        Napi::Object historyCompressionActivity = Napi::Object::New(info.Env());
-        historyCompressionActivity.Set("jobs", Napi::Number::New(info.Env(), static_cast<double>(history.compressionJobs)));
-        historyCompressionActivity.Set("families", Napi::Number::New(info.Env(), static_cast<double>(history.compressedFamilies)));
-        historyCompressionActivity.Set("plain_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(history.compressionPlainBytesProcessed)));
-        historyCompressionActivity.Set("plain_buffer_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(history.compressionPlainBufferBytesAllocated)));
-        historyCompressionActivity.Set("buffer_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(history.compressionBufferBytesAllocated)));
-        historyCompressionActivity.Set("output_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(history.compressedOutputBytesAllocated)));
-        historyCompressionActivity.Set("last_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.lastCompressionPlainBytes)));
-        historyCompressionActivity.Set("last_buffer_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.lastCompressionBufferBytes)));
-        historyCompressionActivity.Set("last_scratch_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.lastCompressionScratchBytes)));
-        historyCompressionActivity.Set("peak_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.peakCompressionPlainBytes)));
-        historyCompressionActivity.Set("peak_buffer_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.peakCompressionBufferBytes)));
-        historyCompressionActivity.Set("peak_scratch_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.peakCompressionScratchBytes)));
-        liveHistory.Set("compression_activity", historyCompressionActivity);
-        Napi::Object historyDecompressionActivity = Napi::Object::New(info.Env());
-        historyDecompressionActivity.Set("jobs", Napi::Number::New(info.Env(), static_cast<double>(history.decompressionJobs)));
-        historyDecompressionActivity.Set("buffer_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(history.decompressionBufferBytesAllocated)));
-        historyDecompressionActivity.Set("last_buffer_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.lastDecompressionBufferBytes)));
-        historyDecompressionActivity.Set("peak_buffer_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.peakDecompressionBufferBytes)));
-        liveHistory.Set("decompression_activity", historyDecompressionActivity);
-        liveHistory.Set("range_jobs", Napi::Number::New(info.Env(), static_cast<double>(history.rangeJobs)));
+            "the live V6 store is the recording writer's V6 writer kept in memory; its builders, pending laps, committed chunk frames and shared records are counted once, under writer.retained_bytes, so retained_bytes here is 0; read images are transient"));
+        liveHistory.Set("session_retained", Napi::Boolean::New(info.Env(), history.sessionRetained));
+        liveHistory.Set("file_attached", Napi::Boolean::New(info.Env(), history.fileAttached));
+        Napi::Object historyBuilders = Napi::Object::New(info.Env());
+        historyBuilders.Set("count", Napi::Number::New(info.Env(), static_cast<double>(history.builderCount)));
+        historyBuilders.Set("bytes", Napi::Number::New(info.Env(), static_cast<double>(history.builderBytes)));
+        historyBuilders.Set("capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.builderCapacityBytes)));
+        historyBuilders.Set("pending_laps", Napi::Number::New(info.Env(), static_cast<double>(history.pendingLapCount)));
+        historyBuilders.Set("pending_lap_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.pendingLapBytes)));
+        liveHistory.Set("builders", historyBuilders);
+        Napi::Object historyCommitted = Napi::Object::New(info.Env());
+        historyCommitted.Set("laps", Napi::Number::New(info.Env(), static_cast<double>(history.committedLapCount)));
+        historyCommitted.Set("chunks", Napi::Number::New(info.Env(), static_cast<double>(history.chunkCount)));
+        historyCommitted.Set("chunk_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.chunkBytes)));
+        historyCommitted.Set("shared_records", Napi::Number::New(info.Env(), static_cast<double>(history.sharedRecords)));
+        historyCommitted.Set("shared_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.sharedBytes)));
+        historyCommitted.Set("uncommitted_laps", Napi::Number::New(info.Env(), static_cast<double>(history.uncommittedLaps)));
+        liveHistory.Set("committed", historyCommitted);
+        Napi::Object historyCompression = Napi::Object::New(info.Env());
+        historyCompression.Set("chunk_writes", Napi::Number::New(info.Env(), static_cast<double>(history.chunkWrites)));
+        historyCompression.Set("plain_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(history.chunkPlainBytesProcessed)));
+        historyCompression.Set("compressed_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.chunkCompressedBytes)));
+        historyCompression.Set("scratch_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.compressionScratchCapacityBytes)));
+        historyCompression.Set("context_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.compressionContextBytes)));
+        liveHistory.Set("compression_activity", historyCompression);
+        Napi::Object historyWork = Napi::Object::New(info.Env());
+        historyWork.Set("queued_jobs", Napi::Number::New(info.Env(), static_cast<double>(history.queuedJobs)));
+        historyWork.Set("queued_rows", Napi::Number::New(info.Env(), static_cast<double>(history.queuedRows)));
+        historyWork.Set("queued_row_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.queuedRowBytes)));
+        historyWork.Set("queued_reads", Napi::Number::New(info.Env(), static_cast<double>(history.queuedReads)));
+        historyWork.Set("images_received", Napi::Number::New(info.Env(), static_cast<double>(history.imagesReceived)));
+        historyWork.Set("reads_completed", Napi::Number::New(info.Env(), static_cast<double>(history.readsCompleted)));
+        historyWork.Set("last_image_encoded_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.lastImageEncodedBytes)));
+        historyWork.Set("peak_image_encoded_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.peakImageEncodedBytes)));
+        liveHistory.Set("work", historyWork);
         result.Set("live_history", liveHistory);
 
         Napi::Object writerStats = Napi::Object::New(info.Env());
         writerStats.Set("stream_active", Napi::Boolean::New(info.Env(), writer.streamActive));
         writerStats.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.retainedBytes)));
         writerStats.Set("estimate_basis", Napi::String::New(info.Env(),
-            "queued event object/payload allocation plus rolling, dedupe, V6 builder, reusable compression scratch, chunk-index, branch, event, and lap-status capacities; transient activity is reported separately; allocator and map/deque node overhead excluded"));
+            "queued event object/payload allocation plus rolling, dedupe, V6 builder, reusable compression scratch, chunk-index, branch, event, and lap-status capacities, and, while the live session is retained in memory, its committed chunk frames and shared records; transient activity is reported separately; allocator and map/deque node overhead excluded"));
         writerStats.Set("queued_events", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedEvents)));
         writerStats.Set("queued_retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedRetainedBytes)));
         writerStats.Set("queued_record_events", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedRecordEvents)));
@@ -1711,6 +1708,15 @@ private:
     Napi::Value LiveGetFastestLap(const Napi::CallbackInfo& info) {
         if (engine && info.Length() >= 1 && info[0].IsNumber())
             engine->liveGetFastestLap(static_cast<uint64_t>(info[0].As<Napi::Number>().Int64Value()));
+        return info.Env().Undefined();
+    }
+
+    // liveGetLapData(requestId, lapNum): one of the player's laps from the
+    // live store, answered by a live_lap_data row.
+    Napi::Value LiveGetLapData(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 2 && info[0].IsNumber() && info[1].IsNumber())
+            engine->liveGetLapData(static_cast<uint64_t>(info[0].As<Napi::Number>().Int64Value()),
+                                   info[1].As<Napi::Number>().Int32Value());
         return info.Env().Undefined();
     }
 

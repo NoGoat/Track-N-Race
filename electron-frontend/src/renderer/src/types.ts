@@ -494,8 +494,14 @@ export interface LiveFastestLapDataMsg {
   lapTimeMs: number
   startSessionTime: number
   endSessionTime: number
-  binary: number[]
-  rows: Array<StatusRow | DamageRow | LapRow>
+  // The lap's chart families from the engine's live V6 store: a V6H1 payload
+  // (lib/columnStore.ts decodeV6History), base64.
+  history: string
+}
+
+// One of the player's laps from the engine's live V6 store (getLiveLap).
+export interface LiveLapDataMsg extends Omit<LiveFastestLapDataMsg, 'type'> {
+  type: 'live_lap_data'
 }
 
 // Mirrors PlaybackState in src/main/bridgeManager.ts, sent on 'playback_state'.
@@ -617,6 +623,7 @@ export type GatewayMsg =
   | PlaybackLoadedMsg
   | PlaybackLapDataMsg
   | LiveFastestLapDataMsg
+  | LiveLapDataMsg
   | PlaybackControlMsg
   | PlaybackSeekFlushBinMsg
   | PlaybackLapBlocksMsg
@@ -777,6 +784,7 @@ declare global {
       setFocusDriver: (driverIndex: number) => void
       getLapData: (lapNum: number, rowTypeMask?: number) => void
       getLiveFastestLap: (requestId: number) => void
+      getLiveLap: (requestId: number, lapNum: number) => void
       // The car whose lap-times view is open (-1 when closed); the engine
       // pushes its driver_lap_history row as it changes.
       setLapHistoryCar: (carIdx: number) => void

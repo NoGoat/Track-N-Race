@@ -72,8 +72,84 @@ const telemetryBridge = {
     ipcRenderer.on('telemetry-binary', listener)
     return () => ipcRenderer.removeListener('telemetry-binary', listener)
   },
-  reportRetention: (snapshot: unknown): void =>
-    ipcRenderer.send('diagnostics:telemetry-retention', snapshot),
+  reportRetention: (snapshot: unknown): void => {
+    const runtime = sampleRendererRuntimeMemory()
+    ipcRenderer.send('diagnostics:telemetry-retention',
+      snapshot && typeof snapshot === 'object' ? { ...snapshot, runtime_memory: runtime } : snapshot)
+  },
+}
+
+// Renderer V8/Blink figures for the RAM log, attached to each retention report
+// (once a second while the memory log is on). V8 exposes no allocation
+// counter, so the heap is polled between reports: growth between polls is a
+// lower bound on what was allocated (collections inside one poll interval hide
+// some), and drops are what collections reclaimed. The poll stops by itself
+// once reports stop.
+const HEAP_POLL_MS = 100
+const HEAP_POLL_IDLE_MS = 5000
+let heapPollTimer: ReturnType<typeof setInterval> | null = null
+let heapPollLastUsed = 0
+let heapPollWindowStart = 0
+let heapGrownBytes = 0
+let heapReclaimedBytes = 0
+let heapDrops = 0
+let lastRuntimeReport = 0
+
+function pollRendererHeap(): void {
+  if (Date.now() - lastRuntimeReport > HEAP_POLL_IDLE_MS) {
+    if (heapPollTimer !== null) clearInterval(heapPollTimer)
+    heapPollTimer = null
+    return
+  }
+  const used = process.getHeapStatistics().usedHeapSize * 1024
+  const delta = used - heapPollLastUsed
+  if (delta >= 0) heapGrownBytes += delta
+  else { heapReclaimedBytes -= delta; heapDrops++ }
+  heapPollLastUsed = used
+}
+
+function sampleRendererRuntimeMemory(): Record<string, unknown> | null {
+  try {
+    const now = Date.now()
+    lastRuntimeReport = now
+    const heap = process.getHeapStatistics()
+    const blink = process.getBlinkMemoryInfo()
+    const windowMs = heapPollTimer === null ? 0 : now - heapPollWindowStart
+    const churn = {
+      window_ms: windowMs,
+      heap_grown_bytes: heapGrownBytes,
+      heap_reclaimed_bytes: heapReclaimedBytes,
+      heap_drops: heapDrops,
+      allocated_lower_bound_bytes_per_s: windowMs > 0 ? Math.round(heapGrownBytes * 1000 / windowMs) : null,
+      reclaimed_bytes_per_s: windowMs > 0 ? Math.round(heapReclaimedBytes * 1000 / windowMs) : null,
+    }
+    heapGrownBytes = heapReclaimedBytes = heapDrops = 0
+    heapPollWindowStart = now
+    heapPollLastUsed = heap.usedHeapSize * 1024
+    if (heapPollTimer === null) heapPollTimer = setInterval(pollRendererHeap, HEAP_POLL_MS)
+    return {
+      pid: process.pid,
+      // Electron reports these in kilobytes.
+      v8: {
+        total_heap_size_bytes: heap.totalHeapSize * 1024,
+        total_heap_size_executable_bytes: heap.totalHeapSizeExecutable * 1024,
+        total_physical_size_bytes: heap.totalPhysicalSize * 1024,
+        total_available_size_bytes: heap.totalAvailableSize * 1024,
+        used_heap_size_bytes: heap.usedHeapSize * 1024,
+        heap_size_limit_bytes: heap.heapSizeLimit * 1024,
+        malloced_memory_bytes: heap.mallocedMemory * 1024,
+        peak_malloced_memory_bytes: heap.peakMallocedMemory * 1024,
+      },
+      blink: {
+        allocated_bytes: blink.allocated * 1024,
+        total_bytes: blink.total * 1024,
+      },
+      churn,
+    }
+  } catch {
+    // Diagnostics must never affect the renderer.
+    return null
+  }
 }
 
 const windowControls = {
@@ -218,6 +294,7 @@ const playerBridge = {
     ipcRenderer.send('player:setDriver', driverIndex, useRecordedRows),
   setFocusDriver: (driverIndex: number) => ipcRenderer.send('player:setFocusDriver', driverIndex),
   getLiveFastestLap: (requestId: number) => ipcRenderer.send('live:getFastestLap', requestId),
+  getLiveLap: (requestId: number, lapNum: number) => ipcRenderer.send('live:getLap', requestId, lapNum),
   setLapHistoryCar: (carIdx: number) => ipcRenderer.send('engine:lap-history-car', carIdx),
   getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF) =>
     ipcRenderer.send('player:getLapData', lapNum, rowTypeMask >>> 0),
