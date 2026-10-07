@@ -49,15 +49,16 @@ public:
     void setChartOptions(ChartWindow window, int referenceLap,
                          bool sectorBoundaries, bool cursorSync);
     // Sector Boundaries / Synchronize Tooltip only apply to chart pages; like
-    // Electron they stay visible but disabled elsewhere.
-    void setChartToolsEnabled(bool on);
+    // Electron they stay visible but disabled elsewhere. Trends plots per-lap
+    // graphs: no sectors, but its graphs share a tooltip.
+    void setChartToolsEnabled(bool sectorBoundaries, bool cursorSync);
     // Skip the delta readout's slide in/out (Settings ▸ Reduce Animations).
     void setReduceAnimations(bool on) { reduceAnimations_ = on; }
     void setPlaybackDrivers(const QVector<PlaybackDriverOption>& drivers,
                             int selectedDriverIndex);
     void clearPlaybackDrivers();
     // Red "UDP ERROR" beside the page dropdown with the full error as its tooltip;
-    // clicking it requests Settings. An empty string hides it.
+    // clicking it requests Settings on its Connection page. An empty string hides it.
     void setUdpError(const QString& error);
 
 signals:
@@ -69,6 +70,7 @@ signals:
     void openRecordingRequested();
     void editLayoutRequested();
     void settingsRequested();
+    void connectionSettingsRequested();   // the UDP ERROR button
     void playbackDriverChanged(int driverIndex);
     void analyzeZoomInRequested();
     void analyzeZoomOutRequested();

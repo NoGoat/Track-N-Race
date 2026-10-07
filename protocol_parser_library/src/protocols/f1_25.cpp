@@ -475,7 +475,11 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             ParticipantsRow pr;
             pr.num_active_cars = data[HEADER_SIZE];
             pr.player_idx = hdr.playerCarIndex;
-            for (int i = 0; i < std::min(pr.num_active_cars, 22); ++i) {
+            // The array is indexed by vehicle index and m_numActiveCars only
+            // counts cars still on the HUD: a retirement lowers it while the
+            // highest indices are still racing. Read every slot; an unused
+            // one has no name.
+            for (int i = 0; i < 22; ++i) {
                 int o = HEADER_SIZE + 1 + i * partSize;
                 bool ai = data[o] != 0; o += 1;
                 o += 2;

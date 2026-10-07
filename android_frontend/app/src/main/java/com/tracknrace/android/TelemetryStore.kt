@@ -180,6 +180,9 @@ internal class TelemetryStore {
     private val currentLiveProgress = mutableListOf<LapProgressSample>()
     private var fastestLiveLap: CompletedLap? = null
     private var trackLengthM = 0.0
+    // The next Participants row starts a new roster instead of merging into
+    // the current one (a new game session or recording); main thread only.
+    private var newParticipantsRoster = true
     private var playbackActive = false
     private var playbackFastestLap = 0
     private var playbackDeltaAvailable = false
@@ -357,6 +360,7 @@ internal class TelemetryStore {
             "playback_loaded" -> post {
                 resetAllLapComparison()
                 playbackActive = row.optBoolean("ok")
+                newParticipantsRoster = true   // the recording brings its own grid
             }
 
             "playback_lap_blocks" -> {
@@ -463,6 +467,7 @@ internal class TelemetryStore {
 
             "playback_close" -> post {
                 resetAllLapComparison()
+                newParticipantsRoster = true   // live rows bring their own grid
                 statedRestriction = null
                 statedRestrictionDriver = -1
                 v6PlaybackActive = false
@@ -561,6 +566,9 @@ internal class TelemetryStore {
                             (cold.sessionType != null && sessionType != null &&
                                 cold.sessionType != sessionType)
                     if (changedSession && !playbackActive) resetLiveLapComparison()
+                    // Direct mode gets no participants_reset; a new track or
+                    // session type is a new grid.
+                    if (changedSession) newParticipantsRoster = true
                     if (sessionTrackLengthM > 0.0) trackLengthM = sessionTrackLengthM
                     cold = cold.copy(
                         totalLaps = totalLaps,
@@ -671,7 +679,13 @@ internal class TelemetryStore {
                     // update. Keep a valid roster if one is already displayed and
                     // leave the missing flag set so paired mode retries after 3 s.
                     if (drivers.isNotEmpty()) {
-                        timing = timing.copy(drivers = drivers, hasParticipants = true)
+                        // Participants can list fewer active slots than timing
+                        // still shows (a recording replays every roster it
+                        // stored). Keep known drivers by car index and apply the
+                        // incoming ones instead of replacing the whole roster.
+                        val roster = if (newParticipantsRoster) drivers else timing.drivers + drivers
+                        newParticipantsRoster = false
+                        timing = timing.copy(drivers = roster, hasParticipants = true)
                     } else if (timing.drivers.isEmpty()) {
                         timing = timing.copy(hasParticipants = false)
                     }
@@ -775,6 +789,7 @@ internal class TelemetryStore {
                 setSelectedDriver(-1)
                 post {
                     resetAllLapComparison()
+                    newParticipantsRoster = true
                     timing = timing.copy(drivers = emptyMap(), hasParticipants = false)
                 }
             }

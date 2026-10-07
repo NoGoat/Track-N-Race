@@ -1,7 +1,7 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { setAnalyzeLapEnabled, setHistoryRowMask, setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
-import Settings from '../components/Settings'
+import Settings, { type SettingsCategory } from '../components/Settings'
 import type { AnalysisDriverSelection, AnalyzeFixedLapMode, SecondaryFileData } from '../components/AnalyzeScreen'
 import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab } from './appConfig'
 import { useAppConfiguration } from './hooks/useAppConfiguration'
@@ -56,6 +56,7 @@ export default function AppShell() {
   const [tab, setTab] = useState<Tab>('core')
   const [mountedTab, setMountedTab] = useState<Tab | null>('core')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory | null>(null)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [playbackDriverIdx, setPlaybackDriverIdx] = useState<number | null>(null)
   const [recordedPlayerIdx, setRecordedPlayerIdx] = useState<number | null>(null)
@@ -235,6 +236,12 @@ export default function AppShell() {
 
   const handleCloseSettings = useCallback(() => {
     setSettingsOpen(false)
+    setSettingsCategory(null)
+  }, [])
+
+  const handleOpenUdpSettings = useCallback(() => {
+    setSettingsCategory('network')
+    setSettingsOpen(true)
   }, [])
 
   // App is deliberately COLD: it selects only low-frequency slices. Every hot,
@@ -537,6 +544,7 @@ export default function AppShell() {
         setSelectedDriverIdx={handlePlaybackDriverChange}
         setReferenceLapNum={handleGlobalReferenceLapChange}
         setSettingsOpen={setSettingsOpen}
+        onOpenUdpSettings={handleOpenUdpSettings}
         setTab={handleTabChange}
         settingsOpen={settingsOpen}
         tab={tab}
@@ -582,6 +590,7 @@ export default function AppShell() {
       {/* Settings Modal */}
       <Settings
         isOpen={settingsOpen}
+        openCategory={settingsCategory}
         onClose={handleCloseSettings}
         tyreView={tyreView}
         onTyreViewChange={setTyreView}

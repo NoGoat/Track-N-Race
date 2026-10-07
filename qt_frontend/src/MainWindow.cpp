@@ -12,6 +12,8 @@
 #include "components/EditPowerLayoutDialog.h"
 #include "components/EditMiscLayoutDialog.h"
 #include "components/EditSessionLayoutDialog.h"
+#include "components/EditTrendsLayoutDialog.h"
+#include "components/EditDamageLayoutDialog.h"
 #include "components/OverviewPage.h"
 #include "components/analysis/AnalysisPage.h"
 #include "components/StandingsPage.h"
@@ -24,6 +26,8 @@
 #include "components/PowerPage.h"
 #include "components/MiscPage.h"
 #include "components/StrategyPage.h"
+#include "components/TrendsPage.h"
+#include "components/DamagePage.h"
 #include "components/SettingsDialog.h"
 #include "components/TrackMapWidget.h"
 #include "components/ChartView.h"   // ChartView::reapplyRenderSettings (chart GPU settings)
@@ -236,7 +240,7 @@ MainWindow::MainWindow(QWidget* parent)
     // Open/Edit Layout/Settings actions, ⋯ overflow. Page names must match the
     // Page enum and the stack->addWidget() order below.
     toolbar_ = new AppToolbar(
-        { "Overview", "Analyze", "Standings", "Session", "Tyres", "Strategy", "Input", "Power", "Misc" },
+        { "Overview", "Analyze", "Standings", "Session", "Tyres", "Strategy", "Trends", "Damage", "Input", "Power", "Misc" },
         settings.value("ui/toolbarShowLabels", false).toBool(), this);
     addToolBar(Qt::TopToolBarArea, toolbar_);
     toolbar_->setReduceAnimations(reduceAnimations());
@@ -348,13 +352,24 @@ MainWindow::MainWindow(QWidget* parent)
             EditSessionLayoutDialog* dlg = new EditSessionLayoutDialog(sessionPage_, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
+        } else if (currentPage_ == Trends) {
+            EditTrendsLayoutDialog* dlg = new EditTrendsLayoutDialog(trendsPage_, this);
+            connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+            dlg->show();
+        } else if (currentPage_ == Damage) {
+            EditDamageLayoutDialog* dlg = new EditDamageLayoutDialog(damagePage_, this);
+            connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+            dlg->show();
         }
     });
-    connect(toolbar_, &AppToolbar::settingsRequested, this, [this] {
+    auto openSettings = [this](bool connectionPage) {
         SettingsDialog* dlg = new SettingsDialog(this, this);
         connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+        if (connectionPage) dlg->showConnectionPage();
         dlg->show();
-    });
+    };
+    connect(toolbar_, &AppToolbar::settingsRequested, this, [openSettings] { openSettings(false); });
+    connect(toolbar_, &AppToolbar::connectionSettingsRequested, this, [openSettings] { openSettings(true); });
 
     // Order must match the Page enum and the AppToolbar page-name list above.
     QStackedWidget* stack = new QStackedWidget(this);
@@ -389,14 +404,16 @@ MainWindow::MainWindow(QWidget* parent)
             }, this);
         lapsDialog_ = dialog;
         // The engine pushes this car's laps now and whenever they change,
-        // until the dialog closes.
-        connect(dialog, &QObject::destroyed, this, [this] { setLapHistoryCar(-1); });
-        setLapHistoryCar(carIdx);
+        // until the dialog closes; then the car goes back to any earlier claim.
+        const int claim = claimLapHistoryCar(carIdx);
+        connect(dialog, &QObject::destroyed, this, [this, claim] { releaseLapHistoryCar(claim); });
         dialog->show();
     });
     stack->addWidget(sessionPage_ = new SessionPage);   // Session
     stack->addWidget(tyresPage_ = new TyresPage(model_));   // Tyres
     stack->addWidget(buildStrategyPage());  // Strategy
+    stack->addWidget(trendsPage_ = new TrendsPage(model_));   // Trends
+    stack->addWidget(damagePage_ = new DamagePage);   // Damage
     stack->addWidget(inputPage_ = new InputPage(model_));   // Input
     connect(inputPage_, &InputPage::layoutChanged,
             this, &MainWindow::schedulePlaybackDataRequirements);
@@ -419,6 +436,7 @@ MainWindow::MainWindow(QWidget* parent)
         refreshPlaybackDriverSelector();
         if (inPlayback_ && analyzePage_ && playback_)
             analyzePage_->setPrimaryCatalog(playback_->playbackLapCatalog());
+        syncTrendsDriver();   // a driver switch arrives with its catalog
     });
     connect(analyzePage_, &AnalysisPage::primaryLapDataRequested,
             playback_, &PlaybackController::requestAnalysisLapData);
@@ -522,14 +540,21 @@ MainWindow::MainWindow(QWidget* parent)
             playback_ && playback_->tnrdVersion() == QStringLiteral("TNRD_V6"))
             playbackSparseRebuildPending_ = true;
         if (currentPage_ == Overview || currentPage_ == Tyres) dirtyTyres_ = true;
+        if (currentPage_ == Trends) dirtyTrends_ = true;
+        if (currentPage_ == Damage) dirtyDamage_ = true;
         toolbar_->setEditLayoutEnabled(currentPage_ == Overview || currentPage_ == Input ||
                                        currentPage_ == Power || currentPage_ == Misc ||
                                        currentPage_ == Session || currentPage_ == Tyres ||
-                                       currentPage_ == Standings);
+                                       currentPage_ == Standings || currentPage_ == Trends ||
+                                       currentPage_ == Damage);
         toolbar_->setAnalyzeControlsVisible(currentPage_ == Analyze);
-        toolbar_->setChartToolsEnabled(currentPage_ == Overview || currentPage_ == Input ||
-                                       currentPage_ == Misc || currentPage_ == Power ||
-                                       currentPage_ == Tyres);
+        const bool sectorBoundaries = currentPage_ == Overview || currentPage_ == Input ||
+                                      currentPage_ == Misc || currentPage_ == Power ||
+                                      currentPage_ == Tyres;
+        // Trends plots per-lap graphs: no sectors, but its graphs share a tooltip.
+        toolbar_->setChartToolsEnabled(sectorBoundaries, sectorBoundaries || currentPage_ == Trends);
+        // The Trends page claims the streamed driver's lap history while shown.
+        syncTrendsDriver();
         // Return from the click handler before pruning/requesting history or
         // rebuilding the newly visible page.  This lets the tab selection paint
         // immediately and collapses rapid tab changes onto the final page.
@@ -573,6 +598,7 @@ MainWindow::MainWindow(QWidget* parent)
         dirtyEvents_ = true;
         refreshSafetyCarBanner();
         playbackPatchMerger_.clear();
+        newParticipantsRoster_ = true;   // the recording brings its own grid
         playerStatusDrsAvailable_ = true;
         allStatusDrsAvailable_.clear();
         playbackDriverRestricted_ = false;
@@ -589,6 +615,8 @@ MainWindow::MainWindow(QWidget* parent)
             if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
             if (powerPage_) powerPage_->setMguhVisible(tnrp::hasMguh(fmt));
+            if (trendsPage_) trendsPage_->setHasMguh(tnrp::hasMguh(fmt));
+            if (damagePage_) damagePage_->refreshTitles();   // DRS ↔ Rear Wing fault card
             // Overtaking-aid overlay follows the clip's format: DRS (F1 24/25) vs
             // SLM (F1 26). The live protocol_status handler is skipped in playback.
             const bool slm = tnrp::aeroMode(fmt) == "slm";
@@ -605,10 +633,12 @@ MainWindow::MainWindow(QWidget* parent)
             analyzePage_->setPlaybackMode(true, currentTime);
         }
         if (tyresPage_) tyresPage_->setPlaybackMode(true, currentTime);
+        if (trendsPage_) trendsPage_->setPlaybackMode(true, currentTime);
         if (inputPage_) inputPage_->setPlaybackMode(true, currentTime);
         if (powerPage_) powerPage_->setPlaybackMode(true, currentTime);
         if (miscPage_) miscPage_->setPlaybackMode(true, currentTime);
         model_->setPlaybackMode(true);
+        syncTrendsDriver();
         updatePlaybackDataRequirements();
         hotSmoother_.reset();   // entering playback: drop live fill state
         lastRaceLeader_.reset();
@@ -623,6 +653,8 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(playback_, &PlaybackController::lapCatalogInstalled,
             this, &MainWindow::updatePlaybackDataRequirements);
+    connect(playback_, &PlaybackController::lapCatalogInstalled,
+            this, &MainWindow::syncTrendsDriver);
     // The events list follows the recording's catalog up to the playhead.
     connect(playback_, &PlaybackController::lapCatalogInstalled,
             this, &MainWindow::loadPlaybackEvents);
@@ -678,6 +710,7 @@ MainWindow::MainWindow(QWidget* parent)
             case Overview: if (overviewPage_) overviewPage_->setCurrentTime(t); break;
             case Analyze: if (analyzePage_) analyzePage_->setCurrentTime(t); break;
             case Tyres: if (tyresPage_) tyresPage_->setCurrentTime(t); break;
+            case Trends: if (trendsPage_) trendsPage_->setCurrentTime(t); break;
             case Input: if (inputPage_) inputPage_->setCurrentTime(t); break;
             case Power: if (powerPage_) powerPage_->setCurrentTime(t); break;
             case Misc: if (miscPage_) miscPage_->setCurrentTime(t); break;
@@ -693,6 +726,7 @@ MainWindow::MainWindow(QWidget* parent)
             case Overview: if (overviewPage_) overviewPage_->setCurrentTime(t); break;
             case Analyze: if (analyzePage_) analyzePage_->setCurrentTime(t); break;
             case Tyres: if (tyresPage_) tyresPage_->setCurrentTime(t); break;
+            case Trends: if (trendsPage_) trendsPage_->setCurrentTime(t); break;
             case Input: if (inputPage_) inputPage_->setCurrentTime(t); break;
             case Power: if (powerPage_) powerPage_->setCurrentTime(t); break;
             case Misc: if (miscPage_) miscPage_->setCurrentTime(t); break;
@@ -718,12 +752,15 @@ MainWindow::MainWindow(QWidget* parent)
         if (overviewPage_) { overviewPage_->resetLiveData(); overviewPage_->setPlaybackMode(false); }
         if (analyzePage_) analyzePage_->setPlaybackMode(false);
         if (tyresPage_) tyresPage_->setPlaybackMode(false);
+        if (trendsPage_) trendsPage_->setPlaybackMode(false);
         if (inputPage_) inputPage_->setPlaybackMode(false);
         if (powerPage_) powerPage_->setPlaybackMode(false);
         if (miscPage_) miscPage_->setPlaybackMode(false);
         model_->setPlaybackMode(false);
+        syncTrendsDriver();
         resetSeekGate();
         playbackPatchMerger_.clear();
+        newParticipantsRoster_ = true;   // live rows bring their own grid
         playerStatusDrsAvailable_ = true;
         allStatusDrsAvailable_.clear();
         playbackDriverRestricted_ = false;
@@ -866,6 +903,7 @@ bool MainWindow::tyreGraphLifeMode() const {
 
 void MainWindow::setTyreGraphLifeMode(bool life) {
     if (overviewPage_) overviewPage_->setTyreGraphLifeMode(life);
+    if (trendsPage_) trendsPage_->setTyreLifeMode(life);
 }
 
 MainWindow::~MainWindow() {
@@ -1046,6 +1084,7 @@ void MainWindow::setRenderingActive(bool on) {
                 case Overview: if (overviewPage_) overviewPage_->setCurrentTime(t); break;
                 case Analyze: if (analyzePage_) analyzePage_->setCurrentTime(t); break;
                 case Tyres: if (tyresPage_) tyresPage_->setCurrentTime(t); break;
+                case Trends: if (trendsPage_) trendsPage_->setCurrentTime(t); break;
                 case Input: if (inputPage_) inputPage_->setCurrentTime(t); break;
                 case Power: if (powerPage_) powerPage_->setCurrentTime(t); break;
                 case Misc: if (miscPage_) miscPage_->setCurrentTime(t); break;
@@ -1117,6 +1156,15 @@ void MainWindow::setInputPedalLayout(const QString& layout) {
         : layout == "combined2" ? InputPedalLayout::Combined2
         : InputPedalLayout::Combined);
     schedulePlaybackDataRequirements();
+}
+
+QString MainWindow::trendsChartLayout() const {
+    return trendsChartLayoutKey(trendsPage_ ? trendsPage_->chartLayout()
+        : trendsChartLayoutFromKey(settings.value("pageLayouts/trends", "separate").toString()));
+}
+
+void MainWindow::setTrendsChartLayout(const QString& layout) {
+    if (trendsPage_) trendsPage_->setChartLayout(trendsChartLayoutFromKey(layout));
 }
 
 bool MainWindow::miscSplitLayout(bool gForce) const {
@@ -1310,6 +1358,8 @@ void MainWindow::setDensitySection(tnr::CompactSection s, tnr::DensityMode mode)
         case CS::SessionHeader:   break; // handled by the integer-level path above
         case CS::PowerCards:      if (powerPage_)    powerPage_->setDensityMode(mode);      dirtyPower_    = true; break;
         case CS::StrategySummary: if (strategyPage_) strategyPage_->setDensityMode(mode);   dirtyStrategy_ = true; break;
+        case CS::TrendsSummary:   if (trendsPage_)   trendsPage_->setDensityMode(mode);     dirtyTrends_   = true; break;
+        case CS::DamageSummary:   if (damagePage_)   damagePage_->setDensityMode(mode);     dirtyDamage_   = true; break;
         case CS::PlaybackBar:     if (playback_) playback_->setDensityMode(mode); break;
         default: break;
     }
@@ -1885,6 +1935,49 @@ void MainWindow::setLapHistoryCar(int carIdx) {
     QThreadPool::globalInstance()->start([engine, carIdx] { engine->setLapHistoryCar(carIdx); });
 }
 
+int MainWindow::claimLapHistoryCar(int carIdx) {
+    const int id = nextLapHistoryClaim_++;
+    lapHistoryClaims_.push_back({id, carIdx});
+    setLapHistoryCar(carIdx);
+    return id;
+}
+
+void MainWindow::releaseLapHistoryCar(int claimId) {
+    const auto it = std::find_if(lapHistoryClaims_.begin(), lapHistoryClaims_.end(),
+        [claimId](const LapHistoryClaim& claim) { return claim.id == claimId; });
+    if (it == lapHistoryClaims_.end()) return;
+    const bool newest = it + 1 == lapHistoryClaims_.end();
+    lapHistoryClaims_.erase(it);
+    if (newest) setLapHistoryCar(lapHistoryClaims_.isEmpty() ? -1 : lapHistoryClaims_.last().carIdx);
+}
+
+// Electron: the playback driver index, else the timing row's player.
+int MainWindow::streamedDriverIndex() const {
+    if (inPlayback_ && playback_ && playback_->currentPlaybackDriverIndex() >= 0)
+        return playback_->currentPlaybackDriverIndex();
+    return lastTimingData ? lastTimingData->player_idx : -1;
+}
+
+// The Trends page claims its driver's lap history while it is shown. A new
+// claim drops the page's held history: a row left from an earlier claim may
+// describe another car or cursor.
+void MainWindow::syncTrendsDriver() {
+    if (!trendsPage_) return;
+    const int driver = streamedDriverIndex();
+    const bool wanted = currentPage_ == Trends && driver >= 0;
+    if (driver != trendsPage_->driver()) {
+        trendsPage_->setDriver(driver);
+        if (trendsLapHistoryClaim_) { releaseLapHistoryCar(trendsLapHistoryClaim_); trendsLapHistoryClaim_ = 0; }
+    }
+    if (wanted && !trendsLapHistoryClaim_) {
+        trendsPage_->clearLapHistory();
+        trendsLapHistoryClaim_ = claimLapHistoryCar(driver);
+    } else if (!wanted && trendsLapHistoryClaim_) {
+        releaseLapHistoryCar(trendsLapHistoryClaim_);
+        trendsLapHistoryClaim_ = 0;
+    }
+}
+
 QString MainWindow::recreateEngine() {
     lastRaceLeader_.reset();
     // Config owns forwarding targets, so applying a changed target list requires
@@ -2181,12 +2274,15 @@ void MainWindow::onEngineRow(const QByteArray& json) {
 
     // Playback seek barrier (see playbackSeekInstalling_). Protocol rows describe
     // the loaded file, not the cursor, and are never held back.
-    // Pushed for the open lap-times dialog; it describes one car, not a panel.
+    // Pushed for the lap-history claims (the lap-times dialog, the Trends
+    // page); it describes one car, not a panel. Each ignores other cars.
     if (json.contains("\"type\":\"driver_lap_history\"")) {
         tnrp::DriverLapHistoryRow history;
-        if (lapsDialog_ && !glz::read<glz::opts{.error_on_unknown_keys = false}>(
-                history, std::string_view(json.constData(), static_cast<size_t>(json.size()))))
-            lapsDialog_->apply(history);
+        if ((lapsDialog_ || trendsPage_) && !glz::read<glz::opts{.error_on_unknown_keys = false}>(
+                history, std::string_view(json.constData(), static_cast<size_t>(json.size())))) {
+            if (lapsDialog_) lapsDialog_->apply(history);
+            if (trendsPage_) trendsPage_->setLapHistory(history);
+        }
         return;
     }
 
@@ -2227,6 +2323,8 @@ void MainWindow::onEngineRow(const QByteArray& json) {
             if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
             if (powerPage_) powerPage_->setMguhVisible(ps->capabilities.hasMguh);
+            if (trendsPage_) trendsPage_->setHasMguh(ps->capabilities.hasMguh);
+            if (damagePage_) damagePage_->refreshTitles();   // DRS ↔ Rear Wing fault card
             // Overtaking-aid overlay follows the format: DRS (F1 24/25) vs SLM (F1 26).
             const bool slm = tnrp::aeroMode(fmt) == "slm";
             if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
@@ -2356,18 +2454,18 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row,
             sparseObject, "drs_allowed");
         if (overviewPage_) overviewPage_->onStatus(*status);
         lastPlayerStatusData = *status;
-        dirtyRacePanel_ = true; dirtyPower_ = true; scheduleUiRefresh();
+        dirtyRacePanel_ = true; dirtyPower_ = true; dirtyTrends_ = true; scheduleUiRefresh();
     } else if (const auto* dmg = std::get_if<DamageRow>(&row)) {
         if (overviewPage_) overviewPage_->onDamage(*dmg);
         lastPlayerDamageData = *dmg;
-        dirtyTyres_ = true; scheduleUiRefresh();
+        dirtyTyres_ = true; dirtyDamage_ = true; scheduleUiRefresh();
     } else if (const auto* ts = std::get_if<tnrp::TyreSetsRow>(&row)) {
         lastTyreSetsData = *ts;
-        dirtyTyreSets_ = true; scheduleUiRefresh();
+        dirtyTyreSets_ = true; dirtyTrends_ = true; scheduleUiRefresh();
     } else if (const auto* lap = std::get_if<LapRow>(&row)) {
         if (overviewPage_) overviewPage_->onLap(*lap);
         lastPlayerLapData = *lap;
-        dirtyRacePanel_ = true; scheduleUiRefresh();
+        dirtyRacePanel_ = true; dirtyTrends_ = true; scheduleUiRefresh();
     } else if (const auto* pos = std::get_if<PositionsRow>(&row)) {
         lastPositionsData = *pos;
         dirtyTrackMapPositions_ = true; scheduleUiRefresh();
@@ -2429,11 +2527,15 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row,
             titleSessionType_ = -1;
             updateWindowTitle();
             streamedEvents_.clear();
+            newParticipantsRoster_ = true;   // the next session brings its own grid
         }
         if (ev->code == "SCAR" || ev->code == "SEND" || ev->code == "FLBK") refreshSafetyCarBanner();
         dirtyEvents_ = true; scheduleUiRefresh();
     } else if (const auto* timing = std::get_if<TimingRow>(&row)) {
+        const int previousPlayer = lastTimingData ? lastTimingData->player_idx : -1;
         lastTimingData = *timing;
+        // Trends follows the player live (and before a playback catalog names a driver).
+        if (timing->player_idx != previousPlayer) syncTrendsDriver();
         if (!inPlayback_) {
             const auto leader = std::find_if(timing->cars.begin(), timing->cars.end(),
                 [](const auto& car) { return car.position == 1 && car.result_status == 2; });
@@ -2445,7 +2547,23 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row,
         }
         dirtyTiming_ = true; dirtyProximity_ = true; scheduleUiRefresh();
     } else if (const auto* part = std::get_if<tnrp::ParticipantsRow>(&row)) {
-        lastParticipantsData = *part;
+        // Participant packets can report fewer active slots while timing still
+        // references the established grid (recordings replay every stored
+        // roster). Retain known identities by car index and apply incoming
+        // changes instead of replacing the whole roster.
+        if (newParticipantsRoster_ || !lastParticipantsData) {
+            lastParticipantsData = *part;
+            newParticipantsRoster_ = false;
+        } else {
+            std::map<int, tnrp::Driver> drivers;
+            for (const tnrp::Driver& driver : lastParticipantsData->drivers) drivers[driver.idx] = driver;
+            for (const tnrp::Driver& driver : part->drivers) drivers[driver.idx] = driver;
+            tnrp::ParticipantsRow merged = *part;
+            merged.drivers.clear();
+            merged.drivers.reserve(drivers.size());
+            for (auto& entry : drivers) merged.drivers.push_back(std::move(entry.second));
+            lastParticipantsData = std::move(merged);
+        }
         if (inPlayback_) {
             playbackParticipantsReady_ = true;
             refreshPlaybackDriverSelector();
@@ -2600,6 +2718,16 @@ void MainWindow::flushUiRefresh() {
         case Power:
             if (dirtyPower_)     { if (powerPage_) powerPage_->update(optPtr(lastPlayerStatusData)); dirtyPower_ = false; }
             break;
+        case Trends:
+            if (dirtyTrends_) {
+                if (trendsPage_) trendsPage_->update(optPtr(lastPlayerStatusData), optPtr(lastTyreSetsData),
+                                                     optPtr(lastPlayerLapData));
+                dirtyTrends_ = false;
+            }
+            break;
+        case Damage:
+            if (dirtyDamage_)    { if (damagePage_) damagePage_->update(optPtr(lastPlayerDamageData)); dirtyDamage_ = false; }
+            break;
         default:
             break;
     }
@@ -2655,7 +2783,8 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
                          (float)s->engine_power_mguk_kw,
                          playbackNumber(s->ers_harvested_mguk_j),
                          playbackNumber(s->ers_harvested_mguh_j),
-                         s->tyre_compound, s->visual_compound, s->tyre_age_laps);
+                         s->tyre_compound, s->visual_compound, s->tyre_age_laps,
+                         playbackNumber(s->ers_deployed_j));
     else if (const auto* d = std::get_if<DamageRow>(&row))
         model_->onDamage(d->session_time,
                          (float)d->tyre_wear_fl, (float)d->tyre_wear_fr,
@@ -2696,6 +2825,7 @@ void MainWindow::updatePlaybackDataRequirements() {
     // cards and tables need only their latest state.
     uint32_t stream = bit(4) | bit(5) | bit(6) | bit(8) | bit(14);
     uint32_t history = 0;
+    bool fullSessionHistory = false;   // the page reads the whole session (All Laps)
     QVector<tnr::GraphSection> sections;
     // TNRD V6 data types, as Electron's DATA_CONSUMERS (historyDependencies.ts):
     // the engine streams only `v6Types` and extracts only `v6HistoryTypes`, so
@@ -2770,6 +2900,21 @@ void MainWindow::updatePlaybackDataRequirements() {
             stream |= bit(15);
             addTypes({15, 13, 12, 24}, false);
             break;
+        case Trends:
+            // Electron's stintPage consumer: per-lap ERS/fuel come from the
+            // whole status history and the tyre graphs from damage history,
+            // over the full session whatever the title-bar window; the
+            // summary cards read current status, tyre-set and lap rows.
+            stream |= bit(2) | bit(3) | bit(4) | bit(10) | bit(5);
+            history |= bit(2) | bit(3) | bit(4);
+            addTypes({15, 17, 18, 13, 12, 24}, true);
+            fullSessionHistory = true;
+            break;
+        case Damage:
+            // Current damage and wear only; the page draws no history.
+            stream |= bit(3);
+            addTypes({14}, false);
+            break;
         case Input:
             stream |= bit(1); history |= bit(1);
             if (inputPage_) sections = inputPage_->chartSections();
@@ -2816,6 +2961,7 @@ void MainWindow::updatePlaybackDataRequirements() {
         }
     }
     if (!sawFinite && sawLap) windowSeconds = 0.0f;
+    if (fullSessionHistory) windowSeconds = -1.0f;
     // Electron's AppShell extras. Aero (7), tyre state (13) and brake bias (20)
     // are edge-encoded in V6 — recorded only on change — so any history request
     // carries them or a value last changed laps ago would stay missing after a

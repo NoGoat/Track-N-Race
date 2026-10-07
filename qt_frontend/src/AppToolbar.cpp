@@ -149,7 +149,7 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
         " border: 1px solid rgba(239, 68, 68, 153); border-radius: 3px; padding: 1px 8px; }"
         "QToolButton#udpError:hover { background: rgba(239, 68, 68, 64); }"));
     udpErrorBtn_->hide();
-    connect(udpErrorBtn_, &QToolButton::clicked, this, &AppToolbar::settingsRequested);
+    connect(udpErrorBtn_, &QToolButton::clicked, this, &AppToolbar::connectionSettingsRequested);
     pageLayout->addWidget(udpErrorBtn_, 0, Qt::AlignVCenter);
 
     pageAct_ = addWidget(pageControl);
@@ -314,9 +314,9 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     });
 }
 
-void AppToolbar::setChartToolsEnabled(bool on) {
-    if (sectorBtn_) sectorBtn_->setEnabled(on);
-    if (syncBtn_) syncBtn_->setEnabled(on);
+void AppToolbar::setChartToolsEnabled(bool sectorBoundaries, bool cursorSync) {
+    if (sectorBtn_) sectorBtn_->setEnabled(sectorBoundaries);
+    if (syncBtn_) syncBtn_->setEnabled(cursorSync);
 }
 
 void AppToolbar::setEditLayoutEnabled(bool on) {

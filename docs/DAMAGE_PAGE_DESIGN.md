@@ -1,7 +1,7 @@
 # Damage Page Design
 
-Status: Native fields and Electron page in source (`DamagePage.tsx`, Stint sidebar removed); not yet built or run. Qt page pending  
-Last updated: 2026-10-05  
+Status: Native fields, Electron page (`DamagePage.tsx`, Stint sidebar removed) and Qt page (`qt_frontend/src/components/DamagePage.cpp`) in source; not yet built or run  
+Last updated: 2026-10-07  
 Scope: Electron first, with shared data semantics suitable for a later Qt port
 
 ## 1. Purpose and confirmed decisions
@@ -20,7 +20,8 @@ the engine-component wear that the Stint page deferred.
 - The Stint page's damage sidebar is removed. Its charts take the full width.
 - Collision events, collision markers and a damage log are out of scope.
 - The page updates in realtime, as rows arrive; nothing polls.
-- No Qt or Android UI is part of the first delivery.
+- No Android UI is part of the first delivery. The Qt page is a later port of
+  the Electron page (section 6.1).
 
 ## 2. Content
 
@@ -162,6 +163,17 @@ carry the flag, and the Android client resolves its aero mode in the same order.
 - **Qt**: check whether `PlaybackPatchMerger.cpp` lists damage fields
   explicitly; if so, add the new ones so Qt playback does not drop them, even
   though Qt gets no Damage page yet.
+
+### 6.1 Qt port
+
+`DamagePage` (with `EditDamageLayoutDialog` and `DamageLayout`) mirrors the
+Electron page: the same cards, colours, layout toggles (`damageLayout/*`)
+and density (`ui/compact/damageSummary`, Settings ▸ Density ▸ Damage). The
+wireframe is loaded from `:/car/f1-car-wireframe.svg`; before QtSvg renders it,
+its presentation attributes are rewritten by id and class the way Electron's
+CSS does, and the leader lines and callouts are drawn over it in the same
+1580 × 520 drawing. MainWindow feeds the latest damage row; V6 fields a
+recording does not carry for the driver arrive as missing and show `—`.
 
 ## 7. Availability
 

@@ -338,6 +338,11 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     nav_->setCurrentRow(qBound(0, lastPage, nav_->count() - 1));
 }
 
+void SettingsDialog::showConnectionPage() {
+    const QList<QListWidgetItem*> items = nav_->findItems(QStringLiteral("Connection"), Qt::MatchExactly);
+    if (!items.isEmpty()) nav_->setCurrentItem(items.first());
+}
+
 void SettingsDialog::done(int result) {
     QSettings settings("TrackNRace", "NativeRecorder");
     settings.setValue("settingsDialog/geometry", saveGeometry());
@@ -642,6 +647,8 @@ QWidget* SettingsDialog::buildCompactPage() {
         { tnr::CompactSection::SessionHeader,     "Session",   "Header:" },
         { tnr::CompactSection::PowerCards,        "Power",     "Power cards:" },
         { tnr::CompactSection::StrategySummary,   "Strategy",  "Summary header:" },
+        { tnr::CompactSection::TrendsSummary,     "Trends",    "Summary cards:" },
+        { tnr::CompactSection::DamageSummary,     "Damage",    "Summary cards:" },
         { tnr::CompactSection::PlaybackBar,       "Playback",  "Playback bar:" },
     };
     QString lastGroup;
@@ -773,6 +780,21 @@ QWidget* SettingsDialog::buildLayoutPage() {
     addSection(form, "Tyres");
     form->addRow("Chart layout:", layoutCombo(MainWindow::Tyres));
     form->addRow(QString(), hint("Arrange the Tyres charts as a 2×2 grid or an aligned vertical stack."));
+
+    addSection(form, "Trends");
+    auto* trends = new QComboBox;
+    trends->addItem("Separate", "separate");
+    trends->addItem("Combined", "combined");
+    trends->addItem("Combined (without Recharge)", "combinedNoRecharge");
+    trends->addItem("Bars", "bars");
+    trends->setCurrentIndex(qMax(0, trends->findData(mainWindow_->trendsChartLayout())));
+    connect(trends, &QComboBox::currentIndexChanged, this, [this, trends](int) {
+        mainWindow_->setTrendsChartLayout(trends->currentData().toString());
+    });
+    form->addRow("Chart layout:", trends);
+    form->addRow(QString(), hint("Show lap times, ERS usage, recharge and tyre wear as separate charts, "
+                                 "or together on one chart with a scale for each unit, with or without "
+                                 "recharge, or as three bars per lap: average tyre wear, ERS used and lap time."));
 
     addSection(form, "Shared Tooltip");
     auto* vertical = new QCheckBox("Secondary vertical crosshair");

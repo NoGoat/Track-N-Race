@@ -27,6 +27,8 @@ class StandingsPage;
 class DriverLapsDialog;
 class SessionPage;
 class StrategyPage;
+class TrendsPage;
+class DamagePage;
 class TyresPage;
 class InputPage;
 class PowerPage;
@@ -80,7 +82,7 @@ public:
     // the QStackedWidget index, so inserting a page here (and in the matching
     // AppToolbar page-name list and stack->addWidget() list) renumbers everything
     // for free. PageCount is the tab count — keep it last.
-    enum Page { Overview, Analyze, Standings, Session, Tyres, Strategy, Input, Power, Misc, PageCount };
+    enum Page { Overview, Analyze, Standings, Session, Tyres, Strategy, Trends, Damage, Input, Power, Misc, PageCount };
 
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
@@ -116,6 +118,9 @@ public:
     void    setVerticalChartLayout(Page page, bool vertical);
     QString inputPedalLayout() const;
     void    setInputPedalLayout(const QString& layout);
+    // Settings ▸ Layout ▸ Trends: "separate", "combined", "combinedNoRecharge" or "bars".
+    QString trendsChartLayout() const;
+    void    setTrendsChartLayout(const QString& layout);
     bool    miscSplitLayout(bool gForce) const;
     void    setMiscSplitLayout(bool gForce, bool split);
     tnr::DensityMode densitySection(tnr::CompactSection s) const;
@@ -221,7 +226,10 @@ private:
     // fastest-lap state); fed the cached rows below via its update methods.
     StandingsPage*   standingsPage_      = nullptr;
     std::optional<TimingRow>             lastTimingData;
+    // The roster merged by car index, as Electron's store keeps it: a
+    // participants row can list fewer cars than timing still shows.
     std::optional<tnrp::ParticipantsRow> lastParticipantsData;
+    bool newParticipantsRoster_ = true;   // the next participants row starts a new roster
     std::optional<AllStatusRow>          lastAllStatusData;
     std::optional<LapRow>                lastPlayerLapData;
     std::optional<StatusRow>             lastPlayerStatusData;
@@ -238,6 +246,14 @@ private:
     // Snapshot-only renderer; libtnrp owns all strategy state and calculations.
     StrategyPage* strategyPage_ = nullptr;
     std::optional<tnrp::StrategySnapshotRow> lastStrategyData;
+
+    // ── Trends / Damage pages ─────────────────────────────────────
+    // Both follow the streamed driver (the player live, the driver selector's
+    // car in V6 playback). Trends reads the model's status/damage history and
+    // the driver lap history the engine pushes while the page claims the car;
+    // Damage shows the latest damage row.
+    TrendsPage* trendsPage_ = nullptr;
+    DamagePage* damagePage_ = nullptr;
 
     // ── Session page ──────────────────────────────────────────────
     // Self-contained page widget (header, stat cards, track map, proximity,
@@ -322,6 +338,17 @@ private:
     void showUdpListenerStatus(const QString& error);   // titlebar "UDP ERROR"; empty clears it
     void setLapHistoryCar(int carIdx);   // subscribe the engine to one car's lap times (-1 = none)
     QPointer<DriverLapsDialog> lapsDialog_;   // the open lap-times dialog, fed by pushed rows
+    // Electron's lapHistoryCar claims: the engine pushes one car at a time;
+    // the newest claim wins and releasing it hands the car back to the
+    // previous claim (the laps dialog and the Trends page).
+    struct LapHistoryClaim { int id = 0; int carIdx = -1; };
+    QVector<LapHistoryClaim> lapHistoryClaims_;
+    int nextLapHistoryClaim_ = 1;
+    int claimLapHistoryCar(int carIdx);
+    void releaseLapHistoryCar(int claimId);
+    int trendsLapHistoryClaim_ = 0;   // the Trends page's claim while it is shown (0 = none)
+    int streamedDriverIndex() const;  // the player live, the selected car in playback (-1 = unknown)
+    void syncTrendsDriver();          // follow the streamed driver and (re)claim its lap history
     void receivePairState(const QByteArray& publicStateJson,
                           const QByteArray& persistedStateJson,
                           const QString& fallbackError = {});
@@ -411,6 +438,8 @@ private:
     bool dirtyTrackMapParticipants_ = false;
     bool dirtyTrackMapPositions_    = false;
     bool dirtyPower_     = false;
+    bool dirtyTrends_    = false;
+    bool dirtyDamage_    = false;
     bool uiRefreshPending_ = false;
     qint64 lastToolbarDeltaUpdateMs_ = -1;
     void scheduleUiRefresh();

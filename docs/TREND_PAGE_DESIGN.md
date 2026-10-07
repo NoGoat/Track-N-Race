@@ -1,7 +1,7 @@
 # Stint Page Design
 
-Status: Reworked in source; native build and application preview pending  
-Last updated: 2026-10-05  
+Status: Reworked in source, with a Qt port (`qt_frontend/src/components/TrendsPage.cpp`); native build and application preview pending  
+Last updated: 2026-10-07  
 Scope: Electron first, with shared data semantics suitable for a later Qt port
 
 ## 1. Purpose and confirmed decisions
@@ -25,7 +25,8 @@ supplied sketch and the existing Electron design language.
 - All panels follow the streamed driver: the player in live, and the driver
   selector's car in V6 playback. There is no driver selector in live.
 - The page updates in realtime, as rows arrive; nothing polls.
-- No Qt UI implementation is part of the first delivery.
+- No Qt UI implementation is part of the first delivery. The Qt page is a
+  later port of the Electron page (section 6.1).
 
 ## 2. Layout and visual language
 
@@ -161,6 +162,21 @@ Reuse the existing pipelines; the page adds no transport of its own.
 
 AppShell requests full-session status and damage history while the page is
 open, regardless of the title-bar chart window.
+
+### 6.1 Qt port
+
+`TrendsPage` mirrors `TrendPanel.tsx`: the same summary cards, the Separate,
+Combined, Combined (without Recharge) and Bars chart layouts
+(`pageLayouts/trends`, Settings ▸ Layout ▸ Trends), each graph's Stint Laps /
+All Laps selector, and Edit Layout (`trendsLayout/*`). `TrendMeasures` is a
+port of `lib/trendMeasures.ts` over the model's status history, whose
+samples now carry `ers_deployed_j`. `TrendChart` is the Qt `TrendChart`
+(per-lap lines with round lap dots, one scale per unit, stacked bars) and
+`TrendTyreChart` the Tyres page wear chart scoped by the Session History
+stint. MainWindow claims the streamed driver's lap history while the page is
+shown, sharing the claim stack with the laps dialog, and requests the full
+session's status and damage history in playback. The separate graphs join the
+shared tooltip through lap axes, matched to the tyre graph by lap start.
 
 ## 7. Availability and protocol evidence
 

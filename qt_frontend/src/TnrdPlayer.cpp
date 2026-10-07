@@ -70,7 +70,8 @@ void appendHistoryRow(PlaybackHistoryBatch& batch, const tnrp::AnyRow& row,
                       static_cast<float>(s->engine_power_mguk_kw),
                       historyNumber(s->ers_harvested_mguk_j),
                       historyNumber(s->ers_harvested_mguh_j),
-                      s->tyre_compound, s->visual_compound, s->tyre_age_laps);
+                      s->tyre_compound, s->visual_compound, s->tyre_age_laps,
+                      historyNumber(s->ers_deployed_j));
     } else if (const auto* d = std::get_if<DamageRow>(&row)) {
         replaceSameTimestamp(data.damageBuf, d->session_time, coalesce);
         data.onDamage(d->session_time, static_cast<float>(d->tyre_wear_fl),
@@ -128,7 +129,8 @@ void appendHistoryObject(PlaybackHistoryBatch& batch, const QJsonObject& row, bo
         data.onStatus(t, num("ers_pct"), num("fuel_kg"), num("engine_power_ice_kw"),
                       num("engine_power_mguk_kw"), num("ers_harvested_mguk_j"),
                       num("ers_harvested_mguh_j"), integer("tyre_compound"),
-                      integer("visual_compound"), integer("tyre_age_laps"));
+                      integer("visual_compound"), integer("tyre_age_laps"),
+                      num("ers_deployed_j"));
     } else if (type == QLatin1String("damage")) {
         replaceSameTimestamp(data.damageBuf, t, sparse);
         data.onDamage(t, num("tyre_wear_fl"), num("tyre_wear_fr"),
@@ -431,14 +433,14 @@ bool decodeColumnarHistory(PlaybackHistoryBatch& batch, const uint8_t* data, siz
                            *ice = col("engine_power_ice_kw"), *mguk = col("engine_power_mguk_kw"),
                            *harvestK = col("ers_harvested_mguk_j"), *harvestH = col("ers_harvested_mguh_j"),
                            *compound = col("tyre_compound"), *visual = col("visual_compound"),
-                           *age = col("tyre_age_laps");
+                           *age = col("tyre_age_laps"), *deployed = col("ers_deployed_j");
                 out.stsBuf.reserve(out.stsBuf.size() + qsizetype(rows));
                 for (size_t r = 0; r < rows; ++r)
                     out.onStatus(table.time[r], f(table.at(ers, r)), f(table.at(fuel, r)),
                                  f(table.at(ice, r)), f(table.at(mguk, r)),
                                  f(table.at(harvestK, r)), f(table.at(harvestH, r)),
                                  missingInt(table.at(compound, r)), missingInt(table.at(visual, r)),
-                                 missingInt(table.at(age, r)));
+                                 missingInt(table.at(age, r)), f(table.at(deployed, r)));
                 break;
             }
             case V6Family::Damage: {

@@ -53,6 +53,9 @@ class SettingsDialog : public QDialog {
 public:
     explicit SettingsDialog(MainWindow* mainWindow, QWidget* parent = nullptr);
 
+    // Select the Connection page (UDP port, bind address, forwarding).
+    void showConnectionPage();
+
 protected:
     void done(int result) override;
 

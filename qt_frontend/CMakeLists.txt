@@ -85,6 +85,8 @@ set(SOURCES
     src/SessionModel.cpp
     src/ChartCoordinates.cpp
     src/SessionModel.h
+    src/TrendMeasures.cpp
+    src/TrendMeasures.h
     src/ChartGraphicsBackend.cpp
     src/ChartGraphicsBackend.h
     src/TelemetryChart.cpp
@@ -152,6 +154,22 @@ set(SOURCES
     src/components/TyreChartsWidget.cpp
     src/components/StrategyPage.h
     src/components/StrategyPage.cpp
+    src/components/SummaryCard.h
+    src/components/SummaryCard.cpp
+    src/components/TrendsLayout.h
+    src/components/TrendsPage.h
+    src/components/TrendsPage.cpp
+    src/components/TrendChart.h
+    src/components/TrendChart.cpp
+    src/components/TrendTyreChart.h
+    src/components/TrendTyreChart.cpp
+    src/components/EditTrendsLayoutDialog.h
+    src/components/EditTrendsLayoutDialog.cpp
+    src/components/DamageLayout.h
+    src/components/DamagePage.h
+    src/components/DamagePage.cpp
+    src/components/EditDamageLayoutDialog.h
+    src/components/EditDamageLayoutDialog.cpp
     src/components/StandingsPage.h
     src/components/StandingsPage.cpp
     src/components/DriverLapsDialog.h

@@ -29,8 +29,12 @@ const TRENDS_LAYOUT_OPTIONS = [
   { value: 'bars' as const, label: 'Bars' },
 ]
 
+export type SettingsCategory = 'appearance' | 'teamColors' | 'layout' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'pairing' | 'protocol' | 'storage' | 'debug'
+
 interface Props {
   isOpen: boolean
+  // Category to show when the modal opens; null keeps the last one viewed.
+  openCategory?: SettingsCategory | null
   onClose: () => void
   tyreView: 'cards' | 'graphs'
   onTyreViewChange: (v: 'cards' | 'graphs') => void
@@ -216,7 +220,7 @@ function isIpv4Address(value: string): boolean {
 }
 
 const Settings = memo(function Settings({
-  isOpen, onClose,
+  isOpen, openCategory = null, onClose,
   tyreView, onTyreViewChange,
   tyreWearMode, onTyreWearModeChange,
   bannerDuration, onBannerDurationChange,
@@ -253,7 +257,7 @@ const Settings = memo(function Settings({
   onChartYAxisChange,
 }: Props) {
   const modalPresence = useModalPresence(isOpen)
-  const [activeCategory, setActiveCategory] = useState<'appearance' | 'teamColors' | 'layout' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'pairing' | 'protocol' | 'storage' | 'debug'>('appearance')
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
   const settingsContentRef = useRef<HTMLDivElement>(null)
@@ -262,6 +266,12 @@ const Settings = memo(function Settings({
   const settingsSidebarItemRefs = useRef(new globalThis.Map<string, HTMLButtonElement>())
   const [sidebarIndicator, setSidebarIndicator] = useState<{ top: number; height: number } | null>(null)
   const selectedSidebarItem = view === 'category' ? activeCategory : view
+
+  useLayoutEffect(() => {
+    if (!isOpen || !openCategory) return
+    setActiveCategory(openCategory)
+    setView('category')
+  }, [isOpen, openCategory])
 
   useLayoutEffect(() => {
     const sidebar = settingsSidebarRef.current

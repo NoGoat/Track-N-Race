@@ -46,6 +46,7 @@ interface AppHeaderProps {
   setSelectedDriverIdx: (driverIndex: number) => void
   setReferenceLapNum: (lapNum: number | null) => void
   setSettingsOpen: (open: boolean) => void
+  onOpenUdpSettings: () => void
   setTab: (tab: Tab) => void
   settingsOpen: boolean
   tab: Tab
@@ -58,7 +59,7 @@ export default memo(function AppHeader({
   actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen, inputCursorSyncEnabled, sectorBoundariesEnabled,
   isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, driverOptions, driverSelectorVisible, selectedDriverIdx, setEditOpen,
   referenceLapNum, referenceLapOptions, setHeaderVisible, setInputCursorSyncEnabled, setSectorBoundariesEnabled, setChartWindow, setSelectedDriverIdx, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
-  titlebarUpdateInterval, udpListenerError,
+  titlebarUpdateInterval, udpListenerError, onOpenUdpSettings,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
   const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower' || tab === 'stint' || tab === 'damage'
@@ -143,7 +144,7 @@ export default memo(function AppHeader({
           <button
             type="button"
             title={udpListenerError}
-            onClick={() => setSettingsOpen(true)}
+            onClick={onOpenUdpSettings}
             style={{ WebkitAppRegion: 'no-drag' }}
             className="shrink-0 rounded border border-red-500/60 bg-red-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-400 hover:bg-red-500/25"
           >

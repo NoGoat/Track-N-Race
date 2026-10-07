@@ -94,9 +94,9 @@ void SessionData::onTelemetry(float t, float speed, float rpm, float gear, float
 }
 
 void SessionData::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j,
-                           int tyre_compound, int visual_compound, int tyre_age_laps) {
+                           int tyre_compound, int visual_compound, int tyre_age_laps, float ers_deployed_j) {
     const StsSample sample{ t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j,
-                            tyre_compound, visual_compound, tyre_age_laps };
+                            tyre_compound, visual_compound, tyre_age_laps, ers_deployed_j };
     if (!stsBuf.isEmpty()) {
         const StsSample& previous = stsBuf.last();
         const bool compoundsValid = previous.tyre_compound > 0 && tyre_compound > 0;
@@ -549,19 +549,20 @@ void SessionModel::onTelemetry(float t, float speed, float rpm, float gear, floa
 }
 
 void SessionModel::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j,
-                            int tyre_compound, int visual_compound, int tyre_age_laps) {
+                            int tyre_compound, int visual_compound, int tyre_age_laps, float ers_deployed_j) {
     if (playbackMode_ && !(playbackRequestedHistoryMask_ & rowBit(2))) {
         d_.latestTime = qMax(d_.latestTime, t);
         return;
     }
-    d_.onStatus(t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j, tyre_compound, visual_compound, tyre_age_laps);
+    d_.onStatus(t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j, tyre_compound, visual_compound, tyre_age_laps,
+                ers_deployed_j);
     if (!playbackMode_ && std::isfinite(fuel_kg) && fuel_kg >= 0.0f && fuel_kg + 1.0f > d_.fuelUpperLimit)
         d_.fuelUpperLimit = fuel_kg + 1.0f;
     if (playbackMode_) {
         if (LapBlock* lap = playbackStreamLap(t, rowBit(2)))
             lap->sts.push_back({t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j,
                                 mguh_harvest_j, tyre_compound, visual_compound,
-                                tyre_age_laps});
+                                tyre_age_laps, ers_deployed_j});
     }
     telemetryDirty_ = true;
     scheduleFlush();

@@ -31,6 +31,8 @@ enum class CompactSection {
     SessionHeader,     // 3 Spacious, 0 Normal, 1..2 Compact
     PowerCards,        // Power info cards
     StrategySummary,   // Strategy summary header (lap / tyre bar / cliff)
+    TrendsSummary,     // Trends summary cards (Electron's stintSummary)
+    DamageSummary,     // Damage summary cards
     PlaybackBar,
     Count_
 };
@@ -51,6 +53,8 @@ inline const char* compactKey(CompactSection s) {
         case CompactSection::SessionHeader:   return "ui/compact/sessionHeader";
         case CompactSection::PowerCards:      return "ui/compact/powerCards";
         case CompactSection::StrategySummary: return "ui/compact/strategySummary";
+        case CompactSection::TrendsSummary:   return "ui/compact/stintSummary";
+        case CompactSection::DamageSummary:   return "ui/compact/damageSummary";
         case CompactSection::PlaybackBar:     return "ui/compact/playbackBar";
         default:                              return "";
     }

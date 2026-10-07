@@ -95,6 +95,7 @@ struct Axis {
     double lo = 0, hi = 1;
     QColor color;
     bool inherit = true, visible = true, grid = false, time = false, distance = false;
+    bool lap = false;   // lap-number axis: sessionKeys are laps, sessionTimes their starts
     char format = 'f'; int precision = 0, panel = 0;
     int tickSpacePx = 80;
     bool lapBoundaryLabels = false;
@@ -135,6 +136,8 @@ struct Panel {
     QString title, note;
     QRect outer, plot;
     QComboBox *window = nullptr, *lap = nullptr;
+    QWidget* control = nullptr;   // caller-supplied header control (setPanelHeaderControl)
+    int syncOrder = -1;           // < 0: follow the bound section's order
     tnr::GraphSection section = tnr::GraphSection::Count_;
     bool cursorV = false, cursorH = false;
     double cursorX = 0, cursorY = .5;
@@ -176,6 +179,27 @@ double interpolate(const QVector<double>& a, const QVector<double>& b, double x)
     int n = int(std::distance(a.begin(), it)), p = n - 1;
     double span = a[n] - a[p];
     return span > 0 ? b[p] + (b[n] - b[p]) * (x - a[p]) / span : b[n];
+}
+
+// Cursor-sync axis kinds, as Electron's ChartCursorAxisKind.
+enum AxisKind { TimeAxis = 0, DistanceAxis = 1, LapAxis = 2 };
+int axisKind(const Axis& a) { return a.lap ? LapAxis : a.distance ? DistanceAxis : TimeAxis; }
+
+// Session time behind x on this axis. A lap stands for the time it began, or
+// NaN when that is not known (it then syncs with other lap axes only).
+double axisSessionTime(const Axis& a, double x) {
+    if (!a.lap) return interpolate(a.sessionKeys, a.sessionTimes, x);
+    for (int i = 0; i < a.sessionKeys.size() && i < a.sessionTimes.size(); ++i)
+        if (std::abs(a.sessionKeys[i] - x) < 1e-6) return a.sessionTimes[i];
+    return qQNaN();
+}
+
+// The lap whose span holds the session time: the last one started by then.
+double lapAtSessionTime(const Axis& a, double time) {
+    if (!std::isfinite(time)) return qQNaN();
+    for (int i = qMin(a.sessionKeys.size(), a.sessionTimes.size()) - 1; i >= 0; --i)
+        if (a.sessionTimes[i] <= time) return a.sessionKeys[i];
+    return qQNaN();
 }
 
 int msaaSamples() {
@@ -449,6 +473,8 @@ protected:
             if (!s.visible || s.empty() || !drawable(s.panel) ||
                 s.spec.xAxisId < 0 || s.spec.xAxisId >= axes->size() ||
                 s.spec.yAxisId < 0 || s.spec.yAxisId >= axes->size()) continue;
+            // Round points are discs drawn with the chrome above the traces.
+            if (lineType(s) == ChartView::LineType::RoundPoint) continue;
             const Axis& x = (*axes)[s.spec.xAxisId];
             const double pad = s.spec.width * .5 * (x.hi - x.lo) / (*panels)[s.panel].plot.width();
             if (s.data.back().x < x.lo - pad || s.data[size_t(s.first)].x > x.hi + pad) continue;
@@ -524,11 +550,54 @@ protected:
                 segment(b, a + unit * t, a + unit * qMin(length, t + on));
         };
         const QRectF everything(QPointF(0, 0), logical);
+        // A filled disc appended to a triangle-strip batch; a repeated vertex
+        // pair bridges consecutive discs with degenerate triangles.
+        auto appendDisc = [](std::vector<GpuPoint>& strip, double cx, double cy, double radius) {
+            constexpr int sides = 24;
+            constexpr double turn = 6.283185307179586;
+            const auto rim = [&](int i) {
+                const double angle = turn * i / sides;
+                return GpuPoint{float(cx + radius * std::cos(angle)), float(cy + radius * std::sin(angle))};
+            };
+            const GpuPoint centre{float(cx), float(cy)};
+            if (!strip.empty()) { const GpuPoint last = strip.back(); strip.push_back(last); strip.push_back(rim(0)); }
+            for (int i = 0; i <= sides; ++i) {
+                strip.push_back(rim(i));
+                if (i < sides) strip.push_back(centre);
+            }
+        };
         QVector<int> sharedPanels;
         for (int pid = 0; pid < panels->size(); ++pid) {
             if (!drawable(pid)) continue;
             const Panel& p = (*panels)[pid];
             const QRectF plot(p.plot), outer(p.outer);
+            // Round points (Electron line type 3), in draw order above every
+            // trace and below the axes chrome, crosshairs and hover markers.
+            for (int id : *drawOrder) {
+                if (id < 0 || id >= series->size()) continue;
+                const Series& s = (*series)[id];
+                if (s.panel != pid || !s.visible || s.empty() ||
+                    lineType(s) != ChartView::LineType::RoundPoint ||
+                    s.spec.xAxisId < 0 || s.spec.xAxisId >= axes->size() ||
+                    s.spec.yAxisId < 0 || s.spec.yAxisId >= axes->size()) continue;
+                const Axis& ax = (*axes)[s.spec.xAxisId];
+                const Axis& ay = (*axes)[s.spec.yAxisId];
+                if (ax.hi <= ax.lo || ay.hi <= ay.lo || s.spec.width <= 0) continue;
+                QColor color = s.spec.color;
+                color.setAlphaF(color.alphaF() * s.spec.opacity);
+                const int discs = batch(over, color, 0, plot, true);
+                const double radius = s.spec.width * .5;
+                for (qsizetype i = s.first; i < qsizetype(s.data.size()); ++i) {
+                    const Point& point = s.data[size_t(i)];
+                    if (!std::isfinite(point.y)) continue;
+                    const double px = plot.left() + (point.x - ax.lo) / (ax.hi - ax.lo) * plot.width();
+                    const double py = plot.top() + (ay.hi - point.y) / (ay.hi - ay.lo) * plot.height();
+                    if (!std::isfinite(px) || !std::isfinite(py) ||
+                        px < plot.left() - radius || px > plot.left() + plot.width() + radius ||
+                        py < plot.top() - radius || py > plot.top() + plot.height() + radius) continue;
+                    appendDisc(over[discs].vertices, px, py, radius);
+                }
+            }
             const int grid = batch(under, gridColor, hair, plot);
             for (const Axis& a : *axes) {
                 if (!a.visible || !a.grid || a.panel != pid || a.hi <= a.lo) continue;
@@ -586,8 +655,15 @@ protected:
                     const Axis& ax = (*axes)[s.spec.xAxisId];
                     const Axis& ay = (*axes)[s.spec.yAxisId];
                     if (ax.hi <= ax.lo || ay.hi <= ay.lo) continue;
+                    if (s.spec.hoverSnap == ChartView::HoverSnap::None) continue;
                     if (p.dotsStrict && p.dotX < s.data[size_t(s.first)].x - 1e-6) continue;
-                    const qsizetype at = nearest(s, p.dotX);
+                    qsizetype at = -1;
+                    if (s.spec.hoverSnap == ChartView::HoverSnap::Next) {
+                        at = lowerBound(s, p.dotX);
+                        if (at >= qsizetype(s.data.size())) continue;
+                    } else {
+                        at = nearest(s, p.dotX);
+                    }
                     if (at < 0) continue;
                     const Point& point = s.data[size_t(at)];
                     if (!std::isfinite(point.y)) continue;
@@ -1736,6 +1812,7 @@ void ChartView::setSeriesVisible(int id, bool on) {
 }
 bool ChartView::seriesVisible(int id)const{return id>=0&&id<d_->series.size()&&d_->series[id].visible;}
 void ChartView::setSeriesColor(int id,const QColor&c){if(id>=0&&id<d_->series.size())d_->series[id].spec.color=c;}
+void ChartView::setSeriesFillColor(int id,const QColor&c){if(id>=0&&id<d_->series.size())d_->series[id].spec.fillColor=c;}
 void ChartView::setSeriesName(int id,const QString&n){if(id>=0&&id<d_->series.size())d_->series[id].spec.name=n;}
 void ChartView::setSeriesWidth(int id, double width) {
     if (id < 0 || id >= d_->series.size() || !std::isfinite(width)) return;
@@ -1791,7 +1868,7 @@ void ChartView::layoutPanels(int cols){d_->columns=qMax(1,cols);d_->explicitRows
 void ChartView::layoutPanelsRows(const QVector<QVector<int>>&rows){d_->rows=rows;d_->explicitRows=true;for(auto&p:d_->panels)p.visible=false;for(const auto&r:rows)for(int id:r)if(id>=0&&id<d_->panels.size())d_->panels[id].visible=true;applyPanelLayout();}
 void ChartView::applyPanelLayout(){d_->geometry(rect());positionPanelChartSettings();requestReplot();}
 void ChartView::setPanelVisible(int id,bool on){if(id>=0&&id<d_->panels.size()){d_->panels[id].visible=on;d_->explicitRows=false;applyPanelLayout();}}
-void ChartView::setPanelTitle(int id,const QString&t){if(id>=0&&id<d_->panels.size()){ensurePanelHeader(id);d_->panels[id].title=t;requestReplot();}}
+void ChartView::setPanelTitle(int id,const QString&t){if(id>=0&&id<d_->panels.size()){ensurePanelHeader(id);d_->panels[id].title=t;positionPanelChartSettings();requestReplot();}}
 void ChartView::setPanelNote(int id,const QString&n){if(id>=0&&id<d_->panels.size()){ensurePanelHeader(id);d_->panels[id].note=n;requestReplot();}}
 // A hidden legend needs no header row, so only a shown one reserves it.
 void ChartView::setPanelLegendVisible(int id,bool on){if(id>=0&&id<d_->panels.size()){if(on)ensurePanelHeader(id);d_->panels[id].legend=on;}}
@@ -1826,9 +1903,37 @@ void ChartView::refreshPanelChartSettings(){
         int wanted=d_->model->referenceLap(p.section);p.lap->blockSignals(true);p.lap->clear();for(const LapBlock&lap:d_->model->data().laps)if(!lap.progress.isEmpty()||d_->model->playbackCatalogHasLapDistance())p.lap->addItem(QString::number(lap.lapNum),lap.lapNum);i=p.lap->findData(wanted);p.lap->setCurrentIndex(i>=0?i:(p.lap->count()?0:-1));p.lap->blockSignals(false);}positionPanelChartSettings();
 }
 
-void ChartView::positionPanelChartSettings(){for(Panel&p:d_->panels){if(!p.window)continue;bool show=p.visible&&!p.outer.isEmpty();p.window->setVisible(show);bool lap=show&&d_->model&&d_->model->playbackMode()&&d_->model->effectiveChartWindow(p.section)==ChartWindow::SelectedLap;p.lap->setVisible(lap);if(!show)continue;QFont f=chartLabelFont(font());f.setBold(true);int title=int(std::ceil(TextWidths::of(f,d_->overlay).advance(p.title)));int x=p.outer.left()+kSidePad+title+kTitleControlGap,y=p.outer.top()+(kHeader-kControlH)/2;p.window->move(x,y);p.window->raise();if(lap){p.lap->move(x+p.window->width()+3,y);p.lap->raise();}}}
+void ChartView::setPanelHeaderControl(int id, QWidget* control) {
+    if (id < 0 || id >= d_->panels.size() || !control) return;
+    ensurePanelHeader(id);
+    Panel& p = d_->panels[id];
+    if (p.control && p.control != control) p.control->deleteLater();
+    control->setParent(this);
+    p.control = control;
+    positionPanelChartSettings();
+}
+
+void ChartView::setPanelSyncOrder(int id, int order) {
+    if (id >= 0 && id < d_->panels.size()) d_->panels[id].syncOrder = order;
+}
+
+void ChartView::positionPanelChartSettings(){for(Panel&p:d_->panels){
+    if(p.control){
+        // Caller controls sit after the title, as the chart-window selector does.
+        const bool show=p.visible&&!p.outer.isEmpty();p.control->setVisible(show);
+        if(show){QFont f=chartLabelFont(font());f.setBold(true);const int title=int(std::ceil(TextWidths::of(f,d_->overlay).advance(p.title)));
+            const int h=qMin(kControlH,qMax(1,p.control->sizeHint().height()));p.control->resize(p.control->sizeHint().width(),h);
+            p.control->move(p.outer.left()+kSidePad+title+kTitleControlGap,p.outer.top()+(kHeader-h)/2);p.control->raise();}
+    }
+    if(!p.window)continue;bool show=p.visible&&!p.outer.isEmpty();p.window->setVisible(show);bool lap=show&&d_->model&&d_->model->playbackMode()&&d_->model->effectiveChartWindow(p.section)==ChartWindow::SelectedLap;p.lap->setVisible(lap);if(!show)continue;QFont f=chartLabelFont(font());f.setBold(true);int title=int(std::ceil(TextWidths::of(f,d_->overlay).advance(p.title)));int x=p.outer.left()+kSidePad+title+kTitleControlGap,y=p.outer.top()+(kHeader-kControlH)/2;p.window->move(x,y);p.window->raise();if(lap){p.lap->move(x+p.window->width()+3,y);p.lap->raise();}}}
 
 void ChartView::setAxisLabelMap(int id,const QVector<double>&ticks,const QStringList&labels,bool lapBoundaryLabels){if(id>=0&&id<d_->axes.size()){auto&a=d_->axes[id];a.time=false;a.lapBoundaryLabels=lapBoundaryLabels;a.ticks=ticks;a.labels=labels;if(a.side!=Side::Bottom)d_->geometry(rect());}}
+void ChartView::setAxisLapMap(int id, const QVector<double>& laps, const QVector<double>& lapStarts) {
+    if (id < 0 || id >= d_->axes.size() || laps.size() != lapStarts.size()) return;
+    Axis& a = d_->axes[id];
+    a.lap = true; a.distance = false;
+    a.sessionKeys = laps; a.sessionTimes = lapStarts;
+}
 void ChartView::setAxisNumberSuffix(int id,double scale,const QString&suffix,double step){if(id>=0&&id<d_->axes.size()){auto&a=d_->axes[id];a.time=false;a.scale=std::isfinite(scale)&&scale>0?scale:1.;a.suffix=suffix;a.step=std::isfinite(step)&&step>0?step:0.;if(a.side!=Side::Bottom)d_->geometry(rect());}}
 ChartView::TooltipLine ChartView::tooltipTextLine(const QString& text, const QColor& color) {
     TooltipLine line;
@@ -1927,7 +2032,7 @@ struct ChartView::PanelTooltip {
 
 struct ChartView::SyncedSample { int order = 100; TooltipContent current, comparison; QString comparisonLabel; };
 
-QVector<ChartView::SyncedSample> ChartView::showSyncedCursor(double time, double sourceX, bool sourceDistance,
+QVector<ChartView::SyncedSample> ChartView::showSyncedCursor(double time, double sourceX, int sourceKind,
                                                              double yRatio, ChartView* source, int sourcePanel,
                                                              bool buildContent) {
     QVector<SyncedSample> out;
@@ -1946,20 +2051,28 @@ QVector<ChartView::SyncedSample> ChartView::showSyncedCursor(double time, double
         if (xid < 0) continue;
         const Axis& a = d_->axes[xid];
         const bool isSource = source == this && pid == sourcePanel;
-        const bool target = a.distance;
-        const double key = sourceDistance == target ? sourceX
-            : target ? interpolate(a.sessionTimes, a.sessionKeys, time) : time;
-        const bool mapped = sourceDistance == target || !target ||
-            (!a.sessionTimes.isEmpty() && time >= a.sessionTimes.first() && time <= a.sessionTimes.last());
+        const int target = axisKind(a);
+        // Same-kind axes share x; lap axes match a time through the lap
+        // started by then; a distance axis maps through its lap's progress.
+        double key = time;
+        bool mapped = true;
+        if (sourceKind == target) key = sourceX;
+        else if (target == DistanceAxis) {
+            key = interpolate(a.sessionTimes, a.sessionKeys, time);
+            mapped = !a.sessionTimes.isEmpty() && time >= a.sessionTimes.first() && time <= a.sessionTimes.last();
+        } else if (target == LapAxis) key = lapAtSessionTime(a, time);
         // The source panel keeps the crosshairs and markers updateHover() set.
         if (!isSource) { p.cursorV = p.cursorH = false; p.dots = false; }
-        if (!p.visible || !mapped || key < a.lo || key > a.hi) continue;
+        if (!p.visible || !mapped || !std::isfinite(key) || key < a.lo || key > a.hi) continue;
         // The hovered panel samples like an unsynced hover; peers only inside
         // their own data range (Electron's coverage gate).
         // Without content (a reused tooltip) only the cheap coverage test runs.
         PanelTooltip tip;
-        if (buildContent) tip = panelTooltip(pid, key, !isSource, sourceDistance == target);
-        else tip.any = panelHasValue(pid, key, !isSource, sourceDistance == target);
+        TooltipContent custom;
+        const bool customRows = customSyncedRows(pid, key, custom);
+        if (customRows) tip.any = !custom.isEmpty();
+        else if (buildContent) tip = panelTooltip(pid, key, !isSource, sourceKind == target);
+        else tip.any = panelHasValue(pid, key, !isSource, sourceKind == target);
         if (!tip.any) continue;
         if (!isSource) {
             p.cursorX = key; p.cursorV = d_->secondaryV;
@@ -1967,14 +2080,19 @@ QVector<ChartView::SyncedSample> ChartView::showSyncedCursor(double time, double
             p.dotX = key; p.dots = true; p.dotsStrict = true;
         }
         if (!buildContent) continue;
+        SyncedSample sample;
+        sample.order = p.syncOrder >= 0 ? p.syncOrder : cursorSyncOrder(p.section);
+        if (customRows) {
+            sample.current = custom;
+            out.push_back(sample);
+            continue;
+        }
         // Electron formatRow: the chart title, then that chart's value rows.
         TooltipContent title;
         if (!p.title.isEmpty()) {
             title << tooltipTextLine(p.title, muted);
             title.last().marginTop = 3;
         }
-        SyncedSample sample;
-        sample.order = cursorSyncOrder(p.section);
         sample.current = title + tip.current;
         if (!tip.comparison.isEmpty()) {
             sample.comparison = faded(title) + tip.comparison;
@@ -2171,6 +2289,19 @@ ChartView::PanelTooltip ChartView::panelTooltip(int pid, double key, bool strict
 }
 
 bool ChartView::customTooltip(int, double, TooltipContent&) const { return false; }
+bool ChartView::customSyncedRows(int, double, TooltipContent&) const { return false; }
+
+bool ChartView::hoverSample(int pid, double key, double& sampled) const {
+    for (const Series& series : d_->series) {
+        if (series.panel != pid || !series.visible || series.spec.name.isEmpty() || series.empty()) continue;
+        const qsizetype at = nearest(series, key);
+        const Point& point = series.data[size_t(at)];
+        if (!std::isfinite(point.y)) continue;
+        sampled = point.x;
+        return true;
+    }
+    return false;
+}
 
 double ChartView::seriesValueAt(int id, double key) const {
     if (id < 0 || id >= d_->series.size() || d_->series[id].empty()) return qQNaN();
@@ -2197,16 +2328,7 @@ void ChartView::updateHover(const QPoint& position) {
     const double key = axis.lo + double(position.x() - panel.plot.left()) / panel.plot.width() * (axis.hi - axis.lo);
     const double yRatio = qBound(0., double(position.y() - panel.plot.top()) / panel.plot.height(), 1.);
     double sampled = key;
-    bool covered = false;
-    for (const Series& series : d_->series) {
-        if (series.panel != pid || !series.visible || series.spec.name.isEmpty() || series.empty()) continue;
-        const qsizetype at = nearest(series, key);
-        const Point& point = series.data[size_t(at)];
-        if (!std::isfinite(point.y)) continue;
-        sampled = point.x; covered = true;
-        break;
-    }
-    if (!covered) {
+    if (!hoverSample(pid, key, sampled)) {
         for (auto* chart : liveCharts()) chart->clearSyncedCursor();
         d_->hoverActive = true; // A later model update may supply a value here.
         return;
@@ -2223,12 +2345,14 @@ void ChartView::updateHover(const QPoint& position) {
     panel.cursorY = yRatio; panel.cursorH = true;
 
     TooltipContent content;
-    if (customTooltip(pid, key, content)) {
+    // A synchronized chart builds its rows through customSyncedRows instead.
+    if (!d_->sync && customTooltip(pid, key, content)) {
         if (content.isEmpty()) { if (d_->tooltip) d_->tooltip->hide(); }
         else showTooltip(content, position);
         d_->canvas->update();
         return;
     }
+    const int sourceKind = axisKind(axis);
     const quint64 generation = chartContentGeneration();
     auto& cache = d_->hoverCache;
     const bool reuse = cache.valid && cache.panel == pid && cache.sampled == sampled &&
@@ -2236,9 +2360,9 @@ void ChartView::updateHover(const QPoint& position) {
     if (reuse) {
         // Same snapped sample: move every crosshair, keep the tooltip text.
         if (d_->sync) {
-            const double time = interpolate(axis.sessionKeys, axis.sessionTimes, sampled);
+            const double time = axisSessionTime(axis, sampled);
             for (auto* chart : liveCharts()) if (chart->isVisible())
-                chart->showSyncedCursor(time, key, axis.distance, yRatio, this, pid, false);
+                chart->showSyncedCursor(time, key, sourceKind, yRatio, this, pid, false);
         }
         if (cache.content.isEmpty()) { if (d_->tooltip) d_->tooltip->hide(); }
         else showTooltip(cache.content, position);
@@ -2246,18 +2370,20 @@ void ChartView::updateHover(const QPoint& position) {
         return;
     }
     const QColor muted = tooltipMutedColor();
-    // Live charts format the header as m:ss (Electron fmtTime floors).
-    const QString xText = axis.distance ? QString("%1 m").arg(qRound(sampled))
+    // Live charts format the header as m:ss (Electron fmtTime floors); lap
+    // charts name the lap.
+    const QString xText = axis.lap ? QStringLiteral("L%1").arg(qRound(sampled))
+                        : axis.distance ? QString("%1 m").arg(qRound(sampled))
                                         : timeText(std::floor(sampled), 0);
     content << tooltipTextLine(xText, muted);
     content.last().marginBottom = 4;
     if (d_->sync) {
         // Electron chartCursorSync: every participant's rows by page order,
         // then the comparison fragments grouped under one heading per lap.
-        const double time = interpolate(axis.sessionKeys, axis.sessionTimes, sampled);
+        const double time = axisSessionTime(axis, sampled);
         QVector<SyncedSample> samples;
         for (auto* chart : liveCharts()) if (chart->isVisible())
-            samples += chart->showSyncedCursor(time, key, axis.distance, yRatio, this, pid);
+            samples += chart->showSyncedCursor(time, key, sourceKind, yRatio, this, pid);
         std::stable_sort(samples.begin(), samples.end(),
             [](const SyncedSample& a, const SyncedSample& b) { return a.order < b.order; });
         QStringList labels;

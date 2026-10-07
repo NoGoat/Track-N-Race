@@ -26,7 +26,12 @@ class ChartView : public QWidget {
 
 public:
     enum class Side { Bottom, Left, Right };
-    enum class LineType { Line, Step, NativeLine, NativePoint };
+    // RoundPoint draws a filled disc of diameter `width` at every sample
+    // (Electron's TimeChart line type 3), above the traces.
+    enum class LineType { Line, Step, NativeLine, NativePoint, RoundPoint };
+    // Which sample the hover marker rings: the nearest, the first at or after
+    // the pointer (e.g. the value closing the lap under it), or none at all.
+    enum class HoverSnap { Nearest, Next, None };
 
     // Gap (px) left between panels — also the divider channel width. Exposed so a
     // caller laying tables out alongside the chart (see GraphTable's
@@ -63,6 +68,7 @@ public:
         double  opacity = 1.0;           // multiplies line and fill alpha
         LineType lineType = LineType::Line;
         bool    unitSpace = true;        // "12 kW" vs Electron's unspaced "12kW" tooltip style
+        HoverSnap hoverSnap = HoverSnap::Nearest;
     };
 
     struct BandSpec {
@@ -149,6 +155,13 @@ public:
     void setPanelLegendVisible(int panelId, bool on);
     void setPanelNote(int panelId, const QString& note);   // muted text after the colour key
     void bindPanelChartSettings(int panelId, SessionModel* model, tnr::GraphSection section);
+    // A caller-owned control (e.g. a range selector) placed in the panel
+    // header right after its title, like the chart-window selector. The chart
+    // takes ownership and shows it only while the panel is laid out.
+    void setPanelHeaderControl(int panelId, QWidget* control);
+    // Position of this panel's rows in a synchronized tooltip (lower first);
+    // by default it follows the panel's bound graph section.
+    void setPanelSyncOrder(int panelId, int order);
     // Extra tooltip row for a panel (e.g. Electron's "Total: 412.3 kW"), as
     // plain text drawn in the muted axis colour; empty adds nothing. The
     // callback receives the value of every named series in the panel, in
@@ -168,6 +181,7 @@ public:
     void setSeriesVisible(int seriesId, bool visible);
     bool seriesVisible(int seriesId) const;
     void setSeriesColor(int seriesId, const QColor& color);
+    void setSeriesFillColor(int seriesId, const QColor& color);
     void setSeriesName(int seriesId, const QString& name);
     void setSeriesWidth(int seriesId, double width);
     void setSeriesLineType(int seriesId, LineType type);
@@ -199,6 +213,10 @@ public:
     void syncAxisSessionMap(int axisId, const LapBlock* lap, float currentTime);
     void setAxisLabelMap(int axisId, const QVector<double>& ticks, const QStringList& labels,
                          bool lapBoundaryLabels = false);
+    // Marks an x axis as a lap-number axis (one point per lap) for cursor
+    // sync: `laps[i]` began at session time `lapStarts[i]`. Lap axes match
+    // each other by lap number and time axes through each lap's start.
+    void setAxisLapMap(int axisId, const QVector<double>& laps, const QVector<double>& lapStarts);
 
     // Format an axis's tick labels as value/scale + suffix, e.g. (1000,"k") turns
     // 16000 into "16k", or (1,"%") turns 80 into "80%". A positive fixedStep forces
@@ -247,6 +265,14 @@ protected:
     // Replace the default tooltip for a hover over panelId at x = key. Return
     // true to use `out` (empty hides the tooltip); false keeps the default.
     virtual bool customTooltip(int panelId, double key, TooltipContent& out) const;
+    // Replace this panel's rows in a synchronized tooltip at x = key (the
+    // chart's own panel included). Return true to use `out`; an empty `out`
+    // means the panel has nothing there and takes no synced cursor.
+    virtual bool customSyncedRows(int panelId, double key, TooltipContent& out) const;
+    // The x of the sample a hover at x = key snaps to. Return false when the
+    // panel has nothing to show there. By default: the nearest finite sample
+    // of the first visible named series.
+    virtual bool hoverSample(int panelId, double key, double& sampled) const;
     // The navigation x axis (setXNavigation) changed range: zoom, pan or reset.
     virtual void navigationRangeChanged() {}
     // Value of the sample nearest x = key (NaN when the series is empty).
@@ -272,8 +298,9 @@ private:
     // fragment per panel that has data there, the source panel included.
     // With buildContent false only the crosshairs/markers move (the source
     // reuses its tooltip for an unchanged snapped sample).
+    // sourceAxisKind: 0 time, 1 lap distance, 2 lap number.
     QVector<SyncedSample> showSyncedCursor(double sessionTime, double sourceAxisX,
-                                           bool sourceDistanceAxis, double yRatio,
+                                           int sourceAxisKind, double yRatio,
                                            ChartView* source, int sourcePanel,
                                            bool buildContent = true);
     // Whether any visible named series in the panel has a value at x = key.
