@@ -53,29 +53,6 @@ static constexpr uint32_t kRaceEventRowBit = 1u << 6;
 static constexpr uint32_t kRestoreSeedRowMask = (1u << 2) | (1u << 3);
 static constexpr std::chrono::milliseconds kStrategyPublishInterval{100};
 
-// Standard base64, for binary carried inside a JSON row.
-static std::string base64(const std::vector<uint8_t>& bytes) {
-    static constexpr char kAlphabet[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve((bytes.size() + 2) / 3 * 4);
-    size_t i = 0;
-    for (; i + 2 < bytes.size(); i += 3) {
-        const uint32_t v = uint32_t(bytes[i]) << 16 | uint32_t(bytes[i + 1]) << 8 | bytes[i + 2];
-        out += kAlphabet[v >> 18]; out += kAlphabet[(v >> 12) & 63];
-        out += kAlphabet[(v >> 6) & 63]; out += kAlphabet[v & 63];
-    }
-    if (i + 1 == bytes.size()) {
-        const uint32_t v = uint32_t(bytes[i]) << 16;
-        out += kAlphabet[v >> 18]; out += kAlphabet[(v >> 12) & 63]; out += "==";
-    } else if (i + 2 == bytes.size()) {
-        const uint32_t v = uint32_t(bytes[i]) << 16 | uint32_t(bytes[i + 1]) << 8;
-        out += kAlphabet[v >> 18]; out += kAlphabet[(v >> 12) & 63];
-        out += kAlphabet[(v >> 6) & 63]; out += '=';
-    }
-    return out;
-}
-
 static uint64_t steadyClockMilliseconds() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -1900,28 +1877,28 @@ void Engine::playerSetFocusDriver(int driverIndex) {
     emitRows(rows);
 }
 
-void Engine::liveGetFastestLap(uint64_t requestId) {
+void Engine::liveGetFastestLap(uint64_t requestId, LiveLapCallback done) {
     // Lap 0 asks the store for the fastest completed lap.
-    liveGetLapData(requestId, 0);
+    liveGetLapData(requestId, 0, std::move(done));
 }
 
-void Engine::liveGetLapData(uint64_t requestId, int lapNum) {
+void Engine::liveGetLapData(uint64_t requestId, int lapNum, LiveLapCallback done) {
+    if (!done) return;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (inPlayback_.load() || !liveV6_ || lapNum < 0) return;
     }
     const char* type = lapNum == 0 ? "live_fastest_lap_data" : "live_lap_data";
     liveV6_->requestLap(lapNum,
-        [this, requestId, type](int lap, int ms, float start, float end,
-                                std::shared_ptr<std::vector<uint8_t>> columnar) {
-            // The lap's chart families as V6 column blocks, base64 in the row.
-            std::string msg = std::string("{\"type\":\"") + type + "\",\"requestId\":" +
+        [requestId, type, done = std::move(done)](int lap, int ms, float start, float end,
+                                                  std::shared_ptr<std::vector<uint8_t>> columnar) {
+            // The lap's chart families travel as binary beside this header.
+            std::string header = std::string("{\"type\":\"") + type + "\",\"requestId\":" +
                 std::to_string(requestId) + ",\"lapNum\":" + std::to_string(lap) +
                 ",\"lapTimeMs\":" + std::to_string(ms) +
                 ",\"startSessionTime\":" + std::to_string(start) +
-                ",\"endSessionTime\":" + std::to_string(end) +
-                ",\"history\":\"" + (columnar ? base64(*columnar) : std::string{}) + "\"}";
-            emitRow(msg);
+                ",\"endSessionTime\":" + std::to_string(end) + "}";
+            done(std::move(header), std::move(columnar));
         });
 }
 

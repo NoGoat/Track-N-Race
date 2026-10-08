@@ -40,9 +40,12 @@ PowerChartsWidget::PowerChartsWidget(QWidget* parent)
 
     // All four sections are panels of one ChartView — a single QRhi render target /
     // context / replot. Each carries its own in-plot title (no colour key, matching
-    // the old headers). All four read stsBuf. Table-mode sections render as
+    // the old headers). All four read the status history. Table-mode sections render as
     // GraphTables overlaid in the same grid cell (see rebuildLayout).
     chart_ = new ChartView;
+    // Hidden, the chart frees its series; the next refresh rebuilds them.
+    chart_->setReleaseSeriesWhenHidden(true);
+    connect(chart_, &ChartView::seriesReleased, this, [this] { dataModeKey_.clear(); prevEndTime_ = -9999.0f; });
 
     auto timeAxis = [&](int sec) {
         xId_[sec] = chart_->addAxis(
@@ -279,9 +282,10 @@ void PowerChartsWidget::refresh() {
                 lastAddedTime_ = qMin(lastAddedTime_, float(domains[section].lower));
             dataModeKey_ = runtimeKey;
         }
-        auto start = std::lower_bound(d.stsBuf.begin(), d.stsBuf.end(), lastAddedTime_ + 0.0001f,
+        const SampleRange<StsSample> status = d.sts();
+        auto start = std::lower_bound(status.begin(), status.end(), lastAddedTime_ + 0.0001f,
             [](const StsSample& sample, float value) { return sample.t < value; });
-        for (auto it = start; it != d.stsBuf.end(); ++it) {
+        for (auto it = start; it != status.end(); ++it) {
             if (it->t > endTime) break;
             chart_->appendPoint(splitIceId_, it->t, it->ice_kw);
             chart_->appendPoint(splitMgukId_, it->t, it->mguk_kw);
@@ -336,8 +340,8 @@ void PowerChartsWidget::refresh() {
         dataModeKey_ = runtimeKey;
     } else if (!allTime && uniformNonTime) {
         const ChartDomain& domain = domains[SPLIT];
-        const QVector<StsSample>& source = domain.distance && domain.primary
-            ? domain.primary->sts : d.stsBuf;
+        const SampleRange<StsSample> source = domain.distance && domain.primary
+            ? SampleRange<StsSample>(domain.primary->sts) : d.sts();
         auto start = std::lower_bound(source.begin(), source.end(), lastAddedTime_ + 0.0001f,
             [](const StsSample& sample, float value) { return sample.t < value; });
         for (auto it = start; it != source.end(); ++it) {
@@ -358,11 +362,20 @@ void PowerChartsWidget::refresh() {
         { harvKId_, harvHId_, harvKRefId_, harvHRefId_ }, 0.0, harvestFixedMax_,
         model_->dynamicYAxis(tnr::GraphSection::PowerHarvest), true);
     // Fuel ceiling as Electron: the session's fuel upper limit, else the first
-    // sample + 1 kg (minimum 1 kg).
+    // sample + 1 kg (minimum 1 kg). Playback lap windows install no session
+    // history, so the laps on screen supply the first sample there; the higher
+    // of them keeps both the lap and its comparison inside the axis.
     double fuelMax = d.fuelUpperLimit;
     if (!(fuelMax > 0)) {
-        const double first = d.stsBuf.isEmpty() ? 0.0 : double(d.stsBuf.first().fuel_kg);
-        fuelMax = qMax(1.0, (std::isfinite(first) ? first : 0.0) + 1.0);
+        double first = 0.0;
+        const auto consider = [&first](const SampleRange<StsSample>& rows) {
+            for (const StsSample& sample : rows)
+                if (qIsFinite(sample.fuel_kg)) { first = qMax(first, double(sample.fuel_kg)); return; }
+        };
+        consider(d.sts());
+        if (domains[FUEL].primary) consider(domains[FUEL].primary->sts);
+        if (domains[FUEL].reference) consider(domains[FUEL].reference->sts);
+        fuelMax = qMax(1.0, first + 1.0);
     }
     chart_->setAxisRange(fuelYId_, 0.0, fuelMax);
 
@@ -378,9 +391,9 @@ void PowerChartsWidget::refresh() {
             table->setDistanceMode(domain.distance);
             table->beginRebuild(domain.lower, domain.upper,
                                 chartWindowAccumulatesLaps(domain.window));
-            const QVector<StsSample>& source = domain.distance && domain.primary
-                ? domain.primary->sts : d.stsBuf;
-            for (int i = source.size() - 1; i >= 0 && !table->full(); --i) {
+            const SampleRange<StsSample> source = domain.distance && domain.primary
+                ? SampleRange<StsSample>(domain.primary->sts) : d.sts();
+            for (qsizetype i = source.size() - 1; i >= 0 && !table->full(); --i) {
                 const StsSample& sample = source[i];
                 if (sample.t > domain.currentTime) continue;
                 const double coordinate = domain.distance

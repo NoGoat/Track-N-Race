@@ -45,6 +45,9 @@ InputChartsWidget::InputChartsWidget(QWidget* parent)
     outer_->setContentsMargins(0, 0, 0, 0);
     outer_->setSpacing(ChartView::PanelGap);
     chart_ = new ChartView;
+    // Hidden, the chart frees its series; the next refresh rebuilds them.
+    chart_->setReleaseSeriesWhenHidden(true);
+    connect(chart_, &ChartView::seriesReleased, this, [this] { for (QString& key : dataModeKey_) key.clear(); });
 
     const char* titles[] = {
         "GEAR INDICATOR", "ACCELERATOR / BRAKE", "STEERING TELEMETRY   ( - Left / + Right )",
@@ -260,8 +263,8 @@ void InputChartsWidget::refresh() {
             .arg(model_->playbackDataRevision());
         const bool rebuild = dataModeKey_[section] != runtimeKey ||
             endTime < previousTime_[section] || std::abs(endTime - previousTime_[section]) > 1.0f;
-        const QVector<TelSample>& samples = domain.distance && domain.primary
-            ? domain.primary->tel : data.telBuf;
+        const SampleRange<TelSample> samples = domain.distance && domain.primary
+            ? SampleRange<TelSample>(domain.primary->tel) : data.tel();
         const int count = section == COMBINED || section == COMBINED2 ? 2 : 1;
         auto value = [section](const TelSample& sample, int component) -> double {
             switch (section) {

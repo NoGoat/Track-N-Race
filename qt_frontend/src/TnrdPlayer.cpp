@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <type_traits>
 #include <vector>
@@ -166,20 +167,29 @@ void copyTimedRange(const QVector<T>& source, float start, float end, QVector<T>
     for (auto it = first; it != last; ++it) target.push_back(*it);
 }
 
+// Every lap gets its progress; only the lap under the cursor gets sample
+// families, which is all SessionModel installs (the session buffers hold the
+// same samples). Copying every lap here only to discard it doubled the peak.
 void buildLapDetails(PlaybackHistoryBatch& batch,
                      const QVector<PlaybackLapRange>& ranges) {
+    int cursorLap = batch.lapNum;
+    if (cursorLap <= 0)
+        for (const PlaybackLapRange& range : ranges)
+            if (range.start <= batch.data.latestTime && batch.data.latestTime <= range.end) cursorLap = range.lapNum;
     batch.lapDetails.reserve(ranges.size());
     for (const PlaybackLapRange& range : ranges) {
         LapBlock lap;
         lap.lapNum = range.lapNum;
         lap.startSessionTime = range.start;
         lap.endSessionTime = range.end;
-        copyTimedRange(batch.data.telBuf, range.start, range.end, lap.tel);
-        copyTimedRange(batch.data.tyreBuf, range.start, range.end, lap.tyre);
-        copyTimedRange(batch.data.stsBuf, range.start, range.end, lap.sts);
-        copyTimedRange(batch.data.damageBuf, range.start, range.end, lap.damage);
-        copyTimedRange(batch.data.motionBuf, range.start, range.end, lap.motion);
-        copyTimedRange(batch.data.motionExBuf, range.start, range.end, lap.motionEx);
+        if (range.lapNum == cursorLap) {
+            copyTimedRange(batch.data.telBuf, range.start, range.end, lap.tel);
+            copyTimedRange(batch.data.tyreBuf, range.start, range.end, lap.tyre);
+            copyTimedRange(batch.data.stsBuf, range.start, range.end, lap.sts);
+            copyTimedRange(batch.data.damageBuf, range.start, range.end, lap.damage);
+            copyTimedRange(batch.data.motionBuf, range.start, range.end, lap.motion);
+            copyTimedRange(batch.data.motionExBuf, range.start, range.end, lap.motionEx);
+        }
         copyTimedRange(batch.progress, range.start, range.end, lap.progress);
         if (!lap.tel.isEmpty() || !lap.tyre.isEmpty() || !lap.sts.isEmpty() ||
             !lap.damage.isEmpty() || !lap.motion.isEmpty() ||
@@ -225,12 +235,41 @@ uint32_t v6FamilyBit(V6Family family) {
     }
 }
 
-struct V6HistoryField { std::string name; std::vector<double> values; };   // NaN = absent
+// A field's values stay packed in the payload: a merge reads them in row
+// order through a V6FieldCursor, so no block is ever expanded to doubles.
+struct V6HistoryField {
+    std::string name;
+    uint8_t kind = 0;                  // 0 f32, 1 f64, 2 i32, 3 bool
+    uint8_t width = 4;
+    const uint8_t* present = nullptr;  // presence bitmap; null when dense
+    const uint8_t* data = nullptr;     // one value per present row
+};
 struct V6HistoryBlock {
     int type = 0;
     std::vector<float> time;
     std::vector<V6HistoryField> fields;
-    std::vector<double> available;   // empty when the block has no availability column
+    std::optional<V6HistoryField> available;   // the block's availability column, if any
+};
+
+// Reads one field's values for rows 0, 1, 2, ... in turn. NaN = absent.
+struct V6FieldCursor {
+    const V6HistoryField* field = nullptr;
+    size_t offset = 0;
+    double next(size_t row) {
+        const V6HistoryField& f = *field;
+        if (f.present && !((f.present[row >> 3] >> (row & 7)) & 1))
+            return std::numeric_limits<double>::quiet_NaN();
+        const uint8_t* at = f.data + offset;
+        offset += f.width;
+        switch (f.kind) {
+            case 0: { const quint32 v = qFromLittleEndian<quint32>(at);
+                      float x; std::memcpy(&x, &v, sizeof x); return x; }
+            case 1: { const quint64 v = qFromLittleEndian<quint64>(at);
+                      double x; std::memcpy(&x, &v, sizeof x); return x; }
+            case 2: return qFromLittleEndian<qint32>(at);
+            default: return *at;
+        }
+    }
 };
 
 bool isV6HistoryPayload(const uint8_t* data, size_t length) {
@@ -245,7 +284,6 @@ bool parseV6History(const uint8_t* data, size_t length, uint32_t& mask,
     mask = qFromLittleEndian<quint32>(data + 4);
     const quint32 blockCount = qFromLittleEndian<quint32>(data + 8);
     at = 12;
-    constexpr double nan = std::numeric_limits<double>::quiet_NaN();
     blocks.reserve(blockCount);
     for (quint32 b = 0; b < blockCount; ++b) {
         if (!need(8)) return false;
@@ -275,111 +313,115 @@ bool parseV6History(const uint8_t* data, size_t length, uint32_t& mask,
                 present = data + at;
                 at += bitmapBytes;
             }
-            const size_t width = kind == 1 ? 8 : kind == 3 ? 1 : 4;
-            std::vector<double> values(rows, nan);
-            for (quint32 r = 0; r < rows; ++r) {
-                if (present && !((present[r >> 3] >> (r & 7)) & 1)) continue;
-                if (!need(width)) return false;
-                switch (kind) {
-                    case 0: { const quint32 v = qFromLittleEndian<quint32>(data + at);
-                              float x; std::memcpy(&x, &v, sizeof x); values[r] = x; break; }
-                    case 1: { const quint64 v = qFromLittleEndian<quint64>(data + at);
-                              double x; std::memcpy(&x, &v, sizeof x); values[r] = x; break; }
-                    case 2: values[r] = qFromLittleEndian<qint32>(data + at); break;
-                    default: values[r] = data[at]; break;
-                }
-                at += width;
+            const uint8_t width = kind == 1 ? 8 : kind == 3 ? 1 : 4;
+            size_t presentRows = rows;
+            if (present) {
+                presentRows = 0;
+                for (quint32 r = 0; r < rows; ++r) presentRows += (present[r >> 3] >> (r & 7)) & 1;
             }
-            if (name == "available") block.available = std::move(values);
-            else block.fields.push_back({std::move(name), std::move(values)});
+            if (!need(presentRows * width)) return false;
+            V6HistoryField field{std::move(name), kind, width, present, data + at};
+            at += presentRows * width;
+            if (field.name == "available") block.available = std::move(field);
+            else block.fields.push_back(std::move(field));
         }
         blocks.push_back(std::move(block));
     }
     return true;
 }
 
-// One family's merged table: union of its blocks' times with every field
-// carried forward (Electron's decodeV6HistoryInner).
-struct V6FamilyTable {
-    std::vector<float> time;
-    std::vector<std::string> names;
-    std::vector<std::vector<double>> columns;   // [field][row]
-    double at(const std::vector<double>* column, size_t row) const {
-        return column ? (*column)[row] : std::numeric_limits<double>::quiet_NaN();
-    }
-    const std::vector<double>* column(std::string_view name) const {
-        for (size_t i = 0; i < names.size(); ++i) if (names[i] == name) return &columns[i];
-        return nullptr;
-    }
-};
-
-bool mergeV6Family(const std::vector<V6HistoryBlock>& blocks, V6Family family, V6FamilyTable& out) {
-    struct Track { const V6HistoryBlock* block; std::vector<int> fieldSlots; std::vector<int> dropSlots; };
-    std::vector<Track> tracks;
-    std::vector<std::string>& names = out.names;
-    const auto slotOf = [&names](const std::string& name, bool create) -> int {
-        for (size_t i = 0; i < names.size(); ++i) if (names[i] == name) return int(i);
-        if (!create) return -1;
-        names.push_back(name);
-        return int(names.size()) - 1;
-    };
-    for (const V6HistoryBlock& block : blocks) {
-        const std::vector<const char*> patchFields = playbackPatchFields(block.type);
-        bool any = false;
-        for (const V6HistoryField& field : block.fields)
-            if (v6FieldFamily(block.type, field.name) == family) { any = true; break; }
-        const bool availabilityOnly = !any && !block.available.empty() && !patchFields.empty() &&
-            v6FieldFamily(block.type, patchFields.front()) == family;
-        if (!any && !availabilityOnly) continue;
-        Track track{&block, {}, {}};
-        for (const V6HistoryField& field : block.fields)
-            track.fieldSlots.push_back(v6FieldFamily(block.type, field.name) == family
-                ? slotOf(field.name, true) : -1);
-        tracks.push_back(std::move(track));
-    }
-    if (tracks.empty()) return false;
-    // Withdrawal targets are resolved once every field slot exists.
-    for (Track& track : tracks)
-        for (const char* name : playbackPatchFields(track.block->type))
-            if (v6FieldFamily(track.block->type, name) == family)
-                if (const int slot = slotOf(name, false); slot >= 0) track.dropSlots.push_back(slot);
-
-    std::vector<float>& times = out.time;
-    for (const Track& track : tracks) {
-        std::vector<float> merged;
-        merged.reserve(times.size() + track.block->time.size());
-        std::merge(times.begin(), times.end(), track.block->time.begin(), track.block->time.end(),
-                   std::back_inserter(merged));
-        merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
-        times.swap(merged);
-    }
-    const size_t rows = times.size();
-    constexpr double nan = std::numeric_limits<double>::quiet_NaN();
-    out.columns.assign(names.size(), std::vector<double>(rows, nan));
-    std::vector<double> state(names.size(), nan);
-    std::vector<size_t> cursors(tracks.size(), 0);
-    for (size_t r = 0; r < rows; ++r) {
-        const float t = times[r];
-        for (size_t k = 0; k < tracks.size(); ++k) {
-            const Track& track = tracks[k];
-            const V6HistoryBlock& block = *track.block;
-            size_t p = cursors[k];
-            while (p < block.time.size() && block.time[p] <= t) {
-                if (!block.available.empty() && block.available[p] == 0.0)
-                    for (const int slot : track.dropSlots) state[size_t(slot)] = nan;
-                for (size_t f = 0; f < block.fields.size(); ++f) {
-                    const int slot = track.fieldSlots[f];
-                    const double value = block.fields[f].values[p];
-                    if (slot >= 0 && value == value) state[size_t(slot)] = value;
-                }
-                ++p;
+// One family's merge: the union of its blocks' times with every field carried
+// forward (Electron's decodeV6HistoryInner). Rows go to the caller as they are
+// completed, so neither the blocks nor the family are ever held as tables of
+// doubles: a full-race seek used to hold both.
+class V6FamilyMerge {
+public:
+    // False when no block carries this family.
+    bool prepare(const std::vector<V6HistoryBlock>& blocks, V6Family family) {
+        const auto slotOf = [this](const std::string& name, bool create) -> int {
+            for (size_t i = 0; i < names_.size(); ++i) if (names_[i] == name) return int(i);
+            if (!create) return -1;
+            names_.push_back(name);
+            return int(names_.size()) - 1;
+        };
+        for (const V6HistoryBlock& block : blocks) {
+            const std::vector<const char*> patchFields = playbackPatchFields(block.type);
+            bool any = false;
+            for (const V6HistoryField& field : block.fields)
+                if (v6FieldFamily(block.type, field.name) == family) { any = true; break; }
+            const bool availabilityOnly = !any && block.available && !patchFields.empty() &&
+                v6FieldFamily(block.type, patchFields.front()) == family;
+            if (!any && !availabilityOnly) continue;
+            Track track;
+            track.block = &block;
+            for (const V6HistoryField& field : block.fields) {
+                track.fieldSlots.push_back(v6FieldFamily(block.type, field.name) == family
+                    ? slotOf(field.name, true) : -1);
+                track.cursors.push_back({&field, 0});
             }
-            cursors[k] = p;
+            if (block.available) track.available = V6FieldCursor{&*block.available, 0};
+            tracks_.push_back(std::move(track));
         }
-        for (size_t c = 0; c < state.size(); ++c) out.columns[c][r] = state[c];
+        if (tracks_.empty()) return false;
+        // Withdrawal targets are resolved once every field slot exists.
+        for (Track& track : tracks_)
+            for (const char* name : playbackPatchFields(track.block->type))
+                if (v6FieldFamily(track.block->type, name) == family)
+                    if (const int slot = slotOf(name, false); slot >= 0) track.dropSlots.push_back(slot);
+        for (const Track& track : tracks_) {
+            std::vector<float> merged;
+            merged.reserve(times_.size() + track.block->time.size());
+            std::merge(times_.begin(), times_.end(), track.block->time.begin(), track.block->time.end(),
+                       std::back_inserter(merged));
+            merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+            times_.swap(merged);
+        }
+        return true;
     }
-    return true;
-}
+
+    size_t rows() const { return times_.size(); }
+    int column(std::string_view name) const {
+        for (size_t i = 0; i < names_.size(); ++i) if (names_[i] == name) return int(i);
+        return -1;
+    }
+
+    // row(time, state): state[column] is the value carried at that time, NaN
+    // when absent. Call once.
+    template <typename RowFn>
+    void forEachRow(RowFn&& row) {
+        constexpr double nan = std::numeric_limits<double>::quiet_NaN();
+        std::vector<double> state(names_.size(), nan);
+        for (const float t : times_) {
+            for (Track& track : tracks_) {
+                const V6HistoryBlock& block = *track.block;
+                size_t& p = track.next;
+                while (p < block.time.size() && block.time[p] <= t) {
+                    if (track.available && track.available->next(p) == 0.0)
+                        for (const int slot : track.dropSlots) state[size_t(slot)] = nan;
+                    for (size_t f = 0; f < track.cursors.size(); ++f) {
+                        const double value = track.cursors[f].next(p);
+                        const int slot = track.fieldSlots[f];
+                        if (slot >= 0 && value == value) state[size_t(slot)] = value;
+                    }
+                    ++p;
+                }
+            }
+            row(t, static_cast<const std::vector<double>&>(state));
+        }
+    }
+
+private:
+    struct Track {
+        const V6HistoryBlock* block = nullptr;
+        std::vector<int> fieldSlots, dropSlots;
+        std::vector<V6FieldCursor> cursors;
+        std::optional<V6FieldCursor> available;
+        size_t next = 0;
+    };
+    std::vector<Track> tracks_;
+    std::vector<std::string> names_;
+    std::vector<float> times_;
+};
 
 int missingInt(double value) {
     return std::isfinite(value) ? static_cast<int>(value) : kPlaybackMissingInt;
@@ -393,88 +435,92 @@ bool decodeColumnarHistory(PlaybackHistoryBatch& batch, const uint8_t* data, siz
     if (!parseV6History(data, length, mask, blocks)) return false;
     auto& out = batch.data;
     const auto f = [](double value) { return static_cast<float>(value); };
+    const auto at = [](const std::vector<double>& state, int column) {
+        return column < 0 ? std::numeric_limits<double>::quiet_NaN() : state[size_t(column)];
+    };
     for (V6Family family : {V6Family::Telemetry, V6Family::Status, V6Family::Damage,
                             V6Family::Lap, V6Family::Motion, V6Family::MotionEx}) {
         if (!(mask & v6FamilyBit(family))) continue;
-        V6FamilyTable table;
-        if (!mergeV6Family(blocks, family, table)) continue;
-        const size_t rows = table.time.size();
-        const auto col = [&table](std::string_view name) { return table.column(name); };
+        V6FamilyMerge merge;
+        if (!merge.prepare(blocks, family)) continue;
+        const qsizetype rows = qsizetype(merge.rows());
         switch (family) {
             case V6Family::Telemetry: {
-                const auto *speed = col("speed_kph"), *rpm = col("rpm"), *gear = col("gear"),
-                           *throttle = col("throttle"), *brake = col("brake"), *steering = col("steering");
-                const std::vector<double>* temps[12] = {
-                    col("tyre_temp_surface_fl"), col("tyre_temp_surface_fr"),
-                    col("tyre_temp_surface_rl"), col("tyre_temp_surface_rr"),
-                    col("tyre_temp_inner_fl"), col("tyre_temp_inner_fr"),
-                    col("tyre_temp_inner_rl"), col("tyre_temp_inner_rr"),
-                    col("brake_temp_fl"), col("brake_temp_fr"),
-                    col("brake_temp_rl"), col("brake_temp_rr") };
-                out.telBuf.reserve(out.telBuf.size() + qsizetype(rows));
-                out.tyreBuf.reserve(out.tyreBuf.size() + qsizetype(rows));
-                for (size_t r = 0; r < rows; ++r) {
-                    const float t = table.time[r];
-                    out.onTelemetry(t, f(table.at(speed, r)), f(table.at(rpm, r)), f(table.at(gear, r)),
-                                    f(table.at(throttle, r)), f(table.at(brake, r)),
-                                    f(table.at(steering, r)));
-                    out.onTyre(t, f(table.at(temps[0], r)), f(table.at(temps[1], r)),
-                               f(table.at(temps[2], r)), f(table.at(temps[3], r)),
-                               f(table.at(temps[4], r)), f(table.at(temps[5], r)),
-                               f(table.at(temps[6], r)), f(table.at(temps[7], r)),
-                               f(table.at(temps[8], r)), f(table.at(temps[9], r)),
-                               f(table.at(temps[10], r)), f(table.at(temps[11], r)),
+                const int speed = merge.column("speed_kph"), rpm = merge.column("rpm"),
+                          gear = merge.column("gear"), throttle = merge.column("throttle"),
+                          brake = merge.column("brake"), steering = merge.column("steering");
+                const int temps[12] = {
+                    merge.column("tyre_temp_surface_fl"), merge.column("tyre_temp_surface_fr"),
+                    merge.column("tyre_temp_surface_rl"), merge.column("tyre_temp_surface_rr"),
+                    merge.column("tyre_temp_inner_fl"), merge.column("tyre_temp_inner_fr"),
+                    merge.column("tyre_temp_inner_rl"), merge.column("tyre_temp_inner_rr"),
+                    merge.column("brake_temp_fl"), merge.column("brake_temp_fr"),
+                    merge.column("brake_temp_rl"), merge.column("brake_temp_rr") };
+                out.telBuf.reserve(out.telBuf.size() + rows);
+                out.tyreBuf.reserve(out.tyreBuf.size() + rows);
+                merge.forEachRow([&](float t, const std::vector<double>& s) {
+                    out.onTelemetry(t, f(at(s, speed)), f(at(s, rpm)), f(at(s, gear)),
+                                    f(at(s, throttle)), f(at(s, brake)), f(at(s, steering)));
+                    out.onTyre(t, f(at(s, temps[0])), f(at(s, temps[1])),
+                               f(at(s, temps[2])), f(at(s, temps[3])),
+                               f(at(s, temps[4])), f(at(s, temps[5])),
+                               f(at(s, temps[6])), f(at(s, temps[7])),
+                               f(at(s, temps[8])), f(at(s, temps[9])),
+                               f(at(s, temps[10])), f(at(s, temps[11])),
                                0.0f, 0.0f, 0.0f, 0.0f);
-                }
+                });
                 break;
             }
             case V6Family::Status: {
-                const auto *ers = col("ers_pct"), *fuel = col("fuel_kg"),
-                           *ice = col("engine_power_ice_kw"), *mguk = col("engine_power_mguk_kw"),
-                           *harvestK = col("ers_harvested_mguk_j"), *harvestH = col("ers_harvested_mguh_j"),
-                           *compound = col("tyre_compound"), *visual = col("visual_compound"),
-                           *age = col("tyre_age_laps"), *deployed = col("ers_deployed_j");
-                out.stsBuf.reserve(out.stsBuf.size() + qsizetype(rows));
-                for (size_t r = 0; r < rows; ++r)
-                    out.onStatus(table.time[r], f(table.at(ers, r)), f(table.at(fuel, r)),
-                                 f(table.at(ice, r)), f(table.at(mguk, r)),
-                                 f(table.at(harvestK, r)), f(table.at(harvestH, r)),
-                                 missingInt(table.at(compound, r)), missingInt(table.at(visual, r)),
-                                 missingInt(table.at(age, r)), f(table.at(deployed, r)));
+                const int ers = merge.column("ers_pct"), fuel = merge.column("fuel_kg"),
+                          ice = merge.column("engine_power_ice_kw"), mguk = merge.column("engine_power_mguk_kw"),
+                          harvestK = merge.column("ers_harvested_mguk_j"), harvestH = merge.column("ers_harvested_mguh_j"),
+                          compound = merge.column("tyre_compound"), visual = merge.column("visual_compound"),
+                          age = merge.column("tyre_age_laps"), deployed = merge.column("ers_deployed_j");
+                out.stsBuf.reserve(out.stsBuf.size() + rows);
+                merge.forEachRow([&](float t, const std::vector<double>& s) {
+                    out.onStatus(t, f(at(s, ers)), f(at(s, fuel)),
+                                 f(at(s, ice)), f(at(s, mguk)),
+                                 f(at(s, harvestK)), f(at(s, harvestH)),
+                                 missingInt(at(s, compound)), missingInt(at(s, visual)),
+                                 missingInt(at(s, age)), f(at(s, deployed)));
+                });
                 break;
             }
             case V6Family::Damage: {
-                const auto *fl = col("tyre_wear_fl"), *fr = col("tyre_wear_fr"),
-                           *rl = col("tyre_wear_rl"), *rr = col("tyre_wear_rr");
-                out.damageBuf.reserve(out.damageBuf.size() + qsizetype(rows));
-                for (size_t r = 0; r < rows; ++r)
-                    out.onDamage(table.time[r], f(table.at(fl, r)), f(table.at(fr, r)),
-                                 f(table.at(rl, r)), f(table.at(rr, r)));
+                const int fl = merge.column("tyre_wear_fl"), fr = merge.column("tyre_wear_fr"),
+                          rl = merge.column("tyre_wear_rl"), rr = merge.column("tyre_wear_rr");
+                out.damageBuf.reserve(out.damageBuf.size() + rows);
+                merge.forEachRow([&](float t, const std::vector<double>& s) {
+                    out.onDamage(t, f(at(s, fl)), f(at(s, fr)), f(at(s, rl)), f(at(s, rr)));
+                });
                 break;
             }
             case V6Family::Lap: {
-                const auto *current = col("current_lap_ms"), *distance = col("lap_distance_m"),
-                           *sector = col("sector");
-                batch.progress.reserve(batch.progress.size() + qsizetype(rows));
-                for (size_t r = 0; r < rows; ++r) {
-                    batch.progress.push_back({table.time[r], missingInt(table.at(current, r)),
-                                              f(table.at(distance, r)), missingInt(table.at(sector, r))});
-                    out.latestTime = std::max(out.latestTime, table.time[r]);
-                }
+                const int current = merge.column("current_lap_ms"), distance = merge.column("lap_distance_m"),
+                          sector = merge.column("sector");
+                batch.progress.reserve(batch.progress.size() + rows);
+                merge.forEachRow([&](float t, const std::vector<double>& s) {
+                    batch.progress.push_back({t, missingInt(at(s, current)),
+                                              f(at(s, distance)), missingInt(at(s, sector))});
+                    out.latestTime = std::max(out.latestTime, t);
+                });
                 break;
             }
             case V6Family::Motion: {
-                const auto *lat = col("g_lat"), *lon = col("g_long");
-                out.motionBuf.reserve(out.motionBuf.size() + qsizetype(rows));
-                for (size_t r = 0; r < rows; ++r)
-                    out.onMotion(table.time[r], f(table.at(lat, r)), f(table.at(lon, r)));
+                const int lat = merge.column("g_lat"), lon = merge.column("g_long");
+                out.motionBuf.reserve(out.motionBuf.size() + rows);
+                merge.forEachRow([&](float t, const std::vector<double>& s) {
+                    out.onMotion(t, f(at(s, lat)), f(at(s, lon)));
+                });
                 break;
             }
             case V6Family::MotionEx: {
-                const auto *front = col("front_aero_height_mm"), *rear = col("rear_aero_height_mm");
-                out.motionExBuf.reserve(out.motionExBuf.size() + qsizetype(rows));
-                for (size_t r = 0; r < rows; ++r)
-                    out.onMotionEx(table.time[r], f(table.at(front, r)), f(table.at(rear, r)));
+                const int front = merge.column("front_aero_height_mm"), rear = merge.column("rear_aero_height_mm");
+                out.motionExBuf.reserve(out.motionExBuf.size() + rows);
+                merge.forEachRow([&](float t, const std::vector<double>& s) {
+                    out.onMotionEx(t, f(at(s, front)), f(at(s, rear)));
+                });
                 break;
             }
             default: break;

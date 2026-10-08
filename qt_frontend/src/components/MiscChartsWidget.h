@@ -10,7 +10,7 @@ class QGridLayout;
 class GraphTable;
 
 // Combined or split Misc graphs share one ChartView and incremental data paths.
-// G-force reads motionBuf, ride height reads motionExBuf.
+// G-force reads motion history, ride height reads motionEx history.
 class MiscChartsWidget : public QWidget {
     Q_OBJECT
 public:

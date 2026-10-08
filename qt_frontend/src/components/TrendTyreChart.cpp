@@ -97,7 +97,7 @@ void TrendTyreChart::refresh(const SessionData& data, const QVector<TrendLapBoun
         lastAddedTime_ = float(lower) - 0.0001f;
         dataKey_ = key;
     }
-    const QVector<DamageSample>& rows = data.damageBuf;
+    const SampleRange<DamageSample> rows = data.damage();
     auto it = std::lower_bound(rows.cbegin(), rows.cend(), lastAddedTime_ + 0.0001f,
         [](const DamageSample& sample, float time) { return sample.t < time; });
     for (; it != rows.cend(); ++it) {

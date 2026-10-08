@@ -31,6 +31,9 @@ MiscChartsWidget::MiscChartsWidget(QWidget* parent)
                                                // overlaid tables align with chart cells
 
     chart_ = new ChartView;
+    // Hidden, the chart frees its series; the next refresh rebuilds them.
+    chart_->setReleaseSeriesWhenHidden(true);
+    connect(chart_, &ChartView::seriesReleased, this, [this] { for (QString& key : dataModeKey_) key.clear(); });
     const char* titles[] = {"G-FORCE", "RIDE HEIGHT", "LATERAL G-FORCE",
                             "LONGITUDINAL G-FORCE", "FRONT RIDE HEIGHT", "REAR RIDE HEIGHT"};
     for (int section = 0; section < SECTIONS; ++section) {
@@ -237,12 +240,12 @@ void MiscChartsWidget::refresh() {
             }
         };
         if (section == GFORCE || section == LATERAL || section == LONGITUDINAL) {
-            feed(data.motionBuf, &LapBlock::motion,
+            feed(data.motion(), &LapBlock::motion,
                 [](const MotionSample& sample, int component) {
                     return component ? sample.g_long : sample.g_lat;
                 });
         } else {
-            feed(data.motionExBuf, &LapBlock::motionEx,
+            feed(data.motionEx(), &LapBlock::motionEx,
                 [](const MotionExSample& sample, int component) {
                     return component ? sample.rear_aero : sample.front_aero;
                 });

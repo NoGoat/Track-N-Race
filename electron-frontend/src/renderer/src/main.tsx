@@ -1,5 +1,9 @@
 import './index.css'
 import { getDebugSettings } from './lib/debugSettings'
+import { installWorkerHistoryDecoder } from './lib/historyDecodeClient'
+
+// History payloads decode in a worker, keeping their temporaries off this heap.
+installWorkerHistoryDecoder()
 
 // React 19's development build emits User Timing measures for component
 // renders. This 60–120 Hz UI can otherwise retain tens of thousands of

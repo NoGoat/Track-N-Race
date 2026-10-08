@@ -117,7 +117,7 @@ QHash<int, double> lapStarts(const QVector<TrendLapBoundary>& boundaries) {
 }
 
 // Index of the last damage row before `time` (-1 when none).
-qsizetype lastBefore(const QVector<DamageSample>& rows, double time) {
+qsizetype lastBefore(const SampleRange<DamageSample>& rows, double time) {
     const auto it = std::lower_bound(rows.cbegin(), rows.cend(), time,
         [](const DamageSample& sample, double value) { return sample.t < value; });
     return qsizetype(std::distance(rows.cbegin(), it)) - 1;
@@ -171,7 +171,7 @@ constexpr double kFallbackLapS = 90;
 // previous lap's time.
 QVector<TrendPoint> buildTyreSamples(const QVector<Lap>& laps, int firstLap, std::optional<int> currentLap,
                                      const QVector<TrendLapBoundary>& boundaries,
-                                     const QVector<DamageSample>& rows, bool life) {
+                                     const SampleRange<DamageSample>& rows, bool life) {
     QVector<TrendPoint> points;
     if (rows.isEmpty() || !currentLap) return points;
     const QHash<int, double> starts = lapStarts(boundaries);
@@ -213,7 +213,7 @@ QVector<TrendPoint> buildTyreSamples(const QVector<Lap>& laps, int firstLap, std
 // corner's tyre wear (or life) at the lap's closing line, ERS used, and lap time.
 QVector<TrendPoint> buildBarPoints(const QVector<Lap>& laps, const QHash<int, TrendLapMeasure>& measures,
                                    const QVector<TrendLapBoundary>& boundaries,
-                                   const QVector<DamageSample>& rows, bool life) {
+                                   const SampleRange<DamageSample>& rows, bool life) {
     const QHash<int, double> starts = lapStarts(boundaries);
     const std::optional<int> fastest = fastestValid(laps);
     QVector<TrendPoint> points;
@@ -684,8 +684,10 @@ void TrendsPage::refresh() {
 
     // The status history grows in place; the scan reads only what is new and
     // starts again when held rows were rewritten.
-    const StintStatusScan& scan = scanner_.scanFor(data.stsBuf, model_->playbackDataRevision());
-    const QHash<int, TrendLapMeasure> measures = measureTrendLaps(scan, data.stsBuf, boundaries, lapNums, hasMguh_);
+    const SampleRange<StsSample> status = data.sts();
+    const StintStatusScan& scan = scanner_.scanFor(status, model_->playbackDataRevision());
+    const QHash<int, TrendLapMeasure> measures = measureTrendLaps(scan, status, boundaries, lapNums, hasMguh_);
+    const SampleRange<DamageSample> damage = data.damage();
     refreshCards(stintLaps, haveHistory ? stintStart : -1, measures);
 
     const bool dynamicTyres = model_->dynamicYAxis(tnr::GraphSection::TyreWear);
@@ -739,13 +741,13 @@ void TrendsPage::refresh() {
         const bool all = combinedRange_ && combinedRange_->currentData().toString() == QLatin1String("all");
         const QVector<Lap>& laps = all ? allLaps : stintLaps;
         if (chartLayout_ == TrendsChartLayout::Bars) {
-            const QVector<TrendPoint> points = buildBarPoints(laps, measures, boundaries, data.damageBuf, life_);
+            const QVector<TrendPoint> points = buildBarPoints(laps, measures, boundaries, damage, life_);
             singleChart_->setData(points, {}, barAxes(points, colors.lapTime, dynamicTyres));
         } else {
             const int firstLap = all ? (allLaps.isEmpty() ? 1 : allLaps.first().lap_num) : stintStart;
             const QVector<TrendPoint> lapPoints = buildLapEndPoints(laps, measures);
             const QVector<TrendPoint> tyrePoints =
-                buildTyreSamples(laps, firstLap, currentLap_, boundaries, data.damageBuf, life_);
+                buildTyreSamples(laps, firstLap, currentLap_, boundaries, damage, life_);
             singleChart_->setData(tyrePoints, lapPoints,
                 combinedAxes(lapPoints, tyrePoints, chartLayout_ != TrendsChartLayout::CombinedNoRecharge,
                              colors.lapTime, dynamicTyres));

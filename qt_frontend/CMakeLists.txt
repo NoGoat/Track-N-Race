@@ -67,10 +67,12 @@ set(SOURCES
     src/PlaybackPatchMerger.cpp
     src/PlaybackPatchMerger.h
     src/EngineSink.h
-    src/HotRowSmoother.h
     src/PresentationScheduler.h
     src/Diagnostics.cpp
     src/Diagnostics.h
+    src/IdleMemory.cpp
+    src/IdleMemory.h
+    src/SampleRange.h
     src/UpdateChecker.cpp
     src/UpdateChecker.h
     src/CompactSettings.h
@@ -201,7 +203,7 @@ set(SOURCES
 )
 
 if(WIN32)
-    list(APPEND SOURCES resources.rc)
+    list(APPEND SOURCES resources.rc app.manifest)
     add_executable(native_recorder WIN32 ${SOURCES})
     target_compile_options(native_recorder PRIVATE /utf-8 /FIwindows.h)
     # NOMINMAX prevents windows.h min/max macros from shadowing std::min/std::max.

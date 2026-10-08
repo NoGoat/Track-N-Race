@@ -38,6 +38,13 @@ public:
     void setCurrentTime(float t);
     void setWindowSeconds(float secs);
     void setCornerTable(int i, bool table);   // Settings-driven Card ⇄ Table swap
+    // A corner shows its Table, which lists the tyre history of the last
+    // windowSeconds() (the cards themselves need only the latest values).
+    bool anyCornerTable() const {
+        for (bool table : cornerTableMode_) if (table) return true;
+        return false;
+    }
+    float windowSeconds() const { return windowS_; }
 
     // Density levels for the Overview tyre cards (the Tyres page always uses Full):
     //   Full          — stacked Surface/Inner/Brake/Wear rows + wear bar (default)

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Merged into the embedded manifest by the linker (CMake passes .manifest
+     sources through). SegmentHeap: the Windows 10/11 heap, which fragments
+     less and returns freed memory to the system more readily than the default
+     NT heap. The CRT, Qt and the engine all allocate from the process heap. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
+    </windowsSettings>
+  </application>
+</assembly>

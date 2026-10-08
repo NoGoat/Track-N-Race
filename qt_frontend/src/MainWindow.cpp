@@ -40,6 +40,7 @@
 #include "PresentationScheduler.h"
 #include "UpdateChecker.h"
 #include "Diagnostics.h"
+#include "IdleMemory.h"
 #include <tnrp/Capabilities.h>
 
 #include <QApplication>
@@ -211,8 +212,10 @@ MainWindow::MainWindow(QWidget* parent)
         // frame at launch. Sizing to the screen's available area here makes the first
         // layout already fill the frame. normalGeometry_ still holds `saved` for the
         // un-maximize restore (changeEvent), so overriding the on-screen geometry is safe.
-        if (const QScreen* scr = QGuiApplication::primaryScreen())
-            setGeometry(scr->availableGeometry());
+        // Maximize on the screen the window was on, not always the primary one.
+        const QScreen* scr = QGuiApplication::screenAt(saved.center());
+        if (!scr) scr = QGuiApplication::primaryScreen();
+        if (scr) setGeometry(scr->availableGeometry());
         setWindowState(windowState() | Qt::WindowMaximized);
     }
 
@@ -411,6 +414,9 @@ MainWindow::MainWindow(QWidget* parent)
     });
     stack->addWidget(sessionPage_ = new SessionPage);   // Session
     stack->addWidget(tyresPage_ = new TyresPage(model_));   // Tyres
+    connect(tyresPage_, &TyresPage::dataNeedsChanged, this, [this] {
+        if (currentPage_ == Tyres) schedulePlaybackDataRequirements();
+    });
     stack->addWidget(buildStrategyPage());  // Strategy
     stack->addWidget(trendsPage_ = new TrendsPage(model_));   // Trends
     stack->addWidget(damagePage_ = new DamagePage);   // Damage
@@ -640,7 +646,6 @@ MainWindow::MainWindow(QWidget* parent)
         model_->setPlaybackMode(true);
         syncTrendsDriver();
         updatePlaybackDataRequirements();
-        hotSmoother_.reset();   // entering playback: drop live fill state
         lastRaceLeader_.reset();
         applyEngineLogging();   // inPlayback_ is set → stops live recording while reviewing
         playbackTrackName_ = hdr.track_name.empty()
@@ -745,7 +750,6 @@ MainWindow::MainWindow(QWidget* parent)
         dirtyEvents_ = true;
         resetPlaybackDriverSelection();
         lastRaceLeader_.reset();
-        hotSmoother_.reset();   // back to live: start the fill state fresh
         applyEngineLogging();   // back to live: resume recording if it was enabled
         // Drop the playback timer value; live packets (if any) repopulate it.
         if (toolbar_) toolbar_->resetSessionTimer();
@@ -838,14 +842,6 @@ MainWindow::MainWindow(QWidget* parent)
     tnr::diagnostics::setMemorySnapshotProvider(
         [this] { return memoryDiagnosticsSnapshot(); });
     tnr::diagnostics::setMemoryLoggingEnabled(memoryLogEnabled());
-
-    // Forward-fill timer: re-emits the last hot row during dropped/late frames so
-    // the live charts stay smooth on a lossy link (see HotRowSmoother). Runs at the
-    // measured frame cadence; bootstraps at 60 Hz until the real rate is detected.
-    hotFillTimer_ = new QTimer(this);
-    hotFillTimer_->setInterval(hotSmoother_.periodMs());
-    connect(hotFillTimer_, &QTimer::timeout, this, &MainWindow::onHotFillTick);
-    hotFillTimer_->start();
 
     // Discovery is deliberately deferred until the main window is fully built;
     // the checker itself enforces the persisted enable flag and 24-hour cadence.
@@ -1067,7 +1063,18 @@ void MainWindow::updateRenderingState() {
 
 void MainWindow::setRenderingActive(bool on) {
     renderingActive_ = on;
+    if (!idleMemoryTimer_) {
+        idleMemoryTimer_ = new QTimer(this);
+        connect(idleMemoryTimer_, &QTimer::timeout, this, [this] {
+            if (renderingActive_) { idleMemoryTimer_->stop(); return; }
+            tnr::idlememory::release();
+            // The first pass waits out a quick alt-tab; later ones keep up
+            // with what ingest touches while the window stays hidden.
+            idleMemoryTimer_->setInterval(60000);
+        });
+    }
     if (on) {
+        idleMemoryTimer_->stop();
         // Electron keeps the renderer's current publication intact while it is
         // hidden and catches presentation up on return.  Qt has no IPC boundary,
         // so keep ingesting into the same bounded model while presentation is
@@ -1098,6 +1105,7 @@ void MainWindow::setRenderingActive(bool on) {
         // rewind to an empty session.
         PresentationScheduler::instance().cancel(this);
         uiRefreshPending_ = false;
+        idleMemoryTimer_->start(3000);
         if (model_)    model_->setLiveFlushActive(false);
         if (sessionPage_) sessionPage_->setRenderingActive(false);
     }
@@ -2397,7 +2405,6 @@ void MainWindow::onEngineBinary(const QByteArray& batch) {
                            [this, &latestTelemetry, &latestPositions](auto&& decoded) {
         tnrp::AnyRow row(std::move(decoded));
         ingestForModel(row);
-        if (!inPlayback_) feedHotSmoother(row);
         if (const auto* telemetry = std::get_if<TelemetryRow>(&row))
             latestTelemetry = *telemetry;
         else if (const auto* positions = std::get_if<PositionsRow>(&row))
@@ -2408,39 +2415,11 @@ void MainWindow::onEngineBinary(const QByteArray& batch) {
     if (latestPositions) emitLiveData(*latestPositions);
 }
 
-// Shared tail of the live paths: panels + SessionModel + forward-fill smoother.
+// Shared tail of the live paths: panels + SessionModel.
 void MainWindow::routeLiveRow(const tnrp::AnyRow& row,
                               const QJsonObject* sparseObject) {
     emitLiveData(row, sparseObject);
     ingestForModel(row);
-    if (!inPlayback_) feedHotSmoother(row);
-}
-
-// Records the latest real hot row in the forward-fill smoother (live only). The
-// fill timer (onHotFillTick) re-emits these during gaps so the charts stay smooth
-// on a lossy link. See HotRowSmoother.
-void MainWindow::feedHotSmoother(const tnrp::AnyRow& row) {
-    if (const auto* t = std::get_if<TelemetryRow>(&row))      hotSmoother_.onTelemetry(*t);
-    else if (const auto* m = std::get_if<MotionRow>(&row))    hotSmoother_.onMotion(*m);
-    else if (const auto* m = std::get_if<MotionExRow>(&row))  hotSmoother_.onMotionEx(*m);
-}
-
-// Fires at the measured frame cadence. When the last interval had no fresh
-// telemetry (a dropped/late frame), the smoother yields held-forward rows which we
-// push through the same live path as real rows — display-only, never recorded.
-void MainWindow::onHotFillTick() {
-    if (inPlayback_) return;   // playback feeds the model from the file, no fills
-    if (model_) model_->beginIngestBatch();
-    for (const tnrp::AnyRow& f : hotSmoother_.tick()) {
-        ingestForModel(f);
-        // Motion and MotionEx have no QWidget consumers; only telemetry needs
-        // to publish a latest-value panel snapshot.
-        if (std::holds_alternative<TelemetryRow>(f)) emitLiveData(f);
-    }
-    if (model_) model_->endIngestBatch();
-    // Track the detected cadence so the timer beats with the game's send rate.
-    const int p = hotSmoother_.periodMs();
-    if (hotFillTimer_ && hotFillTimer_->interval() != p) hotFillTimer_->setInterval(p);
 }
 
 // ── Live data extraction → signals ─────────────────────────────────────────
@@ -2466,7 +2445,16 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row,
         lastPlayerDamageData = *dmg;
         dirtyTyres_ = true; dirtyDamage_ = true; scheduleUiRefresh();
     } else if (const auto* ts = std::get_if<tnrp::TyreSetsRow>(&row)) {
-        lastTyreSetsData = *ts;
+        // The game sends Tyre Sets for every car in turn. Live, keep each car's
+        // and show the player's, as Electron does; playback and rows without a
+        // car index are already the selected driver's.
+        if (inPlayback_ || ts->car_idx < 0) {
+            lastTyreSetsData = *ts;
+        } else {
+            liveTyreSetsByCar_.insert(ts->car_idx, *ts);
+            if (!lastTimingData || ts->car_idx != lastTimingData->player_idx) return;
+            lastTyreSetsData = *ts;
+        }
         dirtyTyreSets_ = true; dirtyTrends_ = true; scheduleUiRefresh();
     } else if (const auto* lap = std::get_if<LapRow>(&row)) {
         if (overviewPage_) overviewPage_->onLap(*lap);
@@ -2542,6 +2530,14 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row,
         lastTimingData = *timing;
         // Trends follows the player live (and before a playback catalog names a driver).
         if (timing->player_idx != previousPlayer) syncTrendsDriver();
+        // The player's Tyre Sets may have arrived before the player index.
+        if (!inPlayback_ && timing->player_idx != previousPlayer) {
+            const auto sets = liveTyreSetsByCar_.constFind(timing->player_idx);
+            if (sets != liveTyreSetsByCar_.cend()) {
+                lastTyreSetsData = sets.value();
+                dirtyTyreSets_ = true; dirtyTrends_ = true; scheduleUiRefresh();
+            }
+        }
         if (!inPlayback_) {
             const auto leader = std::find_if(timing->cars.begin(), timing->cars.end(),
                 [](const auto& car) { return car.position == 1 && car.result_status == 2; });
@@ -2742,6 +2738,19 @@ void MainWindow::flushUiRefresh() {
 // Routes a parsed row into the lap-aware SessionModel. Shared by the live UDP
 // path and (for completeness) any streamed source. The model — not the chart —
 // owns chart state; the chart re-queries the model on its change signals.
+// A backward jump in session time is an in-game flashback/rewind or the clock
+// reset at a race start: drop only the samples newer than it and keep the rest
+// (not a full reset, which wiped all live data). The 0.2 s guard matches the
+// recording side's.
+void MainWindow::rewindLiveClock(float sessionTime) {
+    if (inPlayback_ || !(sessionTime < model_->data().latestTime - 0.2f)) return;
+    std::erase_if(streamedEvents_, [sessionTime](const tnrp::RaceEventRow& e) {
+        return e.session_time > sessionTime;
+    });
+    dirtyEvents_ = true;
+    model_->truncateAfter(sessionTime);
+}
+
 void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
     if (!model_) return;
     if (const auto* ev = std::get_if<tnrp::RaceEventRow>(&row)) {
@@ -2752,18 +2761,7 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
             model_->truncateAfter(*ev->flashback_session_time);
     }
     else if (const auto* t = std::get_if<TelemetryRow>(&row)) {
-        // A backward jump in session time is an in-game flashback/rewind: drop only the
-        // samples newer than the rewind point and keep the rest (NOT a full reset — that
-        // wiped all live data). A genuine restart rewinds to ~0, which truncates to empty
-        // anyway. Same 0.2s guard as the recording-side truncate above.
-        if (!inPlayback_ && t->session_time < model_->data().latestTime - 0.2f) {
-            const float target = t->session_time;
-            std::erase_if(streamedEvents_, [target](const tnrp::RaceEventRow& e) {
-                return e.session_time > target;
-            });
-            dirtyEvents_ = true;
-            model_->truncateAfter(t->session_time);
-        }
+        rewindLiveClock(t->session_time);
         model_->onTelemetry(t->session_time, playbackNumber(t->speed_kph),
                             playbackNumber(t->rpm), playbackNumber(t->gear),
                             t->throttle, t->brake, (float)t->steering);
@@ -2796,6 +2794,10 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
                          (float)d->tyre_wear_fl, (float)d->tyre_wear_fr,
                          (float)d->tyre_wear_rl, (float)d->tyre_wear_rr);
     else if (const auto* l = std::get_if<LapRow>(&row)) {
+        // Lap rows stream on every page, telemetry only where it is charted: a
+        // page without telemetry (Misc) would otherwise miss the race start's
+        // clock reset and keep the formation lap under the race's times.
+        rewindLiveClock(l->session_time);
         const int sessionType = lastSessionData ? lastSessionData->session_type : 0;
         model_->onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid,
                       l->driver_status, sessionType >= 1 && sessionType <= 14,
@@ -2832,6 +2834,7 @@ void MainWindow::updatePlaybackDataRequirements() {
     uint32_t stream = bit(4) | bit(5) | bit(6) | bit(8) | bit(14);
     uint32_t history = 0;
     bool fullSessionHistory = false;   // the page reads the whole session (All Laps)
+    float pageWindowSeconds = 0.0f;    // > 0: the page's own history window, with no sections
     QVector<tnr::GraphSection> sections;
     // TNRD V6 data types, as Electron's DATA_CONSUMERS (historyDependencies.ts):
     // the engine streams only `v6Types` and extracts only `v6HistoryTypes`, so
@@ -2895,12 +2898,22 @@ void MainWindow::updatePlaybackDataRequirements() {
             addTypes({24, 23}, false);
             break;
         case Tyres:
+            // The cards stream their latest values. History only for what is
+            // shown: the graphs over their chart windows, or the last
+            // seconds of tyre temperatures while a card shows its Table. The
+            // allocation view alone used to pull the whole race's history.
             stream |= bit(1) | bit(3) | bit(5) | bit(10);
-            history |= bit(1) | bit(3);
-            sections = {tnr::GraphSection::TyreSurface, tnr::GraphSection::TyreInner,
-                        tnr::GraphSection::TyreBrake, tnr::GraphSection::TyreWear};
             addTypes({13, 8, 9, 10, 12, 14}, false);
-            addTypes({8, 9, 10, 12}, true);
+            if (tyresPage_ && tyresPage_->graphsShown()) {
+                history |= bit(1) | bit(3);
+                sections = {tnr::GraphSection::TyreSurface, tnr::GraphSection::TyreInner,
+                            tnr::GraphSection::TyreBrake, tnr::GraphSection::TyreWear};
+                addTypes({8, 9, 10, 12}, true);
+            } else if (tyresPage_ && tyresPage_->cardTablesShown()) {
+                history |= bit(1);
+                addTypes({8, 9, 10}, true);
+                pageWindowSeconds = tyresPage_->cardWindowSeconds();
+            }
             break;
         case Strategy:
             stream |= bit(15);
@@ -2968,6 +2981,7 @@ void MainWindow::updatePlaybackDataRequirements() {
     }
     if (!sawFinite && sawLap) windowSeconds = 0.0f;
     if (fullSessionHistory) windowSeconds = -1.0f;
+    if (pageWindowSeconds > 0.0f) windowSeconds = pageWindowSeconds;
     // Electron's AppShell extras. Aero (7), tyre state (13) and brake bias (20)
     // are edge-encoded in V6 — recorded only on change — so any history request
     // carries them or a value last changed laps ago would stay missing after a

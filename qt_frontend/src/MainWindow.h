@@ -15,7 +15,6 @@
 
 #include <tnrp/AnyRow.h>
 
-#include "HotRowSmoother.h"
 #include "PlaybackPatchMerger.h"
 #include "CompactSettings.h"
 #include "GraphViewSettings.h"
@@ -241,6 +240,7 @@ private:
     std::optional<TelemetryRow>      lastPlayerTelemetryData;
     std::optional<DamageRow>         lastPlayerDamageData;
     std::optional<tnrp::TyreSetsRow> lastTyreSetsData;
+    QHash<int, tnrp::TyreSetsRow>    liveTyreSetsByCar_;   // live: latest sets per car index
 
     // ── Strategy page ─────────────────────────────────────────────
     // Snapshot-only renderer; libtnrp owns all strategy state and calculations.
@@ -366,13 +366,6 @@ private:
     int detectedProtocolWarningFormat_ = 0;
     int forcedProtocolWarningFormat_   = 0;
 
-    // Forward-fill smoother for the live hot stream: on a dropped/late frame it
-    // re-emits the last telemetry/motion/motion_ex one frame forward so the charts
-    // don't stutter on a flaky link. Display-only; driven by hotFillTimer_.
-    HotRowSmoother hotSmoother_;
-    QTimer*        hotFillTimer_ = nullptr;
-    void feedHotSmoother(const tnrp::AnyRow& row);
-    void onHotFillTick();
 
     // Optional diagnostics. The launch/fatal log in Diagnostics remains active
     // regardless of these settings; this timer only emits the detailed native
@@ -453,6 +446,10 @@ private:
     // ── Rendering gate (pause all UI work when the window isn't displayed) ──
     // Recording (UDP → parse → .tnrd) is independent of these and keeps running.
     bool renderingActive_   = true;
+    // While the window is minimized or hidden: gives unused heap pages and the
+    // working set back to the system (IdleMemory), shortly after hiding and
+    // then periodically, since ingest keeps running.
+    QTimer* idleMemoryTimer_ = nullptr;
     bool windowFilterHooked_ = false;   // installed the QWindow expose filter yet?
 
     // Last windowed bounds (never the maximized rect). Restored on launch, and
@@ -464,10 +461,11 @@ private:
     void setRenderingActive(bool on);   // start/stop the rendering subsystems
 
     // ── Live data routing ─────────────────────────────────────────
+    void rewindLiveClock(float sessionTime);
     void emitLiveData(const tnrp::AnyRow& row,
                       const QJsonObject* sparseObject = nullptr);
-    // Shared tail of the live paths (JSON cold rows, binary hot rows, fills):
-    // panels + SessionModel + forward-fill smoother.
+    // Shared tail of the live paths (JSON cold rows, binary hot rows):
+    // panels + SessionModel.
     void routeLiveRow(const tnrp::AnyRow& row,
                       const QJsonObject* sparseObject = nullptr);
 

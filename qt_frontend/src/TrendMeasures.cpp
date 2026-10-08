@@ -40,7 +40,7 @@ QHash<int, double> totalsByLap(const QVector<StintStatusScan::Reset>& resets,
     return totals;
 }
 
-double fuelAt(const QVector<StsSample>& rows, double time) {
+double fuelAt(const SampleRange<StsSample>& rows, double time) {
     const auto it = std::lower_bound(rows.cbegin(), rows.cend(), time,
         [](const StsSample& sample, double value) { return sample.t < value; });
     const qsizetype after = qsizetype(std::distance(rows.cbegin(), it));
@@ -66,7 +66,7 @@ void StintStatusScan::LapCounter::push(double time, double value) {
     latest = value;
 }
 
-bool StintStatusScan::update(const QVector<StsSample>& rows) {
+bool StintStatusScan::update(const SampleRange<StsSample>& rows) {
     const qsizetype end = rows.size() - 1;
     if (end < scanned_ || (scanned_ > 0 &&
             (rows[0].t != firstTime_ || rows[scanned_ - 1].t != lastScannedTime_))) return false;
@@ -87,7 +87,7 @@ bool StintStatusScan::update(const QVector<StsSample>& rows) {
     return true;
 }
 
-const StintStatusScan& StintStatusScanner::scanFor(const QVector<StsSample>& rows, quint64 revision) {
+const StintStatusScan& StintStatusScanner::scanFor(const SampleRange<StsSample>& rows, quint64 revision) {
     if (!started_ || revision_ != revision || !scan_.update(rows)) {
         started_ = true;
         revision_ = revision;
@@ -98,7 +98,7 @@ const StintStatusScan& StintStatusScanner::scanFor(const QVector<StsSample>& row
 }
 
 QHash<int, TrendLapMeasure> measureTrendLaps(const StintStatusScan& scan,
-                                             const QVector<StsSample>& rows,
+                                             const SampleRange<StsSample>& rows,
                                              const QVector<TrendLapBoundary>& boundaries,
                                              const QVector<int>& laps, bool hasMguh) {
     const QHash<int, double> deployed = totalsByLap(scan.deployed.resets, boundaries);

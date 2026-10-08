@@ -41,6 +41,9 @@ TyreChartsWidget::TyreChartsWidget(bool grid, QWidget* parent)
     // Table-mode sections render as GraphTables overlaid in the same grid cell (see
     // rebuildLayout).
     chart_ = new ChartView;
+    // Hidden, the chart frees its series; the next refresh rebuilds them.
+    chart_->setReleaseSeriesWhenHidden(true);
+    connect(chart_, &ChartView::seriesReleased, this, [this] { dataModeKey_.clear(); prevEndTime_ = -9999.0f; });
 
     auto addSection = [&](int sec, const QString& title, double yMin, double yMax,
                           const QString& unit) {
@@ -265,9 +268,11 @@ void TyreChartsWidget::refresh() {
             lastAddedDamageTime_ = domains[WEAR].lower;
             dataModeKey_ = runtimeKey;
         }
-        auto tyreStart = std::lower_bound(d.tyreBuf.begin(), d.tyreBuf.end(), lastAddedTime_ + 0.0001f,
+        const SampleRange<TyreSample> tyreHistory = d.tyre();
+        const SampleRange<DamageSample> damageHistory = d.damage();
+        auto tyreStart = std::lower_bound(tyreHistory.begin(), tyreHistory.end(), lastAddedTime_ + 0.0001f,
             [](const TyreSample& sample, float value) { return sample.t < value; });
-        for (auto it = tyreStart; it != d.tyreBuf.end(); ++it) {
+        for (auto it = tyreStart; it != tyreHistory.end(); ++it) {
             if (it->t > endTime) break;
             for (int section = SURF; section <= BRAKE; ++section)
                 for (int wheel = 0; wheel < 4; ++wheel)
@@ -275,9 +280,9 @@ void TyreChartsWidget::refresh() {
                                         tyreValue(section, wheel, *it));
             lastAddedTime_ = it->t;
         }
-        auto damageStart = std::lower_bound(d.damageBuf.begin(), d.damageBuf.end(), lastAddedDamageTime_ + 0.0001f,
+        auto damageStart = std::lower_bound(damageHistory.begin(), damageHistory.end(), lastAddedDamageTime_ + 0.0001f,
             [](const DamageSample& sample, float value) { return sample.t < value; });
-        for (auto it = damageStart; it != d.damageBuf.end(); ++it) {
+        for (auto it = damageStart; it != damageHistory.end(); ++it) {
             if (it->t > endTime) break;
             const float values[] = { it->wearFl, it->wearFr, it->wearRl, it->wearRr };
             for (int wheel = 0; wheel < 4; ++wheel)
@@ -350,8 +355,8 @@ void TyreChartsWidget::refresh() {
         dataModeKey_ = runtimeKey;
     } else if (!allTime && uniformNonTime) {
         const ChartDomain& domain = domains[SURF];
-        const QVector<TyreSample>& source = domain.distance && domain.primary
-            ? domain.primary->tyre : d.tyreBuf;
+        const SampleRange<TyreSample> source = domain.distance && domain.primary
+            ? SampleRange<TyreSample>(domain.primary->tyre) : d.tyre();
         auto tyreStart = std::lower_bound(source.begin(), source.end(), lastAddedTime_ + 0.0001f,
             [](const TyreSample& sample, float value) { return sample.t < value; });
         for (auto it = tyreStart; it != source.end(); ++it) {
@@ -366,8 +371,8 @@ void TyreChartsWidget::refresh() {
             lastAddedTime_ = it->t;
         }
         const ChartDomain& wearDomain = domains[WEAR];
-        const QVector<DamageSample>& damage = wearDomain.distance && wearDomain.primary
-            ? wearDomain.primary->damage : d.damageBuf;
+        const SampleRange<DamageSample> damage = wearDomain.distance && wearDomain.primary
+            ? SampleRange<DamageSample>(wearDomain.primary->damage) : d.damage();
         auto damageStart = std::lower_bound(damage.begin(), damage.end(), lastAddedDamageTime_ + 0.0001f,
             [](const DamageSample& sample, float value) { return sample.t < value; });
         for (auto it = damageStart; it != damage.end(); ++it) {
@@ -404,9 +409,9 @@ void TyreChartsWidget::refresh() {
             GraphTable* table = tableMode_[section] && visible_[section] ? table_[section] : nullptr;
             if (!table) return;
             const ChartDomain& domain = domains[section];
-            const QVector<TyreSample>& source = domain.distance && domain.primary
-                ? domain.primary->tyre : d.tyreBuf;
-            for (int i = source.size() - 1; i >= 0 && !table->full(); --i) {
+            const SampleRange<TyreSample> source = domain.distance && domain.primary
+                ? SampleRange<TyreSample>(domain.primary->tyre) : d.tyre();
+            for (qsizetype i = source.size() - 1; i >= 0 && !table->full(); --i) {
                 const TyreSample& sample = source[i];
                 if (sample.t > domain.currentTime) continue;
                 const double coordinate = domain.distance
@@ -427,9 +432,9 @@ void TyreChartsWidget::refresh() {
         GraphTable* wearTable = tableMode_[WEAR] && visible_[WEAR] ? table_[WEAR] : nullptr;
         if (wearTable) {
             const ChartDomain& domain = domains[WEAR];
-            const QVector<DamageSample>& source = domain.distance && domain.primary
-                ? domain.primary->damage : d.damageBuf;
-            for (int i = source.size() - 1; i >= 0 && !wearTable->full(); --i) {
+            const SampleRange<DamageSample> source = domain.distance && domain.primary
+                ? SampleRange<DamageSample>(domain.primary->damage) : d.damage();
+            for (qsizetype i = source.size() - 1; i >= 0 && !wearTable->full(); --i) {
                 const DamageSample& sample = source[i];
                 if (sample.t > domain.currentTime) continue;
                 const double coordinate = domain.distance

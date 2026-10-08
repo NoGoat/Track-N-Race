@@ -55,6 +55,13 @@ TelemetryChart::TelemetryChart(QWidget* parent)
 
     showReference(false);
     setHoverReadout(true);
+    // Hidden, the chart frees its series; the next refresh rebuilds them.
+    setReleaseSeriesWhenHidden(true);
+    connect(this, &ChartView::seriesReleased, this, [this] {
+        dataModeKey_.clear();
+        referenceModeKey_ = QStringLiteral("released");
+        prevEndTime_ = -1.0f;
+    });
     setPanelTitle(0, "SPEED / RPM / ERS");
     setPanelLegendVisible(0, true);
     linkSeriesVisibility(spId_, rSpId_);
@@ -171,13 +178,15 @@ void TelemetryChart::refresh()
             return std::lower_bound(rows.begin(), rows.end(), t,
                 [](const auto& row, float value) { return row.t < value; });
         };
-        for (auto it = lb(data.telBuf, lastAddedTime_ + 0.0001f); it != data.telBuf.end(); ++it) {
+        const SampleRange<TelSample> tel = data.tel();
+        const SampleRange<StsSample> sts = data.sts();
+        for (auto it = lb(tel, lastAddedTime_ + 0.0001f); it != tel.end(); ++it) {
             if (it->t > now) break;
             appendPoint(spId_, it->t, it->speed);
             appendPoint(rpId_, it->t, it->rpm);
             lastAddedTime_ = it->t;
         }
-        for (auto it = lb(data.stsBuf, lastAddedStsTime_ + 0.0001f); it != data.stsBuf.end(); ++it) {
+        for (auto it = lb(sts, lastAddedStsTime_ + 0.0001f); it != sts.end(); ++it) {
             if (it->t > now) break;
             appendPoint(erId_, it->t, it->ers);
             lastAddedStsTime_ = it->t;
@@ -208,10 +217,10 @@ void TelemetryChart::refresh()
             if (sts.isEmpty()) lastAddedStsTime_ = domain.lower;
             dataModeKey_ = primaryKey;
         } else {
-            const QVector<TelSample>& tel = domain.distance && domain.primary
-                ? domain.primary->tel : data.telBuf;
-            const QVector<StsSample>& sts = domain.distance && domain.primary
-                ? domain.primary->sts : data.stsBuf;
+            const SampleRange<TelSample> tel = domain.distance && domain.primary
+                ? SampleRange<TelSample>(domain.primary->tel) : data.tel();
+            const SampleRange<StsSample> sts = domain.distance && domain.primary
+                ? SampleRange<StsSample>(domain.primary->sts) : data.sts();
             auto telStart = std::lower_bound(tel.begin(), tel.end(), lastAddedTime_ + 0.0001f,
                 [](const TelSample& sample, float value) { return sample.t < value; });
             for (auto it = telStart; it != tel.end(); ++it) {
@@ -279,17 +288,19 @@ void TelemetryChart::buildDefault(float endTime)
     auto lb = [](const auto& v, float t) {
         return std::lower_bound(v.begin(), v.end(), t, [](const auto& s, float key) { return s.t < key; });
     };
-    int startIndex = std::distance(d.telBuf.begin(), lb(d.telBuf, lastAddedTime_ + 0.0001f));
-    for (int i = startIndex; i < d.telBuf.size(); ++i) {
-        const auto& s = d.telBuf[i];
+    const SampleRange<TelSample> tel = d.tel();
+    const SampleRange<StsSample> sts = d.sts();
+    qsizetype startIndex = std::distance(tel.begin(), lb(tel, lastAddedTime_ + 0.0001f));
+    for (qsizetype i = startIndex; i < tel.size(); ++i) {
+        const auto& s = tel[i];
         if (s.t > endTime) break;
         appendPoint(spId_, s.t, s.speed);
         appendPoint(rpId_, s.t, s.rpm);
         lastAddedTime_ = s.t;
     }
-    int stsIndex = std::distance(d.stsBuf.begin(), lb(d.stsBuf, lastAddedStsTime_ + 0.0001f));
-    for (int i = stsIndex; i < d.stsBuf.size(); ++i) {
-        const auto& s = d.stsBuf[i];
+    qsizetype stsIndex = std::distance(sts.begin(), lb(sts, lastAddedStsTime_ + 0.0001f));
+    for (qsizetype i = stsIndex; i < sts.size(); ++i) {
+        const auto& s = sts[i];
         if (s.t > endTime) break;
         appendPoint(erId_, s.t, s.ers);
         lastAddedStsTime_ = s.t;

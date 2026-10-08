@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <iterator>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -167,8 +168,49 @@ QJsonObject allocatorSnapshot() {
     heap["free_bytes"] = jsonNumber(info.fordblks);
     heap["releasable_bytes"] = jsonNumber(info.keepcost);
 #elif defined(Q_OS_WIN)
-    heap["source"] = QStringLiteral("GetProcessHeaps");
-    heap["process_heaps"] = jsonNumber(GetProcessHeaps(0, nullptr));
+    heap["source"] = QStringLiteral("GetProcessHeaps+HeapSummary+VirtualQuery");
+    // Heap totals: allocated is what the program holds, committed minus
+    // allocated is what the heaps keep after frees (allocator retention).
+    HANDLE heaps[256];
+    const DWORD heapCount = GetProcessHeaps(DWORD(std::size(heaps)), heaps);
+    heap["process_heaps"] = jsonNumber(heapCount);
+    quint64 allocated = 0, committed = 0, reserved = 0;
+    for (DWORD i = 0; i < heapCount && i < std::size(heaps); ++i) {
+        HEAP_SUMMARY summary{};
+        summary.cb = sizeof(summary);
+        if (!HeapSummary(heaps[i], 0, &summary)) continue;
+        allocated += summary.cbAllocated;
+        committed += summary.cbCommitted;
+        reserved += summary.cbReserved;
+    }
+    heap["heap_allocated_bytes"] = jsonNumber(allocated);
+    heap["heap_committed_bytes"] = jsonNumber(committed);
+    heap["heap_reserved_bytes"] = jsonNumber(reserved);
+    // Committed address space by kind. Private commit not owned by a heap is
+    // direct VirtualAlloc use: graphics drivers, thread stacks, other allocators.
+    quint64 privateCommit = 0, mappedCommit = 0, imageCommit = 0, largePrivate = 0, largePrivateRegions = 0;
+    MEMORY_BASIC_INFORMATION info{};
+    for (const char* address = nullptr;
+         VirtualQuery(address, &info, sizeof(info)) == sizeof(info);
+         address = static_cast<const char*>(info.BaseAddress) + info.RegionSize) {
+        if (info.State == MEM_COMMIT) {
+            if (info.Type == MEM_PRIVATE) {
+                privateCommit += info.RegionSize;
+                if (info.RegionSize >= 1024 * 1024) { largePrivate += info.RegionSize; ++largePrivateRegions; }
+            } else if (info.Type == MEM_MAPPED) {
+                mappedCommit += info.RegionSize;
+            } else if (info.Type == MEM_IMAGE) {
+                imageCommit += info.RegionSize;
+            }
+        }
+        if (static_cast<const char*>(info.BaseAddress) + info.RegionSize <= address) break;
+    }
+    heap["private_commit_bytes"] = jsonNumber(privateCommit);
+    heap["private_commit_outside_heaps_bytes"] = jsonNumber(privateCommit > committed ? privateCommit - committed : 0);
+    heap["private_regions_1mb_plus_bytes"] = jsonNumber(largePrivate);
+    heap["private_regions_1mb_plus"] = jsonNumber(largePrivateRegions);
+    heap["mapped_commit_bytes"] = jsonNumber(mappedCommit);
+    heap["image_commit_bytes"] = jsonNumber(imageCommit);
 #else
     heap["source"] = QStringLiteral("unavailable");
 #endif
@@ -220,6 +262,10 @@ void writeMemorySample() {
     telemetryData["estimated_retained_bytes"] = retainedBytes;
     telemetryData["estimated_retained_kb"] = retainedBytes / 1024.0;
     telemetryData["already_included_in_process_totals"] = true;
+    // What the estimates do not explain: code, Qt/driver state, allocator
+    // slack and anything not instrumented yet.
+    if (process.privateKb >= 0.0)
+        telemetryData["unattributed_private_bytes"] = process.privateKb * 1024.0 - retainedBytes;
     telemetryData["attribution_scope"] = frontend.value("attribution_scope");
     telemetryData["renderer_sample_age_ms"] = rendererSampledAt.isValid()
         ? QJsonValue(jsonNumber(qMax<qint64>(0, rendererSampledAt.msecsTo(QDateTime::currentDateTimeUtc()))))

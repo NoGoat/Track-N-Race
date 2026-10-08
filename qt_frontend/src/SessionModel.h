@@ -11,16 +11,19 @@
 #include <limits>
 #include <tnrp/control_rows.h>
 #include "ChartSettings.h"
+#include "SampleRange.h"
 
 // Slim per-sample records — only what the Speed/RPM/ERS chart needs.
 struct TelSample { float t = 0; float speed = 0; float rpm = 0; float gear = 0; float throttle = 0; float brake = 0; float steering = 0; };
 
+// Tyre wear is not kept here: it is the damage family's, and DamageSample holds
+// it with its own timestamps. (Live used to copy the latest wear into every
+// tyre sample, 16 of 68 bytes, and nothing read it.)
 struct TyreSample {
     float t = 0;
     float surfFl=0, surfFr=0, surfRl=0, surfRr=0;
     float innerFl=0, innerFr=0, innerRl=0, innerRr=0;
     float brakeFl=0, brakeFr=0, brakeRl=0, brakeRr=0;
-    float wearFl=0,  wearFr=0,  wearRl=0,  wearRr=0;
 };
 struct StsSample {
     float t = 0;
@@ -66,14 +69,30 @@ struct LapBlock {
 // its background scan thread — so the lap-detection logic lives in exactly one
 // place. Ported from useTelemetry.ts / sessionPlayer.ts.
 struct SessionData {
-    // Default-view buffers. Live: trimmed to the last ~10 min. Playback: the
-    // whole session (so a window can end anywhere on the slider).
+    // Session-wide history, one family each. Read it through tel(), sts(), ...
+    // below, which work in both storage modes.
+    //
+    // Playback (lapOwned false): these buffers hold the installed history,
+    // separately from the laps' own vectors.
+    // Live (lapOwned true): each sample is stored once, in the lap block it
+    // belongs to, or in a loose block when it falls outside a lap (before the
+    // first lap, in the garage). The buffers stay empty.
     QVector<TelSample> telBuf;
     QVector<StsSample> stsBuf;
     QVector<MotionSample> motionBuf;
     QVector<MotionExSample> motionExBuf;
     QVector<TyreSample> tyreBuf;
     QVector<DamageSample> damageBuf;
+    bool lapOwned = false;
+    QVector<LapBlock> loose;       // live: samples outside laps, time-ordered
+    bool looseOpen = false;        // loose.last() is receiving samples
+
+    SampleRange<TelSample> tel() const { return history(&LapBlock::tel, telBuf); }
+    SampleRange<StsSample> sts() const { return history(&LapBlock::sts, stsBuf); }
+    SampleRange<TyreSample> tyre() const { return history(&LapBlock::tyre, tyreBuf); }
+    SampleRange<DamageSample> damage() const { return history(&LapBlock::damage, damageBuf); }
+    SampleRange<MotionSample> motion() const { return history(&LapBlock::motion, motionBuf); }
+    SampleRange<MotionExSample> motionEx() const { return history(&LapBlock::motionEx, motionExBuf); }
 
     QVector<LapBlock>  laps;       // completed (and, after load, the final) laps
     LapBlock           curLap;     // in-progress lap (live only)
@@ -83,6 +102,7 @@ struct SessionData {
     int   fastestLapNum = -1;
     int   fastestLapMs  = INT_MAX;
     float latestTime    = 0;
+    uint64_t rewindRevision = 0;   // live rows dropped by a rewind
     float trackLengthM  = 0;
     float currentStintStartTime = 0;
     // Fuel chart ceiling (kg), as Electron: live = highest fuel seen + 1,
@@ -130,7 +150,36 @@ struct SessionData {
 private:
     void finalizeCurrentLap(int lastLapMs);
     void trim();
+    template <typename T>
+    SampleRange<T> history(QVector<T> LapBlock::* member, const QVector<T>& buffer) const;
+    template <typename T>
+    void record(QVector<T>& buffer, QVector<T> LapBlock::* member, const T& sample);
+    template <typename T>
+    void eraseFrom(QVector<T> LapBlock::* member, float t);   // every block's rows at or after t
+    LapBlock& openLoose(float t);
+    void closeLoose();
 };
+
+template <typename T>
+SampleRange<T> SessionData::history(QVector<T> LapBlock::* member, const QVector<T>& buffer) const {
+    if (!lapOwned) return SampleRange<T>(buffer);
+    // Samples are appended to one block at a time, in arrival order, so the
+    // blocks never interleave: merge completed laps and loose blocks by their
+    // first sample, then the lap in progress.
+    SampleRange<T> out;
+    qsizetype a = 0, b = 0;
+    while (a < laps.size() || b < loose.size()) {
+        if (a < laps.size() && (laps[a].*member).isEmpty()) { ++a; continue; }
+        if (b < loose.size() && (loose[b].*member).isEmpty()) { ++b; continue; }
+        if (b >= loose.size() ||
+            (a < laps.size() && (laps[a].*member).first().t <= (loose[b].*member).first().t))
+            out.append(laps[a++].*member);
+        else
+            out.append(loose[b++].*member);
+    }
+    if (curLapNum >= 0) out.append(curLap.*member);
+    return out;
+}
 
 // QObject wrapper: the chart and lap selectors hold a pointer to this, query it,
 // and refresh on its signals. Multiple row families from one packet are
@@ -181,7 +230,9 @@ public:
     const LapBlock* chartPrimaryLap(float sessionTime) const;
     const LapBlock* chartReferenceLap(ChartWindow window, int selectedLap,
                                       float sessionTime) const;
-    uint64_t playbackDataRevision() const { return playbackDataRevision_; }
+    // Also advances when live history loses rows (a rewind), so charts that
+    // only append rebuild instead of keeping the dropped samples.
+    uint64_t playbackDataRevision() const { return playbackDataRevision_ + d_.rewindRevision; }
 
     // Pause/resume the per-frame signal flush without affecting ingest. When paused
     // (window hidden/minimized), onTelemetry() etc. keep accumulating samples but

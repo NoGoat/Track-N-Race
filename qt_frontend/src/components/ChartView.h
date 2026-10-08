@@ -175,6 +175,10 @@ public:
     void trimBefore(int seriesId, double x);   // retain one predecessor for edge clipping
     void clear(int seriesId);
     void clearAll();
+    // While hidden, hold no series: every series is freed on hide and
+    // seriesReleased() is emitted, so the owner rebuilds from the session data
+    // when the chart is shown again. Off by default.
+    void setReleaseSeriesWhenHidden(bool on);
 
     // Hide a series (and its legend entry) — used to switch between single-lap
     // and two-lap overlay layouts without rebuilding the chart.
@@ -260,6 +264,9 @@ public:
 
 signals:
     void inspectionRequested(double x, bool distanceCoordinate);
+    // The series were freed on hide (setReleaseSeriesWhenHidden). The owner must
+    // treat its next refresh as a full rebuild.
+    void seriesReleased();
 
 protected:
     // Replace the default tooltip for a hover over panelId at x = key. Return
@@ -281,6 +288,7 @@ protected:
     QColor tooltipMutedColor() const;
 
     bool event(QEvent* e) override;
+    void hideEvent(QHideEvent* e) override;
     void changeEvent(QEvent* e) override;   // keep label/legend colors in sync with the theme
     void resizeEvent(QResizeEvent* e) override;
     bool eventFilter(QObject* watched, QEvent* event) override;

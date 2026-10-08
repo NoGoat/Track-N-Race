@@ -1705,18 +1705,51 @@ private:
         return promise;
     }
 
+    // Wraps a JS callback(headerJson, buffer) answering one live lap request.
+    // The thread-safe function is released when the engine drops the request,
+    // whether or not it was answered (there may be no such lap).
+    static tnrp::Engine::LiveLapCallback liveLapCallback(Napi::Env env, Napi::Function fn) {
+        auto tsfn = std::shared_ptr<Napi::ThreadSafeFunction>(
+            new Napi::ThreadSafeFunction(Napi::ThreadSafeFunction::New(env, fn, "liveLapData", 0, 1)),
+            [](Napi::ThreadSafeFunction* f) { f->Release(); delete f; });
+        tsfn->Unref(env);
+        return [tsfn](std::string header, std::shared_ptr<std::vector<uint8_t>> columnar) {
+            struct LapData { std::string header; std::shared_ptr<std::vector<uint8_t>> columnar; };
+            auto* d = new LapData{ std::move(header), std::move(columnar) };
+            const auto status = tsfn->NonBlockingCall(d, [](Napi::Env env, Napi::Function cb, LapData* d) {
+                if (env != nullptr && cb != nullptr) {
+                    try {
+                        auto buffer = d->columnar && !d->columnar->empty()
+                            ? Napi::Buffer<uint8_t>::Copy(env, d->columnar->data(), d->columnar->size())
+                            : Napi::Buffer<uint8_t>::New(env, 0);
+                        cb.Call({ Napi::String::New(env, d->header), buffer });
+                    } catch (const std::exception& e) {
+                        std::fprintf(stderr, "[addon] live lap callback failed: %s\n", e.what());
+                        std::fflush(stderr);
+                    }
+                }
+                delete d;
+            });
+            if (status != napi_ok) delete d;
+        };
+    }
+
+    // liveGetFastestLap(requestId, callback): the player's fastest completed
+    // lap from the live store, answered as callback(headerJson, v6h1Buffer).
     Napi::Value LiveGetFastestLap(const Napi::CallbackInfo& info) {
-        if (engine && info.Length() >= 1 && info[0].IsNumber())
-            engine->liveGetFastestLap(static_cast<uint64_t>(info[0].As<Napi::Number>().Int64Value()));
+        if (engine && info.Length() >= 2 && info[0].IsNumber() && info[1].IsFunction())
+            engine->liveGetFastestLap(static_cast<uint64_t>(info[0].As<Napi::Number>().Int64Value()),
+                                      liveLapCallback(info.Env(), info[1].As<Napi::Function>()));
         return info.Env().Undefined();
     }
 
-    // liveGetLapData(requestId, lapNum): one of the player's laps from the
-    // live store, answered by a live_lap_data row.
+    // liveGetLapData(requestId, lapNum, callback): one of the player's laps
+    // from the live store, answered as callback(headerJson, v6h1Buffer).
     Napi::Value LiveGetLapData(const Napi::CallbackInfo& info) {
-        if (engine && info.Length() >= 2 && info[0].IsNumber() && info[1].IsNumber())
+        if (engine && info.Length() >= 3 && info[0].IsNumber() && info[1].IsNumber() && info[2].IsFunction())
             engine->liveGetLapData(static_cast<uint64_t>(info[0].As<Napi::Number>().Int64Value()),
-                                   info[1].As<Napi::Number>().Int32Value());
+                                   info[1].As<Napi::Number>().Int32Value(),
+                                   liveLapCallback(info.Env(), info[2].As<Napi::Function>()));
         return info.Env().Undefined();
     }
 

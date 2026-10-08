@@ -51,7 +51,7 @@ public:
     QVector<double> fuelRises;
 
     // False when the history was replaced or trimmed; start a new scan.
-    bool update(const QVector<StsSample>& rows);
+    bool update(const SampleRange<StsSample>& rows);
 
 private:
     double lastFuel_ = std::numeric_limits<double>::quiet_NaN();
@@ -64,7 +64,7 @@ private:
 // again when held rows were replaced or rewritten (a new `revision`).
 class StintStatusScanner {
 public:
-    const StintStatusScan& scanFor(const QVector<StsSample>& rows, quint64 revision);
+    const StintStatusScan& scanFor(const SampleRange<StsSample>& rows, quint64 revision);
 
 private:
     bool started_ = false;
@@ -76,6 +76,6 @@ private:
 // MGU-K plus MGU-H, or MGU-K alone under regulations without an MGU-H (the
 // 2026 packet still carries a legacy MGU-H field).
 QHash<int, TrendLapMeasure> measureTrendLaps(const StintStatusScan& scan,
-                                             const QVector<StsSample>& rows,
+                                             const SampleRange<StsSample>& rows,
                                              const QVector<TrendLapBoundary>& boundaries,
                                              const QVector<int>& laps, bool hasMguh);

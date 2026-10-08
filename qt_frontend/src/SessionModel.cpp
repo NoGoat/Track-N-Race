@@ -16,12 +16,31 @@ struct RetentionEstimate {
     quint64 bytes = 0;
     quint64 samples = 0;
     quint64 laps = 0;
+    quint64 sharedBytes = 0;   // implicitly shared storage already counted elsewhere
+    // Storage already counted by this snapshot. QVector copies share one
+    // allocation, so a vector held by two owners is counted once.
+    QSet<const void*>* seen = nullptr;
 };
 
 template <typename T>
 void addVectorRetention(const QVector<T>& values, RetentionEstimate& estimate) {
-    estimate.bytes += static_cast<quint64>(values.capacity()) * sizeof(T);
+    const quint64 bytes = static_cast<quint64>(values.capacity()) * sizeof(T);
     estimate.samples += static_cast<quint64>(values.size());
+    if (estimate.seen && values.capacity() > 0) {
+        const void* storage = values.constData();
+        if (estimate.seen->contains(storage)) { estimate.sharedBytes += bytes; return; }
+        estimate.seen->insert(storage);
+    }
+    estimate.bytes += bytes;
+}
+
+QJsonObject retentionJson(const RetentionEstimate& estimate) {
+    QJsonObject json;
+    json["bytes"] = static_cast<double>(estimate.bytes);
+    json["samples"] = static_cast<double>(estimate.samples);
+    json["laps"] = static_cast<double>(estimate.laps);
+    json["shared_bytes"] = static_cast<double>(estimate.sharedBytes);
+    return json;
 }
 
 void addLapRetention(const LapBlock& lap, RetentionEstimate& estimate) {
@@ -37,18 +56,6 @@ void addLapRetention(const LapBlock& lap, RetentionEstimate& estimate) {
     addVectorRetention(lap.motionEx, estimate);
     addVectorRetention(lap.progress, estimate);
     addVectorRetention(lap.positions, estimate);
-}
-
-void addSessionRetention(const SessionData& data, RetentionEstimate& estimate) {
-    addVectorRetention(data.telBuf, estimate);
-    addVectorRetention(data.stsBuf, estimate);
-    addVectorRetention(data.tyreBuf, estimate);
-    addVectorRetention(data.damageBuf, estimate);
-    addVectorRetention(data.motionBuf, estimate);
-    addVectorRetention(data.motionExBuf, estimate);
-    estimate.bytes += static_cast<quint64>(data.laps.capacity()) * sizeof(LapBlock);
-    for (const LapBlock& lap : data.laps) addLapRetention(lap, estimate);
-    addLapRetention(data.curLap, estimate);
 }
 
 template <typename T>
@@ -83,22 +90,141 @@ void mergeTimed(QVector<T>& target, QVector<T>&& incoming) {
     target = std::move(merged);
     if (target.size() > kMaxRows) target.remove(0, target.size() - kMaxRows);
 }
+
+// Live, lap-owned history: the block a sample at time t belongs to, which is
+// where the stream put it. A lap's start is back-calculated from its elapsed
+// time, so it reaches a few seconds into the block before it, whose samples
+// those seconds already are: where spans overlap, the earlier block wins.
+// Null when no block covers t.
+LapBlock* liveBlockAt(SessionData& data, float t) {
+    LapBlock* best = nullptr;
+    const auto consider = [&](LapBlock* block) {
+        if (block && (!best || block->startSessionTime < best->startSessionTime)) best = block;
+    };
+    const auto byStart = [](float value, const LapBlock& block) { return value < block.startSessionTime; };
+    // Blocks of one kind don't overlap beyond a lap's back-calculated start,
+    // so the last two starting at or before t are the only candidates.
+    const auto candidates = [&](QVector<LapBlock>& blocks, bool lastIsOpen) {
+        auto end = std::upper_bound(blocks.begin(), blocks.end(), t, byStart);
+        for (auto it = end - std::min<qsizetype>(2, end - blocks.begin()); it != end; ++it) {
+            const bool open = lastIsOpen && it == blocks.end() - 1;
+            if (open || t <= it->endSessionTime) consider(&*it);
+        }
+    };
+    candidates(data.loose, data.looseOpen);
+    candidates(data.laps, false);
+    if (data.curLapNum >= 0 && t >= data.curLap.startSessionTime) consider(&data.curLap);
+    return best;
+}
+
+// Merges time-ordered backfilled samples into the blocks that own their times.
+// Runs of samples no block covers (missed while outside any lap) become new
+// loose blocks, kept in time order.
+template <typename T>
+void mergeLiveHistory(SessionData& data, QVector<T>&& incoming, QVector<T> LapBlock::* member) {
+    if (incoming.isEmpty()) return;
+    QVector<LapBlock> orphans;
+    qsizetype runStart = 0;
+    LapBlock* runBlock = liveBlockAt(data, incoming.first().t);
+    auto flush = [&](qsizetype end) {
+        if (end <= runStart) return;
+        QVector<T> run(incoming.begin() + runStart, incoming.begin() + end);
+        if (runBlock) {
+            mergeTimed(runBlock->*member, std::move(run));
+        } else {
+            LapBlock block;
+            block.startSessionTime = run.first().t;
+            block.endSessionTime = run.last().t;
+            block.*member = std::move(run);
+            orphans.push_back(std::move(block));
+        }
+        runStart = end;
+    };
+    for (qsizetype i = 1; i < incoming.size(); ++i) {
+        LapBlock* block = liveBlockAt(data, incoming[i].t);
+        if (block == runBlock) continue;
+        flush(i);
+        runBlock = block;
+    }
+    flush(incoming.size());
+    if (orphans.isEmpty()) return;
+    // The open loose block, if any, is the newest and covers everything after
+    // its start, so orphans are older and sorting keeps it last.
+    for (LapBlock& block : orphans) data.loose.push_back(std::move(block));
+    std::stable_sort(data.loose.begin(), data.loose.end(),
+        [](const LapBlock& a, const LapBlock& b) { return a.startSessionTime < b.startSessionTime; });
+}
 } // namespace
 
 // ── SessionData: lap segmentation + buffering ───────────────────────────────
 
+LapBlock& SessionData::openLoose(float t) {
+    if (!looseOpen || loose.isEmpty()) {
+        LapBlock block;
+        block.startSessionTime = t;
+        loose.push_back(std::move(block));
+        looseOpen = true;
+    }
+    return loose.last();
+}
+
+void SessionData::closeLoose() {
+    if (looseOpen && !loose.isEmpty()) loose.last().endSessionTime = latestTime;
+    looseOpen = false;
+}
+
+// Live rows of one family a hair older than its newest (packets of one frame,
+// scheduling jitter) are put in their place. Anything older is that family's
+// own rewind.
+constexpr float kReorderWindowS = 0.2f;
+
+template <typename T>
+void SessionData::eraseFrom(QVector<T> LapBlock::* member, float t) {
+    const auto newer = [t](const T& sample) { return sample.t >= t; };
+    ++rewindRevision;
+    for (LapBlock& lap : laps) (lap.*member).removeIf(newer);
+    for (LapBlock& block : loose) (block.*member).removeIf(newer);
+    (curLap.*member).removeIf(newer);
+}
+
+template <typename T>
+void SessionData::record(QVector<T>& buffer, QVector<T> LapBlock::* member, const T& sample) {
+    if (!lapOwned) {
+        buffer.push_back(sample);
+        if (curLapNum >= 0) (curLap.*member).push_back(sample);
+        return;
+    }
+    // Every reader (merges, binary searches, the lap chain) needs each family
+    // in time order, as Electron's tables are (reconcileReversal): a row older
+    // than the newest held one drops the family's newer rows, unless it is
+    // only jitter, which is inserted in place instead.
+    QVector<T>& target = curLapNum >= 0 ? curLap.*member : openLoose(sample.t).*member;
+    float newest = -std::numeric_limits<float>::infinity();
+    if (!target.isEmpty()) newest = target.last().t;
+    else if (const SampleRange<T> held = history(member, buffer); !held.isEmpty()) newest = held.last().t;
+    if (sample.t < newest) {
+        if (newest - sample.t <= kReorderWindowS && !target.isEmpty() && sample.t >= target.first().t) {
+            target.insert(std::upper_bound(target.begin(), target.end(), sample.t,
+                [](float t, const T& held) { return t < held.t; }), sample);
+            return;
+        }
+        eraseFrom(member, sample.t);
+    }
+    target.push_back(sample);
+}
+
 void SessionData::onTelemetry(float t, float speed, float rpm, float gear, float throttle, float brake, float steering) {
     latestTime = t;
-    telBuf.push_back({ t, speed, rpm, gear, throttle, brake, steering });
-    if (curLapNum >= 0) curLap.tel.push_back({ t, speed, rpm, gear, throttle, brake, steering });
+    record(telBuf, &LapBlock::tel, TelSample{ t, speed, rpm, gear, throttle, brake, steering });
 }
 
 void SessionData::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j,
                            int tyre_compound, int visual_compound, int tyre_age_laps, float ers_deployed_j) {
     const StsSample sample{ t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j,
                             tyre_compound, visual_compound, tyre_age_laps, ers_deployed_j };
-    if (!stsBuf.isEmpty()) {
-        const StsSample& previous = stsBuf.last();
+    const SampleRange<StsSample> history = sts();
+    if (!history.isEmpty()) {
+        const StsSample& previous = history.last();
         const bool compoundsValid = previous.tyre_compound > 0 && tyre_compound > 0;
         const bool compoundChanged = compoundsValid &&
             (previous.tyre_compound != tyre_compound || previous.visual_compound != visual_compound);
@@ -111,26 +237,19 @@ void SessionData::onStatus(float t, float ers, float fuel_kg, float ice_kw, floa
     } else {
         currentStintStartTime = t;
     }
-    stsBuf.push_back(sample);
-    if (curLapNum >= 0) curLap.sts.push_back(sample);
+    record(stsBuf, &LapBlock::sts, sample);
 }
 
 void SessionData::onDamage(float t, float wearFl, float wearFr, float wearRl, float wearRr) {
-    const DamageSample sample{ t, wearFl, wearFr, wearRl, wearRr };
-    damageBuf.push_back(sample);
-    if (curLapNum >= 0) curLap.damage.push_back(sample);
+    record(damageBuf, &LapBlock::damage, DamageSample{ t, wearFl, wearFr, wearRl, wearRr });
 }
 
 void SessionData::onMotion(float t, float g_lat, float g_long) {
-    const MotionSample sample{ t, g_lat, g_long };
-    motionBuf.push_back(sample);
-    if (curLapNum >= 0) curLap.motion.push_back(sample);
+    record(motionBuf, &LapBlock::motion, MotionSample{ t, g_lat, g_long });
 }
 
 void SessionData::onMotionEx(float t, float front_aero, float rear_aero) {
-    const MotionExSample sample{ t, front_aero, rear_aero };
-    motionExBuf.push_back(sample);
-    if (curLapNum >= 0) curLap.motionEx.push_back(sample);
+    record(motionExBuf, &LapBlock::motionEx, MotionExSample{ t, front_aero, rear_aero });
 }
 
 void SessionData::onTyre(float t,
@@ -138,13 +257,13 @@ void SessionData::onTyre(float t,
                          float innerFl, float innerFr, float innerRl, float innerRr,
                          float brakeFl, float brakeFr, float brakeRl, float brakeRr,
                          float wearFl,  float wearFr,  float wearRl,  float wearRr) {
+    // Wear belongs to the damage family (see TyreSample).
+    Q_UNUSED(wearFl); Q_UNUSED(wearFr); Q_UNUSED(wearRl); Q_UNUSED(wearRr);
     const TyreSample sample{ t,
         surfFl, surfFr, surfRl, surfRr,
         innerFl, innerFr, innerRl, innerRr,
-        brakeFl, brakeFr, brakeRl, brakeRr,
-        wearFl, wearFr, wearRl, wearRr };
-    tyreBuf.push_back(sample);
-    if (curLapNum >= 0) curLap.tyre.push_back(sample);
+        brakeFl, brakeFr, brakeRl, brakeRr };
+    record(tyreBuf, &LapBlock::tyre, sample);
 }
 
 void SessionData::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid,
@@ -153,6 +272,16 @@ void SessionData::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invali
     if (sessionTime >= 0) latestTime = qMax(latestTime, sessionTime);
     const bool garageAware = timedSession && driverStatus >= 0;
     if (garageAware && driverStatus != 1) {
+        // Lap-owned history keeps the abandoned lap's samples as a loose
+        // block, as the session buffers keep them in playback.
+        if (lapOwned && curLapNum >= 0) {
+            closeLoose();
+            curLap.lapNum = 0;
+            curLap.progress = {};
+            curLap.positions = {};
+            loose.push_back(std::move(curLap));
+            looseOpen = true;
+        }
         curLap = LapBlock{};
         curLapNum = -1;
         lapStartTime = latestTime;
@@ -160,6 +289,7 @@ void SessionData::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invali
     }
     if (curLapNum < 0) {
         // First lap seen: backtrack its start from the elapsed lap time.
+        closeLoose();
         curLapNum    = lapNum;
         lapStartTime = currentLapMs > 0 ? latestTime - currentLapMs / 1000.0f : latestTime;
         curLap = LapBlock{};
@@ -214,12 +344,23 @@ void SessionData::truncateAfter(float newTime) {
     // In-game flashback/rewind: the game replays from an earlier point, so drop
     // every sample newer than the rewind target and keep the earlier history —
     // mirrors the Electron buffer filter (keep session_time < incoming) instead of
-    // wiping the whole session. Buffers are time-ordered, so trim from the tail.
+    // wiping the whole session. Like Electron's truncateAt on every table, the
+    // cut is by time in every block, not by which lap the samples were filed in.
     auto cutTail = [newTime](auto& buf) {
-        int n = buf.size();
-        while (n > 0 && buf[n - 1].t >= newTime) --n;
-        buf.remove(n, buf.size() - n);
+        buf.removeIf([newTime](const auto& sample) { return sample.t >= newTime; });
     };
+    for (LapBlock* block : [&] {
+             QVector<LapBlock*> all{ &curLap };
+             for (LapBlock& lap : laps) all.push_back(&lap);
+             for (LapBlock& b : loose) all.push_back(&b);
+             return all;
+         }()) {
+        cutTail(block->tel); cutTail(block->sts); cutTail(block->motion); cutTail(block->motionEx);
+        cutTail(block->tyre); cutTail(block->damage); cutTail(block->progress); cutTail(block->positions);
+    }
+    // The clock is back at the target: lap progress is stamped with it.
+    latestTime = newTime;
+    ++rewindRevision;
     cutTail(telBuf);
     cutTail(stsBuf);
     cutTail(motionBuf);
@@ -276,6 +417,21 @@ void SessionData::truncateAfter(float newTime) {
         lapStartTime = newTime;
     }
 
+    // Loose blocks are time-ordered: drop those that start after the target and
+    // cut the one that straddles it. New loose samples start a new block.
+    while (!loose.isEmpty() && loose.last().startSessionTime >= newTime)
+        loose.removeLast();
+    if (!loose.isEmpty()) {
+        LapBlock& block = loose.last();
+        cutTail(block.tel);
+        cutTail(block.sts);
+        cutTail(block.motion);
+        cutTail(block.motionEx);
+        cutTail(block.tyre);
+        cutTail(block.damage);
+    }
+    looseOpen = false;
+
     // Recompute the fastest lap over the laps that survived the rewind.
     fastestLapNum = -1;
     fastestLapMs  = INT_MAX;
@@ -287,10 +443,11 @@ void SessionData::truncateAfter(float newTime) {
 
     // Recompute the stint origin from the retained status prefix just as the
     // Electron store does after a rewind.
-    currentStintStartTime = stsBuf.isEmpty() ? 0.0f : stsBuf.first().t;
-    for (int i = 1; i < stsBuf.size(); ++i) {
-        const StsSample& previous = stsBuf[i - 1];
-        const StsSample& sample = stsBuf[i];
+    const SampleRange<StsSample> status = sts();
+    currentStintStartTime = status.isEmpty() ? 0.0f : status.first().t;
+    for (qsizetype i = 1; i < status.size(); ++i) {
+        const StsSample& previous = status[i - 1];
+        const StsSample& sample = status[i];
         const bool compoundsValid = previous.tyre_compound > 0 && sample.tyre_compound > 0;
         const bool compoundChanged = compoundsValid &&
             (previous.tyre_compound != sample.tyre_compound ||
@@ -305,13 +462,17 @@ void SessionData::truncateAfter(float newTime) {
 }
 
 void SessionData::clear() {
-    telBuf.clear();
-    stsBuf.clear();
-    motionBuf.clear();
-    motionExBuf.clear();
-    tyreBuf.clear();
-    damageBuf.clear();
-    laps.clear();
+    // Assign empty vectors: Qt 6's clear() keeps the allocation, which would
+    // hold the previous session's peak size for the rest of the run.
+    telBuf = {};
+    stsBuf = {};
+    motionBuf = {};
+    motionExBuf = {};
+    tyreBuf = {};
+    damageBuf = {};
+    loose = {};
+    looseOpen = false;
+    laps = {};
     curLap = LapBlock{};
     curLapNum = -1;
     lapStartTime = 0;
@@ -442,6 +603,7 @@ void SessionData::learnSessionSectorSplits(const LapBlock& lap) {
 // ── SessionModel: QObject wrapper + per-frame coalescing ────────────────────
 
 SessionModel::SessionModel(QObject* parent) : QObject(parent) {
+    d_.lapOwned = !playbackMode_;
     const int count = static_cast<int>(tnr::GraphSection::Count_);
     windowOverrides_.fill(-1, count);
     referenceLaps_.fill(0, count);
@@ -468,14 +630,34 @@ SessionModel::SessionModel(QObject* parent) : QObject(parent) {
 }
 
 QJsonObject SessionModel::retentionDiagnostics() const {
+    QSet<const void*> seen;
+    // The active total is the sum of its three parts, each deduplicated.
+    RetentionEstimate rolling, completed, current;
+    rolling.seen = completed.seen = current.seen = &seen;
+    addVectorRetention(d_.telBuf, rolling);
+    addVectorRetention(d_.stsBuf, rolling);
+    addVectorRetention(d_.tyreBuf, rolling);
+    addVectorRetention(d_.damageBuf, rolling);
+    addVectorRetention(d_.motionBuf, rolling);
+    addVectorRetention(d_.motionExBuf, rolling);
+    // Live samples outside any lap stand in for the rolling buffers.
+    rolling.bytes += static_cast<quint64>(d_.loose.capacity()) * sizeof(LapBlock);
+    for (const LapBlock& block : d_.loose) addLapRetention(block, rolling);
+    completed.bytes += static_cast<quint64>(d_.laps.capacity()) * sizeof(LapBlock);
+    for (const LapBlock& lap : d_.laps) addLapRetention(lap, completed);
+    addLapRetention(d_.curLap, current);
     RetentionEstimate active;
-    addSessionRetention(d_, active);
+    active.bytes = rolling.bytes + completed.bytes + current.bytes;
+    active.samples = rolling.samples + completed.samples + current.samples;
+    active.laps = completed.laps + current.laps;
 
     RetentionEstimate catalog;
+    catalog.seen = &seen;
     catalog.bytes += static_cast<quint64>(playbackCatalogLaps_.capacity()) * sizeof(LapBlock);
     for (const LapBlock& lap : playbackCatalogLaps_) addLapRetention(lap, catalog);
 
     RetentionEstimate lapCache;
+    lapCache.seen = &seen;
     lapCache.bytes += static_cast<quint64>(playbackLapDataCache_.size()) *
         (sizeof(int) + sizeof(LapBlock));
     for (auto it = playbackLapDataCache_.cbegin(); it != playbackLapDataCache_.cend(); ++it)
@@ -495,6 +677,12 @@ QJsonObject SessionModel::retentionDiagnostics() const {
     result["active_history_bytes"] = static_cast<double>(active.bytes);
     result["active_history_samples"] = static_cast<double>(active.samples);
     result["active_laps"] = static_cast<double>(active.laps);
+    result["rolling_buffers"] = retentionJson(rolling);
+    result["completed_laps"] = retentionJson(completed);
+    result["current_lap"] = retentionJson(current);
+    result["shared_bytes_not_counted"] = static_cast<double>(
+        rolling.sharedBytes + completed.sharedBytes + current.sharedBytes +
+        catalog.sharedBytes + lapCache.sharedBytes);
     result["playback_catalog_bytes"] = static_cast<double>(catalog.bytes);
     result["playback_catalog_samples"] = static_cast<double>(catalog.samples);
     result["playback_catalog_laps"] = static_cast<double>(playbackCatalogLaps_.size());
@@ -628,8 +816,7 @@ void SessionModel::onTyre(float t,
         if (LapBlock* lap = playbackStreamLap(t, rowBit(1)))
             lap->tyre.push_back({t, surfFl, surfFr, surfRl, surfRr,
                                  innerFl, innerFr, innerRl, innerRr,
-                                 brakeFl, brakeFr, brakeRl, brakeRr,
-                                 wearFl, wearFr, wearRl, wearRr});
+                                 brakeFl, brakeFr, brakeRl, brakeRr});
     }
     tyreDirty_ = true;
     scheduleFlush();
@@ -746,6 +933,9 @@ void SessionModel::setReferenceLap(tnr::GraphSection section, int lapNum) {
 void SessionModel::setPlaybackMode(bool on) {
     if (playbackMode_ == on) return;
     playbackMode_ = on;
+    // Playback installs separate session and lap histories; live stores each
+    // sample once, in its lap. The model is cleared around every switch.
+    d_.lapOwned = !on;
     discardUnavailableChartOverrides();
     emit chartConfigurationChanged();
 }
@@ -862,7 +1052,23 @@ LapBlock* SessionModel::playbackStreamLap(float t, uint32_t familyBit) {
     uint32_t mask = playbackActiveLapMasks_.value(lap->lapNum);
     if (mask == 0 && playbackStreamLapNum_ == lap->lapNum - 1) {
         mask = playbackActiveLapMasks_.value(lap->lapNum - 1);
-        if (mask) playbackActiveLapMasks_.insert(lap->lapNum, mask);
+        if (mask) {
+            playbackActiveLapMasks_.insert(lap->lapNum, mask);
+            // The lap the stream leaves keeps its progress; its samples are in
+            // the session buffers, and lap views read it from the lap cache.
+            if (LapBlock* previous = d_.lapByNum(lap->lapNum - 1)) {
+                const LapBlock* baseline = nullptr;
+                for (const LapBlock& candidate : playbackCatalogLaps_)
+                    if (candidate.lapNum == previous->lapNum) { baseline = &candidate; break; }
+                previous->tel = baseline ? baseline->tel : QVector<TelSample>{};
+                previous->sts = baseline ? baseline->sts : QVector<StsSample>{};
+                previous->tyre = {};
+                previous->damage = {};
+                previous->motion = {};
+                previous->motionEx = {};
+                playbackActiveLapMasks_[previous->lapNum] &= rowBit(4) | rowBit(13);
+            }
+        }
     }
     if (mask) playbackStreamLapNum_ = lap->lapNum;
     return (mask & familyBit) ? lap : nullptr;
@@ -995,6 +1201,25 @@ void SessionModel::installPlaybackHistory(SessionData&& incoming,
     Q_UNUSED(progress);
     const uint32_t payloadMask = rowTypeMask;
     const uint32_t activeMask = payloadMask & playbackRequestedHistoryMask_;
+    if (d_.lapOwned) {
+        // Live: the engine backfills, from its own history store, the families
+        // a page needs but which were not streamed while other pages were open.
+        // Merge them into the lap blocks that own each sample's time.
+        if (activeMask & rowBit(1)) {
+            mergeLiveHistory(d_, std::move(incoming.telBuf), &LapBlock::tel);
+            mergeLiveHistory(d_, std::move(incoming.tyreBuf), &LapBlock::tyre);
+        }
+        if (activeMask & rowBit(2)) mergeLiveHistory(d_, std::move(incoming.stsBuf), &LapBlock::sts);
+        if (activeMask & rowBit(3)) mergeLiveHistory(d_, std::move(incoming.damageBuf), &LapBlock::damage);
+        if (activeMask & rowBit(11)) mergeLiveHistory(d_, std::move(incoming.motionBuf), &LapBlock::motion);
+        if (activeMask & rowBit(12)) mergeLiveHistory(d_, std::move(incoming.motionExBuf), &LapBlock::motionEx);
+        ++playbackDataRevision_;
+        telemetryDirty_ = false;
+        tyreDirty_ = false;
+        emit telemetryAppended();
+        emit tyreAppended();
+        return;
+    }
     if (authoritative) {
         d_.laps = playbackCatalogLaps_;
         d_.curLap = {};
@@ -1061,7 +1286,14 @@ void SessionModel::installPlaybackHistory(SessionData&& incoming,
 
     // Seek/window history is the active timeline. The worker already partitioned
     // it by immutable catalog ranges; only these vectors back the current-lap
-    // fallback while an indexed current-lap payload is still in flight.
+    // fallback while an indexed current-lap payload is still in flight. The
+    // session buffers below hold the same samples, so only the lap under the
+    // cursor takes its sample families; the others keep just their progress,
+    // and lap views read them from the indexed-lap cache.
+    int cursorLap = requestedLapNum;
+    if (cursorLap <= 0)
+        if (const LapBlock* lap = d_.currentLapAt(std::max(d_.latestTime, incoming.latestTime)))
+            cursorLap = lap->lapNum;
     for (LapBlock& detail : lapDetails) {
         LapBlock* lap = d_.lapByNum(detail.lapNum);
         if (!lap) continue;
@@ -1071,15 +1303,16 @@ void SessionModel::installPlaybackHistory(SessionData&& incoming,
             else mergeTimed(target, std::move(source));
             installedMask |= bit;
         };
-        if (activeMask & rowBit(1)) {
+        const bool samples = lap->lapNum == cursorLap;
+        if (samples && (activeMask & rowBit(1))) {
             install(rowBit(1), lap->tel, detail.tel);
             if (authoritative || lap->tyre.isEmpty()) lap->tyre = std::move(detail.tyre);
             else mergeTimed(lap->tyre, std::move(detail.tyre));
         }
-        if (activeMask & rowBit(2)) install(rowBit(2), lap->sts, detail.sts);
-        if (activeMask & rowBit(3)) install(rowBit(3), lap->damage, detail.damage);
-        if (activeMask & rowBit(11)) install(rowBit(11), lap->motion, detail.motion);
-        if (activeMask & rowBit(12)) install(rowBit(12), lap->motionEx, detail.motionEx);
+        if (samples && (activeMask & rowBit(2))) install(rowBit(2), lap->sts, detail.sts);
+        if (samples && (activeMask & rowBit(3))) install(rowBit(3), lap->damage, detail.damage);
+        if (samples && (activeMask & rowBit(11))) install(rowBit(11), lap->motion, detail.motion);
+        if (samples && (activeMask & rowBit(12))) install(rowBit(12), lap->motionEx, detail.motionEx);
         if (activeMask & rowBit(4)) {
             install(rowBit(4), lap->progress, detail.progress);
             for (const LapProgressSample& sample : lap->progress)
@@ -1124,12 +1357,16 @@ void SessionModel::retainPlaybackHistoryMask(uint32_t rowTypeMask) {
     const uint32_t removed = (playbackHistoryMask_ | playbackRequestedHistoryMask_) & ~rowTypeMask;
     playbackRequestedHistoryMask_ = rowTypeMask;
     playbackHistoryMask_ &= rowTypeMask;
-    if (!removed) return;
-    if (removed & rowBit(1)) { d_.telBuf.clear(); d_.tyreBuf.clear(); }
-    if (removed & rowBit(2)) d_.stsBuf.clear();
-    if (removed & rowBit(3)) d_.damageBuf.clear();
-    if (removed & rowBit(11)) d_.motionBuf.clear();
-    if (removed & rowBit(12)) d_.motionExBuf.clear();
+    // Only playback can drop a family: a seek reloads it from the recording.
+    // A live session's history exists nowhere else, and the page requirements
+    // that call this change on every page switch.
+    if (!removed || !playbackMode_) return;
+    // Assign empty vectors: Qt 6's clear() keeps the allocation.
+    if (removed & rowBit(1)) { d_.telBuf = {}; d_.tyreBuf = {}; }
+    if (removed & rowBit(2)) d_.stsBuf = {};
+    if (removed & rowBit(3)) d_.damageBuf = {};
+    if (removed & rowBit(11)) d_.motionBuf = {};
+    if (removed & rowBit(12)) d_.motionExBuf = {};
 
     for (LapBlock& lap : d_.laps) {
         const LapBlock* baseline = nullptr;
@@ -1137,13 +1374,13 @@ void SessionModel::retainPlaybackHistoryMask(uint32_t rowTypeMask) {
             if (candidate.lapNum == lap.lapNum) { baseline = &candidate; break; }
         if (removed & rowBit(1)) {
             lap.tel = baseline ? baseline->tel : QVector<TelSample>{};
-            lap.tyre.clear();
+            lap.tyre = {};
         }
         if (removed & rowBit(2)) lap.sts = baseline ? baseline->sts : QVector<StsSample>{};
-        if (removed & rowBit(3)) lap.damage.clear();
-        if (removed & rowBit(4)) lap.progress.clear();
-        if (removed & rowBit(11)) lap.motion.clear();
-        if (removed & rowBit(12)) lap.motionEx.clear();
+        if (removed & rowBit(3)) lap.damage = {};
+        if (removed & rowBit(4)) lap.progress = {};
+        if (removed & rowBit(11)) lap.motion = {};
+        if (removed & rowBit(12)) lap.motionEx = {};
         playbackActiveLapMasks_[lap.lapNum] &= ~removed;
         if (playbackActiveLapMasks_.value(lap.lapNum) == 0)
             playbackActiveLapMasks_.remove(lap.lapNum);

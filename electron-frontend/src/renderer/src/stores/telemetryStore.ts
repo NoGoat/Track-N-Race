@@ -16,7 +16,7 @@ import { findSectorSplits, type SectorSplit } from '../lib/lapDelta'
 import { getTelemetryChartRetentionDiagnostics } from '../diagnostics/telemetryRetention'
 import { getDebugSettings, subscribeDebugSettings } from '../lib/debugSettings'
 import {
-  ColumnTable, V6_PATCH_FIELDS, columnStorageBytes, concatAfter, decodeV6History, emptyView, installHistory,
+  ColumnTable, V6_PATCH_FIELDS, columnStorageBytes, concatAfter, countColumnStorages, decodeV6History, emptyView, installHistory,
   isV6HistoryPayload, viewOfRows, type ColumnView, type HistoryFamily,
 } from '../lib/columnStore'
 
@@ -120,6 +120,7 @@ declare global {
       on: (callback: (row: unknown) => void) => (() => void)
       onBatch: (callback: (batch: string) => void) => (() => void)
       onBinary: (callback: (batch: Uint8Array) => void) => (() => void)
+      onLiveLapData: (callback: (header: string, history: Uint8Array) => void) => (() => void)
       reportRetention: (snapshot: unknown) => void
     }
   }
@@ -156,6 +157,9 @@ export interface TelemetryStoreState {
   analyzeLapProgress: ColumnView<LapProgressPoint>
   analyzeLapStartTime: number
   analyzeLapRevision: number
+  // Advances when history replaces rows charts already consumed; see
+  // historyReplacementRevisionVal.
+  historyReplacementRevision: number
   analyzeDeltaAvailable: boolean
   analyzeTrackLengthM: number
   playbackTnrdVersion: string | null
@@ -210,6 +214,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   latest: null, fastestLapNum: null,
   ...EMPTY_ANALYZE_SLICES, analyzeLapStartTime: 0,
   analyzeLapRevision: 0,
+  historyReplacementRevision: 0,
   analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
   playbackAnalysisDrivers: [], playbackDriverIndex: null,
   playbackTrackId: null, playbackTrackName: null,
@@ -319,6 +324,9 @@ let playbackLapTimes: Record<number, number> = {}
 let liveLapTimes: Record<number, number> = {}
 let playbackLapCacheOrder: number[] = []
 let analyzeLapRevisionVal = 0
+// Advances when history is installed under rows the charts already consumed
+// (a host restore, a sparse V6 field backfill), not on ordinary lap changes.
+let historyReplacementRevisionVal = 0
 let pendingAnalyzeLapReset = false
 let liveLapBoundaries: Array<{ lapNum: number; sessionTime: number }> = []
 let allLapsLapBoundaries: Array<{ lapNum: number; sessionTime: number }> = []
@@ -609,7 +617,7 @@ function getRendererTelemetryRetentionDiagnostics(): Record<string, unknown> {
       estimated_reference_bytes: allLapsCacheBytes,
     },
     column_storage: {
-      storages: seen.size,
+      storages: countColumnStorages(seen),
       bytes: working.estimated_serialized_bytes + liveLapSnapshotBytes + publishedViewBytes +
         playbackLapCache.estimated_serialized_bytes + allLapsCacheBytes,
     },
@@ -1348,13 +1356,6 @@ function onLap(lap: LapRow): void {
   trimLiveWorkingSet()
 }
 
-function base64Bytes(text: string): Uint8Array {
-  const binary = atob(text)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-  return bytes
-}
-
 // Live Previous and Fastest come from the engine's V6 store, which holds every
 // lap whole however the window was shown; committed laps are decompressed from
 // their chunks there. The renderer's own snapshot of a lap only stands in until
@@ -1393,7 +1394,7 @@ export function requestStoredLiveLaps(): void {
 // recording's seek delivers. Null when it holds no telemetry or lap progress.
 async function decodeStoredLap(msg: LiveFastestLapDataMsg | LiveLapDataMsg,
                                keepGoing: () => boolean): Promise<AnalyzeLapData | null> {
-  const bytes = base64Bytes(msg.history || '')
+  const bytes = msg.history
   if (!isV6HistoryPayload(bytes)) return null
   const decoded = await decodeV6History(bytes, async () => {
     await yieldToMainThread()
@@ -2274,12 +2275,17 @@ async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promi
       authoritative ? 'authoritative' : overlay.has(family) ? 'overlay' : 'prefix', MAX_ROWS)
   }
   // Restored rows replace rows the chart bridges have already consumed.
-  if (restore) analyzeLapRevisionVal++
-  else if (!authoritative && Object.keys(decodedV6Types).length > 0) {
+  // Distance charts rebuild on the lap revision; time-axis charts only on the
+  // replacement revision, since the lap revision also advances every lap.
+  if (restore) {
+    analyzeLapRevisionVal++
+    historyReplacementRevisionVal++
+  } else if (!authoritative && Object.keys(decodedV6Types).length > 0) {
     // Sparse V6 page backfills fill fields into timestamps the chart bridges
     // have already consumed. Advance the revision so they rebuild those rows
     // instead of syncing only samples appended after the page change.
     analyzeLapRevisionVal++
+    historyReplacementRevisionVal++
   }
   if (authoritative) {
     authoritativeLapStatusStart = Number(payload.currentLapStart)
@@ -2361,6 +2367,7 @@ async function processPlaybackSeekFlush(payload: PlaybackSeekFlushBinMsg): Promi
     ...(restore && !isPlaybackFlag ? { raceEvents: raceEventsArr } : {}),
     ...(restore && !isPlaybackFlag && fuelMaxReceived > -Infinity ? { fuelUpperLimit: fuelMaxReceived + 1 } : {}),
     currentStintStartTime,
+    historyReplacementRevision: historyReplacementRevisionVal,
   })
   const latestLap = lapProgressTable.last()
   if (latestLap) { lapState = latestLap; set({ lap: latestLap }) }
@@ -2739,6 +2746,18 @@ export function startTelemetryBridge(): void {
     handleMsg(msg)
     recompute(dirtySliceFor(msg))
     if (additionalLoggingEnabled) rendererDiagnostics.recomputes++
+  })
+
+  // Live Previous / Fastest answers: a JSON header with the lap's V6H1 payload.
+  window.telemetryBridge.onLiveLapData((header, history) => {
+    let msg: GatewayMsg
+    try {
+      msg = { ...JSON.parse(header), history } as GatewayMsg
+    } catch (error) {
+      console.error('Malformed live lap header:', error)
+      return
+    }
+    handleMsg(msg)
   })
 
   window.telemetryBridge.onBinary((batch) => {

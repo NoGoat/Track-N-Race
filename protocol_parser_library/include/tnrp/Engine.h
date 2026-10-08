@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -227,12 +228,18 @@ public:
     void playerGetLapData(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu);
     std::string playerGetAnalysisLapData(int lapNum, uint32_t rowTypeMask,
                                          int driverIndex) const;
-    void liveGetFastestLap(uint64_t requestId);
-    // One of the player's laps from the live V6 store, answered with a
-    // live_lap_data row: its chart families as V6 column blocks (base64), the
-    // committed lap decompressed, or the lap still inside the write delay read
-    // from its builders. Live Previous and Fastest read their laps this way.
-    void liveGetLapData(uint64_t requestId, int lapNum);
+    // Answers a live lap request: a live_lap_data / live_fastest_lap_data JSON
+    // header (request id, lap number, lap time, start and end session times)
+    // and the lap's chart families as a V6H1 payload. Called on the live
+    // store's read thread; never called when there is no such lap.
+    using LiveLapCallback = std::function<void(std::string headerJson,
+                                               std::shared_ptr<std::vector<uint8_t>> columnar)>;
+    // The player's fastest completed lap from the live V6 store.
+    void liveGetFastestLap(uint64_t requestId, LiveLapCallback done);
+    // One of the player's laps from the live V6 store: the committed lap
+    // decompressed, or the lap still inside the write delay read from its
+    // builders. Live Previous and Fastest read their laps this way.
+    void liveGetLapData(uint64_t requestId, int lapNum, LiveLapCallback done);
     // The car whose lap-times view is open (-1 when none). While set, the
     // engine emits that car's driver_lap_history row now and again only when
     // it changes: a completed lap (live), the cursor passing a lap end or a

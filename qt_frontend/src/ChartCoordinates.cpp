@@ -98,10 +98,10 @@ double projectReferenceTime(const SessionData& data, const ChartDomain& domain,
 namespace {
 template <typename Sample>
 QVector<Sample> collectSamples(const SessionData& data, const ChartDomain& domain,
-                               const QVector<Sample>& buffer,
+                               const SampleRange<Sample>& buffer,
                                QVector<Sample> LapBlock::* member) {
     QVector<Sample> result;
-    auto appendRange = [&](const QVector<Sample>& source) {
+    auto appendRange = [&](const SampleRange<Sample>& source) {
         for (const Sample& sample : source)
             if (sample.t >= domain.lower && sample.t <= domain.upper) result.push_back(sample);
     };
@@ -118,20 +118,20 @@ QVector<Sample> collectSamples(const SessionData& data, const ChartDomain& domai
 }
 
 QVector<TelSample> chartTelSamples(const SessionData& d, const ChartDomain& c) {
-    return collectSamples(d, c, d.telBuf, &LapBlock::tel);
+    return collectSamples(d, c, d.tel(), &LapBlock::tel);
 }
 QVector<StsSample> chartStatusSamples(const SessionData& d, const ChartDomain& c) {
-    return collectSamples(d, c, d.stsBuf, &LapBlock::sts);
+    return collectSamples(d, c, d.sts(), &LapBlock::sts);
 }
 QVector<TyreSample> chartTyreSamples(const SessionData& d, const ChartDomain& c) {
-    return collectSamples(d, c, d.tyreBuf, &LapBlock::tyre);
+    return collectSamples(d, c, d.tyre(), &LapBlock::tyre);
 }
 QVector<DamageSample> chartDamageSamples(const SessionData& d, const ChartDomain& c) {
-    return collectSamples(d, c, d.damageBuf, &LapBlock::damage);
+    return collectSamples(d, c, d.damage(), &LapBlock::damage);
 }
 QVector<MotionSample> chartMotionSamples(const SessionData& d, const ChartDomain& c) {
-    return collectSamples(d, c, d.motionBuf, &LapBlock::motion);
+    return collectSamples(d, c, d.motion(), &LapBlock::motion);
 }
 QVector<MotionExSample> chartMotionExSamples(const SessionData& d, const ChartDomain& c) {
-    return collectSamples(d, c, d.motionExBuf, &LapBlock::motionEx);
+    return collectSamples(d, c, d.motionEx(), &LapBlock::motionEx);
 }

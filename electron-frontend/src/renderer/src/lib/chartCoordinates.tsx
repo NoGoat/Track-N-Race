@@ -102,6 +102,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
   const currentLapStartTime = useTelemetryStore(state => state.analyzeLapStartTime)
   const trackLengthM = useTelemetryStore(state => state.analyzeTrackLengthM)
   const currentLapRevision = useTelemetryStore(state => state.analyzeLapRevision)
+  const historyReplacementRevision = useTelemetryStore(state => state.historyReplacementRevision)
   const currentLapNum = useTelemetryStore(state => state.lap?.lap_num ?? null)
   const isPlayback = useTelemetryStore(state => state.speedRpmBlocks !== null)
   const playbackCache = useTelemetryStore(state => state.playbackLapDataCache)
@@ -292,7 +293,9 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
     allLapsMode,
     stintLapsMode,
     historyStartTime: stintStartTime,
-    historyRevision: stintLapsMode ? `SL:${stintStartTime}` : mode === 'AL' ? 'AL' : '',
+    // Time-axis charts rebuild when this changes: on a new history range, and
+    // when restored or backfilled history replaces rows they already hold.
+    historyRevision: `${stintLapsMode ? `SL:${stintStartTime}` : mode === 'AL' ? 'AL' : ''}#${historyReplacementRevision}`,
     comparisonMode,
     trackLengthM,
     lapRevision,

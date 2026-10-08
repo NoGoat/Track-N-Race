@@ -13,7 +13,7 @@ class GraphTable;
 // The Power page's four graphs — power split / ERS harvest / ERS store / fuel —
 // rendered as panels of ONE ChartView (a single QRhi render target /
 // replot) rather than four separate widgets. Arranged in a grid or vertical
-// stack; hidden sections drop out in split/harvest/store/fuel order. All read stsBuf.
+// stack; hidden sections drop out in split/harvest/store/fuel order. All read the status history.
 class PowerChartsWidget : public QWidget {
     Q_OBJECT
 public:

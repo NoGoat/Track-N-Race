@@ -218,9 +218,15 @@ void TyresPage::showLayoutEditor() {
 }
 
 void TyresPage::setGraphsShown(bool on) {
+    const bool changed = graphsShown_ != on;
     graphsShown_ = on;
     if (stack_) stack_->setCurrentIndex(on ? 1 : 0);
+    if (changed) emit dataNeedsChanged();
 }
+
+bool TyresPage::cardTablesShown() const { return tyreCards_ && tyreCards_->anyCornerTable(); }
+
+float TyresPage::cardWindowSeconds() const { return tyreCards_ ? tyreCards_->windowSeconds() : 30.0f; }
 
 void TyresPage::setPlaybackMode(bool on, float currentTime) {
     if (tyreCharts_) {
@@ -248,7 +254,10 @@ void TyresPage::setGraphSectionTable(int section, bool table) {
 }
 
 void TyresPage::setCardTable(int corner, bool table) {
-    if (tyreCards_) tyreCards_->setCornerTable(corner, table);
+    if (!tyreCards_) return;
+    const bool before = tyreCards_->anyCornerTable();
+    tyreCards_->setCornerTable(corner, table);
+    if (tyreCards_->anyCornerTable() != before) emit dataNeedsChanged();
 }
 
 // ── Tyres page updater ────────────────────────────────────────────────────

@@ -43,6 +43,17 @@ public:
     void setVerticalLayout(bool vertical);
     void showLayoutEditor();
 
+    // What the page shows decides the history it needs: the graphs read the
+    // tyre and damage history over their chart windows; the cards only the
+    // latest rows, or the last cardWindowSeconds() of tyre history while a
+    // corner shows its Table.
+    bool graphsShown() const { return graphsShown_; }
+    bool cardTablesShown() const;
+    float cardWindowSeconds() const;
+
+signals:
+    void dataNeedsChanged();
+
 private:
     void setGraphsShown(bool on);   // swap allocation ⇄ graphs views
 

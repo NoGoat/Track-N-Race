@@ -2,17 +2,20 @@
 // Columnar history store.
 //
 // Every renderer history family (telemetry, motion, motion_ex, status, damage,
-// lap) is held as typed column arrays rather than an array of row objects: one
-// Float64Array of session times plus one Float64Array per numeric/boolean field
-// (NaN = the row does not carry that field). Charts, tables and lap analysis
-// read samples by index through ColumnView; row objects are only materialised
-// for the few consumers that want one sample (cards, tooltips).
+// lap) is held as typed columns rather than an array of row objects: session
+// times as Float64, every numeric/boolean field as Float32 (NaN = the row does
+// not carry that field), other values as plain arrays. Charts, tables and lap
+// analysis read samples by index through ColumnView; row objects are only
+// materialised for the few consumers that want one sample (cards, tooltips).
 //
-// Storage is append-only. Anything that would rewrite existing rows (a rewind,
-// a history merge, a copy) builds a new Storage instead, so a frozen view taken
-// earlier keeps reading exactly the rows it was published with. The one
-// exception is the V6 patch merge into the newest row at the same timestamp,
-// which the old row-array path also made visible to already-published arrays.
+// Columns are lists of fixed-size chunks, so a table grows without copying and
+// a trim releases whole chunks. Chunks are shared between storages wherever
+// rows are reused (a trim, a rewind, a history install), and copied before any
+// write to one that is shared. A frozen view taken earlier therefore keeps
+// reading exactly the rows it was published with, while costing only the chunks
+// no newer storage holds. The one exception is the V6 patch merge into the
+// newest row at the same timestamp, which the old row-array path also made
+// visible to already-published arrays.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type HistoryFamily = 'telemetry' | 'motion' | 'motion_ex' | 'status' | 'damage' | 'lap'
@@ -59,38 +62,119 @@ export const V6_PATCH_FIELDS: Record<number, readonly string[]> = {
     'num_sg_pens', 'sector', 'result_status', 'driver_status'],
 }
 
-function nanArray(capacity: number): Float64Array {
-  const out = new Float64Array(capacity)
-  out.fill(NaN)
-  return out
+// ── Chunked columns ──────────────────────────────────────────────────────────
+
+// 4096-row chunks: a trimmed table (three laps in Current-lap mode, about 13K
+// rows) wastes at most one chunk behind its head and one partly used chunk.
+const CHUNK_BITS = 12
+const CHUNK_ROWS = 1 << CHUNK_BITS
+const CHUNK_MASK = CHUNK_ROWS - 1
+const MIN_CHUNK_ROWS = 256
+
+// Numeric fields whose values need more than Float32's 24-bit mantissa. The
+// game sends single-precision floats and integers below 2^24 (milliseconds,
+// joules), so none do today; session time is always Float64.
+const FLOAT64_FIELDS = new Set<string>()
+
+type NumChunk = Float32Array | Float64Array
+
+// Rows a fresh chunk is sized for. A chunk grows (by copying, at most 4K
+// rows) until it is full; a known count of rows from the chunk's start sizes
+// it exactly instead.
+function chunkRows(currentRows: number, offset: number, rowsHint: number): number {
+  if (rowsHint > 0) return Math.min(CHUNK_ROWS, Math.max(offset + 1, currentRows, rowsHint))
+  let rows = Math.max(MIN_CHUNK_ROWS, currentRows)
+  while (rows <= offset) rows *= 4
+  return Math.min(CHUNK_ROWS, rows)
 }
 
+/**
+ * A column as chunks: chunk k holds rows [k * CHUNK_ROWS, (k + 1) * CHUNK_ROWS).
+ * A missing or short chunk reads as absent. `owned[k]` is false for a chunk
+ * shared with another storage, which is copied before it is written.
+ */
+class NumColumn {
+  chunks: (NumChunk | undefined)[] = []
+  owned: boolean[] = []
+
+  constructor(readonly kind: NumericKind, readonly wide: boolean) {}
+
+  get(p: number): number {
+    const chunk = this.chunks[p >> CHUNK_BITS]
+    const offset = p & CHUNK_MASK
+    return chunk !== undefined && offset < chunk.length ? chunk[offset] : NaN
+  }
+
+  set(p: number, value: number, rowsHint = 0): void {
+    this.writable(p, rowsHint)[p & CHUNK_MASK] = value
+  }
+
+  writable(p: number, rowsHint = 0): NumChunk {
+    const k = p >> CHUNK_BITS
+    const offset = p & CHUNK_MASK
+    let chunk = this.chunks[k]
+    if (chunk === undefined || !this.owned[k] || offset >= chunk.length) {
+      const rows = chunkRows(chunk?.length ?? 0, offset, Math.max(0, rowsHint - (k << CHUNK_BITS)))
+      const next = this.wide ? new Float64Array(rows) : new Float32Array(rows)
+      next.fill(NaN)
+      if (chunk) next.set(chunk)
+      chunk = next
+      this.chunks[k] = chunk
+      this.owned[k] = true
+    }
+    return chunk
+  }
+}
+
+/** Non-numeric values (strings, objects) as chunks of plain arrays. */
+class OtherColumn {
+  chunks: (unknown[] | undefined)[] = []
+  owned: boolean[] = []
+
+  get(p: number): unknown {
+    return this.chunks[p >> CHUNK_BITS]?.[p & CHUNK_MASK]
+  }
+
+  set(p: number, value: unknown): void {
+    const k = p >> CHUNK_BITS
+    let chunk = this.chunks[k]
+    if (chunk === undefined || !this.owned[k]) {
+      chunk = chunk ? chunk.slice() : []
+      this.chunks[k] = chunk
+      this.owned[k] = true
+    }
+    chunk[p & CHUNK_MASK] = value
+  }
+}
+
+// Every slot at or past a storage's `length` reads as absent: chunks shared
+// from another storage lie wholly below `length`, and a partly used chunk is
+// copied up to `length` only. Appending a row therefore never inherits values.
 class Storage {
   head = 0
   length = 0
-  readonly time: Float64Array
-  readonly nums = new Map<string, Float64Array>()
-  readonly kinds = new Map<string, NumericKind>()
-  readonly others = new Map<string, unknown[]>()
+  readonly time = new NumColumn(NUM, true)
+  readonly nums = new Map<string, NumColumn>()
+  readonly others = new Map<string, OtherColumn>()
 
-  constructor(readonly capacity: number) {
-    this.time = new Float64Array(capacity)
-  }
+  /** Rows this storage is expected to hold, to size its chunks exactly. */
+  constructor(readonly rowsHint = 0) {}
 
-  numColumn(field: string, kind: NumericKind): Float64Array {
+  timeAt(p: number): number { return this.time.get(p) }
+
+  numColumn(field: string, kind: NumericKind): NumColumn {
     let column = this.nums.get(field)
     if (!column) {
-      column = nanArray(this.capacity)
+      column = new NumColumn(kind, FLOAT64_FIELDS.has(field))
       this.nums.set(field, column)
-      this.kinds.set(field, kind)
     }
     return column
   }
 
-  otherColumn(field: string): unknown[] {
+  otherColumn(field: string): OtherColumn {
     let column = this.others.get(field)
     if (!column) {
-      column = []
+      column = new OtherColumn()
       this.others.set(field, column)
     }
     return column
@@ -98,28 +182,35 @@ class Storage {
 
   write(p: number, field: string, value: unknown): void {
     if (value === undefined || value === null || META_FIELDS.has(field)) return
-    if (typeof value === 'number') this.numColumn(field, NUM)[p] = value
-    else if (typeof value === 'boolean') this.numColumn(field, BOOL)[p] = value ? 1 : 0
-    else this.otherColumn(field)[p] = value
+    if (typeof value === 'number') this.numColumn(field, NUM).set(p, value, this.rowsHint)
+    else if (typeof value === 'boolean') this.numColumn(field, BOOL).set(p, value ? 1 : 0, this.rowsHint)
+    else this.otherColumn(field).set(p, value)
   }
 
   clearField(p: number, field: string): void {
     const column = this.nums.get(field)
-    if (column) column[p] = NaN
+    if (column && column.get(p) === column.get(p)) column.set(p, NaN)
     const other = this.others.get(field)
-    if (other && p < other.length) other[p] = undefined
+    if (other && other.get(p) !== undefined) other.set(p, undefined)
   }
 
+  /** Copies row `from`'s values into the empty row `to`. */
   copyRow(from: number, to: number): void {
-    for (const column of this.nums.values()) column[to] = column[from]
-    for (const column of this.others.values()) if (from < column.length) column[to] = column[from]
+    for (const column of this.nums.values()) {
+      const value = column.get(from)
+      if (value === value) column.set(to, value, this.rowsHint)
+    }
+    for (const column of this.others.values()) {
+      const value = column.get(from)
+      if (value !== undefined) column.set(to, value)
+    }
   }
 
   lowerBound(start: number, end: number, sessionTime: number, inclusive: boolean): number {
     let lo = start, hi = end
     while (lo < hi) {
       const mid = (lo + hi) >> 1
-      const t = this.time[mid]
+      const t = this.time.get(mid)
       if (inclusive ? t < sessionTime : t <= sessionTime) lo = mid + 1
       else hi = mid
     }
@@ -127,60 +218,125 @@ class Storage {
   }
 
   materialize(rowType: string, p: number): Record<string, unknown> {
-    const out: Record<string, unknown> = { type: rowType, session_time: this.time[p] }
+    const out: Record<string, unknown> = { type: rowType, session_time: this.time.get(p) }
     for (const [field, column] of this.nums) {
-      const value = column[p]
-      if (value === value) out[field] = this.kinds.get(field) === BOOL ? value !== 0 : value
+      const value = column.get(p)
+      if (value === value) out[field] = column.kind === BOOL ? value !== 0 : value
     }
     for (const [field, column] of this.others) {
-      const value = p < column.length ? column[p] : undefined
+      const value = column.get(p)
       if (value !== undefined) out[field] = value
+    }
+    return out
+  }
+
+  /**
+   * Rows [start, end) as a new storage that shares this one's chunks. Indices
+   * are rebased to the first kept chunk; a chunk that `end` cuts through is
+   * copied up to `end`, so the result's free slots stay absent. `keepOwnership`
+   * hands the shared chunks over when this storage will not be written again.
+   */
+  slice(start: number, end: number, keepOwnership = false): Storage {
+    const first = start >> CHUNK_BITS
+    const base = first << CHUNK_BITS
+    const out = new Storage(this.rowsHint)
+    out.head = start - base
+    out.length = end - base
+    const lastChunk = (end - 1) >> CHUNK_BITS
+    const cut = end & CHUNK_MASK
+    const share = <C>(from: { chunks: (C | undefined)[]; owned: boolean[] }, to: { chunks: (C | undefined)[]; owned: boolean[] },
+                      copy: (chunk: C, rows: number) => C) => {
+      for (let k = first; k <= lastChunk && k < from.chunks.length; k++) {
+        const chunk = from.chunks[k]
+        if (chunk === undefined) continue
+        if (k === lastChunk && cut !== 0) {
+          to.chunks[k - first] = copy(chunk, cut)
+          to.owned[k - first] = true
+        } else {
+          to.chunks[k - first] = chunk
+          to.owned[k - first] = keepOwnership && from.owned[k]
+        }
+      }
+    }
+    // Every column carries over, even with no rows: a column's kind (number
+    // or boolean) is fixed by the storage it was first written in.
+    adoptColumns(this, out)
+    if (end > start) {
+      const copyNum = (chunk: NumChunk, rows: number): NumChunk => {
+        const next = chunk instanceof Float64Array ? new Float64Array(chunk.length) : new Float32Array(chunk.length)
+        next.fill(NaN)
+        next.set(chunk.subarray(0, Math.min(rows, chunk.length)))
+        return next
+      }
+      share(this.time, out.time, copyNum)
+      for (const [field, column] of this.nums) share(column, out.nums.get(field)!, copyNum)
+      for (const [field, column] of this.others) {
+        share(column, out.others.get(field)!, (chunk: unknown[], rows) => chunk.slice(0, rows))
+      }
+    } else {
+      out.head = out.length = 0
     }
     return out
   }
 }
 
 // Copies rows into a fresh Storage, taking the union of the sources' columns.
+// Whole chunks that line up with the destination are shared, not copied.
 class StorageBuilder {
   private storage: Storage
-  constructor(capacity: number) {
-    this.storage = new Storage(Math.max(16, capacity))
+
+  constructor(rowsHint: number) {
+    this.storage = new Storage(Math.max(0, rowsHint))
   }
 
-  get length(): number { return this.storage.length }
+  get length(): number { return this.storage.length - this.storage.head }
 
   lastTime(): number {
-    return this.storage.length > 0 ? this.storage.time[this.storage.length - 1] : -Infinity
+    const s = this.storage
+    return s.length > s.head ? s.timeAt(s.length - 1) : -Infinity
   }
 
-  private ensure(extra: number): Storage {
+  /**
+   * Starts the destination at the same position within a chunk as `sourceStart`,
+   * so a range copied from there shares the source's whole chunks. Only
+   * before anything is appended.
+   */
+  alignTo(sourceStart: number): void {
     const s = this.storage
-    if (s.length + extra <= s.capacity) return s
-    const grown = new Storage(Math.max(s.capacity * 2, s.length + extra))
-    copyRange(s, 0, s.length, grown)
-    this.storage = grown
-    return grown
+    if (s.length !== s.head || s.length !== 0) return
+    s.head = s.length = sourceStart & CHUNK_MASK
   }
 
   appendRange(source: Storage, start: number, end: number): void {
     if (end <= start) return
-    copyRange(source, start, end, this.ensure(end - start))
+    const target = this.storage
+    adoptColumns(source, target)
+    let from = start
+    while (from < end) {
+      const to = target.length
+      const offset = from & CHUNK_MASK
+      const rows = Math.min(end - from, CHUNK_ROWS - offset, CHUNK_ROWS - (to & CHUNK_MASK))
+      if (offset === 0 && (to & CHUNK_MASK) === 0 && rows === CHUNK_ROWS) shareChunk(source, from, target, to)
+      else copyRows(source, from, target, to, rows)
+      target.length = to + rows
+      from += rows
+    }
   }
 
   // Appends one row: `base` fields, then `overlay` fields where present.
   appendMerged(base: Storage | null, bp: number, overlay: Storage | null, op: number, time: number): void {
-    const s = this.ensure(1)
+    const s = this.storage
     const p = s.length
-    s.time[p] = time
+    s.time.set(p, time, s.rowsHint)
     for (const [source, sp] of [[base, bp], [overlay, op]] as const) {
       if (!source) continue
       for (const [field, column] of source.nums) {
-        const value = column[sp]
-        if (value === value) s.numColumn(field, source.kinds.get(field) ?? NUM)[p] = value
+        const value = column.get(sp)
+        if (value === value) s.numColumn(field, column.kind).set(p, value, s.rowsHint)
       }
       for (const [field, column] of source.others) {
-        const value = sp < column.length ? column[sp] : undefined
-        if (value !== undefined) s.otherColumn(field)[p] = value
+        const value = column.get(sp)
+        if (value !== undefined) s.otherColumn(field).set(p, value)
       }
     }
     s.length = p + 1
@@ -189,21 +345,51 @@ class StorageBuilder {
   build(): Storage { return this.storage }
 }
 
-function copyRange(source: Storage, start: number, end: number, target: Storage): void {
-  const count = end - start
-  const at = target.length
-  target.time.set(source.time.subarray(start, end), at)
-  for (const [field, column] of source.nums) {
-    target.numColumn(field, source.kinds.get(field) ?? NUM).set(column.subarray(start, end), at)
+// Gives `target` every column `source` has, keeping a column `target` already
+// has as it is.
+function adoptColumns(source: Storage, target: Storage): void {
+  for (const [field, column] of source.nums) target.numColumn(field, column.kind)
+  for (const field of source.others.keys()) target.otherColumn(field)
+}
+
+// Shares the full chunk holding source row `from` as the destination chunk
+// holding row `to`; both are chunk-aligned.
+function shareChunk(source: Storage, from: number, target: Storage, to: number): void {
+  const k = from >> CHUNK_BITS, t = to >> CHUNK_BITS
+  const share = <C>(a: { chunks: (C | undefined)[] }, b: { chunks: (C | undefined)[]; owned: boolean[] }) => {
+    const chunk = a.chunks[k]
+    if (chunk === undefined) return
+    b.chunks[t] = chunk
+    b.owned[t] = false
   }
+  share(source.time, target.time)
+  for (const [field, column] of source.nums) share(column, target.numColumn(field, column.kind))
+  for (const [field, column] of source.others) share(column, target.otherColumn(field))
+}
+
+// Copies `rows` rows from source row `from` to destination row `to`, within
+// one chunk on each side.
+function copyRows(source: Storage, from: number, target: Storage, to: number, rows: number): void {
+  const k = from >> CHUNK_BITS, offset = from & CHUNK_MASK
+  const copy = (a: NumColumn, b: NumColumn) => {
+    const chunk = a.chunks[k]
+    if (chunk === undefined || offset >= chunk.length) return
+    const available = Math.min(rows, chunk.length - offset)
+    b.writable(to + available - 1, target.rowsHint).set(chunk.subarray(offset, offset + available), to & CHUNK_MASK)
+  }
+  copy(source.time, target.time)
+  for (const [field, column] of source.nums) copy(column, target.numColumn(field, column.kind))
   for (const [field, column] of source.others) {
-    const out = target.otherColumn(field)
-    for (let i = 0; i < count; i++) {
-      const value = start + i < column.length ? column[start + i] : undefined
-      if (value !== undefined) out[at + i] = value
+    const chunk = column.chunks[k]
+    if (chunk === undefined) continue
+    let out: OtherColumn | null = null
+    for (let i = 0; i < rows; i++) {
+      const value = chunk[offset + i]
+      if (value === undefined) continue
+      out ??= target.otherColumn(field)
+      out.set(to + i, value)
     }
   }
-  target.length = at + count
 }
 
 // ── Views ────────────────────────────────────────────────────────────────────
@@ -224,6 +410,16 @@ export interface ColumnView<T extends { session_time: number } = { session_time:
   slice(start: number, end?: number): ColumnView<T>
 }
 
+function storageValue(storage: Storage, field: string, p: number): unknown {
+  const column = storage.nums.get(field)
+  if (column) {
+    const value = column.get(p)
+    if (value !== value) return undefined
+    return column.kind === BOOL ? value !== 0 : value
+  }
+  return storage.others.get(field)?.get(p)
+}
+
 class FrozenView<T extends { session_time: number }> implements ColumnView<T> {
   constructor(
     private readonly storage: Storage,
@@ -232,22 +428,12 @@ class FrozenView<T extends { session_time: number }> implements ColumnView<T> {
     readonly rowType: string,
   ) {}
   get length(): number { return this.end - this.start }
-  time(i: number): number { return this.storage.time[this.start + i] }
+  time(i: number): number { return this.storage.time.get(this.start + i) }
   num(field: string, i: number): number {
     const column = this.storage.nums.get(field)
-    return column ? column[this.start + i] : NaN
+    return column ? column.get(this.start + i) : NaN
   }
-  value(field: string, i: number): unknown {
-    const p = this.start + i
-    const column = this.storage.nums.get(field)
-    if (column) {
-      const value = column[p]
-      if (value !== value) return undefined
-      return this.storage.kinds.get(field) === BOOL ? value !== 0 : value
-    }
-    const other = this.storage.others.get(field)
-    return other && p < other.length ? other[p] : undefined
-  }
+  value(field: string, i: number): unknown { return storageValue(this.storage, field, this.start + i) }
   row(i: number): T { return this.storage.materialize(this.rowType, this.start + i) as unknown as T }
   lowerBound(sessionTime: number, inclusive: boolean): number {
     return this.storage.lowerBound(this.start, this.end, sessionTime, inclusive) - this.start
@@ -266,13 +452,13 @@ class LiveView<T extends { session_time: number }> implements ColumnView<T> {
   constructor(private readonly table: ColumnTable<T>) {}
   get rowType(): string { return this.table.rowType }
   get length(): number { return this.table.length }
-  time(i: number): number { const s = this.table.storage; return s.time[s.head + i] }
+  time(i: number): number { const s = this.table.storage; return s.time.get(s.head + i) }
   num(field: string, i: number): number {
     const s = this.table.storage
     const column = s.nums.get(field)
-    return column ? column[s.head + i] : NaN
+    return column ? column.get(s.head + i) : NaN
   }
-  value(field: string, i: number): unknown { return this.table.frozen().value(field, i) }
+  value(field: string, i: number): unknown { const s = this.table.storage; return storageValue(s, field, s.head + i) }
   row(i: number): T { const s = this.table.storage; return s.materialize(this.table.rowType, s.head + i) as unknown as T }
   lowerBound(sessionTime: number, inclusive: boolean): number {
     const s = this.table.storage
@@ -281,7 +467,7 @@ class LiveView<T extends { session_time: number }> implements ColumnView<T> {
   slice(start: number, end?: number): ColumnView<T> { return this.table.frozen().slice(start, end) }
 }
 
-const EMPTY_STORAGE = new Storage(0)
+const EMPTY_STORAGE = new Storage()
 const emptyViews = new Map<string, ColumnView>()
 export function emptyView<T extends { session_time: number }>(rowType = ''): ColumnView<T> {
   let view = emptyViews.get(rowType)
@@ -299,17 +485,17 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
   private live: LiveView<T> | null = null
 
   constructor(readonly rowType: string, storage?: Storage) {
-    this.storage = storage ?? new Storage(256)
+    this.storage = storage ?? new Storage()
   }
 
   get length(): number { return this.storage.length - this.storage.head }
 
   firstTime(): number | undefined {
-    return this.length > 0 ? this.storage.time[this.storage.head] : undefined
+    return this.length > 0 ? this.storage.timeAt(this.storage.head) : undefined
   }
 
   lastTime(): number | undefined {
-    return this.length > 0 ? this.storage.time[this.storage.length - 1] : undefined
+    return this.length > 0 ? this.storage.timeAt(this.storage.length - 1) : undefined
   }
 
   /** A snapshot of rows [start, end). */
@@ -338,7 +524,7 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
   lastNum(field: string): number {
     if (this.length === 0) return NaN
     const column = this.storage.nums.get(field)
-    return column ? column[this.storage.length - 1] : NaN
+    return column ? column.get(this.storage.length - 1) : NaN
   }
 
   private replace(storage: Storage): void {
@@ -346,21 +532,22 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
     this.live = null
   }
 
-  private reserve(): Storage {
+  /**
+   * Releases the chunks wholly before the head: the table moves to a storage
+   * sharing the rest (same rows, same logical indices, so the live view stays),
+   * and the dropped chunks are freed once no earlier view holds them.
+   */
+  private releaseHead(): void {
     const s = this.storage
-    if (s.length < s.capacity) return s
-    const size = s.length - s.head
-    const grown = new Storage(Math.max(256, size * 2))
-    copyRange(s, s.head, s.length, grown)
-    this.storage = grown // same rows, same logical indices: the live view stays
-    return grown
+    if (s.head < CHUNK_ROWS) return
+    this.storage = s.slice(s.head, s.length, true)
   }
 
   /** Appends a complete row. Fields the row lacks read as absent. */
   append(row: { session_time: number }, maxRows = Infinity): void {
-    const s = this.reserve()
+    const s = this.storage
     const p = s.length
-    s.time[p] = row.session_time
+    s.time.set(p, row.session_time, s.rowsHint)
     const fields = row as Record<string, unknown>
     for (const key in fields) s.write(p, key, fields[key])
     s.length = p + 1
@@ -375,15 +562,14 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
   appendPatch(patch: { session_time: number }, maxRows = Infinity): void {
     const fields = patch as Record<string, unknown>
     const v6Type = Number(fields._v6_type)
-    const s0 = this.storage
-    const lastIndex = s0.length - 1
-    if (this.length > 0 && s0.time[lastIndex] === patch.session_time) {
-      this.applyPatch(s0, lastIndex, fields, v6Type)
+    const s = this.storage
+    const lastIndex = s.length - 1
+    if (this.length > 0 && s.timeAt(lastIndex) === patch.session_time) {
+      this.applyPatch(s, lastIndex, fields, v6Type)
       return
     }
-    const s = this.reserve()
     const p = s.length
-    s.time[p] = patch.session_time
+    s.time.set(p, patch.session_time, s.rowsHint)
     if (this.length > 0) s.copyRow(p - 1, p)
     s.length = p + 1
     this.applyPatch(s, p, fields, v6Type)
@@ -398,16 +584,21 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
   }
 
   private capRows(maxRows: number): void {
-    // Front trim only advances the head; the tail storage is compacted on the
-    // next growth. Views taken earlier keep their own physical range.
-    if (this.length > maxRows + 4096) this.storage.head = this.storage.length - maxRows
+    // Front trim only advances the head; whole chunks behind it are released.
+    if (this.length > maxRows + 4096) {
+      this.storage.head = this.storage.length - maxRows
+      this.releaseHead()
+    }
   }
 
   /** Drops rows before `cutoff` (keeping one predecessor when asked). */
   trimBefore(cutoff: number, preservePredecessor = false): void {
     let start = this.lowerBound(cutoff, true)
     if (preservePredecessor && start > 0) start--
-    if (start > 0) this.storage.head += start
+    if (start > 0) {
+      this.storage.head += start
+      this.releaseHead()
+    }
   }
 
   /** Keeps rows in [from, to) as a new storage; used for rewinds. */
@@ -415,9 +606,7 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
     const s = this.storage
     const start = s.lowerBound(s.head, s.length, from, true)
     const end = s.lowerBound(s.head, s.length, to, true)
-    const next = new Storage(Math.max(256, (end - start) * 2))
-    copyRange(s, start, Math.max(start, end), next)
-    this.replace(next)
+    this.replace(s.slice(start, Math.max(start, end)))
   }
 
   /** Keeps rows with time <= target. */
@@ -425,19 +614,20 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
     const s = this.storage
     const end = s.lowerBound(s.head, s.length, target, false)
     if (end === s.length) return
-    const next = new Storage(Math.max(256, (end - s.head) * 2))
-    copyRange(s, s.head, end, next)
-    this.replace(next)
+    this.replace(s.slice(s.head, end))
   }
 
-  /** Drops every row but the newest (a head advance; nothing is copied). */
+  /** Drops every row but the newest. */
   keepLastOnly(): void {
     const s = this.storage
-    if (s.length - s.head > 1) s.head = s.length - 1
+    if (s.length - s.head > 1) {
+      s.head = s.length - 1
+      this.releaseHead()
+    }
   }
 
   clear(): void {
-    this.replace(new Storage(256))
+    this.replace(new Storage())
   }
 
   /** Replaces the contents with a copy of `view`'s rows. */
@@ -450,20 +640,37 @@ export class ColumnTable<T extends { session_time: number } = { session_time: nu
   }
 }
 
+function storageOf(source: ColumnTable | ColumnView): Storage | null {
+  return source instanceof ColumnTable ? source.storage : viewParts(source)?.storage ?? null
+}
+
 /**
- * Bytes allocated by the storage behind a table or view: every column at its
- * full capacity, rows trimmed from the front included. A storage already in
- * `seen` counts 0, so callers can total several holders without counting a
- * shared storage twice. Non-numeric columns count their reference slots only.
+ * Bytes allocated by the chunks behind a table or view, rows trimmed from the
+ * front of a shared chunk included. A chunk (or storage) already in `seen`
+ * counts 0, so callers can total several holders without counting shared
+ * chunks twice. Non-numeric columns count their reference slots only.
  */
 export function columnStorageBytes(source: ColumnTable | ColumnView, seen: Set<object>): number {
-  const storage = source instanceof ColumnTable ? source.storage : viewParts(source)?.storage
+  const storage = storageOf(source)
   if (!storage || seen.has(storage)) return 0
   seen.add(storage)
-  let bytes = storage.time.byteLength
-  for (const column of storage.nums.values()) bytes += column.byteLength
-  for (const column of storage.others.values()) bytes += column.length * 8
+  let bytes = 0
+  const count = (chunk: object | undefined, size: number) => {
+    if (chunk === undefined || seen.has(chunk)) return
+    seen.add(chunk)
+    bytes += size
+  }
+  for (const chunk of storage.time.chunks) count(chunk, chunk?.byteLength ?? 0)
+  for (const column of storage.nums.values()) for (const chunk of column.chunks) count(chunk, chunk?.byteLength ?? 0)
+  for (const column of storage.others.values()) for (const chunk of column.chunks) count(chunk, (chunk?.length ?? 0) * 8)
   return bytes
+}
+
+/** The storages counted by columnStorageBytes calls with this `seen` set. */
+export function countColumnStorages(seen: Set<object>): number {
+  let count = 0
+  for (const entry of seen) if (entry instanceof Storage) count++
+  return count
 }
 
 function viewParts(view: ColumnView): { storage: Storage; start: number; end: number } | null {
@@ -475,8 +682,11 @@ function viewParts(view: ColumnView): { storage: Storage; start: number; end: nu
 
 function storageOfView(view: ColumnView): Storage {
   const parts = viewParts(view)
-  const builder = new StorageBuilder(Math.max(256, view.length * 2))
-  if (parts) builder.appendRange(parts.storage, parts.start, parts.end)
+  const builder = new StorageBuilder(view.length)
+  if (parts) {
+    builder.alignTo(parts.start)
+    builder.appendRange(parts.storage, parts.start, parts.end)
+  }
   return builder.build()
 }
 
@@ -490,7 +700,7 @@ export function tableFromRows<T extends { session_time: number }>(
   rows: readonly { session_time: number }[],
   mergePatches: boolean,
 ): ColumnTable<T> {
-  const table = new ColumnTable<T>(rowType)
+  const table = new ColumnTable<T>(rowType, new Storage(rows.length))
   for (const row of rows) {
     if (mergePatches && Number.isInteger(Number((row as Record<string, unknown>)._v6_type))) table.appendPatch(row)
     else table.append(row)
@@ -510,10 +720,14 @@ export function viewOfRows<T extends { session_time: number }>(
 export function concatAfter<T extends { session_time: number }>(prefix: ColumnView<T>, rest: ColumnView<T>): ColumnView<T> {
   const a = viewParts(prefix), b = viewParts(rest)
   const builder = new StorageBuilder(prefix.length + rest.length)
-  if (a) builder.appendRange(a.storage, a.start, a.end)
+  if (a) {
+    builder.alignTo(a.start)
+    builder.appendRange(a.storage, a.start, a.end)
+  }
   const lastTime = prefix.length ? prefix.time(prefix.length - 1) : -Infinity
   if (b) builder.appendRange(b.storage, b.start + rest.lowerBound(lastTime, false), b.end)
-  return new FrozenView<T>(builder.build(), 0, builder.length, prefix.rowType || rest.rowType)
+  const built = builder.build()
+  return new FrozenView<T>(built, built.head, built.length, prefix.rowType || rest.rowType)
 }
 
 export type InstallMode = 'authoritative' | 'prefix' | 'overlay' | 'replaceRange'
@@ -527,7 +741,8 @@ export type InstallMode = 'authoritative' | 'prefix' | 'overlay' | 'replaceRange
  *   replaceRange: held rows before `range.from`, the incoming rows inside
  *            [from, through], then held rows after `range.through`. An empty
  *            incoming view still clears the held rows inside the range.
- * The result keeps at most `maxRows` newest rows.
+ * The result keeps at most `maxRows` newest rows. Whole chunks of the first
+ * part are shared with its source rather than copied.
  */
 export function installHistory<T extends { session_time: number }>(
   table: ColumnTable<T>,
@@ -543,21 +758,33 @@ export function installHistory<T extends { session_time: number }>(
   if (mode === 'replaceRange') {
     const from = range?.from ?? -Infinity
     const through = range?.through ?? Infinity
-    if (old) builder.appendRange(old.storage, old.start, old.start + held.lowerBound(from, true))
+    if (old) {
+      builder.alignTo(old.start)
+      builder.appendRange(old.storage, old.start, old.start + held.lowerBound(from, true))
+    } else if (inc) {
+      builder.alignTo(inc.start + incoming.lowerBound(from, true))
+    }
     if (inc) builder.appendRange(inc.storage, inc.start + incoming.lowerBound(from, true),
       inc.start + incoming.lowerBound(through, false))
     if (old) builder.appendRange(old.storage, old.start + held.lowerBound(through, false), old.end)
   } else if (mode === 'authoritative' || held.length === 0) {
-    if (inc) builder.appendRange(inc.storage, inc.start, inc.end)
+    if (inc) {
+      builder.alignTo(inc.start)
+      builder.appendRange(inc.storage, inc.start, inc.end)
+    }
     if (old && mode === 'authoritative' && incoming.length > 0) {
       const lastTime = incoming.time(incoming.length - 1)
       builder.appendRange(old.storage, old.start + held.lowerBound(lastTime, false), old.end)
     } else if (old && incoming.length === 0 && mode === 'authoritative') {
+      builder.alignTo(old.start)
       builder.appendRange(old.storage, old.start, old.end)
     }
   } else if (mode === 'prefix') {
     const firstHeld = held.time(0)
-    if (inc) builder.appendRange(inc.storage, inc.start, inc.start + incoming.lowerBound(firstHeld, true))
+    if (inc) {
+      builder.alignTo(inc.start)
+      builder.appendRange(inc.storage, inc.start, inc.start + incoming.lowerBound(firstHeld, true))
+    }
     if (old) builder.appendRange(old.storage, old.start, old.end)
   } else if (inc && old) {
     let i = 0, j = 0
@@ -568,11 +795,13 @@ export function installHistory<T extends { session_time: number }>(
         // Contiguous runs of held-only rows copy column-wise.
         let k = j + 1
         while (k < held.length && held.time(k) < ti) k++
+        if (builder.length === 0) builder.alignTo(old.start + j)
         builder.appendRange(old.storage, old.start + j, old.start + k)
         j = k
       } else if (ti < tj) {
         let k = i + 1
         while (k < incoming.length && incoming.time(k) < tj) k++
+        if (builder.length === 0) builder.alignTo(inc.start + i)
         builder.appendRange(inc.storage, inc.start + i, inc.start + k)
         i = k
       } else {
@@ -581,8 +810,9 @@ export function installHistory<T extends { session_time: number }>(
       }
     }
   }
-  const built = builder.build()
+  let built = builder.build()
   if (built.length - built.head > maxRows) built.head = built.length - maxRows
+  if (built.head >= CHUNK_ROWS) built = built.slice(built.head, built.length, true)
   table.replaceStorage(built)
 }
 
@@ -612,6 +842,12 @@ function v6FieldFamily(type: number, field: string): HistoryFamily | null {
 
 interface HistoryField { name: string; bool: boolean; values: Float64Array }
 interface HistoryBlock { type: number; time: Float64Array; fields: HistoryField[]; available: Float64Array | null }
+
+function nanArray(length: number): Float64Array {
+  const out = new Float64Array(length)
+  out.fill(NaN)
+  return out
+}
 
 export function isV6HistoryPayload(bytes: Uint8Array | null | undefined): boolean {
   if (!bytes || bytes.byteLength < 12) return false
@@ -708,11 +944,94 @@ export interface V6HistoryTables {
   typeCounts: Record<string, number>
 }
 
+/** A decoded payload as plain chunk arrays, which can cross to another thread. */
+export interface DecodedV6History {
+  mask: number
+  typeCounts: Record<string, number>
+  families: Array<{
+    family: HistoryFamily
+    rows: number
+    time: Array<NumChunk | undefined>
+    nums: Array<{ name: string; kind: NumericKind; chunks: Array<NumChunk | undefined> }>
+  }>
+}
+
+/**
+ * Decodes a payload to chunks, for a decoder on another thread. Every chunk is
+ * its own ArrayBuffer, so the result can be transferred without copying.
+ */
+export async function decodeV6HistoryChunks(bytes: Uint8Array): Promise<DecodedV6History> {
+  const decoded = await decodeV6HistoryInner(bytes, async () => {})
+  const families: DecodedV6History['families'] = []
+  for (const [family, table] of Object.entries(decoded.tables) as [HistoryFamily, ColumnTable][]) {
+    const s = table.storage
+    families.push({
+      family,
+      rows: s.length,
+      time: s.time.chunks,
+      nums: [...s.nums].map(([name, column]) => ({ name, kind: column.kind, chunks: column.chunks })),
+    })
+  }
+  return { mask: decoded.mask, typeCounts: decoded.typeCounts, families }
+}
+
+/** The ArrayBuffers of a decodeV6HistoryChunks result, to transfer it. */
+export function decodedV6HistoryBuffers(decoded: DecodedV6History): ArrayBuffer[] {
+  const buffers: ArrayBuffer[] = []
+  const add = (chunk: NumChunk | undefined) => { if (chunk) buffers.push(chunk.buffer as ArrayBuffer) }
+  for (const family of decoded.families) {
+    family.time.forEach(add)
+    for (const column of family.nums) column.chunks.forEach(add)
+  }
+  return buffers
+}
+
+function tablesOfDecoded(decoded: DecodedV6History): V6HistoryTables {
+  const tables: Partial<Record<HistoryFamily, ColumnTable>> = {}
+  for (const family of decoded.families) {
+    const storage = new Storage(family.rows)
+    storage.length = family.rows
+    storage.time.chunks = family.time
+    storage.time.owned = family.time.map(() => true)
+    for (const { name, kind, chunks } of family.nums) {
+      const column = storage.numColumn(name, kind)
+      column.chunks = chunks
+      column.owned = chunks.map(() => true)
+    }
+    tables[family.family] = new ColumnTable(family.family, storage)
+  }
+  return { mask: decoded.mask, tables, typeCounts: decoded.typeCounts }
+}
+
+/** Decodes payloads elsewhere (a worker); throws to fall back to this thread. */
+export type HistoryDecoder = (bytes: Uint8Array) => Promise<DecodedV6History>
+let historyDecoder: HistoryDecoder | null = null
+
+export function setHistoryDecoder(decoder: HistoryDecoder | null): void {
+  historyDecoder = decoder
+}
+
 /**
  * Decodes a V6H1 payload into one table per history family it covers. With
  * `pause`, the work is split into slices; null means the pause abandoned it.
+ * With a decoder installed, the work runs there and `pause` is asked once,
+ * when the result arrives.
  */
 export async function decodeV6History(bytes: Uint8Array, pause?: DecodePause): Promise<V6HistoryTables | null> {
+  if (historyDecoder) {
+    let decoded: DecodedV6History | null = null
+    try {
+      decoded = await historyDecoder(bytes)
+    } catch (error) {
+      // A decoder failure (or a bad payload) falls back to the in-thread
+      // decode below, which reports a bad payload the way it always did.
+      console.warn('[history-decode] worker decode failed; decoding in-thread:', error)
+    }
+    if (decoded) {
+      if (pause && !(await pause())) return null
+      return tablesOfDecoded(decoded)
+    }
+  }
   try {
     return await decodeV6HistoryInner(bytes, pacer(pause))
   } catch (error) {
@@ -739,8 +1058,8 @@ async function decodeV6HistoryInner(bytes: Uint8Array, step: (work: number) => P
     let times: Float64Array = new Float64Array(0)
     for (const track of tracks) times = mergeSortedUnique(times, track.block.time)
     const rows = times.length
-    const storage = new Storage(Math.max(16, rows))
-    storage.time.set(times)
+    const storage = new Storage(rows)
+    for (let r = 0; r < rows; r++) storage.time.set(r, times[r], rows)
     storage.length = rows
     const fieldNames: string[] = []
     const fieldIndex = new Map<string, number>()
@@ -779,7 +1098,11 @@ async function decodeV6HistoryInner(bytes: Uint8Array, step: (work: number) => P
         }
         cursors[k] = p
       }
-      for (let c = 0; c < columns.length; c++) columns[c][r] = state[c]
+      // Absent values stay unwritten: a column only gets the chunks it uses.
+      for (let c = 0; c < columns.length; c++) {
+        const value = state[c]
+        if (value === value) columns[c].set(r, value, rows)
+      }
       if ((r & 4095) === 4095) await step(4096 * (columns.length + tracks.length))
     }
     tables[family] = new ColumnTable(family, storage)

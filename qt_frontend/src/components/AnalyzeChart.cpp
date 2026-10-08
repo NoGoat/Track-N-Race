@@ -190,7 +190,7 @@ void AnalyzeChart::fitYAxes(){
     // Formula (8 MJ in 2026), fuel the session's fuel load + 1 kg.
     const double harvestUpper=tnr::Labels::instance().format()>=2026?8000.0:4000.0;
     double fuelUpper=model_?double(model_->data().fuelUpperLimit):-1.0;
-    if(!(fuelUpper>0)){const double first=model_&&!model_->data().stsBuf.isEmpty()?double(model_->data().stsBuf.first().fuel_kg):0.0;fuelUpper=qMax(1.0,(std::isfinite(first)?first:0.0)+1.0);}
+    if(!(fuelUpper>0)){const double first=model_&&!model_->data().sts().isEmpty()?double(model_->data().sts().first().fuel_kg):0.0;fuelUpper=qMax(1.0,(std::isfinite(first)?first:0.0)+1.0);}
     // Electron TimeChartView's y-range policies. Dynamic (Settings ▸ Y Axis ▸
     // Analysis) is its 'auto' range; Fixed is the scale's 'fixed' or 'expand' range.
     auto fit=[&](int axis,const QVector<int>&ids,const QString&scaleKey){

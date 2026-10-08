@@ -898,12 +898,12 @@ void OverviewPage::refreshTelemetryTable() {
         model_->chartPrimaryLap(endTime),
         model_->chartReferenceLap(window, selectedLap, endTime));
     telemetryTable_->setDistanceMode(domain.distance);
-    const QVector<TelSample>& telemetry = domain.distance && domain.primary
-        ? domain.primary->tel : d.telBuf;
-    const QVector<StsSample>& status = domain.distance && domain.primary
-        ? domain.primary->sts : d.stsBuf;
+    const SampleRange<TelSample> telemetry = domain.distance && domain.primary
+        ? SampleRange<TelSample>(domain.primary->tel) : d.tel();
+    const SampleRange<StsSample> status = domain.distance && domain.primary
+        ? SampleRange<StsSample>(domain.primary->sts) : d.sts();
 
-    // ERS lives in stsBuf, sampled independently of telBuf — match each telemetry
+    // ERS lives in the status history, sampled independently of telemetry — match each telemetry
     // sample to the most recent status sample at or before it.
     auto ersAt = [&](float t) -> float {
         if (status.isEmpty()) return std::numeric_limits<float>::quiet_NaN();

@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QFontMetricsF>
 #include <QFrame>
+#include <QJsonArray>
 #include <QLocale>
 #include <QMatrix4x4>
 #include <QMouseEvent>
@@ -83,9 +84,17 @@ protected:
     }
 };
 
-// Keep CPU keys in double precision for binary search and midpoint selection.
-// GPU coordinates are relative to a retained per-series origin.
-struct Point { double x; float y; };
+// A sample's key is stored as a float offset from a double origin (Series::key):
+// offsets up to ~10,000 s or metres keep about a millisecond or millimetre of
+// precision, well inside the sample spacing. GPU coordinates are relative to a
+// per-upload origin.
+//
+// Keys live in a KeyColumn that series with identical keys share (Speed and
+// RPM, the four tyre corners, ...), so each of them stores 4 bytes a sample
+// for its values and the keys are stored once. A series holds keys
+// [0, ys.size()) of its column; a sharer that appended ahead may have added
+// more. A series that must change its keys takes a private copy first.
+struct KeyColumn { double origin = 0; std::vector<float> dx; };
 struct GpuPoint { float x, y; };
 struct Segment { GpuPoint a, b; };
 static_assert(sizeof(Segment) == sizeof(float) * 4);
@@ -115,12 +124,34 @@ struct Series {
     ChartView::SeriesSpec spec;
     int panel = 0, linked = -1;
     bool visible = true;
-    std::vector<Point> data;
+    std::shared_ptr<KeyColumn> keys = std::make_shared<KeyColumn>();
+    std::vector<float> ys;
     qsizetype first = 0, dirty = 0, fitDirty = 0;
     quint64 revision = 1;
     QRect legendHit;
-    qsizetype size() const { return qsizetype(data.size()) - first; }
+    qsizetype count() const { return qsizetype(ys.size()); }
+    qsizetype size() const { return count() - first; }
     bool empty() const { return size() <= 0; }
+    double key(qsizetype i) const { return keys->origin + double(keys->dx[size_t(i)]); }
+    double firstKey() const { return key(first); }
+    double lastKey() const { return key(count() - 1); }
+    float offset(double x) const { return float(x - keys->origin); }
+    bool sharesKeys() const { return keys.use_count() > 1; }
+    // Before changing its keys: a private copy of the ones this series holds.
+    void ownKeys() {
+        if (!sharesKeys()) return;
+        auto own = std::make_shared<KeyColumn>();
+        own->origin = keys->origin;
+        own->dx.assign(keys->dx.begin(), keys->dx.begin() + qsizetype(ys.size()));
+        keys = std::move(own);
+    }
+    // Empty, with a fresh unshared column.
+    void reset() {
+        std::vector<float>().swap(ys);
+        if (sharesKeys()) keys = std::make_shared<KeyColumn>();
+        else std::vector<float>().swap(keys->dx);
+        first = dirty = fitDirty = 0; ++revision;
+    }
 };
 
 struct Band { ChartView::BandSpec spec; int panel = 0; };
@@ -151,24 +182,38 @@ struct Panel {
 };
 
 qsizetype lowerBound(const Series& s, double x) {
-    auto begin = s.data.begin() + s.first;
-    auto it = std::lower_bound(begin, s.data.end(), x,
-        [](const Point& p, double key) { return p.x < key; });
-    return qsizetype(std::distance(s.data.begin(), it));
+    const auto begin = s.keys->dx.begin();
+    auto it = std::lower_bound(begin + s.first, begin + s.count(), x,
+        [&s](float dx, double key) { return s.keys->origin + double(dx) < key; });
+    return qsizetype(std::distance(begin, it));
 }
 
 qsizetype nearest(const Series& s, double x) {
     if (s.empty()) return -1;
     qsizetype i = lowerBound(s, x);
-    if (i >= qsizetype(s.data.size())) return qsizetype(s.data.size()) - 1;
-    if (i > s.first && x - s.data[size_t(i - 1)].x <= s.data[size_t(i)].x - x) --i;
+    if (i >= s.count()) return s.count() - 1;
+    if (i > s.first && x - s.key(i - 1) <= s.key(i) - x) --i;
     return i;
 }
 
-void compact(Series& s) {
-    if (s.first < kCompactAt || s.first * 2 < qsizetype(s.data.size())) return;
-    s.data.erase(s.data.begin(), s.data.begin() + s.first);
-    s.first = s.dirty = s.fitDirty = 0; ++s.revision;
+// Drops the trimmed front once it is large. A shared key column moves only as
+// far as every series on it has trimmed, and all of them move together.
+void compact(QVector<Series>& all, Series& s) {
+    if (s.first < kCompactAt || s.first * 2 < s.count()) return;
+    qsizetype cut = s.first;
+    if (s.sharesKeys()) {
+        for (const Series& other : all)
+            if (other.keys == s.keys) cut = qMin(cut, other.first);
+        if (cut < kCompactAt) return;
+    }
+    auto& dx = s.keys->dx;
+    dx.erase(dx.begin(), dx.begin() + cut);
+    for (Series& other : all) {
+        if (other.keys != s.keys) continue;
+        other.ys.erase(other.ys.begin(), other.ys.begin() + cut);
+        other.first -= cut;
+        other.dirty = other.fitDirty = 0; ++other.revision;
+    }
 }
 
 double interpolate(const QVector<double>& a, const QVector<double>& b, double x) {
@@ -410,39 +455,74 @@ public:
         : QRhiWidget(parent), axes(a), series(s), bands(b), panels(p), drawOrder(order),
           references(refs), sharedCursor(shared) {
         setApi(tnr::graphics::activeApi());
-        setSampleCount(msaaSamples());
+        // The canvas owns its render target (see makeTarget): QRhiWidget only
+        // provides the single-sample texture it composites. Charts never
+        // depth-test, so the automatic target's depth-stencil buffer would be
+        // waste, and owning the multisample buffer lets a hidden chart free it.
+        setAutoRenderTarget(false);
         setMouseTracking(true);
     }
-    void applySettings() { if (sampleCount() != msaaSamples()) setSampleCount(msaaSamples()); update(); }
+    void applySettings() {
+        if (requestedSamples != msaaSamples()) {
+            requestedSamples = msaaSamples();
+            releaseTarget();
+            linePipe.reset(); nativePipe.reset(); fillPipe.reset(); targetPass.reset();
+        }
+        update();
+    }
 
-    // Memory-log accounting: allocated GPU buffer sizes plus the CPU-side
-    // staging/run caches that persist between uploads.
-    void addRetention(quint64& gpuBuffers, quint64& gpuBytes, quint64& cpuBytes) const {
+    // Memory-log accounting: allocated GPU buffer sizes, the CPU-side
+    // staging/run caches that persist between uploads, and the render target
+    // (QRhiWidget's texture plus the multisample buffer, at 4 bytes per pixel
+    // per sample).
+    struct Retention {
+        quint64 gpuBuffers = 0, gpuBytes = 0, stagingBytes = 0, cacheBytes = 0, targetBytes = 0;
+        QSize targetSize; int samples = 1;
+    };
+    void addRetention(Retention& r) const {
         auto addBuffer = [&](const std::unique_ptr<QRhiBuffer>& buffer) {
             if (!buffer) return;
-            ++gpuBuffers; gpuBytes += buffer->size();
+            ++r.gpuBuffers; r.gpuBytes += buffer->size();
         };
         for (const auto* list : {&gpu, &gpuBands}) {
-            cpuBytes += quint64(list->capacity()) * sizeof(Gpu);
+            r.cacheBytes += quint64(list->capacity()) * sizeof(Gpu);
             for (const Gpu& g : *list) {
                 addBuffer(g.line); addBuffer(g.fill); addBuffer(g.lineUbo); addBuffer(g.fillUbo);
-                cpuBytes += quint64(g.runs.capacity()) * sizeof(g.runs[0]) +
-                    quint64(g.lineStaging.capacity()) + quint64(g.fillStaging.capacity());
+                r.cacheBytes += quint64(g.runs.capacity()) * sizeof(g.runs[0]);
+                r.stagingBytes += quint64(g.lineStaging.capacity()) + quint64(g.fillStaging.capacity());
             }
         }
         addBuffer(templateUbo);
-        cpuBytes += quint64(chromeSlots.capacity()) * sizeof(ChromeSlot);
+        r.cacheBytes += quint64(chromeSlots.capacity()) * sizeof(ChromeSlot);
         for (const ChromeSlot& slot : chromeSlots) { addBuffer(slot.vertices); addBuffer(slot.ubo); }
+        r.samples = msaa ? msaa->sampleCount() : 1;
+        auto pixels = [](QSize s) { return quint64(qMax(0, s.width())) * quint64(qMax(0, s.height())); };
+        if (const QRhiTexture* t = colorTexture()) { r.targetSize = t->pixelSize(); r.targetBytes += pixels(t->pixelSize()) * 4; }
+        if (msaa) r.targetBytes += pixels(msaa->pixelSize()) * 4 * quint64(msaa->sampleCount());
     }
+    QRhi* rhiDevice() const { return device; }
+
 
 protected:
+    // Called whenever QRhiWidget (re)creates its texture: first show and resize.
     void initialize(QRhiCommandBuffer*) override {
         if (device != rhi()) { releaseResources(); device = rhi(); }
-        makePipelines();
+        releaseTarget();   // the colour texture was recreated
+    }
+
+    // A hidden chart keeps only QRhiWidget's single-sample texture and its
+    // CPU series. The multisample buffer (most of the target's memory) and
+    // the vertex buffers are rebuilt from those when it is shown again.
+    void hideEvent(QHideEvent* e) override {
+        releaseTarget();
+        gpu.clear(); gpuBands.clear(); chromeSlots.clear();
+        QRhiWidget::hideEvent(e);
     }
 
     void render(QRhiCommandBuffer* cb) override {
-        if (!device || !renderTarget() || !linePipe || !nativePipe || !fillPipe) return;
+        if (device && !target) makeTarget();
+        if (device && target && !linePipe) makePipelines();
+        if (!device || !target || !linePipe || !nativePipe || !fillPipe) return;
         if (gpu.size() < size_t(series->size())) gpu.resize(size_t(series->size()));
         if (gpuBands.size() < size_t(bands->size())) gpuBands.resize(size_t(bands->size()));
         QRhiResourceUpdateBatch* up = device->nextResourceUpdateBatch();
@@ -461,7 +541,7 @@ protected:
             if (!g.uploaded) {
                 GpuPoint v[] = {{0, float(b.spec.min)}, {1, float(b.spec.min)},
                                 {0, float(b.spec.max)}, {1, float(b.spec.max)}};
-                up->updateDynamicBuffer(g.line.get(), 0, sizeof(v), v); g.uploaded = 1;
+                up->uploadStaticBuffer(g.line.get(), 0, sizeof(v), v); g.uploaded = 1;
             }
             const Uniform u = uniform(0, b.spec.axisId, b.spec.color, 0, true);
             up->updateDynamicBuffer(g.lineUbo.get(), 0, sizeof(u), &u);
@@ -477,11 +557,11 @@ protected:
             if (lineType(s) == ChartView::LineType::RoundPoint) continue;
             const Axis& x = (*axes)[s.spec.xAxisId];
             const double pad = s.spec.width * .5 * (x.hi - x.lo) / (*panels)[s.panel].plot.width();
-            if (s.data.back().x < x.lo - pad || s.data[size_t(s.first)].x > x.hi + pad) continue;
+            if (s.lastKey() < x.lo - pad || s.firstKey() > x.hi + pad) continue;
             upload(id, up);
             Gpu& g = gpu[size_t(id)];
             qsizetype begin = lowerBound(s, x.lo - pad); if (begin > s.first) --begin;
-            qsizetype end = lowerBound(s, x.hi + pad); if (end < qsizetype(s.data.size())) ++end;
+            qsizetype end = lowerBound(s, x.hi + pad); if (end < s.count()) ++end;
             if (end <= begin) continue;
             const auto type = lineType(s);
             const bool native = type == ChartView::LineType::NativeLine;
@@ -518,13 +598,13 @@ protected:
                         quint32(native ? last - first : intervals * segments), s.panel, !native});
             }
         }
-        const QSize target = renderTarget()->pixelSize();
+        const QSize targetSize = target->pixelSize();
         // Chart chrome on the GPU (Electron's axis-plugin grid, borders,
         // reference lines, crosshairs and nearest-point markers). Geometry is
         // in logical pixels; hairlines snap to device-pixel centres and stay
         // one physical pixel wide, like the cosmetic pens they replace.
         const double dpr = devicePixelRatioF();
-        const QSizeF logical(target.width() / dpr, target.height() / dpr);
+        const QSizeF logical(targetSize.width() / dpr, targetSize.height() / dpr);
         const float hair = float(.5 / dpr);
         auto snap = [dpr](double v) { return (std::floor(v * dpr) + .5) / dpr; };
         const QColor gridColor = chartGridColor(), borderColor = chartBorderColor(palette());
@@ -587,11 +667,11 @@ protected:
                 color.setAlphaF(color.alphaF() * s.spec.opacity);
                 const int discs = batch(over, color, 0, plot, true);
                 const double radius = s.spec.width * .5;
-                for (qsizetype i = s.first; i < qsizetype(s.data.size()); ++i) {
-                    const Point& point = s.data[size_t(i)];
-                    if (!std::isfinite(point.y)) continue;
-                    const double px = plot.left() + (point.x - ax.lo) / (ax.hi - ax.lo) * plot.width();
-                    const double py = plot.top() + (ay.hi - point.y) / (ay.hi - ay.lo) * plot.height();
+                for (qsizetype i = s.first; i < s.count(); ++i) {
+                    const float pointY = s.ys[size_t(i)];
+                    if (!std::isfinite(pointY)) continue;
+                    const double px = plot.left() + (s.key(i) - ax.lo) / (ax.hi - ax.lo) * plot.width();
+                    const double py = plot.top() + (ay.hi - pointY) / (ay.hi - ay.lo) * plot.height();
                     if (!std::isfinite(px) || !std::isfinite(py) ||
                         px < plot.left() - radius || px > plot.left() + plot.width() + radius ||
                         py < plot.top() - radius || py > plot.top() + plot.height() + radius) continue;
@@ -656,19 +736,19 @@ protected:
                     const Axis& ay = (*axes)[s.spec.yAxisId];
                     if (ax.hi <= ax.lo || ay.hi <= ay.lo) continue;
                     if (s.spec.hoverSnap == ChartView::HoverSnap::None) continue;
-                    if (p.dotsStrict && p.dotX < s.data[size_t(s.first)].x - 1e-6) continue;
+                    if (p.dotsStrict && p.dotX < s.firstKey() - 1e-6) continue;
                     qsizetype at = -1;
                     if (s.spec.hoverSnap == ChartView::HoverSnap::Next) {
                         at = lowerBound(s, p.dotX);
-                        if (at >= qsizetype(s.data.size())) continue;
+                        if (at >= s.count()) continue;
                     } else {
                         at = nearest(s, p.dotX);
                     }
                     if (at < 0) continue;
-                    const Point& point = s.data[size_t(at)];
-                    if (!std::isfinite(point.y)) continue;
-                    const double px = plot.left() + (point.x - ax.lo) / (ax.hi - ax.lo) * plot.width();
-                    const double py = plot.top() + (ay.hi - point.y) / (ay.hi - ay.lo) * plot.height();
+                    const float pointY = s.ys[size_t(at)];
+                    if (!std::isfinite(pointY)) continue;
+                    const double px = plot.left() + (s.key(at) - ax.lo) / (ax.hi - ax.lo) * plot.width();
+                    const double py = plot.top() + (ay.hi - pointY) / (ay.hi - ay.lo) * plot.height();
                     if (!std::isfinite(px) || !std::isfinite(py) ||
                         px < plot.left() - .5 || px > plot.left() + plot.width() + .5 ||
                         py < plot.top() - .5 || py > plot.top() + plot.height() + .5) continue;
@@ -716,21 +796,21 @@ protected:
         }
         const QVector<ChromeDraw> underDraws = uploadChrome(under, 0, logical, up);
         const QVector<ChromeDraw> overDraws = uploadChrome(over, under.size(), logical, up);
-        cb->beginPass(renderTarget(), palette().color(QPalette::Window), {1, 0}, up);
+        cb->beginPass(target.get(), palette().color(QPalette::Window), {1, 0}, up);
         const double ratio = devicePixelRatioF();
         auto viewport = [&](int id) {
             const QRect r = (*panels)[id].plot;
             const double left = r.x() * ratio, right = (r.x() + r.width()) * ratio;
             const double top = r.y() * ratio, bottom = (r.y() + r.height()) * ratio;
             // QRhi viewport/scissor coordinates are bottom-left based on every API.
-            const double y = target.height() - bottom;
+            const double y = targetSize.height() - bottom;
             // Viewports accept fractions. Only scissors require integer pixels;
             // round those outwards to avoid shaving off fractional edge coverage.
             cb->setViewport(QRhiViewport(float(left), float(y), float(right - left), float(bottom - top)));
-            const int x0 = qBound(0, int(std::floor(left)), target.width());
-            const int x1 = qBound(x0, int(std::ceil(right)), target.width());
-            const int y0 = qBound(0, int(std::floor(y)), target.height());
-            const int y1 = qBound(y0, int(std::ceil(target.height() - top)), target.height());
+            const int x0 = qBound(0, int(std::floor(left)), targetSize.width());
+            const int x1 = qBound(x0, int(std::ceil(right)), targetSize.width());
+            const int y0 = qBound(0, int(std::floor(y)), targetSize.height());
+            const int y1 = qBound(y0, int(std::ceil(targetSize.height() - top)), targetSize.height());
             cb->setScissor(QRhiScissor(x0, y0, x1 - x0, y1 - y0));
         };
         auto draw = [&](const QVector<Draw>& list, bool fill) {
@@ -751,13 +831,13 @@ protected:
             for (const ChromeDraw& d : list) {
                 auto* pipe = d.strip ? fillPipe.get() : linePipe.get();
                 if (pipe != active) { cb->setGraphicsPipeline(pipe); active = pipe; }
-                cb->setViewport(QRhiViewport(0, 0, float(target.width()), float(target.height())));
+                cb->setViewport(QRhiViewport(0, 0, float(targetSize.width()), float(targetSize.height())));
                 const double left = d.clip.left() * ratio, right = (d.clip.left() + d.clip.width()) * ratio;
                 const double top = d.clip.top() * ratio, bottom = (d.clip.top() + d.clip.height()) * ratio;
-                const int x0 = qBound(0, int(std::floor(left)), target.width());
-                const int x1 = qBound(x0, int(std::ceil(right)), target.width());
-                const int y0 = qBound(0, int(std::floor(target.height() - bottom)), target.height());
-                const int y1 = qBound(y0, int(std::ceil(target.height() - top)), target.height());
+                const int x0 = qBound(0, int(std::floor(left)), targetSize.width());
+                const int x1 = qBound(x0, int(std::ceil(right)), targetSize.width());
+                const int y0 = qBound(0, int(std::floor(targetSize.height() - bottom)), targetSize.height());
+                const int y1 = qBound(y0, int(std::ceil(targetSize.height() - top)), targetSize.height());
                 cb->setScissor(QRhiScissor(x0, y0, x1 - x0, y1 - y0));
                 cb->setShaderResources(d.srb);
                 QRhiCommandBuffer::VertexInput input(d.vb, 0);
@@ -774,10 +854,52 @@ protected:
 
     void releaseResources() override {
         linePipe.reset(); nativePipe.reset(); fillPipe.reset(); templateSrb.reset(); templateUbo.reset();
+        releaseTarget(); targetPass.reset();
         gpu.clear(); gpuBands.clear(); chromeSlots.clear(); device = nullptr;
     }
 
 private:
+    void releaseTarget() { target.reset(); msaa.reset(); }
+
+    // Colour-only render target: a multisample buffer resolving into
+    // QRhiWidget's texture, or the texture itself without MSAA. Pipelines
+    // survive while the new target's render pass stays compatible.
+    void makeTarget() {
+        releaseTarget();
+        QRhiTexture* texture = colorTexture();
+        if (!device || !texture) {
+            qWarning("[charts] No colour texture for the chart render target");
+            return;
+        }
+        int samples = 1;
+        for (int supported : device->supportedSampleCounts())
+            if (supported <= requestedSamples) samples = qMax(samples, supported);
+        QRhiColorAttachment color(texture);
+        if (samples > 1) {
+            msaa.reset(device->newRenderBuffer(QRhiRenderBuffer::Color, texture->pixelSize(), samples,
+                                               {}, texture->format()));
+            if (!msaa->create()) {
+                qWarning("[charts] Creating the chart multisample buffer failed");
+                msaa.reset(); samples = 1;
+            } else {
+                color = QRhiColorAttachment(msaa.get());
+                color.setResolveTexture(texture);
+            }
+        }
+        target.reset(device->newTextureRenderTarget(QRhiTextureRenderTargetDescription(color)));
+        std::unique_ptr<QRhiRenderPassDescriptor> pass(target->newCompatibleRenderPassDescriptor());
+        if (!targetPass || !linePipe || pipelineSamples != samples || !pass->isCompatible(targetPass.get())) {
+            linePipe.reset(); nativePipe.reset(); fillPipe.reset();
+            targetPass = std::move(pass);
+            pipelineSamples = samples;
+        }
+        target->setRenderPassDescriptor(targetPass.get());
+        if (!target->create()) {
+            qWarning("[charts] Creating the chart render target failed");
+            releaseTarget();
+        }
+    }
+
     struct Gpu {
         std::unique_ptr<QRhiBuffer> line, fill, lineUbo, fillUbo;
         std::unique_ptr<QRhiShaderResourceBindings> lineSrb, fillSrb;
@@ -850,14 +972,14 @@ private:
     }
 
     void makePipelines() {
-        if (!device || !renderTarget()) return;
+        if (!device || !target) return;
         if (!templateSrb) templateSrb = makeSrb(templateUbo);
         const QShader vs = shader(":/shaders/chart.vert.qsb"), stroke = shader(":/shaders/chartline.vert.qsb"),
                       fs = shader(":/shaders/chart.frag.qsb");
         if (!vs.isValid() || !stroke.isValid() || !fs.isValid()) { qCritical("[charts] QRhi shaders are missing"); return; }
         auto make = [&](QRhiGraphicsPipeline::Topology topology, bool instanced) {
             std::unique_ptr<QRhiGraphicsPipeline> p(device->newGraphicsPipeline());
-            p->setTopology(topology); p->setSampleCount(sampleCount());
+            p->setTopology(topology); p->setSampleCount(pipelineSamples);
             p->setFlags(QRhiGraphicsPipeline::UsesScissor);
             QRhiGraphicsPipeline::TargetBlend blend; blend.enable = true;
             blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
@@ -873,8 +995,10 @@ private:
                 layout.setAttributes({{0, 0, QRhiVertexInputAttribute::Float2, 0}});
             }
             p->setVertexInputLayout(layout); p->setShaderResourceBindings(templateSrb.get());
-            p->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-            return p->create() ? std::move(p) : std::unique_ptr<QRhiGraphicsPipeline>();
+            p->setRenderPassDescriptor(targetPass.get());
+            if (p->create()) return p;
+            qWarning("[charts] Creating a chart pipeline failed");
+            return std::unique_ptr<QRhiGraphicsPipeline>();
         };
         linePipe = make(QRhiGraphicsPipeline::Triangles, true);
         nativePipe = make(QRhiGraphicsPipeline::LineStrip, false);
@@ -883,17 +1007,22 @@ private:
 
     static qsizetype capacity(qsizetype needed) { qsizetype n = 1024; while (n < needed) n *= 2; return n; }
 
+    // Series vertices are Static: written once, then only appended to. With
+    // Dynamic buffers Qt's D3D11 backend keeps a full CPU copy of each buffer
+    // and re-uploads all of it on every change, and the driver keeps more
+    // copies: end-of-race All Laps playback measured 1,002 MB with Dynamic and
+    // 698 MB with Static on the Input page.
     void ensureGpu(Gpu& g, qsizetype vertices, qsizetype fillVertices, bool instanced) {
         if (!g.line || g.cap < vertices || g.instanced != instanced) {
             g.cap = capacity(qMax<qsizetype>(1, vertices)); g.instanced = instanced;
-            g.line.reset(device->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer,
+            g.line.reset(device->newBuffer(QRhiBuffer::Static, QRhiBuffer::VertexBuffer,
                 int(g.cap * (instanced ? sizeof(Segment) : sizeof(GpuPoint)))));
             g.line->create(); g.uploaded = 0;
         }
         if (!g.lineSrb) g.lineSrb = makeSrb(g.lineUbo);
         if (fillVertices && (!g.fill || g.fillCap < fillVertices)) {
             g.fillCap = capacity(fillVertices);
-            g.fill.reset(device->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, int(g.fillCap * sizeof(GpuPoint))));
+            g.fill.reset(device->newBuffer(QRhiBuffer::Static, QRhiBuffer::VertexBuffer, int(g.fillCap * sizeof(GpuPoint))));
             g.fill->create(); g.uploaded = 0;
         }
         if (fillVertices && !g.fillSrb) g.fillSrb = makeSrb(g.fillUbo);
@@ -901,7 +1030,7 @@ private:
 
     void upload(int id, QRhiResourceUpdateBatch* up) {
         Series& s = (*series)[id]; Gpu& g = gpu[size_t(id)];
-        const qsizetype count = qsizetype(s.data.size());
+        const qsizetype count = s.count();
         const auto type = lineType(s);
         const bool native = type == ChartView::LineType::NativeLine;
         const bool points = type == ChartView::LineType::NativePoint;
@@ -910,11 +1039,11 @@ private:
         ensureGpu(g, native || points ? count : pathCount - 1, s.spec.fill ? pathCount * 2 : 0, !native);
         if (g.uploaded == s.revision) return;
         qsizetype dirty = g.uploaded ? qBound<qsizetype>(0, s.dirty, count) : 0;
-        if (!dirty) g.origin = s.data.front().x;
+        if (!dirty) g.origin = s.key(0);
         // Append/replace repairs the previous interval too, including its step corners.
         const qsizetype start = dirty ? dirty - 1 : 0;
         g.lineStaging.resize(0); g.fillStaging.resize(0);
-        auto point = [&](qsizetype i) { const auto& p = s.data[size_t(i)]; return GpuPoint{float(p.x - g.origin), p.y}; };
+        auto point = [&](qsizetype i) { return GpuPoint{float(s.key(i) - g.origin), s.ys[size_t(i)]}; };
         auto appendFill = [&](GpuPoint p) {
             GpuPoint baseline{p.x, float(s.spec.fillBaseline)};
             g.fillStaging.append(reinterpret_cast<const char*>(&baseline), sizeof(baseline));
@@ -934,8 +1063,8 @@ private:
             GpuPoint path[4] = {a, b, b, b};
             if (segments > 1) {
                 // Calculate the transition before conversion to GPU float.
-                const double transition = s.data[size_t(i)].x +
-                    (s.data[size_t(i + 1)].x - s.data[size_t(i)].x) * s.spec.stepLocation - g.origin;
+                const double transition = s.key(i) +
+                    (s.key(i + 1) - s.key(i)) * s.spec.stepLocation - g.origin;
                 const float x = float(transition);
                 path[1] = {x, segments == 2 && s.spec.stepLocation == 0 ? b.y : a.y};
                 path[2] = segments == 3 ? GpuPoint{x, b.y} : b;
@@ -946,16 +1075,22 @@ private:
             }
         }
         const qsizetype lineStart = start * (native || points ? 1 : segments);
-        if (!g.lineStaging.isEmpty()) up->updateDynamicBuffer(g.line.get(), quint32(lineStart * (native ? sizeof(GpuPoint) : sizeof(Segment))), g.lineStaging);
-        if (!g.fillStaging.isEmpty()) up->updateDynamicBuffer(g.fill.get(), quint32(start * segments * 2 * sizeof(GpuPoint)), g.fillStaging);
+        if (!g.lineStaging.isEmpty()) up->uploadStaticBuffer(g.line.get(), quint32(lineStart * (native ? sizeof(GpuPoint) : sizeof(Segment))), g.lineStaging);
+        if (!g.fillStaging.isEmpty()) up->uploadStaticBuffer(g.fill.get(), quint32(start * segments * 2 * sizeof(GpuPoint)), g.fillStaging);
+        // The update batch holds its own reference to the bytes. Appends are a
+        // few points, so only a full rebuild leaves a large staging buffer:
+        // drop it rather than keep a CPU copy of the whole series.
+        constexpr qsizetype kKeepStaging = 64 * 1024;
+        if (g.lineStaging.capacity() > kKeepStaging) g.lineStaging = QByteArray();
+        if (g.fillStaging.capacity() > kKeepStaging) g.fillStaging = QByteArray();
         // Preserve runs before the changed suffix and repair the crossing run.
         qsizetype scan = start;
         while (!g.runs.empty() && g.runs.back().first >= start) g.runs.pop_back();
         if (!g.runs.empty() && g.runs.back().second > start) g.runs.back().second = start;
         for (; scan < count;) {
-            while (scan < count && !std::isfinite(s.data[size_t(scan)].y)) ++scan;
+            while (scan < count && !std::isfinite(s.ys[size_t(scan)])) ++scan;
             const qsizetype first = scan;
-            while (scan < count && std::isfinite(s.data[size_t(scan)].y)) ++scan;
+            while (scan < count && std::isfinite(s.ys[size_t(scan)])) ++scan;
             if (scan > first) {
                 if (!g.runs.empty() && g.runs.back().second == first) g.runs.back().second = scan;
                 else g.runs.emplace_back(first, scan);
@@ -985,6 +1120,13 @@ private:
     std::vector<Gpu> gpu, gpuBands;
     std::unique_ptr<QRhiBuffer> templateUbo;
     std::unique_ptr<QRhiShaderResourceBindings> templateSrb;
+    // Declared before the pipelines, which are built against targetPass, so
+    // the pipelines are destroyed first.
+    std::unique_ptr<QRhiRenderBuffer> msaa;
+    std::unique_ptr<QRhiTextureRenderTarget> target;
+    std::unique_ptr<QRhiRenderPassDescriptor> targetPass;
+    int requestedSamples = msaaSamples();
+    int pipelineSamples = 1;
     std::unique_ptr<QRhiGraphicsPipeline> linePipe, nativePipe, fillPipe;
 };
 
@@ -1535,6 +1677,7 @@ struct ChartView::Impl {
     QTimer* hoverTimer = nullptr;
     QPoint hoverPosition;
     bool hoverActive = false;
+    bool releaseSeriesWhenHidden = false;
 
     QVector<QVector<int>> layoutRows() const {
         if (explicitRows) return rows;
@@ -1699,23 +1842,71 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent), d_(std::make_unique<Imp
 ChartView::~ChartView() { liveCharts().removeAll(this); delete d_->tooltip.data(); }
 void ChartView::suspendOpenGlForStyleChange() {}
 QJsonObject ChartView::retentionDiagnostics() {
-    quint64 charts = 0, buffers = 0, rows = 0, cpuBytes = 0, gpuBuffers = 0, gpuBytes = 0;
+    quint64 charts = 0, visibleCharts = 0, buffers = 0, rows = 0, cpuBytes = 0, gpuBuffers = 0, gpuBytes = 0;
+    quint64 seriesBytes = 0, stagingBytes = 0, targetBytes = 0;
+    QJsonArray perChart;
+    QRhi* rhi = nullptr;
     for (const ChartView* view : liveCharts()) {
         ++charts;
+        quint64 viewRows = 0, viewSeriesBytes = 0;
         for (const Series& s : view->d_->series) {
             ++buffers;
-            rows += quint64(qMax<qsizetype>(0, s.size()));
-            cpuBytes += quint64(s.data.capacity()) * sizeof(Point);
+            viewRows += quint64(qMax<qsizetype>(0, s.size()));
+            viewSeriesBytes += quint64(s.ys.capacity()) * sizeof(float) +
+                quint64(s.keys->dx.capacity()) * sizeof(float) / quint64(qMax<long>(1, s.keys.use_count()));
         }
-        view->d_->canvas->addRetention(gpuBuffers, gpuBytes, cpuBytes);
+        RhiCanvas::Retention r;
+        view->d_->canvas->addRetention(r);
+        if (!rhi) rhi = view->d_->canvas->rhiDevice();
+        const bool visible = view->isVisible();
+        if (visible) ++visibleCharts;
+        rows += viewRows; seriesBytes += viewSeriesBytes; stagingBytes += r.stagingBytes;
+        cpuBytes += viewSeriesBytes + r.stagingBytes + r.cacheBytes;
+        gpuBuffers += r.gpuBuffers; gpuBytes += r.gpuBytes; targetBytes += r.targetBytes;
+        // Owner chain names the page and section without each chart naming itself.
+        QStringList owners;
+        for (const QObject* o = view; o && owners.size() < 3; o = o->parent()) {
+            const QString cls = QString::fromLatin1(o->metaObject()->className());
+            if (cls.startsWith(QLatin1Char('Q')) && o != view) continue;
+            owners << (o->objectName().isEmpty() ? cls : cls + QLatin1Char('#') + o->objectName());
+        }
+        QJsonObject chart;
+        chart["owner"] = owners.join(QStringLiteral(" < "));
+        chart["visible"] = visible;
+        chart["series"] = double(view->d_->series.size());
+        chart["rows"] = double(viewRows);
+        chart["series_bytes"] = double(viewSeriesBytes);
+        chart["staging_bytes"] = double(r.stagingBytes);
+        chart["gpu_buffer_bytes"] = double(r.gpuBytes);
+        chart["render_target_bytes"] = double(r.targetBytes);
+        chart["render_target"] = QStringLiteral("%1x%2x%3").arg(r.targetSize.width()).arg(r.targetSize.height()).arg(r.samples);
+        perChart.append(chart);
     }
     QJsonObject result;
     result["chart_count"] = double(charts);
+    result["visible_chart_count"] = double(visibleCharts);
     result["buffer_count"] = double(buffers);
     result["rows"] = double(rows);
     result["cpu_bytes"] = double(cpuBytes);
+    result["series_bytes"] = double(seriesBytes);
+    result["staging_bytes"] = double(stagingBytes);
     result["gpu_buffers"] = double(gpuBuffers);
     result["gpu_buffer_bytes"] = double(gpuBytes);
+    // The dev-tools RAM viewer reads Electron's key for the chart GPU row.
+    result["gpu_texture_bytes"] = double(gpuBytes + targetBytes);
+    result["render_target_bytes"] = double(targetBytes);
+    if (rhi) {
+        const QRhiStats stats = rhi->statistics();
+        QJsonObject rhiJson;
+        rhiJson["backend"] = QString::fromLatin1(rhi->backendName());
+        rhiJson["block_count"] = double(stats.blockCount);
+        rhiJson["alloc_count"] = double(stats.allocCount);
+        rhiJson["used_bytes"] = double(stats.usedBytes);
+        rhiJson["unused_bytes"] = double(stats.unusedBytes);
+        rhiJson["total_usage_bytes"] = double(stats.totalUsageBytes);
+        result["rhi"] = rhiJson;
+    }
+    result["charts"] = perChart;
     return result;
 }
 
@@ -1751,49 +1942,104 @@ void ChartView::setCursorGuides(const QVector<CursorGuide>& guides) {
 void ChartView::appendPoint(int id, double x, double y) {
     if (id < 0 || id >= d_->series.size() || !std::isfinite(x)) return;
     Series& s = d_->series[id];
-    const Point p{x, float(y)}; // Non-finite Y is an explicit gap, including on append.
-    if (!s.data.empty() && x < s.data.back().x) {
-        auto at = std::lower_bound(s.data.begin() + s.first, s.data.end(), x,
-            [](const Point& point, double key) { return point.x < key; });
-        const qsizetype i = std::distance(s.data.begin(), at);
-        s.data.insert(at, p); s.dirty = qMin(s.dirty, i); s.fitDirty = qMin(s.fitDirty, i);
+    if (s.ys.empty()) {
+        // Starting over: share a column that another series has just begun at
+        // the same key (they are appended to in turn), else start a new one.
+        bool adopted = false;
+        for (Series& other : d_->series) {
+            if (&other == &s || other.keys == s.keys || other.count() != 1 ||
+                other.keys->dx.size() != 1 || other.key(0) != x) continue;
+            s.keys = other.keys;
+            adopted = true;
+            break;
+        }
+        if (!adopted) {
+            if (s.sharesKeys()) s.keys = std::make_shared<KeyColumn>();
+            s.keys->dx.clear();
+            s.keys->origin = x;
+        }
+    }
+    const float dx = s.offset(x);
+    const float value = float(y);   // Non-finite Y is an explicit gap, including on append.
+    if (!s.ys.empty() && x < s.lastKey()) {
+        s.ownKeys();
+        auto& keys = s.keys->dx;
+        keys.resize(s.ys.size());
+        auto at = std::lower_bound(keys.begin() + s.first, keys.end(), x,
+            [&s](float key, double value) { return s.keys->origin + double(key) < value; });
+        const qsizetype i = std::distance(keys.begin(), at);
+        keys.insert(at, dx);
+        s.ys.insert(s.ys.begin() + i, value);
+        s.dirty = qMin(s.dirty, i); s.fitDirty = qMin(s.fitDirty, i);
     } else {
-        s.dirty = qMin(s.dirty, qsizetype(s.data.size()));
-        s.fitDirty = qMin(s.fitDirty, qsizetype(s.data.size())); s.data.push_back(p);
+        const size_t n = s.ys.size();
+        s.dirty = qMin(s.dirty, qsizetype(n));
+        s.fitDirty = qMin(s.fitDirty, qsizetype(n));
+        // A sharer may already have appended this key; otherwise add it.
+        if (s.keys->dx.size() > n) {
+            // Otherwise this series' keys diverge here: keep only its own (a
+            // column it now owns alone may still end in a key a former sharer added).
+            if (s.keys->dx[n] != dx) { s.ownKeys(); s.keys->dx.resize(n); s.keys->dx.push_back(dx); }
+        } else {
+            s.keys->dx.push_back(dx);
+        }
+        s.ys.push_back(value);
     }
     while (s.size() > kMaxPoints) ++s.first;
-    compact(s); ++s.revision;
+    compact(d_->series, s); ++s.revision;
 }
 
 void ChartView::setSeriesData(int id, const QVector<double>& xs, const QVector<double>& ys) {
     if (id < 0 || id >= d_->series.size() || xs.size() != ys.size()) return;
     Series& s = d_->series[id];
-    std::vector<Point> replacement;
+    struct Keyed { double x; double y; };
+    std::vector<Keyed> replacement;
     replacement.reserve(size_t(qMin<qsizetype>(kMaxPoints, xs.size())));
     for (qsizetype i = qMax<qsizetype>(0, xs.size() - kMaxPoints); i < xs.size(); ++i)
-        if (std::isfinite(xs[i])) replacement.push_back({xs[i], float(ys[i])});
+        if (std::isfinite(xs[i])) replacement.push_back({xs[i], ys[i]});
     // Binary search, clipping and hover all require ordered keys. Equal keys
     // retain source order, including vertical edges and explicit gap samples.
     if (!std::is_sorted(replacement.begin(), replacement.end(),
-            [](const Point& a, const Point& b) { return a.x < b.x; }))
+            [](const Keyed& a, const Keyed& b) { return a.x < b.x; }))
         std::stable_sort(replacement.begin(), replacement.end(),
-            [](const Point& a, const Point& b) { return a.x < b.x; });
+            [](const Keyed& a, const Keyed& b) { return a.x < b.x; });
     const qsizetype n = qsizetype(replacement.size());
     qsizetype equal = 0;
+    // Compare in stored form against the current origin, so identical input
+    // keeps its prefix.
     while (equal < qMin(s.size(), n)) {
-        const auto& old = s.data[size_t(s.first + equal)];
-        const auto& next = replacement[size_t(equal)];
-        if (old.x != next.x || !(old.y == next.y || (std::isnan(old.y) && std::isnan(next.y)))) break;
+        const size_t at = size_t(s.first + equal);
+        const float oldY = s.ys[at];
+        const float nextY = float(replacement[size_t(equal)].y);
+        if (s.keys->dx[at] != s.offset(replacement[size_t(equal)].x) ||
+            !(oldY == nextY || (std::isnan(oldY) && std::isnan(nextY)))) break;
         ++equal;
     }
     if (equal == n && n == s.size()) return;
     // Preserve the unchanged prefix and upload just the changed suffix. Checking
     // endpoints alone misses interior corrections (notably analysis delta data).
-    s.data.resize(size_t(s.first + equal));
-    s.data.insert(s.data.end(), replacement.begin() + equal, replacement.end());
+    s.ownKeys();
+    const size_t keep = size_t(s.first + equal);
+    s.keys->dx.resize(keep);
+    s.ys.resize(keep);
+    if (s.ys.empty() && n > 0) s.keys->origin = replacement.front().x;
+    s.keys->dx.reserve(keep + size_t(n - equal));
+    s.ys.reserve(keep + size_t(n - equal));
+    for (qsizetype i = equal; i < n; ++i) {
+        s.keys->dx.push_back(s.offset(replacement[size_t(i)].x));
+        s.ys.push_back(float(replacement[size_t(i)].y));
+    }
+    // Series given the same keys (Speed and RPM, tyre corners) share one column.
+    for (const Series& other : d_->series) {
+        if (&other == &s || other.keys == s.keys || other.count() != s.count() ||
+            other.keys->origin != s.keys->origin || other.keys->dx.size() != s.keys->dx.size()) continue;
+        if (std::memcmp(other.keys->dx.data(), s.keys->dx.data(), s.keys->dx.size() * sizeof(float)) != 0) continue;
+        s.keys = other.keys;
+        break;
+    }
     s.dirty = qMin(s.dirty, s.first + equal);
     s.fitDirty = qMin(s.fitDirty, s.first + equal);
-    compact(s); ++s.revision;
+    compact(d_->series, s); ++s.revision;
 }
 
 void ChartView::trimBefore(int id, double x) {
@@ -1801,10 +2047,22 @@ void ChartView::trimBefore(int id, double x) {
     Series& s = d_->series[id];
     qsizetype first = lowerBound(s, x);
     if (first > s.first) --first; // Segment crossing the viewport's left edge.
-    s.first = first; compact(s);
+    s.first = first; compact(d_->series, s);
 }
-void ChartView::clear(int id){if(id<0||id>=d_->series.size())return;Series&s=d_->series[id];s.data.clear();s.first=s.dirty=s.fitDirty=0;++s.revision;}
+void ChartView::clear(int id){if(id<0||id>=d_->series.size())return;d_->series[id].reset();}
 void ChartView::clearAll(){for(int i=0;i<d_->series.size();++i)clear(i);}
+void ChartView::setReleaseSeriesWhenHidden(bool on) { d_->releaseSeriesWhenHidden = on; }
+void ChartView::hideEvent(QHideEvent* e) {
+    QWidget::hideEvent(e);
+    if (!d_->releaseSeriesWhenHidden) return;
+    bool released = false;
+    for (Series& s : d_->series) {
+        if (s.ys.empty()) continue;
+        s.reset();   // frees the allocations, not just the sizes
+        released = true;
+    }
+    if (released) emit seriesReleased();
+}
 void ChartView::setSeriesVisible(int id, bool on) {
     if (id < 0 || id >= d_->series.size() || d_->series[id].visible == on) return;
     Series& s = d_->series[id]; s.visible = on; ++chartContentGeneration();
@@ -2116,15 +2374,15 @@ bool ChartView::panelHasValue(int pid, double key, bool strictRange, bool allowE
     for (const Series& s : d_->series) {
         if (s.panel != pid || s.spec.name.isEmpty() || !s.visible || s.empty()) continue;
         if (strictRange) {
-            const double lo = s.data[size_t(s.first)].x, hi = s.data.back().x;
+            const double lo = s.firstKey(), hi = s.lastKey();
             if (key < lo || (key > hi && !allowEndpoint)) continue;
         }
         const qsizetype at = nearest(s, key);
-        if (at >= 0 && std::isfinite(s.data[size_t(at)].y)) return true;
+        if (at >= 0 && std::isfinite(s.ys[size_t(at)])) return true;
     }
     return false;
 }
-bool ChartView::seriesKeyRange(int id,double&lo,double&hi)const{if(id<0||id>=d_->series.size()||d_->series[id].empty())return false;const Series&s=d_->series[id];lo=s.data[size_t(s.first)].x;hi=s.data.back().x;return true;}
+bool ChartView::seriesKeyRange(int id,double&lo,double&hi)const{if(id<0||id>=d_->series.size()||d_->series[id].empty())return false;const Series&s=d_->series[id];lo=s.firstKey();hi=s.lastKey();return true;}
 void ChartView::setXRange(int id,double lo,double hi){
     if(id<0||id>=d_->axes.size()||!std::isfinite(lo)||!std::isfinite(hi)||hi<=lo)return;
     // An unchanged range skips the label re-measure; a changed one only
@@ -2144,9 +2402,9 @@ bool ChartView::visibleSeriesRange(const QVector<int>& ids, double& lo, double& 
         const Axis& x = d_->axes[s.spec.xAxisId];
         qsizetype begin = lowerBound(s, x.lo);
         if (begin > s.first) --begin;
-        const qsizetype end = qMin(lowerBound(s, x.hi) + 1, qsizetype(s.data.size()));
+        const qsizetype end = qMin(lowerBound(s, x.hi) + 1, s.count());
         for (qsizetype i = begin; i < end; ++i) {
-            const double value = s.data[size_t(i)].y;
+            const double value = s.ys[size_t(i)];
             if (!std::isfinite(value)) continue;
             if (!found) { lo = hi = value; found = true; }
             else { lo = qMin(lo, value); hi = qMax(hi, value); }
@@ -2172,10 +2430,10 @@ void ChartView::fitAxisToVisibleSeries(int id, const QVector<int>& ids, double f
         const Axis& x = d_->axes[s.spec.xAxisId];
         qsizetype begin = lowerBound(s, x.lo);
         if (begin > s.first) --begin;
-        const qsizetype end = qMin(lowerBound(s, x.hi) + 1, qsizetype(s.data.size()));
+        const qsizetype end = qMin(lowerBound(s, x.hi) + 1, s.count());
         if (!full) begin = qMax(begin, s.fitDirty);
         for (qsizetype i = begin; i < end; ++i) {
-            const double value = s.data[size_t(i)].y;
+            const double value = s.ys[size_t(i)];
             if (!std::isfinite(value)) continue;
             if (!found) { lo = hi = value; found = true; }
             else { lo = qMin(lo, value); hi = qMax(hi, value); }
@@ -2216,11 +2474,11 @@ ChartView::PanelTooltip ChartView::panelTooltip(int pid, double key, bool strict
     const auto sampleAt = [&](const Series& s) -> double {
         if (s.empty()) return qQNaN();
         if (strictRange) {
-            const double lo = s.data[size_t(s.first)].x, hi = s.data.back().x;
+            const double lo = s.firstKey(), hi = s.lastKey();
             if (key < lo || (key > hi && !allowEndpoint)) return qQNaN();
         }
         const qsizetype at = nearest(s, key);
-        return at < 0 ? qQNaN() : s.data[size_t(at)].y;
+        return at < 0 ? qQNaN() : s.ys[size_t(at)];
     };
     // A missing value prints as an em dash, like Electron's NaN replacement.
     const auto valueText = [](const Series& s, double value) {
@@ -2295,9 +2553,8 @@ bool ChartView::hoverSample(int pid, double key, double& sampled) const {
     for (const Series& series : d_->series) {
         if (series.panel != pid || !series.visible || series.spec.name.isEmpty() || series.empty()) continue;
         const qsizetype at = nearest(series, key);
-        const Point& point = series.data[size_t(at)];
-        if (!std::isfinite(point.y)) continue;
-        sampled = point.x;
+        if (!std::isfinite(series.ys[size_t(at)])) continue;
+        sampled = series.key(at);
         return true;
     }
     return false;
@@ -2307,7 +2564,7 @@ double ChartView::seriesValueAt(int id, double key) const {
     if (id < 0 || id >= d_->series.size() || d_->series[id].empty()) return qQNaN();
     const Series& s = d_->series[id];
     const qsizetype at = nearest(s, key);
-    return at < 0 ? qQNaN() : double(s.data[size_t(at)].y);
+    return at < 0 ? qQNaN() : double(s.ys[size_t(at)]);
 }
 
 QColor ChartView::tooltipTextColor() const { return palette().color(QPalette::Text); }
@@ -2526,3 +2783,4 @@ void ChartView::changeEvent(QEvent* e) {
         applyPaletteText(); d_->overlay->invalidateAll(); requestReplot();
     }
 }
+

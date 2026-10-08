@@ -72,6 +72,12 @@ const telemetryBridge = {
     ipcRenderer.on('telemetry-binary', listener)
     return () => ipcRenderer.removeListener('telemetry-binary', listener)
   },
+  // A live lap answer: its JSON header and the lap's V6H1 payload.
+  onLiveLapData: (callback: (header: string, history: Uint8Array) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, header: string, history: Uint8Array) => callback(header, history)
+    ipcRenderer.on('live-lap-data', listener)
+    return () => ipcRenderer.removeListener('live-lap-data', listener)
+  },
   reportRetention: (snapshot: unknown): void => {
     const runtime = sampleRendererRuntimeMemory()
     ipcRenderer.send('diagnostics:telemetry-retention',

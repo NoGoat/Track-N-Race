@@ -548,18 +548,11 @@ MainWindow::onEngineRow    — tnrp::parseRow → typed AnyRow; protocol_status
                              updates the label catalog / harvest scale / aero overlay
 MainWindow::onEngineBinary — tnrp::bin::decodeBatch → typed rows directly
         └─> routeLiveRow: emitLiveData (panels) + ingestForModel (charts)
-                          + feedHotSmoother (forward-fill)
 ```
 
 - **Typed rows everywhere**: the UI never touches dynamic JSON. Cold rows are
   glaze-parsed once into `AnyRow`; hot rows never round-trip through JSON at
   all (the engine is constructed with `hotRowsAsJson = false`).
-- **`HotRowSmoother` (`qt_frontend/src/HotRowSmoother.h`)** — a Qt-specific
-  smoother, driven by `hotFillTimer_` at the measured cadence
-  (`periodMs()` re-applied each tick): on an interval with no fresh telemetry
-  it re-emits the last telemetry/motion/motion_ex one frame forward (capped at
-  one frame past the last real sample); a large backward jump (flashback)
-  drops fill state. Display-only.
 - **Coalesced panel refresh**: packets only set per-panel dirty flags
   (`dirtyTiming_`, `dirtyTyres_`, …); `flushUiRefresh()` runs on a timer and
   rebuilds **only the visible page's** dirty panels — hidden pages refresh

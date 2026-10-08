@@ -101,7 +101,7 @@ playback reads a file.
 | --- | --- |
 | Chart backfill (`applyDataRequirements`) | `columnarHistory` for the player, seeded at the range start, plus race events as JSON lines |
 | Host restore (`issueLiveRestoreLocked`) | The same, with separate chart and event starts |
-| Live fastest lap (`liveGetFastestLap`) | The player's fastest completed lap from its lap summaries, its chart families as V6H1 (base64 in `live_fastest_lap_data`) |
+| Live fastest lap (`liveGetFastestLap`) | The player's fastest completed lap from its lap summaries, its chart families as V6H1. The caller's callback receives a `live_fastest_lap_data` JSON header and the payload bytes beside it |
 | Live Previous / Fastest (`liveGetLapData`) | One lap by number, read the same way (`live_lap_data`). Electron asks on every lap change, restore, rewind and whenever a chart shows Previous or Fastest, and replaces its own snapshot, which has holes for anything received while the window was hidden |
 | Deep Strategy rollback | `TnrdReader::loadV6ArchiveForStrategy` on an image of the Strategy types, then `strategySnapshotAt`, as a V6 recording's playback rebuild |
 
@@ -116,8 +116,10 @@ session is still on its formation lap exposes that phase instead.
   `decodeV6History`. A backfill is merged by time with the rows held (laps
   missed while hidden sit between held ones, so a prefix install would leave
   them empty); a restore replaces its range. Race events are read from the
-  cold JSON beside the blocks. Live Previous and Fastest decode their base64
-  V6H1 laps from the store. The engine delivers a backfill whose families are
+  cold JSON beside the blocks. Live Previous and Fastest arrive on their own
+  `live-lap-data` IPC channel as a JSON header plus a V6H1 Buffer, and are
+  decoded from the store. History decodes run in a worker
+  (`historyDecodeClient.ts`) that stops when idle. The engine delivers a backfill whose families are
   still subscribed even when newer requirements arrived meanwhile, since those
   would not ask for them again.
 - **Qt:** live backfills already pass through `TnrdPlayer::decodeHistory`,

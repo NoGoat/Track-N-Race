@@ -232,6 +232,10 @@ function configureAdditionalLogging(enabled: boolean): void {
   }
 }
 
+// Answers a live lap request: a live_lap_data / live_fastest_lap_data header
+// (JSON) and the lap's chart families as a V6H1 payload.
+type LiveLapCallback = (header: string, history: Uint8Array) => void
+
 // The surface of protocol_parser.node (node_addon/addon.cpp) this module uses.
 interface NativeEngine extends NativePairEngine {
   startUdp(): boolean
@@ -245,8 +249,8 @@ interface NativeEngine extends NativePairEngine {
   telemetryRetention?(): Record<string, unknown> | null
   setDataRequirements(streamMask: number, historyMask: number, historyWindow: number, requestId: number,
     v6Types: number[], v6HistoryTypes: number[]): void
-  liveGetFastestLap(requestId: number): void
-  liveGetLapData(requestId: number, lapNum: number): void
+  liveGetFastestLap(requestId: number, done: LiveLapCallback): void
+  liveGetLapData(requestId: number, lapNum: number, done: LiveLapCallback): void
   setLapHistoryCar(carIdx: number): void
   setHostVisible?(visible: boolean, sequence: number): void
   setOverride(value: ProtocolOverride): void
@@ -701,8 +705,6 @@ export function startBridge(): BridgeStartResult {
         // sector metadata never recover. They are immutable and safe to send
         // while hidden, just like the load metadata above.
         batch.includes('"type":"playback_lap_data"') ||
-        batch.includes('"type":"live_fastest_lap_data"') ||
-        batch.includes('"type":"live_lap_data"') ||
         batch.includes('"type":"playback_loaded"') ||
         batch.includes('"type":"playback_close"')
       const forwardDriverLapCatalogDuringSeek =
@@ -1032,11 +1034,21 @@ function applyAggregateDataRequirements(): void {
     rendererHistoryMask, rendererHistoryWindow, requestId, rendererV6Types, rendererV6HistoryTypes)
 }
 
+// A live lap answer: its JSON header and the lap's V6H1 payload, sent on a
+// channel of its own so the bytes never travel inside JSON. Immutable, so it
+// is delivered while hidden too: a dropped answer would leave the lap marked
+// as requested in the renderer.
+const forwardLiveLap: LiveLapCallback = (header, history) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('live-lap-data', header, history)
+  }
+}
+
 export function liveGetFastestLap(requestId: number): void {
-  engine?.liveGetFastestLap(requestId)
+  engine?.liveGetFastestLap(requestId, forwardLiveLap)
 }
 export function liveGetLapData(requestId: number, lapNum: number): void {
-  engine?.liveGetLapData(requestId, lapNum)
+  engine?.liveGetLapData(requestId, lapNum, forwardLiveLap)
 }
 export function playerClose(): void {
   console.log(`[close-trace] ${new Date().toISOString()} bridge playerClose entry`)

@@ -483,8 +483,9 @@ void TyreCardsWidget::refresh() {
 
     // Feed newest-first over the visible window (the table renders oldest→newest);
     // stop once we walk past the window's start. Mirrors TyreChartsWidget's table feed.
-    for (int k = (int)d.tyreBuf.size() - 1; acceptingRows && k >= 0; --k) {
-        const TyreSample& s = d.tyreBuf[k];
+    const SampleRange<TyreSample> tyreHistory = d.tyre();
+    for (qsizetype k = tyreHistory.size() - 1; acceptingRows && k >= 0; --k) {
+        const TyreSample& s = tyreHistory[k];
         if (s.t > endTime) continue;
         if (s.t < left)    break;
         auto add = [&](int i, float surf, float inner, float brake) {

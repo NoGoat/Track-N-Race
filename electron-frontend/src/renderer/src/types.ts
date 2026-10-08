@@ -495,8 +495,8 @@ export interface LiveFastestLapDataMsg {
   startSessionTime: number
   endSessionTime: number
   // The lap's chart families from the engine's live V6 store: a V6H1 payload
-  // (lib/columnStore.ts decodeV6History), base64.
-  history: string
+  // (lib/columnStore.ts decodeV6History), delivered beside the JSON header.
+  history: Uint8Array
 }
 
 // One of the player's laps from the engine's live V6 store (getLiveLap).
