@@ -1,0 +1,483 @@
+import { memo, useMemo } from 'react'
+import { useTelemetryStore } from '../../stores/telemetryStore'
+import LiveStats from '../../components/LiveStats'
+import SpeedRpmChart from '../../components/SpeedRpmChart'
+import GearChart from '../../components/GearChart'
+import InputsChart from '../../components/InputsChart'
+import GForceChart from '../../components/GForceChart'
+import RideHeightChart from '../../components/RideHeightChart'
+import SteeringChart from '../../components/SteeringChart'
+import RacePanel from '../../components/RacePanel'
+import TimingTower from '../../components/TimingTower'
+import ThermalPanel from '../../components/ThermalPanel'
+import DamagePanel from '../../components/DamagePanel'
+import PowerBreakdownChart from '../../components/PowerBreakdownChart'
+import PowerStatsBar from '../../components/PowerStatsBar'
+import TyresPanel from '../../components/TyresPanel'
+import SessionPanel from '../../components/SessionPanel'
+import StrategyPanel from '../../components/StrategyPanel'
+import TrendPanel from '../../components/TrendPanel'
+import DamagePage from '../../components/DamagePage'
+import AnalyzeScreen, { type AnalysisDriverSelection, type AnalyzeFixedLapMode, type SecondaryFileData } from '../../components/AnalyzeScreen'
+import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
+import type { CoreLayout, DamageLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TrendsLayout, TyresLayout } from '../appConfig'
+import { useChartCoordinates } from '../../lib/chartCoordinates'
+import { ChartCursorSyncProvider } from '../../lib/chartCursorSync'
+import { emptyView } from '../../lib/columnStore'
+import type { DamageRow, StatusRow, TelemetryRow } from '../../types'
+
+const EMPTY_ROWS: never[] = []
+const EMPTY_TELEMETRY = emptyView<TelemetryRow>('telemetry')
+const EMPTY_STATUS = emptyView<StatusRow>('status')
+const EMPTY_DAMAGE = emptyView<DamageRow>('damage')
+
+// The tab content is the only part of the UI that consumes the hot (per-frame)
+// telemetry slices. Extracting it into its own store-subscribing component is
+// what lets App itself stay cold: App renders the header/nav (which never touch
+// hot data) plus <TabContent/>, and only TabContent + the active tab's leaves
+// re-render at the telemetry rate. The leaves keep their existing prop shapes —
+// TabContent selects the slices from the store and passes them down, exactly as
+// App used to. All the low-frequency config comes in as props.
+interface TabContentProps {
+  tab: Tab
+  isDark: boolean
+  seconds: number
+  coreLayout: CoreLayout
+  powerLayout: PowerLayout
+  sessionLayout: SessionLayout
+  standingsLayout: StandingsLayout
+  tyresLayout: TyresLayout
+  trendsLayout: TrendsLayout
+  damageLayout: DamageLayout
+  inputLayout: InputLayout
+  inputCursorSyncEnabled: boolean
+  secondaryHorizontalCrosshairEnabled: boolean
+  secondaryVerticalCrosshairEnabled: boolean
+  pageLayouts: PageLayouts
+  miscLayout: MiscLayout
+  graphView: GraphViewState
+  compact: CompactState
+  chartYAxis: ChartYAxisState
+  tyreView: 'cards' | 'graphs'
+  tyreWearMode: 'wear' | 'life'
+  selectedIdx: number | null
+  onSelectDriver: (idx: number) => void
+  reduceAnimations: boolean
+  sectorColors: boolean
+  driversMode: 'dots' | 'both' | 'labels'
+  mapTimeout: number
+  mapDimmed: boolean
+  currentPlaybackLapNum: number | null
+  playbackFilename: string | null
+  analyzeCompareLapNum: number | null
+  onAnalyzeCompareLapChange: (lapNum: number | null) => void
+  analyzeCompareDriver: AnalysisDriverSelection | null
+  onAnalyzeCompareDriverChange: (driver: AnalysisDriverSelection | null) => void
+  analyzeSecondaryFile: SecondaryFileData | null
+  onAnalyzeSecondaryFileChange: (file: SecondaryFileData | null) => void
+  analyzeFixedLapMode: AnalyzeFixedLapMode
+  onAnalyzeFixedLapModeChange: (mode: AnalyzeFixedLapMode) => void
+  onAnalyzeDataMaskChange: (mask: number) => void
+}
+
+const SubscribedTabContent = memo(function SubscribedTabContent({
+  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, trendsLayout, damageLayout, inputLayout, inputCursorSyncEnabled, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, pageLayouts,
+  graphView, compact, chartYAxis, tyreView, tyreWearMode,
+  selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
+  mapDimmed,
+}: TabContentProps) {
+  const coordinates = useChartCoordinates()
+  const splitPedals = pageLayouts.inputPedals === 'split'
+  const combinedPedalMode = pageLayouts.inputPedals === 'combined2' ? 'combined2' : 'combined'
+  const combinedPedalView = combinedPedalMode === 'combined2'
+    ? graphView.inputThrottleBrakeOverlay
+    : graphView.inputThrottleBrake
+  const showCombinedPedals = inputLayout.showAccelerator || inputLayout.showBrake
+  // Subscribe only to slices the active tab renders. Previously every normal
+  // tab subscribed to `latest`, so playback forced the entire tab subtree
+  // through React for every telemetry batch even on chart-only pages. AL chart
+  // history itself remains on the imperative store-to-WebGL path.
+  const needsTelemetry = tab === 'core' || tab === 'tyres'
+  const needsDamage = tab === 'core' || tab === 'tyres'
+  const needsLap = tab === 'core' || tab === 'timing_tower'
+  const needsTiming = tab === 'timing_tower' || tab === 'session'
+  const needsStatus = tab === 'core' || tab === 'timing_tower' || tab === 'power'
+  const needsParticipants = tab === 'timing_tower' || tab === 'session'
+  const needsSession = tab === 'session' || tab === 'tyres'
+  const needsProtocol = tab === 'session' || tab === 'power'
+  const needsLatest = tab === 'tyres' || (tab === 'core' && (
+    coreLayout.showStats || (coreLayout.showThermal && tyreView === 'cards')
+  ))
+
+  const telemetry        = useTelemetryStore(s => needsTelemetry ? coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry : EMPTY_TELEMETRY)
+  const statusHistory    = useTelemetryStore(s => tab === 'core' || tab === 'power' ? coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory : EMPTY_STATUS)
+  const damage           = useTelemetryStore(s => needsDamage ? s.damage : null)
+  const damageHistory    = useTelemetryStore(s => needsDamage ? coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory : EMPTY_DAMAGE)
+  const lap              = useTelemetryStore(s => needsLap ? s.lap : null)
+  const timing           = useTelemetryStore(s => needsTiming ? s.timing : null)
+  const latest           = useTelemetryStore(s => needsLatest ? s.latest : null)
+  const allStatus        = useTelemetryStore(s => tab === 'timing_tower' ? s.allStatus : null)
+  const status           = useTelemetryStore(s => needsStatus ? s.status : null)
+  const participants     = useTelemetryStore(s => needsParticipants ? s.participants : null)
+  const session          = useTelemetryStore(s => needsSession ? s.session : null)
+  const tyreSets         = useTelemetryStore(s => tab === 'tyres' ? s.tyreSets : null)
+  const raceEvents       = useTelemetryStore(s => tab === 'session' ? s.raceEvents : EMPTY_ROWS)
+  const fastestLapCarIdx = useTelemetryStore(s => tab === 'timing_tower' ? s.fastestLapCarIdx : null)
+  const isConnected      = useTelemetryStore(s => tab === 'core' ? s.isConnected : false)
+  const protocolStatus   = useTelemetryStore(s => needsProtocol ? s.protocolStatus : null)
+  const fuelUpperLimit   = useTelemetryStore(s => tab === 'power' ? s.fuelUpperLimit : null)
+  const strategy         = useTelemetryStore(s => tab === 'strategy' ? s.strategy : null)
+
+  const overviewThermalGraphViews = useMemo(() => ({
+    surfaceTemp: graphView.overviewTyreSurface,
+    innerTemp: graphView.overviewTyreInner,
+    brakeTemp: graphView.overviewTyreBrake,
+    tyreLife: graphView.overviewTyreWear,
+  }), [graphView.overviewTyreBrake, graphView.overviewTyreInner, graphView.overviewTyreSurface, graphView.overviewTyreWear])
+  const overviewThermalCardViews = useMemo(() => ({
+    fl: graphView.overviewTyreCardFL,
+    fr: graphView.overviewTyreCardFR,
+    rl: graphView.overviewTyreCardRL,
+    rr: graphView.overviewTyreCardRR,
+  }), [graphView.overviewTyreCardFL, graphView.overviewTyreCardFR, graphView.overviewTyreCardRL, graphView.overviewTyreCardRR])
+  const tyreGraphViews = useMemo(() => ({
+    surfaceTemp: graphView.tyreSurface,
+    innerTemp: graphView.tyreInner,
+    brakeTemp: graphView.tyreBrake,
+    tyreLife: graphView.tyreWear,
+  }), [graphView.tyreBrake, graphView.tyreInner, graphView.tyreSurface, graphView.tyreWear])
+  const tyreCardViews = useMemo(() => ({
+    fl: graphView.tyreCardFL,
+    fr: graphView.tyreCardFR,
+    rl: graphView.tyreCardRL,
+    rr: graphView.tyreCardRR,
+  }), [graphView.tyreCardFL, graphView.tyreCardFR, graphView.tyreCardRL, graphView.tyreCardRR])
+
+  const selectedCar        = timing?.cars.find(c => c.idx === selectedIdx) ?? null
+  const playerDriver       = participants?.drivers.find(d => d.idx === (timing?.player_idx ?? -1)) ?? null
+  const selectedDriver     = participants?.drivers.find(d => d.idx === selectedIdx) ?? playerDriver
+  const selectedCarStatus  = allStatus?.cars.find(c => c.idx === selectedIdx) ?? null
+
+  return (
+    <>
+      {tab === 'stint' && <TrendPanel isDark={isDark} compact={compact.stintSummary} layout={pageLayouts.trends} visible={trendsLayout} wearMode={tyreWearMode} tyreYAxis={chartYAxis.tyres.tyreLife}
+        cursorSyncEnabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled} />}
+      {tab === 'damage' && <DamagePage isDark={isDark} compact={compact.damageSummary} visible={damageLayout} />}
+      {tab === 'core' && (() => {
+        const visibleDamageCount = Object.values(coreLayout.damageItems).filter(Boolean).length
+        const damageTwoRow = visibleDamageCount > 8
+        const showStatsPanel = coreLayout.showStats && Object.values(coreLayout.statsCards).some(Boolean)
+        const showThermalPanel = coreLayout.showThermal && (
+          tyreView === 'graphs'
+            ? Object.values(coreLayout.thermalGraphs).some(Boolean)
+            : Object.values(coreLayout.thermalCards).some(Boolean)
+        )
+        const showSpeedChartPanel = coreLayout.showSpeedChart
+
+        let speedChartFlex = 'flex-1'
+        let thermalFlex = 'flex-1'
+
+        if (showSpeedChartPanel && showThermalPanel) {
+          speedChartFlex = damageTwoRow ? 'flex-[8]' : 'flex-[13]'
+          thermalFlex = damageTwoRow ? 'flex-[4]' : 'flex-[7]'
+        }
+
+        const thermalCompactCards = tyreView === 'cards'
+
+        return (
+        <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
+          <div className="h-full flex flex-col overflow-hidden">
+            <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+            {showStatsPanel && (
+              <div className="shrink-0">
+                <LiveStats latest={latest} status={status} lap={lap} damage={damage} isConnected={isConnected} visibleCards={coreLayout.statsCards} isDark={isDark} compact={compact.overviewStats} />
+              </div>
+            )}
+            {showSpeedChartPanel && (
+              <div className={`${speedChartFlex} min-h-0`}>
+                <SpeedRpmChart isDark={isDark} view={graphView.overviewTelemetry} windowSeconds={seconds} />
+              </div>
+            )}
+            {showThermalPanel && (
+              <div className={thermalCompactCards ? 'shrink-0' : `${thermalFlex} min-h-0`}>
+                <ThermalPanel latest={tyreView === 'cards' ? latest : null} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={isDark} tyresLevel={compact.overviewTyres} graphViews={overviewThermalGraphViews} cardViews={overviewThermalCardViews} windowSeconds={seconds} yAxis={chartYAxis.overview} />
+              </div>
+            )}
+            {visibleDamageCount > 0 && (
+              <div className="shrink-0">
+                <DamagePanel connected={!!latest} damage={damage} visibleItems={coreLayout.damageItems} twoRow={damageTwoRow} isDark={isDark} compact={compact.overviewDamage} />
+              </div>
+            )}
+            </div>
+          </div>
+        </ChartCursorSyncProvider>
+        )
+      })()}
+      {tab === 'timing_tower' && (() => {
+        const showTower = standingsLayout?.showTimingTower ?? true
+        const showTiming = standingsLayout?.cards?.timing ?? true
+        const showErs = standingsLayout?.cards?.energyRecovery ?? true
+        const showStrategy = standingsLayout?.cards?.strategy ?? true
+        const anySidebar = showTiming || showErs || showStrategy
+        const sidebarPct = standingsLayout?.sidebarPct ?? 28
+
+        if (!showTower && !anySidebar) {
+          return null
+        }
+
+        return (
+          <div className="h-full flex flex-col overflow-hidden">
+            <div className="flex-1 min-h-0 flex bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-x divide-[var(--border)]">
+              {showTower && (
+                <div
+                  style={anySidebar ? { width: `${100 - sidebarPct}%` } : undefined}
+                  className={`${anySidebar ? 'shrink-0' : 'flex-1'} min-w-0 overflow-auto`}
+                >
+                  <TimingTower
+                    timing={timing}
+                    participants={participants}
+                    allStatus={allStatus}
+                    fastestLapCarIdx={fastestLapCarIdx}
+                    selectedIdx={selectedIdx}
+                    onSelectDriver={onSelectDriver}
+                    isDark={isDark}
+                    animationsEnabled={!reduceAnimations}
+                    compact={compact.standingsTable}
+                  />
+                </div>
+              )}
+              {anySidebar && (
+                <div
+                  style={showTower ? { width: `${sidebarPct}%` } : undefined}
+                  className={`${showTower ? 'shrink-0' : 'flex-1'} overflow-y-auto`}
+                >
+                  <RacePanel
+                    lap={lap}
+                    status={status}
+                    selectedCar={selectedCar}
+                    selectedDriver={selectedDriver}
+                    selectedCarStatus={selectedCarStatus}
+                    playerIdx={timing?.player_idx ?? null}
+                    isDark={isDark}
+                    cards={standingsLayout?.cards}
+                    compactTiming={compact.standingsTiming}
+                    compactErs={compact.standingsErs}
+                    compactStrategy={compact.standingsStrategy}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+      {tab === 'session' && (
+        <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
+          <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={isDark} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} compactHeader={compact.sessionHeader} compactCards={compact.sessionCards} compactWeather={compact.sessionWeather} compactEvents={compact.sessionEvents} compactProximity={compact.sessionProximity} layout={sessionLayout} />
+        </div>
+      )}
+      {tab === 'input' && (
+        <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
+        <div className="h-full flex flex-col overflow-hidden">
+          {pageLayouts.input === 'vertical' ? (
+            <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+              {inputLayout.showGear && (
+                <div className="flex-1 min-h-0">
+                  <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
+                </div>
+              )}
+              {splitPedals ? <>
+                {inputLayout.showAccelerator && (
+                  <div className="flex-1 min-h-0">
+                    <InputsChart key="accelerator" mode="accelerator" isDark={isDark} view={graphView.inputAccelerator} windowSeconds={seconds} />
+                  </div>
+                )}
+                {inputLayout.showBrake && (
+                  <div className="flex-1 min-h-0">
+                    <InputsChart key="brake" mode="brake" isDark={isDark} view={graphView.inputBrake} windowSeconds={seconds} />
+                  </div>
+                )}
+              </> : showCombinedPedals && (
+                <div className="flex-1 min-h-0">
+                  <InputsChart key={combinedPedalMode} mode={combinedPedalMode} showAccelerator={inputLayout.showAccelerator} showBrake={inputLayout.showBrake} isDark={isDark} view={combinedPedalView} windowSeconds={seconds} />
+                </div>
+              )}
+              {inputLayout.showSteering && (
+                <div className="flex-1 min-h-0">
+                  <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+              {splitPedals ? <>
+                {(inputLayout.showAccelerator || inputLayout.showBrake) && (
+                  <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
+                    {inputLayout.showAccelerator && (
+                      <div className="flex-1 min-w-0 min-h-0">
+                        <InputsChart key="accelerator" mode="accelerator" isDark={isDark} view={graphView.inputAccelerator} windowSeconds={seconds} />
+                      </div>
+                    )}
+                    {inputLayout.showBrake && (
+                      <div className="flex-1 min-w-0 min-h-0">
+                        <InputsChart key="brake" mode="brake" isDark={isDark} view={graphView.inputBrake} windowSeconds={seconds} />
+                      </div>
+                    )}
+                  </div>
+                )}
+                {(inputLayout.showGear || inputLayout.showSteering) && (
+                  <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
+                    {inputLayout.showGear && (
+                      <div className="flex-1 min-w-0 min-h-0">
+                        <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
+                      </div>
+                    )}
+                    {inputLayout.showSteering && (
+                      <div className="flex-1 min-w-0 min-h-0">
+                        <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </> : <>
+              {(inputLayout.showGear || showCombinedPedals) && (
+                <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
+                  {inputLayout.showGear && (
+                    <div className="flex-1 min-w-0 min-h-0">
+                      <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
+                    </div>
+                  )}
+                  {showCombinedPedals && (
+                    <div className="flex-1 min-w-0 min-h-0">
+                      <InputsChart key={combinedPedalMode} mode={combinedPedalMode} showAccelerator={inputLayout.showAccelerator} showBrake={inputLayout.showBrake} isDark={isDark} view={combinedPedalView} windowSeconds={seconds} />
+                    </div>
+                  )}
+                </div>
+              )}
+              {inputLayout.showSteering && (
+                <div className="flex-1 min-h-0">
+                  <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
+                </div>
+              )}
+              </>}
+            </div>
+          )}
+        </div>
+        </ChartCursorSyncProvider>
+      )}
+
+      {tab === 'power' && (
+        <div className="h-full flex flex-col overflow-hidden border-t border-[var(--border)] divide-y divide-[var(--border)]">
+          <div className="shrink-0 bg-[var(--bg-panel)]">
+            <PowerStatsBar status={status} visibleCards={powerLayout.statsCards} isDark={isDark} compact={compact.powerCards} />
+          </div>
+          <div className="flex-1 min-h-0">
+            <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
+              <PowerBreakdownChart data={statusHistory} isDark={isDark} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} fuelUpperLimit={fuelUpperLimit} hasMguh={protocolStatus?.capabilities.hasMguh ?? false} harvestUpperLimit={(protocolStatus?.presentation_format ?? protocolStatus?.active_format) === 2026 ? 8000 : 4000} ersHarvestYAxis={chartYAxis.power.ersHarvest} layout={pageLayouts.power} />
+            </ChartCursorSyncProvider>
+          </div>
+        </div>
+      )}
+      {tab === 'tyres' && (
+        <div className="h-full overflow-hidden border-t border-[var(--border)]">
+          <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
+            <TyresPanel
+              tyreSets={tyreSets}
+              latest={latest}
+              damage={damage}
+              damageHistory={damageHistory}
+              telemetry={telemetry}
+              tyreWearMode={tyreWearMode}
+              isDark={isDark}
+              visibleGraphs={tyresLayout.charts}
+              graphViews={tyreGraphViews}
+              cardViews={tyreCardViews}
+              sessionType={session?.session_type ?? null}
+              windowSeconds={seconds}
+              yAxis={chartYAxis.tyres}
+              chartLayout={pageLayouts.tyres}
+            />
+          </ChartCursorSyncProvider>
+        </div>
+      )}
+      {tab === 'strategy' && (
+        <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
+          <StrategyPanel
+            strategy={strategy}
+            isDark={isDark}
+            compact={compact.strategySummary}
+          />
+        </div>
+      )}
+    </>
+  )
+})
+
+// Misc owns no broad telemetry subscription. Its two chart leaves subscribe
+// directly to motion and motionEx, so unrelated store publications cannot
+// re-render this tab container.
+const MiscTabContent = memo(function MiscTabContent({
+  isDark, seconds, miscLayout, graphView, pageLayouts, inputCursorSyncEnabled,
+  secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled,
+}: Pick<TabContentProps, 'isDark' | 'seconds' | 'miscLayout' | 'graphView' | 'pageLayouts' | 'inputCursorSyncEnabled' | 'secondaryHorizontalCrosshairEnabled' | 'secondaryVerticalCrosshairEnabled'>) {
+  return (
+    <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
+      <div className="h-full flex flex-col overflow-hidden">
+        <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+          {pageLayouts.miscGForce === 'split' ? <>
+            {miscLayout.showGLateral && <div className="flex-1 min-h-0">
+              <GForceChart mode="lateral" isDark={isDark} view={graphView.miscGLateral} windowSeconds={seconds} />
+            </div>}
+            {miscLayout.showGLongitudinal && <div className="flex-1 min-h-0">
+              <GForceChart mode="longitudinal" isDark={isDark} view={graphView.miscGLongitudinal} windowSeconds={seconds} />
+            </div>}
+          </> : miscLayout.showGForce && (
+            <div className="flex-1 min-h-0">
+              <GForceChart isDark={isDark} view={graphView.miscGForce} windowSeconds={seconds} />
+            </div>
+          )}
+          {pageLayouts.miscRideHeight === 'split' ? <>
+            {miscLayout.showRideFront && <div className="flex-1 min-h-0">
+              <RideHeightChart mode="front" isDark={isDark} view={graphView.miscRideFront} windowSeconds={seconds} />
+            </div>}
+            {miscLayout.showRideRear && <div className="flex-1 min-h-0">
+              <RideHeightChart mode="rear" isDark={isDark} view={graphView.miscRideRear} windowSeconds={seconds} />
+            </div>}
+          </> : miscLayout.showRideHeight && (
+            <div className="flex-1 min-h-0">
+              <RideHeightChart isDark={isDark} view={graphView.miscRideHeight} windowSeconds={seconds} />
+            </div>
+          )}
+        </div>
+      </div>
+    </ChartCursorSyncProvider>
+  )
+})
+
+const TabContent = memo(function TabContent(props: TabContentProps) {
+  if (props.tab === 'analyze') {
+    return <AnalyzeScreen
+      isDark={props.isDark}
+      playbackFilename={props.playbackFilename}
+      currentLapNum={props.currentPlaybackLapNum}
+      compareLapNum={props.analyzeCompareLapNum}
+      onCompareLapChange={props.onAnalyzeCompareLapChange}
+      compareDriver={props.analyzeCompareDriver}
+      onCompareDriverChange={props.onAnalyzeCompareDriverChange}
+      secondaryFile={props.analyzeSecondaryFile}
+      onSecondaryFileChange={props.onAnalyzeSecondaryFileChange}
+      fixedLapMode={props.analyzeFixedLapMode}
+      onFixedLapModeChange={props.onAnalyzeFixedLapModeChange}
+      mapDimmed={props.mapDimmed}
+      reduceAnimations={props.reduceAnimations}
+      sectorColors={props.sectorColors}
+      onDataMaskChange={props.onAnalyzeDataMaskChange}
+      yAxis={props.chartYAxis.analysis}
+    />
+  }
+  if (props.tab === 'misc') {
+    return <MiscTabContent isDark={props.isDark} seconds={props.seconds} miscLayout={props.miscLayout} graphView={props.graphView} pageLayouts={props.pageLayouts} inputCursorSyncEnabled={props.inputCursorSyncEnabled} secondaryHorizontalCrosshairEnabled={props.secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshairEnabled={props.secondaryVerticalCrosshairEnabled} />
+  }
+  return <SubscribedTabContent {...props} />
+})
+
+export default TabContent

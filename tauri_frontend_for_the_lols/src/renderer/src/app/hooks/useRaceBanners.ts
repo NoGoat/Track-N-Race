@@ -1,0 +1,79 @@
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { subscribeRaceEvent, useTelemetryStore } from '../../stores/telemetryStore'
+import { useLabels } from '../../lib/labels'
+import { buildBanner, buildSafetyCarBanner, lastName, type BannerItem } from '../bannerHelpers'
+
+export function useRaceBanners(durationSeconds: number) {
+  const { raw: labels } = useLabels()
+  const participants = useTelemetryStore(state => state.participants)
+  const safetyCarStatus = useTelemetryStore(state => state.session?.safety_car_status)
+  const latestSafetyCarEvent = useTelemetryStore(state => {
+    for (let i = state.raceEvents.length - 1; i >= 0; i--) {
+      if (state.raceEvents[i].code === 'SCAR') return state.raceEvents[i]
+    }
+    return undefined
+  })
+  const protocolWarning = useTelemetryStore(state => state.protocolWarning)
+  const [transientBanner, setTransientBanner] = useState<BannerItem | null>(null)
+  const queueRef = useRef<BannerItem[]>([])
+  const showingRef = useRef(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const participantsRef = useRef(participants)
+  const labelsRef = useRef(labels)
+  const durationRef = useRef(durationSeconds)
+  useLayoutEffect(() => {
+    participantsRef.current = participants
+    labelsRef.current = labels
+    durationRef.current = durationSeconds
+  })
+
+  const dequeue = useCallback(function dequeue() {
+    if (queueRef.current.length === 0) {
+      setTransientBanner(null)
+      showingRef.current = false
+      return
+    }
+    setTransientBanner(queueRef.current.shift()!)
+    showingRef.current = true
+    timerRef.current = setTimeout(dequeue, durationRef.current * 1000)
+  }, [])
+
+  const enqueue = useCallback((item: BannerItem) => {
+    queueRef.current.push(item)
+    if (!showingRef.current) dequeue()
+  }, [dequeue])
+
+  const handleLeaderChange = useCallback((idx: number) => {
+    enqueue({ label: 'New Race Leader', sub: lastName(participantsRef.current, idx), color: '#5794F2' })
+  }, [enqueue])
+
+  useEffect(() => subscribeRaceEvent(event => {
+    const item = buildBanner(event, participantsRef.current, labelsRef.current)
+    if (item) enqueue(item)
+  }), [enqueue])
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+  const safetyCarBanner = useMemo<BannerItem | null>(() => {
+    if (safetyCarStatus === undefined) return null
+
+    // Session packets can retain the formation-lap status after recording starts,
+    // while the first recorded SCAR event is already its terminal Resume Race
+    // transition. Prefer the latest event transition so the persistent title-bar
+    // banner represents the current state, including after playback seeks.
+    const action = latestSafetyCarEvent?.event_type
+    if (action === 2 || action === 3) return null
+
+    const status = latestSafetyCarEvent && (action === 0 || action === 1)
+      ? latestSafetyCarEvent.safety_car_type ?? safetyCarStatus
+      : safetyCarStatus
+    if (status === 0) return null
+    return buildSafetyCarBanner(status, action ?? 0)
+  }, [safetyCarStatus, latestSafetyCarEvent])
+
+  const warningBanner = useMemo<BannerItem | null>(() => protocolWarning ? {
+    label: 'PROTOCOL MISMATCH DETECTED',
+    sub: `Receiving ${protocolWarning.detected_format} packets - override is set to ${protocolWarning.forced_format}`,
+    color: '#ff4646',
+  } : null, [protocolWarning])
+  const activeBanner = useMemo(() => warningBanner ?? transientBanner ?? safetyCarBanner, [warningBanner, transientBanner, safetyCarBanner])
+  return { activeBanner, handleLeaderChange }
+}

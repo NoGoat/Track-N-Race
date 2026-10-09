@@ -1,0 +1,737 @@
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
+import { setAnalyzeLapEnabled, setHistoryRowMask, setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
+import Settings, { type SettingsCategory } from '../components/Settings'
+import type { AnalysisDriverSelection, AnalyzeFixedLapMode, SecondaryFileData } from '../components/AnalyzeScreen'
+import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab } from './appConfig'
+import { useAppConfiguration } from './hooks/useAppConfiguration'
+import { useWindowState } from './hooks/useWindowState'
+import { usePlayback } from './hooks/usePlayback'
+import { useRaceBanners } from './hooks/useRaceBanners'
+import AppHeader from './components/AppHeader'
+import PageMountShell from './components/PageMountShell'
+import PlaybackBar from './components/PlaybackBar'
+import TabContent from './components/TabContent'
+import FullscreenBanner from './components/FullscreenBanner'
+import StatusOverlays from './components/StatusOverlays'
+import SeekLoadingOverlay from './components/SeekLoadingOverlay'
+import LayoutEditor from './components/LayoutEditor'
+import PlaybackDialogs from './components/PlaybackDialogs'
+import RaceLeaderWatcher from './components/RaceLeaderWatcher'
+import RecordingErrorDialog from './components/RecordingErrorDialog'
+import UpdateAvailableDialog from './components/UpdateAvailableDialog'
+import type { AvailableUpdate, RecordingErrorMsg } from '../types'
+import { ChartCoordinatesProvider } from '../lib/chartCoordinates'
+import { DATA_ROW, dataRequirementsForUi, visibleChartSectionsForUi } from '../lib/historyDependencies'
+import {
+  ChartWindowOverridesProvider,
+  GRAPH_SECTION_ROW_MASK,
+  type ChartReferenceLapOverrides,
+  type ChartWindowOverrides,
+} from '../lib/chartWindowOverrides'
+import type { GraphSection } from '../lib/graphSections'
+
+const LIVE_LAP_FAMILY_MASK = DATA_ROW.telemetry | DATA_ROW.status |
+  DATA_ROW.damage | DATA_ROW.lap | DATA_ROW.motion | DATA_ROW.motionEx
+
+type AppPageTransition = {
+  ready: Promise<unknown>
+  finished: Promise<unknown>
+  skipTransition?: () => void
+}
+
+export default function AppShell() {
+  const Header = AppHeader
+  const {
+    actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, damageLayout, driversMode,
+    fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
+    nativeTitlebar, powerLayout, reduceAnimations, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, seconds, sectorBoundariesEnabled, sectorColors, titlebarUpdateInterval,
+    setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDamageLayout, setDriversMode,
+    setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
+    setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
+    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorBoundariesEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTrendsLayout, setTyreView, setTyreWearMode, setTyresLayout,
+    sessionLayout, standingsLayout, theme, trendsLayout, tyreView, tyreWearMode, tyresLayout,
+  } = useAppConfiguration()
+  const [tab, setTab] = useState<Tab>('core')
+  const [mountedTab, setMountedTab] = useState<Tab | null>('core')
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory | null>(null)
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+  const [playbackDriverIdx, setPlaybackDriverIdx] = useState<number | null>(null)
+  const [recordedPlayerIdx, setRecordedPlayerIdx] = useState<number | null>(null)
+  const [editOpen, setEditOpen] = useState(false)
+  const [recordingError, setRecordingError] = useState<RecordingErrorMsg | null>(null)
+  const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null)
+  const [udpListenerError, setUdpListenerError] = useState<string | null>(null)
+  const { headerVisible, isFullscreen, isMaximized, setHeaderVisible } = useWindowState()
+  const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
+  const [analyzeCompareDriver, setAnalyzeCompareDriver] = useState<AnalysisDriverSelection | null>(null)
+  const [analyzeSecondaryFile, setAnalyzeSecondaryFile] = useState<SecondaryFileData | null>(null)
+  const [referenceLapNum, setReferenceLapNum] = useState<number | null>(1)
+  const [analyzeFixedLapMode, setAnalyzeFixedLapMode] = useState<AnalyzeFixedLapMode>({
+    enabled: false, lapA: null, lapB: null, lapADriver: null, lapBDriver: null,
+  })
+  const [analyzeDataMask, setAnalyzeDataMask] = useState(0)
+  const [chartWindowOverrides, setChartWindowOverrides] = useState<ChartWindowOverrides>({})
+  const [chartReferenceLapOverrides, setChartReferenceLapOverrides] = useState<ChartReferenceLapOverrides>({})
+  const activePageTransitionRef = useRef<AppPageTransition | null>(null)
+  const pageMountGenerationRef = useRef(0)
+  const handlePlaybackClosed = useCallback(() => setSelectedIdx(null), [])
+  const playback = usePlayback(handlePlaybackClosed)
+
+  useLayoutEffect(() => {
+    const root = document.documentElement
+    if (reduceAnimations) root.dataset.reduceAnimations = 'true'
+    else delete root.dataset.reduceAnimations
+    return () => { delete root.dataset.reduceAnimations }
+  }, [reduceAnimations])
+
+  const setChartWindowOverride = useCallback((section: GraphSection, value: ChartWindow | null) => {
+    setChartWindowOverrides(current => {
+      if (value === null) {
+        if (!(section in current)) return current
+        const next = { ...current }
+        delete next[section]
+        return next
+      }
+      return current[section] === value ? current : { ...current, [section]: value }
+    })
+  }, [])
+  const handleGlobalChartWindowChange = useCallback((value: ChartWindow) => {
+    setChartWindowOverrides({})
+    setChartReferenceLapOverrides({})
+    setChartWindow(value)
+  }, [setChartWindow])
+  const setChartReferenceLapOverride = useCallback((section: GraphSection, lapNum: number | null) => {
+    setChartReferenceLapOverrides(current => {
+      if (lapNum === null) {
+        if (!(section in current)) return current
+        const next = { ...current }
+        delete next[section]
+        return next
+      }
+      return current[section] === lapNum ? current : { ...current, [section]: lapNum }
+    })
+  }, [])
+  const handleGlobalReferenceLapChange = useCallback((lapNum: number | null) => {
+    setChartReferenceLapOverrides({})
+    setReferenceLapNum(lapNum)
+  }, [])
+
+  const schedulePageMount = useCallback((nextTab: Tab, generation: number) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (pageMountGenerationRef.current !== generation) return
+      startTransition(() => setMountedTab(nextTab))
+    }))
+  }, [])
+
+  const handleTabChange = useCallback((nextTab: Tab) => {
+    if (nextTab === tab) return
+    const generation = ++pageMountGenerationRef.current
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => AppPageTransition
+    }
+    const root = document.documentElement
+    const motionReduced = reduceAnimations
+      || root.dataset.reduceAnimations === 'true'
+
+    if (motionReduced || !transitionDocument.startViewTransition) {
+      activePageTransitionRef.current?.skipTransition?.()
+      activePageTransitionRef.current = null
+      delete root.dataset.pageTransition
+      delete root.dataset.pageTransitionDirection
+      delete root.dataset.pageTransitionPhase
+      setMountedTab(null)
+      setTab(nextTab)
+      schedulePageMount(nextTab, generation)
+      return
+    }
+
+    activePageTransitionRef.current?.skipTransition?.()
+    root.dataset.pageTransition = 'true'
+    root.dataset.pageTransitionPhase = 'preparing'
+    try {
+      const currentIndex = TAB_OPTIONS.findIndex(option => option.value === tab)
+      const nextIndex = TAB_OPTIONS.findIndex(option => option.value === nextTab)
+      root.dataset.pageTransitionDirection = nextIndex > currentIndex ? 'right' : 'left'
+      const transition = transitionDocument.startViewTransition(() => {
+        if (pageMountGenerationRef.current !== generation) return
+        flushSync(() => {
+          setMountedTab(null)
+          setTab(nextTab)
+        })
+      })
+      activePageTransitionRef.current = transition
+      void transition.ready.then(() => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (activePageTransitionRef.current !== transition) return
+          root.dataset.pageTransitionPhase = 'running'
+        }))
+      }, () => {})
+      const clearPageTransition = () => {
+        if (activePageTransitionRef.current !== transition) return
+        activePageTransitionRef.current = null
+        delete root.dataset.pageTransition
+        delete root.dataset.pageTransitionDirection
+        delete root.dataset.pageTransitionPhase
+        schedulePageMount(nextTab, generation)
+      }
+      void transition.finished.then(clearPageTransition, clearPageTransition)
+    } catch {
+      activePageTransitionRef.current = null
+      delete root.dataset.pageTransition
+      delete root.dataset.pageTransitionDirection
+      delete root.dataset.pageTransitionPhase
+      if (pageMountGenerationRef.current !== generation) return
+      setMountedTab(null)
+      setTab(nextTab)
+      schedulePageMount(nextTab, generation)
+    }
+  }, [reduceAnimations, schedulePageMount, tab])
+
+  useEffect(() => window.recordingBridge.onError(setRecordingError), [])
+
+  useEffect(() => {
+    let cancelled = false
+    void window.udpBridge.getStatus().then(status => {
+      if (!cancelled) setUdpListenerError(status.ok ? null : status.error ?? 'UDP listener failed')
+    }).catch(error => {
+      console.warn('[udp] could not request listener status:', error)
+    })
+    const unsubscribe = window.udpBridge.onStatusChange(status => {
+      setUdpListenerError(status.ok ? null : status.error ?? 'UDP listener failed')
+    })
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void window.updateBridge.checkOnStartup().then(update => {
+      if (!cancelled && update) setAvailableUpdate(update)
+    }).catch(error => {
+      console.warn('[updates] could not request the startup update check:', error)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  // Opening or closing a recording (and the first render) starts with fresh
+  // comparison and driver selections.
+  const [selectionsFile, setSelectionsFile] = useState<{ filename: string | null | undefined } | null>(null)
+  if (selectionsFile === null || selectionsFile.filename !== playback.state?.filename) {
+    setSelectionsFile({ filename: playback.state?.filename })
+    setAnalyzeCompareLapNum(null)
+    setAnalyzeCompareDriver(null)
+    setAnalyzeSecondaryFile(null)
+    setAnalyzeFixedLapMode({
+      enabled: false, lapA: null, lapB: null, lapADriver: null, lapBDriver: null,
+    })
+    setReferenceLapNum(null)
+    setPlaybackDriverIdx(null)
+    setRecordedPlayerIdx(null)
+  }
+
+  const handleCloseSettings = useCallback(() => {
+    setSettingsOpen(false)
+    setSettingsCategory(null)
+  }, [])
+
+  const handleOpenUdpSettings = useCallback(() => {
+    setSettingsCategory('network')
+    setSettingsOpen(true)
+  }, [])
+
+  // App is deliberately COLD: it selects only low-frequency slices. Every hot,
+  // per-frame slice is read inside <TabContent/> and the other subscriber
+  // components below, so a telemetry frame never re-renders App itself.
+  const protocolStatus  = useTelemetryStore(s => s.protocolStatus)
+  const protocolWarning = useTelemetryStore(s => s.protocolWarning)
+  const recordingCurrentLapSupported = useTelemetryStore(s => s.analyzeDeltaAvailable)
+  const playbackTnrdVersion = useTelemetryStore(s => s.playbackTnrdVersion)
+  const playbackDriverIndex = useTelemetryStore(s => s.playbackDriverIndex)
+  const participants = useTelemetryStore(s => s.participants)
+  const timingPlayerIdx = useTelemetryStore(s => s.timing?.player_idx ?? null)
+  const clCapability = !playback.state?.filename
+    ? 'live'
+    : playbackTnrdVersion === null
+      ? 'loading'
+      : recordingCurrentLapSupported
+        ? 'supported'
+        : 'legacy'
+  const clAvailable = clCapability !== 'legacy'
+  const recordingOpen = !!playback.state?.filename
+  const driverSelectorVisible = recordingOpen && playbackTnrdVersion === 'TNRD_V6'
+  const originalPlayerIdx = recordedPlayerIdx ?? playbackDriverIndex ?? timingPlayerIdx
+  // Every participants packet replaces the store's roster object, so this list
+  // would otherwise get a new identity several times a second and re-render the
+  // whole title bar through AppHeader's memo. Reuse the previous array whenever
+  // the rendered options are unchanged.
+  const nextDriverOptions = useMemo(() => (participants?.drivers ?? []).map(driver => {
+    const restricted = driver.idx !== originalPlayerIdx && driver.your_telemetry !== 1
+    return {
+      value: driver.idx,
+      label: restricted ? `${driver.name} · Public data only` : driver.name,
+      isDisabled: false,
+    }
+  }), [participants, originalPlayerIdx])
+  const [driverOptions, setDriverOptions] = useState(nextDriverOptions)
+  if (nextDriverOptions !== driverOptions && !(driverOptions.length === nextDriverOptions.length &&
+      driverOptions.every((option, index) => option.value === nextDriverOptions[index].value &&
+        option.label === nextDriverOptions[index].label && option.isDisabled === nextDriverOptions[index].isDisabled))) {
+    setDriverOptions(nextDriverOptions)
+  }
+  if (!driverSelectorVisible && playbackDriverIdx !== null) setPlaybackDriverIdx(null)
+  const initialPlayerIdx = playbackDriverIndex ?? timingPlayerIdx
+  if (driverSelectorVisible && recordedPlayerIdx === null && initialPlayerIdx !== null) {
+    setRecordedPlayerIdx(initialPlayerIdx)
+    setPlaybackDriverIdx(initialPlayerIdx)
+  }
+  // recordedPlayerIdx is only ever set right above, once per recording: tell
+  // the engine which driver the recording starts on.
+  useEffect(() => {
+    if (recordedPlayerIdx !== null) window.playerBridge.setDriver(recordedPlayerIdx, true)
+  }, [recordedPlayerIdx])
+  const availableChartWindows = useMemo(() => new Set(
+    getChartWindowOptionGroups(clAvailable, recordingOpen)
+      .flatMap(group => group.options)
+      .map(option => option.value),
+  ), [clAvailable, recordingOpen])
+  // Drop overrides for windows the current source can't show.
+  const prunedWindowOverrides = Object.fromEntries(Object.entries(chartWindowOverrides)
+    .filter(([, value]) => availableChartWindows.has(value))) as ChartWindowOverrides
+  if (Object.keys(prunedWindowOverrides).length !== Object.keys(chartWindowOverrides).length)
+    setChartWindowOverrides(prunedWindowOverrides)
+  const prunedReferenceLapOverrides = Object.fromEntries(Object.entries(chartReferenceLapOverrides)
+    .filter(([section]) => {
+      const graphSection = section as GraphSection
+      const effectiveWindow = chartWindowOverrides[graphSection] ?? chartWindow
+      return effectiveWindow === 'RL' && availableChartWindows.has(effectiveWindow)
+    })) as ChartReferenceLapOverrides
+  if (Object.keys(prunedReferenceLapOverrides).length !== Object.keys(chartReferenceLapOverrides).length)
+    setChartReferenceLapOverrides(prunedReferenceLapOverrides)
+  const chartCoordinateMode = chartWindow === 'AL' || chartWindow === 'SL'
+    ? chartWindow
+    : clAvailable && typeof chartWindow !== 'number' && (chartWindow !== 'RL' || recordingOpen)
+      ? chartWindow
+      : null
+  const referenceLapOptions = useMemo(() => {
+    const lapNumbers = (playback.speedRpmBlocks ?? [])
+      .map(block => Number(block.lapNum))
+      .filter(Number.isFinite)
+    return [...new Set(lapNumbers)]
+      .sort((a, b) => a - b)
+      .map(value => ({ value, label: String(value) }))
+  }, [playback.speedRpmBlocks])
+
+  // The lap catalog arrives after the playback header. Keep RL on its Lap 1
+  // default while loading instead of clearing it to the dash placeholder.
+  if (referenceLapOptions.length > 0 &&
+      (referenceLapNum === null || !referenceLapOptions.some(option => option.value === referenceLapNum))) {
+    setReferenceLapNum(referenceLapOptions.find(option => option.value === 1)?.value ?? referenceLapOptions[0].value)
+  }
+  // Publish the visible time window to the store so it computes the right slices.
+  const dataRequirements = useMemo(
+    () => dataRequirementsForUi(
+      tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView,
+      Boolean(playback.state?.filename),
+      analyzeDataMask,
+      pageLayouts,
+      graphView,
+    ),
+    [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView, playback.state?.filename, analyzeDataMask, pageLayouts, graphView],
+  )
+  const visibleChartSections = useMemo(() => visibleChartSectionsForUi(
+    tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView,
+  ), [tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView])
+  const visibleChartScopes = useMemo((): Array<{ mask: number; window: ChartWindow }> => tab === 'stint'
+    // Trends' per-lap measurements and graphs cover the whole session,
+    // whatever the title-bar window. Each graph's range choice only crops it.
+    ? [{ mask: DATA_ROW.status | DATA_ROW.damage, window: 'AL' }]
+    : visibleChartSections.map(section => ({
+      mask: GRAPH_SECTION_ROW_MASK[section],
+      window: chartWindowOverrides[section] ?? chartWindow,
+    })),
+  [chartWindow, chartWindowOverrides, tab, visibleChartSections])
+  useEffect(() => {
+    // Analysis is always scoped to the current lap. Its distance-axis charts
+    // consume the store's dedicated analyzeLap* slices, so the title-bar time
+    // window must not truncate the native seek preload (15s/30s/etc.) or turn
+    // it into an unnecessarily large full-session AL preload.
+    const analysisLapScope = tab === 'analyze'
+    const fullLapScopes = analysisLapScope
+      ? []
+      : visibleChartScopes.filter(scope => scope.window === 'AL' || scope.window === 'SL')
+    const fullLapHistoryEnabled = fullLapScopes.length > 0
+    const stintLapsEnabled = fullLapScopes.some(scope => scope.window === 'SL')
+    const lapWindowScopes = visibleChartScopes.filter(scope =>
+      typeof scope.window !== 'number' && scope.window !== 'AL' && scope.window !== 'SL')
+    const hasLapWindow = lapWindowScopes.length > 0
+    const finiteScopes = visibleChartScopes.filter(
+      (scope): scope is { mask: number; window: number } => typeof scope.window === 'number')
+    const finiteWindows = finiteScopes.map(scope => scope.window)
+    // A page with no visible chart has no time range to request. Its stream
+    // subscription is restored from the latest rows at the current cursor.
+    const maxFiniteWindow = finiteWindows.length > 0 ? Math.max(...finiteWindows) : 0
+    // Live Previous/Fastest selectors can be changed after a lap completes, so
+    // retain every chart family for the small uncompressed lap working set.
+    // Historical AL decompression remains restricted to historyMask below.
+    const liveLapMask = playback.state?.filename || visibleChartScopes.length === 0
+      ? 0
+      : LIVE_LAP_FAMILY_MASK
+    const streamMask = (stintLapsEnabled
+      ? dataRequirements.streamMask | DATA_ROW.status
+      : dataRequirements.streamMask) | liveLapMask
+    const lapMetadataMask = fullLapHistoryEnabled || hasLapWindow ? DATA_ROW.lap : 0
+    const historyMask = (stintLapsEnabled
+      ? dataRequirements.historyMask | DATA_ROW.status
+      : dataRequirements.historyMask) | lapMetadataMask
+    const fullSessionHistoryMask = fullLapHistoryEnabled
+      ? (fullLapScopes.reduce((mask, scope) => mask | scope.mask, 0) |
+        DATA_ROW.lap | (stintLapsEnabled ? DATA_ROW.status : 0)) >>> 0
+      : 0
+    const finiteHistoryMask = finiteScopes.reduce((mask, scope) => mask | scope.mask, 0) >>> 0
+    const lapWindowHistoryMask = (lapWindowScopes.reduce((mask, scope) => mask | scope.mask, 0) |
+      (hasLapWindow ? DATA_ROW.lap : 0)) >>> 0
+    // A mixed lap/time page seeks the current lap first. The renderer then
+    // requests the older finite prefix additively only when that prefix starts
+    // before the lap, so overlapping V4 blocks are not decoded unnecessarily.
+    const mixedLapAndTime = hasLapWindow && finiteWindows.length > 0
+    const historyWindowSeconds = analysisLapScope
+      ? 0
+      : fullLapHistoryEnabled
+          ? -1
+          : hasLapWindow ? 0 : maxFiniteWindow
+    // Aero (7), TyreState (13) and BrakeBias (20) are edge-encoded in V6: the
+    // writer only records a sample when the value changes. Every other type is
+    // sampled continuously, so if a seek flush omits it the resumed 60Hz stream
+    // refills it within a frame and nobody notices. These three have no such
+    // safety net — a value whose last change was laps ago is never re-sent, so
+    // leaving them out of the history request means the field stays missing
+    // until the car next changes it. That is why the wing card read blank after
+    // every seek. Request them whenever any history is requested.
+    const v6HistoryTypes = [...new Set([
+      ...dataRequirements.v6HistoryTypes,
+      ...(historyMask ? [7, 13, 20] : []),
+      ...(stintLapsEnabled ? [13, 15] : []),
+      ...(lapMetadataMask ? [24] : []),
+    ])]
+    window.playerBridge.setDataRequirements(
+      streamMask,
+      historyMask,
+      historyWindowSeconds,
+      [...new Set([
+        ...dataRequirements.v6Types,
+        ...(stintLapsEnabled ? [13, 15] : []),
+        ...(lapMetadataMask ? [24] : []),
+      ])],
+      v6HistoryTypes,
+    )
+    setHistoryRowMask(
+      historyMask,
+      fullSessionHistoryMask,
+      finiteHistoryMask,
+      finiteWindows.length > 0 ? maxFiniteWindow : 0,
+      lapWindowHistoryMask,
+      v6HistoryTypes,
+    )
+    setAnalyzeLapEnabled(analysisLapScope || hasLapWindow)
+    window.playerBridge.setAllLapsMode(
+      fullLapHistoryEnabled,
+      analysisLapScope
+        ? historyMask
+        : fullLapHistoryEnabled
+          ? fullSessionHistoryMask
+          : hasLapWindow
+            ? lapWindowHistoryMask
+            : historyMask,
+      analysisLapScope || fullLapHistoryEnabled || hasLapWindow ? 0 : maxFiniteWindow,
+    )
+    setTelemetrySeconds(
+      fullLapHistoryEnabled ? Infinity : maxFiniteWindow,
+      !analysisLapScope && (finiteWindows.length > 0 || mixedLapAndTime),
+    )
+  }, [dataRequirements, seconds, tab, visibleChartScopes, playback.state?.filename])
+
+  // A renderer that mounts after the engine already settled on a format never
+  // receives the one-shot protocol_status push, so pull the last one when we
+  // have no catalog. (Ported from the old useTelemetry hook.)
+  useEffect(() => {
+    if (!protocolStatus) window.protocolBridge.requestStatus()
+  }, [protocolStatus])
+
+  const detectedGameLabel = useMemo(() => {
+    if (!protocolStatus) return 'No data yet'
+    const { detected_format, active_format, override } = protocolStatus
+    if (detected_format) {
+      return `${detected_format}`
+    }
+    if (override !== 'auto' && active_format) {
+      return `${active_format} (manual)`
+    }
+    if (active_format) {
+      return `${active_format} (last session)`
+    }
+    return 'No data yet'
+  }, [protocolStatus])
+
+  const detectedWarningFormat = protocolWarning?.detected_format ?? null
+  const forcedWarningFormat = protocolWarning?.forced_format ?? null
+
+  const { activeBanner, handleLeaderChange } = useRaceBanners(bannerDuration)
+
+  const handleSelectDriver = useCallback((idx: number) => {
+    setSelectedIdx(prev => prev === idx ? null : idx)
+  }, [])
+
+  // V6 playback reads a car's private status (ERS, fuel, DRS, brake bias) only
+  // for the car selected in Standings; the rest of the grid streams lap timing
+  // and tyres. Re-sent per recording, since a load starts with no focus car.
+  const focusDriverIdx = recordingOpen && tab === 'timing_tower' ? selectedIdx : null
+  const recordingFilename = playback.state?.filename
+  useEffect(() => {
+    if (!recordingFilename) return
+    window.playerBridge.setFocusDriver(focusDriverIdx ?? -1)
+  }, [recordingFilename, focusDriverIdx])
+
+  // usePlayback returns a fresh object on every render, so reading it through a
+  // ref keeps this handler stable for AppHeader's memo.
+  const playbackRef = useRef(playback)
+  useLayoutEffect(() => { playbackRef.current = playback })
+  const handlePlaybackDriverChange = useCallback((idx: number) => {
+    if (!driverSelectorVisible || idx === playbackDriverIdx) return
+    const option = driverOptions.find(candidate => candidate.value === idx)
+    if (!option) return
+    setPlaybackDriverIdx(idx)
+    setSelectedIdx(idx)
+    window.playerBridge.setDriver(idx, idx === originalPlayerIdx)
+    const current = playbackRef.current
+    if (current.state) current.seekProgress(current.state.progressPct)
+  }, [driverOptions, driverSelectorVisible, originalPlayerIdx, playbackDriverIdx])
+
+  return (
+    <div className="h-dvh bg-[var(--bg-base)] text-[var(--text-primary)] flex flex-col relative">
+      {window.platform !== 'darwin' && (
+        <FullscreenBanner banner={activeBanner} headerVisible={headerVisible} isFullscreen={isFullscreen} />
+      )}
+
+      <Header
+        actualNativeTitlebar={actualNativeTitlebar}
+        activeBanner={activeBanner}
+        editOpen={editOpen}
+        filename={playback.state?.filename ?? undefined}
+        headerVisible={headerVisible}
+        isFullscreen={isFullscreen}
+        isMaximized={isMaximized}
+        inputCursorSyncEnabled={inputCursorSyncEnabled}
+        sectorBoundariesEnabled={sectorBoundariesEnabled}
+        onClosePlayback={playback.close}
+        onSelectPlaybackFile={playback.selectFile}
+        chartWindow={chartWindow}
+        driverOptions={driverOptions}
+        driverSelectorVisible={driverSelectorVisible}
+        selectedDriverIdx={playbackDriverIdx}
+        clAvailable={clAvailable}
+        referenceLapNum={referenceLapNum}
+        referenceLapOptions={referenceLapOptions}
+        setEditOpen={setEditOpen}
+        setHeaderVisible={setHeaderVisible}
+        setInputCursorSyncEnabled={setInputCursorSyncEnabled}
+        setSectorBoundariesEnabled={setSectorBoundariesEnabled}
+        setChartWindow={handleGlobalChartWindowChange}
+        setSelectedDriverIdx={handlePlaybackDriverChange}
+        setReferenceLapNum={handleGlobalReferenceLapChange}
+        setSettingsOpen={setSettingsOpen}
+        onOpenUdpSettings={handleOpenUdpSettings}
+        setTab={handleTabChange}
+        settingsOpen={settingsOpen}
+        tab={tab}
+        theme={theme}
+        titlebarUpdateInterval={titlebarUpdateInterval}
+        udpListenerError={udpListenerError}
+      />
+
+      <StatusOverlays
+        exportProgress={playback.exportProgress}
+        exportStage={playback.exportStage}
+        exportState={playback.exportState}
+        isScanning={!!playback.state?.isScanning}
+      />
+
+      <LayoutEditor
+        coreLayout={coreLayout}
+        editOpen={editOpen}
+        inputLayout={inputLayout}
+        pageLayouts={pageLayouts}
+        miscLayout={miscLayout}
+        powerLayout={powerLayout}
+        sessionLayout={sessionLayout}
+        standingsLayout={standingsLayout}
+        setCoreLayout={setCoreLayout}
+        setEditOpen={setEditOpen}
+        setInputLayout={setInputLayout}
+        setMiscLayout={setMiscLayout}
+        setPowerLayout={setPowerLayout}
+        setSessionLayout={setSessionLayout}
+        setStandingsLayout={setStandingsLayout}
+        setTyresLayout={setTyresLayout}
+        setTrendsLayout={setTrendsLayout}
+        damageLayout={damageLayout}
+        setDamageLayout={setDamageLayout}
+        tab={tab}
+        trendsLayout={trendsLayout}
+        tyreView={tyreView}
+        tyreWearMode={tyreWearMode}
+        tyresLayout={tyresLayout}
+      />
+
+      {/* Settings Modal */}
+      <Settings
+        isOpen={settingsOpen}
+        openCategory={settingsCategory}
+        onClose={handleCloseSettings}
+        tyreView={tyreView}
+        onTyreViewChange={setTyreView}
+        tyreWearMode={tyreWearMode}
+        onTyreWearModeChange={setTyreWearMode}
+        bannerDuration={bannerDuration}
+        onBannerDurationChange={setBannerDuration}
+        theme={theme}
+        onThemeChange={setTheme}
+        sectorColors={sectorColors}
+        onSectorColorsChange={setSectorColors}
+        driversMode={driversMode}
+        onDriversModeChange={setDriversMode}
+        mapTimeout={mapTimeout}
+        onMapTimeoutChange={setMapTimeout}
+        detectedGameLabel={detectedGameLabel}
+        detectedWarningFormat={detectedWarningFormat}
+        forcedWarningFormat={forcedWarningFormat}
+        nativeTitlebar={nativeTitlebar}
+        onNativeTitlebarChange={setNativeTitlebar}
+        titlebarUpdateInterval={titlebarUpdateInterval}
+        onTitlebarUpdateIntervalChange={setTitlebarUpdateInterval}
+        reduceAnimations={reduceAnimations}
+        onReduceAnimationsChange={setReduceAnimations}
+        fpsInFocus={fpsInFocus}
+        onFpsInFocusChange={setFpsInFocus}
+        fpsOutOfFocus={fpsOutOfFocus}
+        onFpsOutOfFocusChange={setFpsOutOfFocus}
+        mapDimmed={mapDimmed}
+        onMapDimmedChange={setMapDimmed}
+        pageLayouts={pageLayouts}
+        onPageLayoutsChange={setPageLayouts}
+        secondaryHorizontalCrosshairEnabled={secondaryHorizontalCrosshairEnabled}
+        onSecondaryHorizontalCrosshairEnabledChange={setSecondaryHorizontalCrosshairEnabled}
+        secondaryVerticalCrosshairEnabled={secondaryVerticalCrosshairEnabled}
+        onSecondaryVerticalCrosshairEnabledChange={setSecondaryVerticalCrosshairEnabled}
+        graphView={graphView}
+        onGraphViewChange={setGraphView}
+        compact={compact}
+        onCompactChange={setCompact}
+        chartYAxis={chartYAxis}
+        onChartYAxisChange={setChartYAxis}
+      />
+
+      {/* Content */}
+      <RaceLeaderWatcher enabled={!playback.state?.filename} onLeaderChange={handleLeaderChange} />
+      <main className="app-page-transition relative flex-1 min-h-0">
+        <ChartWindowOverridesProvider
+          globalWindow={chartWindow}
+          overrides={chartWindowOverrides}
+          setOverride={setChartWindowOverride}
+          clAvailable={clAvailable}
+          recordingOpen={recordingOpen}
+          referenceLapNum={referenceLapNum}
+          referenceLapOptions={referenceLapOptions}
+          referenceLapOverrides={chartReferenceLapOverrides}
+          setReferenceLapOverride={setChartReferenceLapOverride}
+          sectorBoundariesEnabled={sectorBoundariesEnabled}
+        >
+        <ChartCoordinatesProvider mode={chartCoordinateMode} referenceLapNum={referenceLapNum} rowTypeMask={dataRequirements.historyMask} sectorBoundaries={sectorBoundariesEnabled}>
+        {mountedTab === null ? <PageMountShell /> : <TabContent
+          tab={mountedTab}
+          isDark={theme !== 'light'}
+          seconds={seconds}
+          coreLayout={coreLayout}
+          powerLayout={powerLayout}
+          sessionLayout={sessionLayout}
+          standingsLayout={standingsLayout}
+          tyresLayout={tyresLayout}
+          trendsLayout={trendsLayout}
+          damageLayout={damageLayout}
+          inputLayout={inputLayout}
+          inputCursorSyncEnabled={inputCursorSyncEnabled}
+          secondaryHorizontalCrosshairEnabled={secondaryHorizontalCrosshairEnabled}
+          secondaryVerticalCrosshairEnabled={secondaryVerticalCrosshairEnabled}
+          pageLayouts={pageLayouts}
+          miscLayout={miscLayout}
+          graphView={graphView}
+          compact={compact}
+          chartYAxis={chartYAxis}
+          tyreView={tyreView}
+          tyreWearMode={tyreWearMode}
+          selectedIdx={selectedIdx}
+          onSelectDriver={handleSelectDriver}
+          reduceAnimations={reduceAnimations}
+          sectorColors={sectorColors}
+          driversMode={driversMode}
+          mapTimeout={mapTimeout}
+          mapDimmed={mapDimmed}
+          currentPlaybackLapNum={playback.currentLapNum}
+          playbackFilename={playback.state?.filename ?? null}
+          analyzeCompareLapNum={analyzeCompareLapNum}
+          onAnalyzeCompareLapChange={setAnalyzeCompareLapNum}
+          analyzeCompareDriver={analyzeCompareDriver}
+          onAnalyzeCompareDriverChange={setAnalyzeCompareDriver}
+          analyzeSecondaryFile={analyzeSecondaryFile}
+          onAnalyzeSecondaryFileChange={setAnalyzeSecondaryFile}
+          analyzeFixedLapMode={analyzeFixedLapMode}
+          onAnalyzeFixedLapModeChange={setAnalyzeFixedLapMode}
+          onAnalyzeDataMaskChange={setAnalyzeDataMask}
+        />}
+        </ChartCoordinatesProvider>
+        </ChartWindowOverridesProvider>
+        <SeekLoadingOverlay />
+      </main>
+
+      {/* Playback Controls Bar */}
+      {playback.state && playback.state.filename && (
+        <PlaybackBar
+          compact={compact.playbackBar}
+          currentLapNum={playback.currentLapNum}
+          exportError={playback.exportError}
+          exportState={playback.exportState}
+          onExport={playback.exportXlsx}
+          onSeekProgress={playback.seekProgress}
+          onSeekBackward={playback.seekBackward}
+          onSeekForward={playback.seekForward}
+          onSpeedChange={playback.setSpeed}
+          onTogglePlay={playback.togglePlay}
+          sessionFileStart={playback.sessionFileStart}
+          speedRpmBlocks={playback.speedRpmBlocks}
+          state={playback.state}
+        />
+      )}
+
+      <PlaybackDialogs
+        confirmOpenFilePath={playback.confirmOpenFilePath}
+        loadError={playback.loadError}
+        setConfirmOpenFilePath={playback.setConfirmOpenFilePath}
+        setLoadError={playback.setLoadError}
+      />
+
+      <RecordingErrorDialog
+        error={recordingError}
+        onClose={() => setRecordingError(null)}
+      />
+
+      <UpdateAvailableDialog
+        update={availableUpdate}
+        onClose={() => setAvailableUpdate(null)}
+      />
+
+    </div>
+  )
+}

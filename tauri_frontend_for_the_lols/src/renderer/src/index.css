@@ -1,0 +1,1070 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono: 'Cascadia Code', ui-monospace, monospace;
+}
+
+/* Bundled so the UI renders in Cascadia Code even where it isn't installed (e.g. Linux). */
+@font-face {
+  font-family: 'Cascadia Code';
+  src: url('./assets/fonts/CascadiaCode.woff2') format('woff2-variations');
+  font-weight: 200 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Cascadia Code';
+  src: url('./assets/fonts/CascadiaCodeItalic.woff2') format('woff2-variations');
+  font-weight: 200 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+  --compound-soft:   #e8002d;
+  --compound-medium: #ffd700;
+  --compound-hard:   #c8c8c8;
+  --compound-inter:  #39b54a;
+  --compound-wet:    #4488ff;
+  --bg-base: #0c0e14;
+  --bg-panel: #11141f;
+  --bg-card: #0e1019;
+  --bg-input: #09090e;
+  --bg-menu: #171b2e;
+  --bg-hover: #181c2c;
+  --bg-accent: #161a28;
+  --bg-modal: rgba(0,0,0,0.72);
+  --bg-selected: #162440;
+  --bg-widget-active: #1a274c;
+  --border: #1e2136;
+  --border-subtle: #161828;
+  --border-muted: #1a1d2e;
+  --border-focus: #2e3e6c;
+  --border-focus-hover: #3c508e;
+  --text-primary: #dde0ec;
+  --text-secondary: #7c8098;
+  --text-muted: #484c62;
+  --text-dim: #5a5e78;
+  --text-inactive: #262a3a;
+  --color-info: #5794F2;
+  --color-fastest: #BF5FFF;
+  --chart-grid: rgba(255,255,255,0.04);
+  --chart-ref: rgba(255,255,255,0.08);
+  --chart-axis: #7c8098;
+  --chart-zero: rgba(255,255,255,0.2);
+  --shadow-overlay: 0 10px 28px rgba(0,0,0,0.48), 0 2px 6px rgba(0,0,0,0.32);
+}
+
+[data-theme='midnight'] {
+  color-scheme: dark;
+  --compound-soft:   #f01a3c;
+  --compound-medium: #ffd700;
+  --compound-hard:   #dcdfe8;
+  --compound-inter:  #36c759;
+  --compound-wet:    #3d8cff;
+  --bg-base: #06070a;
+  --bg-panel: #0c0d12;
+  --bg-card: #090a0e;
+  --bg-input: #050507;
+  --bg-menu: #101117;
+  --bg-hover: #151720;
+  --bg-accent: #111319;
+  --bg-modal: rgba(3, 4, 6, 0.82);
+  --bg-selected: #111826;
+  --bg-widget-active: #151f33;
+  --border: #171922;
+  --border-subtle: #0f1016;
+  --border-muted: #13151d;
+  --border-focus: #202c46;
+  --border-focus-hover: #2c3d62;
+  --text-primary: #e2e4ec;
+  --text-secondary: #7a7d8c;
+  --text-muted: #444754;
+  --text-dim: #565968;
+  --text-inactive: #1e2028;
+  --color-info: #5794F2;
+  --color-fastest: #c065f5;
+  --chart-grid: rgba(255,255,255,0.03);
+  --chart-ref: rgba(255,255,255,0.065);
+  --chart-axis: #7a7d8c;
+  --chart-zero: rgba(255,255,255,0.16);
+  --shadow-overlay: 0 10px 30px rgba(0,0,0,0.7), 0 2px 8px rgba(0,0,0,0.5);
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+  --compound-soft:   #c8001a;
+  --compound-medium: #765900;
+  --compound-hard:   #555555;
+  --compound-inter:  #1e7a2e;
+  --compound-wet:    #1a55bb;
+  --bg-base: #dededa;
+  --bg-panel: #ebeae6;
+  --bg-card: #e5e4e0;
+  --bg-input: #dcdcd8;
+  --bg-menu: #f1f0ec;
+  --bg-hover: #d7d7d3;
+  --bg-accent: #d2d3d1;
+  --bg-modal: rgba(35,37,39,0.32);
+  --bg-selected: #cfd9e1;
+  --bg-widget-active: #c4d0da;
+  --border: #afb1ae;
+  --border-subtle: #cecfcb;
+  --border-muted: #bec0bc;
+  --border-focus: #687e96;
+  --border-focus-hover: #566f8b;
+  --text-primary: #24272b;
+  --text-secondary: #454b51;
+  --shadow-overlay: 0 10px 28px rgba(35,37,39,0.14), 0 2px 6px rgba(35,37,39,0.1);
+  --text-muted: #5f656b;
+  --text-dim: #63696f;
+  --text-inactive: #a9acae;
+  --color-info: #0B57D0;
+  --color-fastest: #7C3BA6;
+  --chart-grid: rgba(36,39,43,0.075);
+  --chart-ref: rgba(36,39,43,0.11);
+  --chart-axis: #596168;
+  --chart-zero: rgba(36,39,43,0.2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.no-number-spinner {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.no-number-spinner::-webkit-inner-spin-button,
+.no-number-spinner::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+body {
+  margin: 0;
+  font-family: 'Cascadia Code', ui-monospace, 'Fira Code', Consolas, monospace;
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+}
+
+/* Chart tooltips render outside chart overflow/stacking contexts. Normal app
+   overlays top out at z-40; modal backdrops begin at z-50. */
+#chart-tooltip-portal {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+@keyframes posGainFlash {
+  0%   { background-color: rgba(34, 197, 94, 0.22); }
+  100% { background-color: transparent; }
+}
+
+@keyframes posLoseFlash {
+  0%   { background-color: rgba(239, 68, 68, 0.18); }
+  100% { background-color: transparent; }
+}
+
+@keyframes eventFadeIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Legacy utility colours still used by the layout editor and compact badges. */
+[data-theme='light'] .text-\[\#5794F2\] { color: var(--color-info); }
+[data-theme='light'] .text-\[\#5794F2\].opacity-60 { opacity: 1; }
+[data-theme='light'] .text-\[\#37872D\] { color: #0D6B2F; }
+[data-theme='light'] .text-\[\#9f7aea\] { color: var(--color-fastest); }
+
+.modal-backdrop {
+  opacity: 0;
+  transition: opacity 180ms ease-in;
+}
+
+.modal-backdrop[data-state='open'] {
+  opacity: 1;
+  transition-timing-function: ease-out;
+}
+
+.modal-panel {
+  opacity: 0;
+  transform: translateY(8px) scale(0.975);
+  transition:
+    opacity 150ms ease-in,
+    transform 180ms cubic-bezier(0.4, 0, 1, 1);
+  will-change: opacity, transform;
+}
+
+.modal-backdrop[data-state='open'] .modal-panel {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 180ms ease-out,
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes fullscreenEventBannerEnter {
+  from {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fullscreen-event-banner {
+  animation: fullscreenEventBannerEnter 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  box-shadow: var(--shadow-overlay);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-focus);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Match the Chrome color picker's editable fields to Settings inputs. */
+.analyze-color-picker .w-color-interactive.w-color-saturation {
+  border-radius: 6px 6px 0 0 !important;
+}
+
+.analyze-color-picker .w-color-editable-input input {
+  height: 2rem !important;
+  padding: 0 0.75rem !important;
+  border: 1px solid var(--border-muted) !important;
+  border-radius: 0.5rem !important;
+  outline: none !important;
+  background: var(--bg-input) !important;
+  box-shadow: none !important;
+  color: var(--text-primary) !important;
+  font-family: inherit !important;
+  font-size: 0.75rem !important;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 150ms ease;
+}
+
+.analyze-color-picker .w-color-editable-input input:focus {
+  border-color: var(--border-focus) !important;
+}
+
+.analyze-color-picker svg[viewBox="0 0 1024 1024"] {
+  display: none !important;
+}
+
+.analyze-color-format-icon {
+  width: 16px !important;
+  height: 16px !important;
+  flex: 0 0 16px;
+}
+
+@keyframes selectMenuEnterBottom {
+  from {
+    clip-path: inset(0 0 100% 0 round 6px);
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+}
+
+@keyframes selectMenuEnterTop {
+  from {
+    clip-path: inset(100% 0 0 0 round 6px);
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+}
+
+@keyframes selectMenuExitBottom {
+  from {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+  to {
+    clip-path: inset(0 0 100% 0 round 6px);
+  }
+}
+
+@keyframes selectMenuExitTop {
+  from {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+  to {
+    clip-path: inset(100% 0 0 0 round 6px);
+  }
+}
+
+/* Chart axes reserve their own label gutter. Keep the shared panel shell flush
+   on the left so that gutter is not duplicated by outer container padding. */
+.chart-panel {
+  padding: 0.75rem 1rem 1rem 0;
+}
+
+.chart-panel-title {
+  margin-left: 16px;
+}
+
+/* Each tyre graph responds to its own tile width, not the application width.
+   At compact widths the four-corner legend folds into a stable 2x2 grid. */
+.tyre-chart-container {
+  container-name: tyre-chart;
+  container-type: inline-size;
+}
+
+@container tyre-chart (max-width: 430px) {
+  .tyre-chart-legend {
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    column-gap: 0.75rem;
+    row-gap: 0.125rem;
+  }
+}
+
+/* Titlebar mode changes are low-frequency. Animate their intrinsic layout
+   without putting animation work on the telemetry update path. */
+.titlebar-auto-width {
+  flex: 0 0 auto;
+  overflow: hidden;
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.titlebar-filename {
+  max-width: 200px;
+  transition: max-width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* React Select controls can live inside a draggable Electron titlebar, while
+   their menus are portaled to the document body. Exclude both complete trees
+   from native titlebar hit testing so rapid clicks remain control interactions. */
+.react-select-no-drag,
+.react-select-no-drag * {
+  -webkit-app-region: no-drag;
+}
+
+@media (max-width: 1400px) {
+  .titlebar-filename {
+    max-width: 100px;
+  }
+}
+
+.titlebar-delta-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.titlebar-delta-slot > span {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.titlebar-delta-slot--visible {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.titlebar-lap-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  margin-left: -0.75rem;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-left 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.titlebar-lap-slot__inner {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.titlebar-lap-slot--visible {
+  grid-template-columns: 1fr;
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.chart-lap-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  margin-left: -0.25rem;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-left 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chart-lap-slot__inner {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.chart-lap-slot--visible {
+  grid-template-columns: 1fr;
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+/* Map comparison colors occupy inline space beside the lap labels. Keeping
+   the slot mounted lets the adjacent flexing select resize with the reveal. */
+.analyze-map-color-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  margin-right: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-right 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.analyze-map-color-slot__inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.analyze-map-color-slot--visible {
+  grid-template-columns: 1fr;
+  margin-right: 0.5rem;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+/* Keep fixed-color controls mounted so both the fade and row spacing can
+   transition when switching to/from game livery colors. */
+.team-color-picker-slot {
+  display: grid;
+  flex-shrink: 0;
+  grid-template-columns: 0fr;
+  margin-left: -1rem;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-left 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.team-color-picker-slot__inner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.team-color-picker-slot--visible {
+  grid-template-columns: 1fr;
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.analyze-lap-mode-switch {
+  position: relative;
+}
+
+.analyze-lap-mode-panel {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0;
+  transition:
+    opacity 140ms ease,
+    visibility 0s linear 140ms;
+}
+
+.analyze-lap-mode-panel--visible {
+  position: relative;
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 0s, 0s;
+}
+
+.analyze-lap-mode-panel--hidden-left,
+.analyze-lap-mode-panel--hidden-right {
+  position: absolute;
+  inset: 0 0 auto;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition-delay: 0s, 140ms;
+}
+
+.analyze-input-comparison {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 10;
+  width: 252px;
+  max-width: calc(100% - 1rem);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
+  font-size: 11px;
+  -webkit-app-region: no-drag;
+}
+
+.analyze-input-comparison__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 6px 4px 10px;
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.analyze-input-comparison__drag-handle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 24px;
+  text-align: left;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.analyze-input-comparison[data-dragging='true'] .analyze-input-comparison__drag-handle {
+  cursor: grabbing;
+}
+
+.analyze-input-comparison__action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.analyze-input-comparison__action:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.analyze-input-comparison__toggle-stroke {
+  transform-box: view-box;
+  transform-origin: center;
+  transform: rotate(90deg);
+  opacity: 0;
+  transition: transform 180ms ease, opacity 140ms ease;
+}
+
+.analyze-input-comparison__action[aria-expanded='false'] .analyze-input-comparison__toggle-stroke {
+  transform: rotate(0deg);
+  opacity: 1;
+}
+
+.analyze-input-comparison__action:focus-visible,
+.analyze-input-comparison__drag-handle:focus-visible {
+  outline: 2px solid var(--color-info);
+  outline-offset: -2px;
+}
+
+.analyze-input-comparison__content {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.analyze-input-comparison__body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+  transition: grid-template-rows 180ms ease, opacity 140ms ease;
+}
+
+.analyze-input-comparison__body--expanded {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.analyze-input-comparison__body-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.analyze-comparison-group__body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+  transition: grid-template-rows 180ms ease, opacity 140ms ease;
+}
+
+.analyze-comparison-group__body--expanded {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.analyze-comparison-group__body-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.analyze-input-comparison__row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.analyze-input-comparison__bars {
+  position: relative;
+  display: grid;
+  gap: 2px;
+  padding: 2px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-input);
+}
+
+.analyze-input-comparison__bars--signed::after {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 50%;
+  width: 1px;
+  background: var(--text-dim);
+  content: '';
+}
+
+.analyze-input-comparison__lane {
+  position: relative;
+  height: 4px;
+}
+
+.analyze-input-comparison__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 1px;
+  transition: left 50ms linear, width 50ms linear, background-color 140ms ease;
+}
+
+.analyze-input-comparison__missing {
+  position: absolute;
+  inset: 0;
+  color: var(--text-muted);
+  font-size: 8px;
+  line-height: 4px;
+  text-align: center;
+}
+
+.analyze-input-comparison__values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) 34px;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.analyze-map-playback-bar {
+  display: grid;
+  flex: none;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    grid-template-rows 180ms ease,
+    opacity 140ms ease;
+}
+
+.analyze-map-playback-bar__inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.analyze-map-playback-bar--visible {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.analyze-toggle-button {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+
+.analyze-toggle-button:hover:not(:disabled) {
+  background: var(--border);
+  color: var(--text-primary);
+}
+
+.analyze-toggle-button:focus-visible {
+  border-color: color-mix(in srgb, var(--color-info) 70%, transparent);
+}
+
+.analyze-toggle-button--active {
+  background: var(--border-focus);
+  color: white;
+}
+
+.analyze-toggle-button--active:hover:not(:disabled) {
+  background: var(--border-focus);
+  color: white;
+}
+
+.analysis-view-surface {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms cubic-bezier(0.65, 0, 0.35, 1);
+  will-change: opacity;
+}
+
+.analysis-view-surface--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Treat Graph, Split, and Map as sibling pages. A single compositor snapshot
+   hides their internal layout change without resizing the live chart per frame. */
+html[data-analysis-view-transition] .analysis-view-page-transition {
+  view-transition-name: analysis-view;
+}
+
+html[data-analysis-view-transition] .analysis-view-surface {
+  transition: none;
+}
+
+html[data-analysis-view-transition] .analysis-view-surface[data-analysis-active='true'] {
+  opacity: 1;
+}
+
+html[data-analysis-view-transition] .analysis-view-surface[data-analysis-active='false'] {
+  opacity: 0;
+}
+
+html[data-analysis-view-transition]::view-transition {
+  pointer-events: none;
+}
+
+html[data-analysis-view-transition]::view-transition-group(analysis-view) {
+  animation-duration: 250ms;
+}
+
+html[data-analysis-view-transition]::view-transition-old(analysis-view) {
+  animation: tyresViewFadeOut 140ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-analysis-view-transition]::view-transition-new(analysis-view) {
+  animation: tyresViewFadeIn 180ms 70ms cubic-bezier(0.4, 1, 0.6, 1) both;
+}
+
+html[data-analysis-view-transition-phase='preparing']::view-transition-group(analysis-view),
+html[data-analysis-view-transition-phase='preparing']::view-transition-old(analysis-view),
+html[data-analysis-view-transition-phase='preparing']::view-transition-new(analysis-view) {
+  animation-play-state: paused;
+}
+
+.analysis-chart-mode-surface {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms cubic-bezier(0.65, 0, 0.35, 1);
+  will-change: opacity;
+}
+
+.analysis-chart-mode-surface--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.analysis-chart-empty-state {
+  opacity: 0;
+  transition: opacity 260ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.analysis-chart-empty-state--visible {
+  opacity: 1;
+}
+
+.attribution-license-panel {
+  transition:
+    grid-template-rows 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease-out;
+}
+
+html[data-reduce-animations='true'] *,
+html[data-reduce-animations='true'] *::before,
+html[data-reduce-animations='true'] *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+
+.session-map-transition {
+  view-transition-name: session-map;
+}
+
+html[data-page-transition='true'] .session-map-transition {
+  view-transition-name: none;
+}
+
+.app-page-transition {
+  view-transition-name: app-page;
+}
+
+/* Compositor-driven delay: a seek that installs within 300ms unmounts the
+   overlay before it becomes visible, with no JS timer to schedule or cancel.
+   Pointer input passes through during the delay; the animation switches it on
+   as the fade starts and the forwards fill keeps it on. */
+.seek-loading-overlay {
+  opacity: 0;
+  pointer-events: none;
+  animation: seekLoadingFadeIn 150ms ease-out 300ms forwards;
+}
+
+.seek-loading-bar {
+  animation: seekLoadingScan 1.5s linear infinite;
+}
+
+/* Loading scrims stay dark in every theme, so their label and bar use fixed
+   light colors rather than theme text tokens that turn dark in light mode. */
+.loading-scrim {
+  background: rgba(0, 0, 0, 0.9);
+  backdrop-filter: blur(8px);
+}
+
+.loading-scrim-label {
+  color: #eef0f6;
+}
+
+.loading-scrim-muted {
+  color: rgba(238, 240, 246, 0.62);
+}
+
+.loading-scrim-track {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.loading-scrim-fill {
+  background: #5794F2;
+}
+
+@keyframes seekLoadingFadeIn {
+  from { pointer-events: auto; }
+  to { opacity: 1; pointer-events: auto; }
+}
+
+@keyframes seekLoadingScan {
+  from { left: -50%; }
+  to { left: 100%; }
+}
+
+html[data-page-transition='true']::view-transition {
+  pointer-events: none;
+}
+
+.tyres-view-transition {
+  view-transition-name: tyres-view;
+}
+
+html[data-page-transition='true'] .tyres-view-transition {
+  view-transition-name: none;
+}
+
+@keyframes appPageExitLeft {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(-44px); }
+}
+
+@keyframes appPageEnterRight {
+  from { opacity: 0; transform: translateX(44px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes appPageExitRight {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(44px); }
+}
+
+@keyframes appPageEnterLeft {
+  from { opacity: 0; transform: translateX(-44px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+html[data-page-transition-direction='right']::view-transition-old(app-page) {
+  animation: appPageExitLeft 230ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-page-transition-direction='right']::view-transition-new(app-page) {
+  animation: appPageEnterRight 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+html[data-page-transition-direction='left']::view-transition-old(app-page) {
+  animation: appPageExitRight 230ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-page-transition-direction='left']::view-transition-new(app-page) {
+  animation: appPageEnterLeft 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+html[data-page-transition-phase='preparing']::view-transition-group(app-page),
+html[data-page-transition-phase='preparing']::view-transition-old(app-page),
+html[data-page-transition-phase='preparing']::view-transition-new(app-page) {
+  animation-play-state: paused;
+}
+
+/* Allocation and Graphs are sibling states, so use a quiet fade-through rather
+   than implying spatial navigation. These remain compositor snapshots, keeping
+   the live WebGL charts out of the animation path. */
+@keyframes tyresViewFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes tyresViewFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+html[data-tyres-view-transition]::view-transition {
+  pointer-events: none;
+}
+
+html[data-tyres-view-transition]::view-transition-old(tyres-view) {
+  z-index: 1;
+  animation: tyresViewFadeOut 140ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-tyres-view-transition]::view-transition-new(tyres-view) {
+  z-index: 2;
+  animation: tyresViewFadeIn 180ms 70ms cubic-bezier(0.4, 1, 0.6, 1) both;
+}
+
+html[data-tyres-view-transition-phase='preparing']::view-transition-new(tyres-view),
+html[data-tyres-view-transition-phase='preparing']::view-transition-old(tyres-view) {
+  animation-play-state: paused;
+}
+
+::view-transition-group(session-map) {
+  animation-duration: 360ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html[data-theme-transition='true'] .session-map-transition,
+html[data-theme-transition='true'] .app-page-transition,
+html[data-theme-transition='true'] .tyres-view-transition {
+  view-transition-name: none !important;
+}
+
+html[data-theme-transition='true']::view-transition {
+  pointer-events: none;
+}
+
+html[data-theme-transition='true']::view-transition-old(root) {
+  animation: themeFadeOut 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+html[data-theme-transition='true']::view-transition-new(root) {
+  animation: themeFadeIn 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes themeFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes themeFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+html[data-reduce-animations='true']::view-transition-old(root),
+html[data-reduce-animations='true']::view-transition-new(root),
+html[data-reduce-animations='true']::view-transition-old(app-page),
+html[data-reduce-animations='true']::view-transition-new(app-page),
+html[data-reduce-animations='true']::view-transition-old(tyres-view),
+html[data-reduce-animations='true']::view-transition-new(tyres-view),
+html[data-reduce-animations='true']::view-transition-group(analysis-view),
+html[data-reduce-animations='true']::view-transition-old(analysis-view),
+html[data-reduce-animations='true']::view-transition-new(analysis-view),
+html[data-reduce-animations='true']::view-transition-group(session-map),
+html[data-reduce-animations='true']::view-transition-old(session-map),
+html[data-reduce-animations='true']::view-transition-new(session-map) {
+  animation-duration: 0s !important;
+}

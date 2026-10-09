@@ -1,0 +1,1634 @@
+import { useEffect, useRef, type MutableRefObject, useLayoutEffect, useState } from 'react'
+import { ChartTooltipPortal, useChartTooltip } from '../../hooks/useChartTooltip'
+import {
+  ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, analyzeSeriesHasLines, analyzeSeriesLineColor, analyzeSeriesMemberIds, analyzeSeriesScaleDef,
+  type AnalyzeSeriesConfig, type AnalyzeSource,
+} from '../../lib/analyzeMetrics'
+import { ANALYSIS_Y_AXIS_SECTIONS, DEFAULT_CHART_Y_AXIS, type AnalysisFixedYRange, type AnalysisYAxisKey, type AnalysisYAxisState } from '../../lib/graphSections'
+import { useTelemetryStore } from '../../stores/telemetryStore'
+import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
+import { createCursorLinesPlugin, type CursorLine, type CursorLinesConfig, type CursorLinesHandle } from '../../lib/timechart/cursorLines'
+import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
+import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/core/alignedData'
+import type { TimeChartSeriesOptions } from '../../lib/timechart/engine/options'
+import { buildLapProgressMap, findSectorSplits, interpolateDistanceAtTime, interpolateLapElapsed, type LapProgressMap, type SectorSplit } from '../../lib/lapDelta'
+import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
+import { themeSeriesColor } from '../../lib/themeColors'
+import { getPlaybackCursorTime, subscribePlaybackCursor } from '../../lib/playbackCursor'
+import { getAnalyzeCursorElapsed } from '../../lib/analyzeCursor'
+import type { AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData } from '../../types'
+import { emptyView, type ColumnView } from '../../lib/columnStore'
+
+export interface AnalyzeTimeChartProps {
+  isDark: boolean
+  current: AnalyzeLapData
+  currentRevision: string | number
+  comparison: AnalyzeLapData | null
+  comparisonSelected: boolean
+  selected: AnalyzeSeriesConfig[]
+  primaryLabel?: string
+  comparisonLabel?: string
+  distanceMode: boolean
+  trackLengthM: number
+  deltaPositiveColor: string
+  deltaNegativeColor: string
+  zoomEnabled: boolean
+  realtimeCurrent: boolean
+  deltaData: AnalyzeDeltaData | null
+  controlsRef: MutableRefObject<AnalyzeChartControls | null>
+  onInspectMap?: (elapsedSeconds: number) => void
+  /** Restrict storage and GPU series to these metrics (used by stacked charts). */
+  metricScope?: readonly string[]
+  /** Compact panels reserve x-axis labels for the final chart only. */
+  showXAxis?: boolean
+  /** Let a parent synchronize pointer interactions across multiple panels. */
+  interactionEnabled?: boolean
+  /** Render selected metrics as vertical viewports on one WebGL canvas. */
+  stackedMode?: boolean
+  /** Hidden persistent chart modes must not leave their portaled tooltip visible. */
+  tooltipEnabled?: boolean
+  /** Show values from every stacked panel instead of only the hovered panel. */
+  syncedTooltip?: boolean
+  sectorBoundaries?: boolean
+  sectorDelta?: boolean
+  /** Split mode: mark where each compared car sits on the map with a cursor. */
+  showMapCursors?: boolean
+  mapCurrentColor?: string
+  mapComparisonColor?: string
+  /** Settings ▸ Y Axis ▸ Analysis: Fixed or Dynamic per metric scale. */
+  yAxis?: AnalysisYAxisState
+}
+
+export interface AnalyzeChartControls {
+  zoomIn: () => void
+  zoomOut: () => void
+  panLeft: () => void
+  panRight: () => void
+  reset: () => void
+  zoomByFactor: (factor: number, anchorRatio?: number) => void
+  panByFraction: (fraction: number) => void
+}
+
+type Role = 'comparison' | 'current'
+type SourceBuffers = Partial<Record<AnalyzeSource, AlignedDataBuffer>>
+type Buffers = Record<Role, SourceBuffers> & {
+  deltaPositive: AlignedDataBuffer
+  deltaNegative: AlignedDataBuffer
+}
+type SeriesRecord = Record<Role, Map<string, TimeChartSeriesOptions>>
+type DeltaSeriesPair = { positive: TimeChartSeriesOptions; negative: TimeChartSeriesOptions }
+type StackedAxisPanel = NonNullable<AxisConfig['panels']>[number]
+type StackedViewport = { top: number; bottom: number; gapAfter: number }
+type StackedTransition = {
+  from: StackedViewport
+  to: StackedViewport
+  fromOpacity: number
+  toOpacity: number
+}
+
+const SOURCES: AnalyzeSource[] = ['telemetry', 'motion', 'motionEx', 'status', 'damage']
+const EMPTY_ROWS = emptyView()
+const Y_TICKS = [0, 0.25, 0.5, 0.75, 1]
+const TOP_PADDING = 16
+const STACKED_TOP_PADDING = 6
+const STACKED_PANEL_GAP = 10
+const ANALYSIS_MOTION_DURATION = 260
+const COLLAPSED_PANEL_SPAN = 0.0001
+const MIN_ZOOM_SECONDS = 0.5
+const MIN_ZOOM_METRES = 25
+/** Dynamic Y axes pad the visible data by this fraction of its span, as the live charts' auto range. */
+const DYNAMIC_Y_PAD = 0.1
+const ANALYSIS_FIXED_Y_RANGES = new Map<AnalysisYAxisKey, AnalysisFixedYRange>(
+  ANALYSIS_Y_AXIS_SECTIONS.map(section => [section.key, section.range]))
+
+/** A value axis' drawn range, in the metric's normalized units (preset min..max = 0..1). */
+type YAxisRange = { lo: number; hi: number }
+
+function collapsedViewportAt(boundary: number): StackedViewport {
+  const top = Math.max(0, Math.min(1 - COLLAPSED_PANEL_SPAN, boundary - COLLAPSED_PANEL_SPAN / 2))
+  return { top, bottom: top + COLLAPSED_PANEL_SPAN, gapAfter: 0 }
+}
+
+function easeInOutCubic(progress: number): number {
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2
+}
+
+function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): ColumnView {
+  if (source === 'status') return lap.statusHistory
+  if (source === 'damage') return lap.damageHistory
+  return lap[source]
+}
+
+function lastDistance(lap: AnalyzeLapData | null): number {
+  const progress = lap?.lapProgress
+  if (!progress || progress.length === 0) return 0
+  const value = progress.num('lap_distance_m', progress.length - 1)
+  return value === value ? value : 0
+}
+
+function makeBuffers(
+  sources: readonly AnalyzeSource[],
+  metricsBySource: Record<AnalyzeSource, typeof ANALYZE_METRICS>,
+): Buffers {
+  const makeRole = () => Object.fromEntries(sources.map(source => [source, new AlignedDataBuffer(metricsBySource[source].length)])) as SourceBuffers
+  return {
+    comparison: makeRole(), current: makeRole(),
+    deltaPositive: new AlignedDataBuffer(1),
+    deltaNegative: new AlignedDataBuffer(1),
+  }
+}
+
+function nearestIndex(data: SeriesData, x: number): number {
+  if (data.length === 0) return -1
+  const after = data.lowerBoundX(x)
+  if (after === 0) return 0
+  if (after === data.length) return data.length - 1
+  return x - data.xAt(after - 1) <= data.xAt(after) - x ? after - 1 : after
+}
+
+function syncSource(
+  buffer: AlignedDataBuffer,
+  rows: ColumnView,
+  defs: typeof ANALYZE_METRICS,
+  origin: number,
+  rebuild: boolean,
+  scratch: Float64Array,
+  maxSessionTime: number,
+): boolean {
+  if (rebuild) buffer.clear()
+  if (rows.length === 0) {
+    // Source slices are published independently and can be transiently empty.
+    // Preserve the accumulated lap unless the store explicitly changed the
+    // lap revision (in which case the rebuild above already cleared it).
+    return rebuild
+  }
+  const lastX = buffer.length ? buffer.lastX : -Infinity
+  let lo = 0, hi = rows.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (rows.time(mid) - origin <= lastX) lo = mid + 1
+    else hi = mid
+  }
+  const appendStart = lo
+  let changed = false
+
+  // The same timestamp can continue arriving across separate renderer
+  // updates. Replace the buffered value with the final row published for that
+  // timestamp instead of retaining the first value or appending a duplicate X.
+  if (buffer.length && lo > 0 && rows.time(lo - 1) <= maxSessionTime && rows.time(lo - 1) - origin === lastX) {
+    const row = lo - 1
+    let differs = false
+    for (let channel = 0; channel < defs.length; channel++) {
+      const def = defs[channel]
+      const value = def.getValue(rows, row)
+      const normalized = Number.isFinite(value) ? (value - def.min) / (def.max - def.min) : NaN
+      scratch[channel] = normalized
+      const previous = buffer.yAt(channel, buffer.length - 1)
+      const stored = Math.fround(normalized)
+      if (stored !== previous && !(Number.isNaN(stored) && Number.isNaN(previous))) differs = true
+    }
+    if (differs) {
+      buffer.replaceLast(scratch)
+      changed = true
+    }
+  }
+
+  for (let i = appendStart; i < rows.length;) {
+    // Packet sources commonly publish several rows at the exact same session
+    // time while the lap timer is stopped (most visibly at 0:00.000). Keep the
+    // final row for that timestamp so every source has a strictly unique X.
+    let next = i + 1
+    while (next < rows.length && rows.time(next) === rows.time(i)) next++
+    const row = next - 1
+    const sessionTime = rows.time(row)
+    if (sessionTime > maxSessionTime) break
+    for (let channel = 0; channel < defs.length; channel++) {
+      const def = defs[channel]
+      const value = def.getValue(rows, row)
+      scratch[channel] = Number.isFinite(value) ? (value - def.min) / (def.max - def.min) : NaN
+    }
+    buffer.append(sessionTime - origin, scratch)
+    changed = true
+    i = next
+  }
+  // Do not trim to the first row of a current publication. The five source
+  // slices are published independently and one can briefly contain only its
+  // newest row while lap metadata catches up. Lap changes and explicit seeks
+  // rebuild the whole buffer explicitly, so front-trimming here is both
+  // unnecessary and the cause of visible full-lap/one-point flicker.
+  return rebuild || changed
+}
+
+function syncSourceDistance(
+  buffer: AlignedDataBuffer,
+  rows: ColumnView,
+  defs: typeof ANALYZE_METRICS,
+  progress: LapProgressMap | null,
+  rebuild: boolean,
+  scratch: Float64Array,
+  cursor: { value: number },
+  maxSessionTime: number,
+): boolean {
+  if (rebuild) { buffer.clear(); cursor.value = -Infinity }
+  if (!progress || rows.length === 0) return rebuild
+  let lo = 0, hi = rows.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (rows.time(mid) <= cursor.value) lo = mid + 1
+    else hi = mid
+  }
+  let changed = false
+  for (let i = lo; i < rows.length;) {
+    let next = i + 1
+    while (next < rows.length && rows.time(next) === rows.time(i)) next++
+    const row = next - 1
+    const sessionTime = rows.time(row)
+    if (sessionTime > progress.maxSessionTime || sessionTime > maxSessionTime) break
+    cursor.value = sessionTime
+    const distance = interpolateDistanceAtTime(progress, sessionTime)
+    if (!Number.isFinite(distance)) { i = next; continue }
+    for (let channel = 0; channel < defs.length; channel++) {
+      const def = defs[channel]
+      const value = def.getValue(rows, row)
+      scratch[channel] = Number.isFinite(value) ? (value - def.min) / (def.max - def.min) : NaN
+    }
+    if (buffer.length && distance === buffer.lastX) buffer.replaceLast(scratch)
+    else if (!buffer.length || distance > buffer.lastX) buffer.append(distance, scratch)
+    changed = true
+    i = next
+  }
+  return rebuild || changed
+}
+
+interface DeltaRenderState {
+  source: AnalyzeDeltaData | null
+  renderedCount: number
+  renderedRange: number
+}
+
+function rewriteDeltaRange(
+  positive: AlignedDataBuffer,
+  negative: AlignedDataBuffer,
+  samples: readonly AnalyzeDeltaSample[],
+  count: number,
+  range: number,
+) {
+  const positiveValues: number[] = []
+  const negativeValues: number[] = []
+  let previous: [number, number] | null = null
+  for (let index = 0; index < count; index++) {
+    const sample = samples[index]
+    const delta = sample.delta_seconds
+    if (!sample.valid || !Number.isFinite(delta)) {
+      positiveValues.push(NaN)
+      negativeValues.push(NaN)
+      previous = null
+      continue
+    }
+    if (previous && Math.sign(previous[1]) !== Math.sign(delta) && previous[1] !== 0 && delta !== 0) {
+      positiveValues.push(0.5)
+      negativeValues.push(0.5)
+    }
+    const normalized = 0.5 + delta / (2 * range)
+    positiveValues.push(delta >= 0 ? normalized : NaN)
+    negativeValues.push(delta <= 0 ? normalized : NaN)
+    previous = [sample.lap_distance_m, delta]
+  }
+  positive.replaceChannel(0, positiveValues)
+  negative.replaceChannel(0, negativeValues)
+}
+
+function syncNativeDelta(
+  positive: AlignedDataBuffer,
+  negative: AlignedDataBuffer,
+  deltaData: AnalyzeDeltaData | null,
+  state: DeltaRenderState,
+  currentMaxDistance: number,
+): { range: number; changed: boolean } {
+  if (!deltaData) {
+    const changed = positive.length > 0 || negative.length > 0
+    state.source = null
+    state.renderedCount = 0
+    state.renderedRange = 0
+    positive.clear()
+    negative.clear()
+    return { range: 0.5, changed }
+  }
+  const sourceChanged = state.source !== deltaData
+  if (sourceChanged) {
+    state.source = deltaData
+    state.renderedCount = 0
+    state.renderedRange = 0
+    positive.clear()
+    negative.clear()
+  }
+
+  let visibleCount = 0
+  while (visibleCount < deltaData.samples.length &&
+         deltaData.samples[visibleCount].lap_distance_m <= currentMaxDistance) visibleCount++
+  if (visibleCount < state.renderedCount) {
+    state.renderedCount = 0
+    positive.clear()
+    negative.clear()
+  }
+
+  const range = Math.max(0.5, Math.ceil(deltaData.maxAbsDeltaSeconds * 10) / 10)
+  let changed = sourceChanged
+  if (state.renderedCount > 0 && state.renderedRange !== range) {
+    rewriteDeltaRange(positive, negative, deltaData.samples, state.renderedCount, range)
+    changed = true
+  }
+  if (state.renderedCount >= visibleCount) {
+    changed = changed || state.renderedRange !== range
+    state.renderedRange = range
+    return { range, changed }
+  }
+
+  const positiveY = new Float64Array(1)
+  const negativeY = new Float64Array(1)
+  let previous: [number, number] | null = state.renderedCount > 0
+    ? (() => {
+        const sample = deltaData.samples[state.renderedCount - 1]
+        return sample.valid
+          ? [sample.lap_distance_m, sample.delta_seconds] as [number, number]
+          : null
+      })()
+    : null
+  for (let index = state.renderedCount; index < visibleCount; index++) {
+    const sample = deltaData.samples[index]
+    const distance = sample.lap_distance_m
+    const delta = sample.delta_seconds
+    if (!sample.valid || !Number.isFinite(delta)) {
+      positiveY[0] = negativeY[0] = NaN
+      positive.append(distance, positiveY)
+      negative.append(distance, negativeY)
+      previous = null
+      continue
+    }
+    if (previous && Math.sign(previous[1]) !== Math.sign(delta) && previous[1] !== 0 && delta !== 0) {
+      const zeroDistance = previous[0] + (distance - previous[0]) * Math.abs(previous[1]) / (Math.abs(previous[1]) + Math.abs(delta))
+      positiveY[0] = negativeY[0] = 0.5
+      positive.append(zeroDistance, positiveY)
+      negative.append(zeroDistance, negativeY)
+    }
+    const normalized = 0.5 + delta / (2 * range)
+    positiveY[0] = delta >= 0 ? normalized : NaN
+    negativeY[0] = delta <= 0 ? normalized : NaN
+    positive.append(distance, positiveY)
+    negative.append(distance, negativeY)
+    previous = [distance, delta]
+  }
+  state.renderedCount = visibleCount
+  state.renderedRange = range
+  return { range, changed: true }
+}
+
+function blendColor(hex: string, isDark: boolean): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex)
+  if (!match) return hex
+  const value = Number.parseInt(match[1], 16)
+  const bg = isDark ? [0x12, 0x14, 0x1f] : [0xeb, 0xea, 0xe6]
+  const rgb = [(value >> 16) & 255, (value >> 8) & 255, value & 255]
+  return `#${rgb.map((channel, i) => Math.round(channel * 0.35 + bg[i] * 0.65).toString(16).padStart(2, '0')).join('')}`
+}
+
+function fmtLapTime(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, '0')}`
+}
+
+function fmtDistance(metres: number): string {
+  return `${Math.round(metres)} m`
+}
+
+function resolvedSectorSplits(primary: AnalyzeLapData, comparison: AnalyzeLapData | null): SectorSplit[] {
+  const bySector = new Map(findSectorSplits(comparison).map(split => [split.afterSector, split]))
+  for (const split of findSectorSplits(primary)) bySector.set(split.afterSector, split)
+  return ([1, 2] as const).flatMap(sector => {
+    const split = bySector.get(sector)
+    return split ? [split] : []
+  })
+}
+
+export default function AnalyzeTimeChart({
+  isDark, current, currentRevision, comparison, comparisonSelected, selected, primaryLabel, comparisonLabel,
+  distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
+  zoomEnabled, realtimeCurrent, controlsRef, onInspectMap,
+  deltaData,
+  metricScope, showXAxis = true, interactionEnabled = true, stackedMode = false,
+  tooltipEnabled = true, syncedTooltip = false, sectorBoundaries = false,
+  showMapCursors = false, mapCurrentColor = '#ffffff', mapComparisonColor = '#ffffff',
+  yAxis = DEFAULT_CHART_Y_AXIS.analysis,
+}: AnalyzeTimeChartProps) {
+  // Series topology is fixed for the lifetime of this chart. Stacked mode
+  // includes every metric as channels on one shared WebGL canvas.
+  const [topology] = useState(() => {
+    const scopedMetrics = metricScope
+      ? ANALYZE_METRICS.filter(def => metricScope.includes(def.id))
+      : ANALYZE_METRICS
+    const metricsBySource = Object.fromEntries(SOURCES.map(source => [
+      source,
+      scopedMetrics.filter(metric => metric.source === source),
+    ])) as Record<AnalyzeSource, typeof ANALYZE_METRICS>
+    const activeSources = SOURCES.filter(source => metricsBySource[source].length > 0)
+    const scratch: Partial<Record<AnalyzeSource, Float64Array>> = Object.fromEntries(activeSources.map(source =>
+      [source, new Float64Array(metricsBySource[source].length)]))
+    return { scopedMetrics, metricsBySource, activeSources, scratch }
+  })
+  const scopedMetricsRef = useRef(topology.scopedMetrics)
+  const metricsBySourceRef = useRef(topology.metricsBySource)
+  const activeSourcesRef = useRef(topology.activeSources)
+  const themedDeltaPositive = themeSeriesColor(deltaPositiveColor, isDark)
+  const themedDeltaNegative = themeSeriesColor(deltaNegativeColor, isDark)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const { tooltipRef, show, hide } = useChartTooltip(containerRef)
+  const hostRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<TChart | null>(null)
+  const buffersRef = useRef<Buffers | null>(null)
+  const seriesRef = useRef<SeriesRecord | null>(null)
+  const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
+  const cursorCfgRef = useRef<{ current: CursorLinesConfig } | null>(null)
+  const cursorHandleRef = useRef<CursorLinesHandle | null>(null)
+  const deltaSeriesRef = useRef<DeltaSeriesPair | null>(null)
+  const stackedViewportAnimationRef = useRef(0)
+  const stackedAxisPanelsRef = useRef(new Map<string, StackedAxisPanel>())
+  const stackedExitingMetricIdsRef = useRef(new Set<string>())
+  const stackedPanelConfigsRef = useRef(new Map<string, AnalyzeSeriesConfig>())
+  const stackedLayoutReadyRef = useRef(false)
+  const stackedLayoutSignatureRef = useRef('')
+  const stackedMembershipRef = useRef('')
+  const combinedSeriesAnimationRef = useRef(0)
+  const combinedSeriesVisibilityReadyRef = useRef(false)
+  const combinedSeriesDesiredVisibilityRef = useRef(new Map<TimeChartSeriesOptions, boolean>())
+  const deltaRangeRef = useRef(0.5)
+  const deltaSamplesRef = useRef<DeltaRenderState>({ source: null, renderedCount: 0, renderedRange: 0 })
+  const deltaColorsRef = useRef({ positive: themedDeltaPositive, negative: themedDeltaNegative })
+  const selectedRef = useRef(selected)
+  const isDarkRef = useRef(isDark)
+  const currentRef = useRef(current)
+  const comparisonRef = useRef(comparison)
+  const comparisonSelectedRef = useRef(comparisonSelected)
+  const primaryLabelRef = useRef(primaryLabel)
+  const comparisonLabelRef = useRef(comparisonLabel)
+  const zoomEnabledRef = useRef(zoomEnabled)
+  const interactionEnabledRef = useRef(interactionEnabled)
+  const tooltipEnabledRef = useRef(tooltipEnabled)
+  const syncedTooltipRef = useRef(syncedTooltip)
+  const distanceModeRef = useRef(distanceMode)
+  const onInspectMapRef = useRef(onInspectMap)
+  const fullXRangeRef = useRef({ min: 0, max: 1 })
+  const revisionsRef = useRef<Record<string, string>>({})
+  const originsRef = useRef<Record<string, number>>({})
+  const distanceCursorsRef = useRef<Record<string, { value: number }>>({})
+  const lastRealtimeCutoffRef = useRef(-Infinity)
+  const syncPlaybackCursorRef = useRef<(() => void) | null>(null)
+  const scratchRef = useRef(topology.scratch)
+  // Fitted value-axis ranges keyed by scale (overlay) or panel metric (stacked).
+  const yRangesRef = useRef(new Map<string, YAxisRange>())
+  const fitYRangesRef = useRef<(() => void) | null>(null)
+  const yAxisRef = useRef(yAxis)
+
+  // Latest render values for the chart's imperative handlers and plugins.
+  // Declared ahead of every effect below, so each of them sees this render.
+  useLayoutEffect(() => {
+    selectedRef.current = selected
+    isDarkRef.current = isDark
+    currentRef.current = current
+    comparisonRef.current = comparison
+    comparisonSelectedRef.current = comparisonSelected
+    primaryLabelRef.current = primaryLabel
+    comparisonLabelRef.current = comparisonLabel
+    zoomEnabledRef.current = zoomEnabled
+    interactionEnabledRef.current = interactionEnabled
+    tooltipEnabledRef.current = tooltipEnabled
+    syncedTooltipRef.current = syncedTooltip
+    distanceModeRef.current = distanceMode
+    onInspectMapRef.current = onInspectMap
+    deltaColorsRef.current = { positive: themedDeltaPositive, negative: themedDeltaNegative }
+    yAxisRef.current = yAxis
+  })
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const scopedMetrics = scopedMetricsRef.current
+    const metricsBySource = metricsBySourceRef.current
+    const buffers = makeBuffers(activeSourcesRef.current, metricsBySource)
+    buffersRef.current = buffers
+    const axisCfg = { current: {
+      axisColor: '#7c8098', gridColor: 'rgba(255,255,255,0.04)', borderColor: '#1e2136',
+      font: '10px "Cascadia Code", ui-monospace, monospace', xTickSpacePx: 80,
+      xTickFormat: showXAxis ? fmtLapTime : () => '', yTickValues: () => [], yTickFormat: () => '',
+      xGap: 2, yGap: 4, showYGrid: true, extraYAxes: [],
+    } satisfies AxisConfig }
+    axisCfgRef.current = axisCfg
+    const cursorCfg = { current: { lines: [] } satisfies CursorLinesConfig }
+    const cursorHandle: CursorLinesHandle = { redraw: null }
+    cursorCfgRef.current = cursorCfg
+    cursorHandleRef.current = cursorHandle
+    const rawSeries: TimeChartSeriesOptions[] = []
+    for (const role of ['comparison', 'current'] as Role[]) {
+      for (const def of scopedMetrics) {
+        const channel = metricsBySource[def.source].findIndex(candidate => candidate.id === def.id)
+        rawSeries.push({
+          name: `${role}:${def.id}`, color: themeSeriesColor(def.defaultColor, isDark), visible: false,
+          lineWidth: role === 'comparison' ? 1.25 : 1.75,
+          lineType: def.lineType === 'step' ? TimeChart.LineType.Step : TimeChart.LineType.Line,
+          stepLocation: def.lineType === 'step' ? 1 : 0,
+          data: buffers[role][def.source]!.series[channel],
+        })
+      }
+    }
+    const deltaSeries: DeltaSeriesPair = {
+      positive: {
+        name: 'delta:positive', color: themedDeltaPositive, visible: false, lineWidth: 2,
+        lineType: TimeChart.LineType.Line, stepLocation: 1, data: buffers.deltaPositive.series[0], viewport: undefined,
+      },
+      negative: {
+        name: 'delta:negative', color: themedDeltaNegative, visible: false, lineWidth: 2,
+        lineType: TimeChart.LineType.Line, stepLocation: 1, data: buffers.deltaNegative.series[0], viewport: undefined,
+      },
+    }
+    rawSeries.push(deltaSeries.positive, deltaSeries.negative)
+    deltaSeriesRef.current = deltaSeries
+    const paddingTop = stackedMode ? STACKED_TOP_PADDING : TOP_PADDING
+    const paddingLeft = stackedMode ? 48 : 12
+    const paddingBottom = showXAxis ? 24 : 8
+    const chart = new TimeChart.core(host, {
+      paddingTop, paddingRight: 12, paddingBottom, paddingLeft,
+      renderPaddingTop: paddingTop, renderPaddingRight: 12, renderPaddingBottom: paddingBottom, renderPaddingLeft: paddingLeft,
+      yRange: { min: 0, max: 1 }, lineWidth: 1.5, series: rawSeries,
+      plugins: {
+        lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair,
+        nearestPoint: corePlugins.nearestPoint,
+        axis: createAxisPlugin(axisCfg),
+        cursorLines: createCursorLinesPlugin(cursorCfg, cursorHandle),
+      },
+    })
+    chartRef.current = chart
+
+    let xDomainAnimationFrame = 0
+    const clampXDomain = (requestedMin: number, requestedMax: number): [number, number] | null => {
+      if (!zoomEnabledRef.current) return null
+      const full = fullXRangeRef.current
+      const fullExtent = Math.max(0, full.max - full.min)
+      if (fullExtent <= 0) return null
+      const minExtent = Math.min(distanceModeRef.current ? MIN_ZOOM_METRES : MIN_ZOOM_SECONDS, fullExtent)
+      const extent = Math.min(fullExtent, Math.max(minExtent, requestedMax - requestedMin))
+      let min = requestedMin - (extent - (requestedMax - requestedMin)) / 2
+      min = Math.max(full.min, Math.min(min, full.max - extent))
+      return [min, min + extent]
+    }
+    const commitXDomain = ([min, max]: [number, number]) => {
+      chart.options.xRange = null
+      chart.model.xScale.domain([min, max])
+      fitYRangesRef.current?.()
+      chart.model.requestRedraw()
+    }
+    const applyXDomain = (requestedMin: number, requestedMax: number) => {
+      const target = clampXDomain(requestedMin, requestedMax)
+      if (!target) return
+      if (xDomainAnimationFrame) cancelAnimationFrame(xDomainAnimationFrame)
+      xDomainAnimationFrame = 0
+      commitXDomain(target)
+    }
+    const animateXDomain = (requestedMin: number, requestedMax: number, allowWhenDisabled = false) => {
+      const target = allowWhenDisabled
+        ? [requestedMin, requestedMax] as [number, number]
+        : clampXDomain(requestedMin, requestedMax)
+      if (!target) return
+      if (xDomainAnimationFrame) cancelAnimationFrame(xDomainAnimationFrame)
+      if (document.documentElement.dataset.reduceAnimations === 'true') {
+        xDomainAnimationFrame = 0
+        commitXDomain(target)
+        return
+      }
+      const from = chart.model.xScale.domain().map(Number) as [number, number]
+      const startedAt = performance.now()
+      const duration = ANALYSIS_MOTION_DURATION
+      const animate = (now: number) => {
+        const progress = Math.min(1, (now - startedAt) / duration)
+        const eased = easeInOutCubic(progress)
+        commitXDomain([
+          from[0] + (target[0] - from[0]) * eased,
+          from[1] + (target[1] - from[1]) * eased,
+        ])
+        if (progress < 1) xDomainAnimationFrame = requestAnimationFrame(animate)
+        else xDomainAnimationFrame = 0
+      }
+      xDomainAnimationFrame = requestAnimationFrame(animate)
+    }
+    const zoomBy = (factor: number, anchor?: number, animated = false) => {
+      if (!zoomEnabledRef.current) return
+      const [min, max] = chart.model.xScale.domain().map(Number)
+      const center = anchor ?? (min + max) / 2
+      const apply = animated ? animateXDomain : applyXDomain
+      apply(center + (min - center) * factor, center + (max - center) * factor)
+    }
+    const panBy = (fraction: number, animated = false) => {
+      if (!zoomEnabledRef.current) return
+      const [min, max] = chart.model.xScale.domain().map(Number)
+      const delta = (max - min) * fraction
+      const apply = animated ? animateXDomain : applyXDomain
+      apply(min + delta, max + delta)
+    }
+    const resetZoom = (animated = false) => {
+      const full = fullXRangeRef.current
+      if (animated) animateXDomain(full.min, full.max, true)
+      else {
+        if (xDomainAnimationFrame) cancelAnimationFrame(xDomainAnimationFrame)
+        xDomainAnimationFrame = 0
+        commitXDomain([full.min, full.max])
+      }
+    }
+    const controls: AnalyzeChartControls = {
+      zoomIn: () => zoomBy(0.7, undefined, true),
+      zoomOut: () => zoomBy(1 / 0.7, undefined, true),
+      panLeft: () => panBy(-0.2, true),
+      panRight: () => panBy(0.2, true),
+      reset: () => resetZoom(true),
+      zoomByFactor: (factor, anchorRatio = 0.5) => {
+        const [min, max] = chart.model.xScale.domain().map(Number)
+        zoomBy(factor, min + (max - min) * Math.max(0, Math.min(1, anchorRatio)), true)
+      },
+      panByFraction: fraction => panBy(fraction, true),
+    }
+    controlsRef.current = controls
+
+    const interactionNode = chart.contentBoxDetector.node
+    let dragPointer: number | null = null
+    let dragX = 0
+    let dragDomain: [number, number] = [0, 1]
+    let lastRightClick = { at: -Infinity, x: 0, y: 0 }
+    const inspectMapAtClientX = (clientX: number) => {
+      const inspectMap = onInspectMapRef.current
+      if (!inspectMap) return
+      const rect = interactionNode.getBoundingClientRect()
+      const contentX = Math.max(0, Math.min(rect.width, clientX - rect.left))
+      const chartX = chart.model.xScale.invert(contentX + chart.options.paddingLeft) as number
+      const lap = currentRef.current
+      const elapsed = distanceModeRef.current
+        ? (() => {
+            const progress = buildLapProgressMap(lap)
+            return progress ? interpolateLapElapsed(progress, chartX) : NaN
+          })()
+        : chartX
+      if (!Number.isFinite(elapsed)) return
+      const duration = Math.max(0, lap.endSessionTime - lap.startSessionTime)
+      inspectMap(Math.max(0, Math.min(duration, elapsed)))
+    }
+    const onWheel = (event: WheelEvent) => {
+      if (!interactionEnabledRef.current || !zoomEnabledRef.current) return
+      event.preventDefault()
+      const rect = interactionNode.getBoundingClientRect()
+      if (event.ctrlKey || event.metaKey) {
+        const [min, max] = chart.model.xScale.domain().map(Number)
+        const ratio = rect.width > 0 ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) : 0.5
+        const anchor = min + (max - min) * ratio
+        zoomBy(Math.max(0.5, Math.min(2, Math.exp(event.deltaY * 0.002))), anchor)
+      } else if (rect.width > 0) {
+        const [min, max] = chart.model.xScale.domain().map(Number)
+        const delta = (event.deltaX + event.deltaY) * (max - min) / rect.width
+        applyXDomain(min + delta, max + delta)
+      }
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button === 2) {
+        event.preventDefault()
+        const now = performance.now()
+        const isDouble = now - lastRightClick.at <= 500 &&
+          Math.hypot(event.clientX - lastRightClick.x, event.clientY - lastRightClick.y) <= 12
+        if (!isDouble) {
+          lastRightClick = { at: now, x: event.clientX, y: event.clientY }
+          return
+        }
+        lastRightClick.at = -Infinity
+        resetZoom(true)
+        return
+      }
+      if (!interactionEnabledRef.current || !zoomEnabledRef.current || event.button !== 0) return
+      dragPointer = event.pointerId
+      dragX = event.clientX
+      dragDomain = chart.model.xScale.domain().map(Number) as [number, number]
+      interactionNode.setPointerCapture(event.pointerId)
+      interactionNode.style.cursor = 'grabbing'
+    }
+    const onPointerMove = (event: PointerEvent) => {
+      if (dragPointer !== event.pointerId || interactionNode.clientWidth <= 0) return
+      const extent = dragDomain[1] - dragDomain[0]
+      const delta = -(event.clientX - dragX) * extent / interactionNode.clientWidth
+      applyXDomain(dragDomain[0] + delta, dragDomain[1] + delta)
+    }
+    const stopDrag = (event: PointerEvent) => {
+      if (dragPointer !== event.pointerId) return
+      dragPointer = null
+      if (interactionNode.hasPointerCapture(event.pointerId)) interactionNode.releasePointerCapture(event.pointerId)
+      interactionNode.style.cursor = interactionEnabledRef.current && zoomEnabledRef.current ? 'grab' : ''
+    }
+    const preventContextMenu = (event: MouseEvent) => {
+      event.preventDefault()
+    }
+    const onDoubleClick = (event: MouseEvent) => {
+      if (event.button === 0) inspectMapAtClientX(event.clientX)
+    }
+    interactionNode.addEventListener('wheel', onWheel, { passive: false })
+    interactionNode.addEventListener('pointerdown', onPointerDown)
+    interactionNode.addEventListener('pointermove', onPointerMove)
+    interactionNode.addEventListener('pointerup', stopDrag)
+    interactionNode.addEventListener('pointercancel', stopDrag)
+    interactionNode.addEventListener('contextmenu', preventContextMenu)
+    interactionNode.addEventListener('dblclick', onDoubleClick)
+    const records: SeriesRecord = { comparison: new Map(), current: new Map() }
+    for (const option of chart.options.series) {
+      if (option.name.startsWith('delta:')) continue
+      const [role, id] = option.name.split(':') as [Role, string]
+      records[role].set(id, option)
+    }
+    seriesRef.current = records
+
+    // Fit each value axis to the samples inside the visible x window with the
+    // live charts' TimeChartView policies: Settings ▸ Y Axis ▸ Analysis
+    // Dynamic is its 'auto' range; Fixed is the range the live page chart for
+    // the same values uses ('fixed' or 'expand'). Values are stored normalized
+    // to the metric's preset range, so the result is applied as a per-series
+    // y range in those normalized units.
+    const fitYRanges = () => {
+      const xRange = chart.options.xRange
+      const [xMin, xMax] = xRange && xRange !== 'auto'
+        ? [Number(xRange.min), Number(xRange.max)]
+        : chart.model.xScale.domain().map(Number)
+      // Upper bounds the live Power page resolves at runtime: harvest follows
+      // the Formula (8 MJ in 2026), fuel the session's fuel load + 1 kg.
+      const store = useTelemetryStore.getState()
+      const protocol = store.protocolStatus
+      const harvestUpper = (protocol?.presentation_format ?? protocol?.active_format) === 2026 ? 8000 : 4000
+      const status = currentRef.current.statusHistory
+      const firstFuel = status.length ? status.num('fuel_kg', 0) : NaN
+      const fuelUpper = store.fuelUpperLimit ?? Math.max(1, (firstFuel === firstFuel ? firstFuel : 0) + 1)
+      const groups = new Map<string, { def: (typeof ANALYZE_METRICS)[number]; options: TimeChartSeriesOptions[] }>()
+      for (const item of selectedRef.current) {
+        if (item.metricId === 'delta' || !item.visible || !analyzeSeriesHasLines(item)) continue
+        const def = analyzeSeriesScaleDef(item.metricId)
+        if (!def) continue
+        const key = stackedMode ? item.metricId : def.scaleKey
+        let group = groups.get(key)
+        if (!group) groups.set(key, group = { def, options: [] })
+        for (const id of analyzeSeriesMemberIds(item)) {
+          const currentOption = records.current.get(id)
+          const comparisonOption = records.comparison.get(id)
+          if (currentOption) group.options.push(currentOption)
+          if (comparisonOption && comparisonRef.current) group.options.push(comparisonOption)
+        }
+      }
+      const ranges = new Map<string, YAxisRange>()
+      for (const [key, { def, options }] of groups) {
+        const span = def.max - def.min
+        let lo = Infinity, hi = -Infinity
+        for (const option of options) {
+          const data = option.data
+          if (data.length === 0) continue
+          const begin = Math.max(0, data.lowerBoundX(xMin) - 1)
+          const end = Math.min(data.length, data.lowerBoundX(xMax) + 1)
+          for (let index = begin; index < end; index++) {
+            const value = data.yAt(index)
+            if (value < lo) lo = value
+            if (value > hi) hi = value
+          }
+        }
+        const found = hi >= lo
+        lo = def.min + lo * span
+        hi = def.min + hi * span
+        const scaleKey = def.scaleKey as AnalysisYAxisKey
+        const fixed = ANALYSIS_FIXED_Y_RANGES.get(scaleKey) ?? { min: def.min, max: def.max }
+        let lower = fixed.min
+        let upper = scaleKey === 'harvest' ? harvestUpper : scaleKey === 'fuel' ? fuelUpper : fixed.max
+        if (found && yAxisRef.current[scaleKey] === 'dynamic') {
+          const pad = hi === lo ? Math.abs(hi) * 0.05 + 1 : (hi - lo) * DYNAMIC_Y_PAD
+          lower = lo - pad
+          upper = hi + pad
+        } else if (found && fixed.expand) {
+          if (hi > upper - fixed.expand.upperPad) upper = Math.ceil(hi + fixed.expand.upperPad)
+          if (fixed.expand.expandLower && lo < lower + fixed.expand.lowerPad) lower = Math.floor(lo - fixed.expand.lowerPad)
+        }
+        const range = { lo: (lower - def.min) / span, hi: (upper - def.min) / span }
+        ranges.set(key, range)
+        // Options leaving the chart keep their last range while they fade out.
+        for (const option of options) option.yRange = { min: range.lo, max: range.hi }
+      }
+      yRangesRef.current = ranges
+    }
+    fitYRangesRef.current = fitYRanges
+
+    const move = (contentX: number, contentY: number) => {
+      if (!tooltipEnabledRef.current) { hide(); return }
+      const x = chart.model.xScale.invert(contentX + chart.options.paddingLeft) as number
+      const rows: string[] = [`<div style="color:var(--text-secondary);margin-bottom:4px">${distanceModeRef.current ? fmtDistance(x) : fmtLapTime(x)}</div>`]
+      let hasValue = false
+      let hoveredMetricId: string | null = null
+      if (stackedMode) {
+        const panels = selectedRef.current.filter(item =>
+          item.visible && analyzeSeriesHasLines(item) &&
+          (item.metricId !== 'delta' || (distanceModeRef.current && comparisonSelectedRef.current)),
+        )
+        const contentHeight = chart.clientHeight - chart.options.paddingTop - chart.options.paddingBottom
+        const panelIndex = Math.floor(contentY / contentHeight * panels.length)
+        hoveredMetricId = panels[Math.max(0, Math.min(panels.length - 1, panelIndex))]?.metricId ?? null
+      }
+      const appendRole = (role: Role, lap: AnalyzeLapData | null, heading: string) => {
+        if (!lap) return
+        const roleRows: string[] = []
+        for (const item of selectedRef.current) {
+          if (!item.visible) continue
+          if (hoveredMetricId && !syncedTooltipRef.current && item.metricId !== hoveredMetricId) continue
+          for (const id of analyzeSeriesMemberIds(item)) {
+            const def = ANALYZE_METRIC_BY_ID.get(id)
+            const option = seriesRef.current?.[role].get(id)
+            if (!def || !option) continue
+            const index = nearestIndex(option.data, x)
+            const normalized = index >= 0 ? option.data.yAt(index) : NaN
+            const value = def.min + normalized * (def.max - def.min)
+            const display = Number.isFinite(value) ? def.format(value) : '—'
+            const seriesColor = analyzeSeriesLineColor(item, id)
+            const color = role === 'comparison' ? blendColor(seriesColor, isDarkRef.current) : seriesColor
+            roleRows.push(`<div><span style="color:${color}">${def.label}</span>: ${display}</div>`)
+          }
+        }
+        if (roleRows.length > 0) {
+          rows.push(`<div style="color:var(--text-secondary);font-size:10px;margin:${rows.length > 1 ? '5px' : '0'} 0 2px">${heading}</div>`, ...roleRows)
+          hasValue = true
+        }
+      }
+      appendRole('current', currentRef.current, primaryLabelRef.current ?? `CURRENT L${currentRef.current.lapNum || '—'}`)
+      appendRole('comparison', comparisonRef.current, comparisonRef.current ? comparisonLabelRef.current ?? `COMPARE L${comparisonRef.current.lapNum}` : '')
+      const deltaSeries = deltaSeriesRef.current
+      if (distanceModeRef.current && deltaSeries?.positive.visible &&
+        (!hoveredMetricId || syncedTooltipRef.current || hoveredMetricId === 'delta')) {
+        const index = nearestIndex(deltaSeries.positive.data, x)
+        const positive = index >= 0 ? deltaSeries.positive.data.yAt(index) : NaN
+        const negative = index >= 0 ? deltaSeries.negative.data.yAt(index) : NaN
+        const normalized = Number.isFinite(positive) ? positive : negative
+        const delta = (normalized - 0.5) * 2 * deltaRangeRef.current
+        if (Number.isFinite(delta)) {
+          rows.push(formatChartDeltaTooltip(delta, deltaColorsRef.current.positive, deltaColorsRef.current.negative))
+          hasValue = true
+        }
+      }
+      if (!hasValue) { hide(); return }
+      show(rows.join(''), contentX + chart.options.paddingLeft, contentY + chart.options.paddingTop + 4)
+    }
+    const stopTooltipSync = chart.nearestPoint.updated.on(() => {
+      const pointer = chart.nearestPoint.lastPointerPos
+      if (!pointer) { hide(); return }
+      move(pointer.x - chart.options.paddingLeft, pointer.y - chart.options.paddingTop)
+    })
+    return () => {
+      interactionNode.removeEventListener('wheel', onWheel)
+      interactionNode.removeEventListener('pointerdown', onPointerDown)
+      interactionNode.removeEventListener('pointermove', onPointerMove)
+      interactionNode.removeEventListener('pointerup', stopDrag)
+      interactionNode.removeEventListener('pointercancel', stopDrag)
+      interactionNode.removeEventListener('contextmenu', preventContextMenu)
+      interactionNode.removeEventListener('dblclick', onDoubleClick)
+      if (controlsRef.current === controls) controlsRef.current = null
+      if (fitYRangesRef.current === fitYRanges) fitYRangesRef.current = null
+      if (xDomainAnimationFrame) cancelAnimationFrame(xDomainAnimationFrame)
+      stopTooltipSync(); chart.dispose()
+      if (stackedViewportAnimationRef.current) cancelAnimationFrame(stackedViewportAnimationRef.current)
+      if (combinedSeriesAnimationRef.current) cancelAnimationFrame(combinedSeriesAnimationRef.current)
+      chartRef.current = null; buffersRef.current = null; seriesRef.current = null; axisCfgRef.current = null
+      cursorCfgRef.current = null; cursorHandleRef.current = null
+      deltaSeriesRef.current = null
+      stackedAxisPanelsRef.current.clear()
+      stackedExitingMetricIdsRef.current.clear()
+      stackedPanelConfigsRef.current.clear()
+      combinedSeriesDesiredVisibilityRef.current.clear()
+    }
+    // Stable chart lifetime; all changing inputs are applied imperatively below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    const chart = chartRef.current
+    const records = seriesRef.current
+    const axisHolder = axisCfgRef.current
+    if (!chart || !records || !axisHolder) return
+    // Metric definition id → the series card that draws it.
+    const ownerById = new Map<string, AnalyzeSeriesConfig>()
+    for (const item of selected) {
+      for (const id of analyzeSeriesMemberIds(item)) ownerById.set(id, item)
+    }
+    const deltaItem = selected.find(item => item.metricId === 'delta')
+    const showDelta = !!deltaItem && deltaItem.visible !== false && distanceMode && comparisonSelected
+    const deltaSeries = deltaSeriesRef.current
+    const desiredVisibility = new Map<TimeChartSeriesOptions, boolean>()
+    for (const def of scopedMetricsRef.current) {
+      const item = ownerById.get(def.id)
+      const visible = !!item?.visible
+      const currentOption = records.current.get(def.id)
+      const comparisonOption = records.comparison.get(def.id)
+      // Combined cards draw each corner in its own colour.
+      const color = themeSeriesColor(item ? analyzeSeriesLineColor(item, def.id) : def.defaultColor, isDark)
+      if (currentOption) { desiredVisibility.set(currentOption, visible); currentOption.color = color }
+      if (comparisonOption) { desiredVisibility.set(comparisonOption, visible && !!comparison); comparisonOption.color = blendColor(color, isDark) }
+    }
+    if (deltaSeries) {
+      desiredVisibility.set(deltaSeries.positive, showDelta)
+      deltaSeries.positive.color = themedDeltaPositive
+      desiredVisibility.set(deltaSeries.negative, showDelta)
+      deltaSeries.negative.color = themedDeltaNegative
+    }
+    if (stackedMode) {
+      for (const [option, visible] of desiredVisibility) option.visible = visible
+    } else {
+      const previousVisibility = combinedSeriesDesiredVisibilityRef.current
+      const visibilityChanged = combinedSeriesVisibilityReadyRef.current &&
+        [...desiredVisibility].some(([option, visible]) => previousVisibility.get(option) !== visible)
+      const animateVisibility = visibilityChanged &&
+        document.documentElement.dataset.reduceAnimations !== 'true'
+      if (animateVisibility) {
+        if (combinedSeriesAnimationRef.current) cancelAnimationFrame(combinedSeriesAnimationRef.current)
+        const transitions = new Map<TimeChartSeriesOptions, { from: number; to: number }>()
+        for (const [option, visible] of desiredVisibility) {
+          const from = option.visible ? option.opacity ?? 1 : 0
+          const to = visible ? 1 : 0
+          if (Math.abs(to - from) < 0.001) {
+            option.visible = visible
+            option.opacity = 1
+            continue
+          }
+          option.visible = true
+          option.opacity = from
+          transitions.set(option, { from, to })
+        }
+        const startedAt = performance.now()
+        const duration = ANALYSIS_MOTION_DURATION
+        const animate = (now: number) => {
+          const progress = Math.min(1, (now - startedAt) / duration)
+          const eased = easeInOutCubic(progress)
+          for (const [option, { from, to }] of transitions) {
+            option.opacity = from + (to - from) * eased
+          }
+          chart.update()
+          if (progress < 1) combinedSeriesAnimationRef.current = requestAnimationFrame(animate)
+          else {
+            combinedSeriesAnimationRef.current = 0
+            for (const [option, visible] of combinedSeriesDesiredVisibilityRef.current) {
+              option.visible = visible
+              option.opacity = 1
+            }
+            chart.update()
+          }
+        }
+        combinedSeriesAnimationRef.current = requestAnimationFrame(animate)
+      } else if (!combinedSeriesAnimationRef.current) {
+        for (const [option, visible] of desiredVisibility) {
+          option.visible = visible
+          option.opacity = 1
+        }
+      }
+      combinedSeriesDesiredVisibilityRef.current = desiredVisibility
+      combinedSeriesVisibilityReadyRef.current = true
+    }
+    // WebGL paints later series over earlier ones, so reverse the sidebar order:
+    // the first row in the sidebar is drawn last and remains visually on top.
+    const panelItems = selected.filter(item =>
+      item.visible && analyzeSeriesHasLines(item) && (item.metricId !== 'delta' || showDelta),
+    )
+    const splitValues = sectorBoundaries
+      ? resolvedSectorSplits(current, comparison).map(split => distanceMode ? split.distance : split.elapsedSeconds)
+      : []
+    const fullLapEnd = distanceMode
+      ? trackLengthM > 0
+        ? trackLengthM
+        : Math.max(lastDistance(current), lastDistance(comparison))
+      : Math.max(
+          current.endSessionTime - current.startSessionTime,
+          comparison ? comparison.endSessionTime - comparison.startSessionTime : 0,
+        )
+    const sectorEnds = [...splitValues, fullLapEnd]
+    const xTickValues = sectorBoundaries
+      ? (min: number, max: number) => {
+          const values = [min, ...splitValues.filter(value => value > min && value < max), max]
+          return values.filter((value, index) => index === 0 || Math.abs(value - values[index - 1]) > 1e-6)
+        }
+      : undefined
+    const xTickFormat = !showXAxis
+      ? () => ''
+      : sectorBoundaries
+        ? (value: number) => {
+            const sectorIndex = sectorEnds.findIndex(end => Math.abs(end - value) < 1e-3)
+            return sectorIndex >= 0 ? `S${sectorIndex + 1}` : ''
+          }
+        : distanceMode ? fmtDistance : fmtLapTime
+    if (!stackedMode) {
+      // The chart lives in a ref and is updated imperatively; the compiler aliases it with the creation effect's captures.
+      // eslint-disable-next-line react-hooks/immutability
+      for (const option of chart.options.series) option.viewport = undefined
+      stackedExitingMetricIdsRef.current.clear()
+      stackedLayoutReadyRef.current = false
+      stackedLayoutSignatureRef.current = ''
+      stackedMembershipRef.current = ''
+    }
+    const viewportAnimation = new Map<TimeChartSeriesOptions, StackedTransition>()
+    const panelViewportAnimation = new Map<string, StackedTransition>()
+    let animateStackedLayout = false
+    let layoutChanged = false
+    let stackedLayoutSignature = ''
+    let stackedMembership = ''
+    let exitingItems: AnalyzeSeriesConfig[] = []
+    // Series options animating out with a panel that no longer owns any of
+    // them in the target layout. Hidden once that exit animation completes.
+    const exitingOptions = new Set<TimeChartSeriesOptions>()
+    // Options a series card draws, comparison first so the current lap paints on top.
+    const optionsFor = (item: AnalyzeSeriesConfig): TimeChartSeriesOptions[] => {
+      if (item.metricId === 'delta') return deltaSeries ? [deltaSeries.positive, deltaSeries.negative] : []
+      return analyzeSeriesMemberIds(item).flatMap(id => [records.comparison.get(id), records.current.get(id)])
+        .filter((option): option is TimeChartSeriesOptions => !!option)
+    }
+    if (stackedMode) {
+      const selectedById = new Map(selected.map(item => [item.metricId, item]))
+      const targetViewportById = new Map<string, StackedViewport>(panelItems.map((item, index) => [item.metricId, {
+        top: index / panelItems.length,
+        bottom: (index + 1) / panelItems.length,
+        gapAfter: index < panelItems.length - 1 ? STACKED_PANEL_GAP : 0,
+      }]))
+      // Series options are keyed by metric, not by card: a combined tyre card
+      // and its per-corner cards draw the very same options. Swapping one for
+      // the other exits one panel and enters another over shared options, so
+      // the entering panels claim their options before any exit is planned.
+      const claimedOptions = new Set(panelItems.flatMap(optionsFor))
+      // Each panel's own presented geometry, kept current by the animation.
+      // Panels must not infer it from a series, which another panel may own.
+      const panelStates = stackedAxisPanelsRef.current
+      const viewportOf = (panel: StackedAxisPanel): StackedViewport => ({
+        top: panel.top, bottom: panel.bottom, gapAfter: panel.gapAfter ?? 0,
+      })
+      stackedLayoutSignature = panelItems.map(item => item.metricId).join('|')
+      // A combined card gaining or losing a corner keeps the panel list but
+      // still has to place that corner's line, so it counts as a layout change.
+      stackedMembership = panelItems.map(item => analyzeSeriesMemberIds(item).join(',')).join('|')
+      layoutChanged = stackedLayoutSignatureRef.current !== stackedLayoutSignature ||
+        stackedMembershipRef.current !== stackedMembership
+      const previousPanelIds = stackedLayoutSignatureRef.current
+        ? stackedLayoutSignatureRef.current.split('|')
+        : []
+      const interruptedExits = new Set(stackedExitingMetricIdsRef.current)
+      if (layoutChanged && stackedViewportAnimationRef.current) {
+        cancelAnimationFrame(stackedViewportAnimationRef.current)
+        stackedViewportAnimationRef.current = 0
+      }
+      animateStackedLayout = layoutChanged && stackedLayoutReadyRef.current &&
+        document.documentElement.dataset.reduceAnimations !== 'true'
+      if (layoutChanged) {
+        const targetIds = new Set(panelItems.map(item => item.metricId))
+        const exitingIds = animateStackedLayout
+          ? new Set([...interruptedExits, ...previousPanelIds].filter(id => !targetIds.has(id)))
+          : new Set<string>()
+        stackedExitingMetricIdsRef.current = exitingIds
+      }
+      exitingItems = [...stackedExitingMetricIdsRef.current].flatMap(id => {
+        const item = selectedById.get(id) ?? stackedPanelConfigsRef.current.get(id)
+        return item ? [item] : []
+      })
+      stackedPanelConfigsRef.current = new Map([
+        ...stackedPanelConfigsRef.current,
+        ...selectedById,
+      ].filter(([id]) => selectedById.has(id) || stackedExitingMetricIdsRef.current.has(id)))
+      panelItems.forEach((item, index) => {
+        const viewport = targetViewportById.get(item.metricId)!
+        const prior = panelStates.get(item.metricId)
+        let entryBoundary: number | null = null
+        if (!prior) {
+          for (let sibling = index - 1; sibling >= 0; sibling--) {
+            const siblingState = panelStates.get(panelItems[sibling].metricId)
+            if (siblingState) { entryBoundary = siblingState.bottom; break }
+          }
+          if (entryBoundary === null) {
+            for (let sibling = index + 1; sibling < panelItems.length; sibling++) {
+              const siblingState = panelStates.get(panelItems[sibling].metricId)
+              if (siblingState) { entryBoundary = siblingState.top; break }
+            }
+          }
+        }
+        const enteringFrom: StackedViewport = entryBoundary === null
+          ? { ...viewport }
+          : collapsedViewportAt(entryBoundary)
+        panelViewportAnimation.set(item.metricId, {
+          from: prior ? viewportOf(prior) : enteringFrom,
+          to: { ...viewport },
+          fromOpacity: prior ? prior.opacity ?? 1 : 0,
+          toOpacity: 1,
+        })
+        // An option that already has a viewport is placed (in this panel, or
+        // in the panel it is moving from) and slides; anything else fades in.
+        for (const option of optionsFor(item)) {
+          const optionPrior = option.viewport
+          const from = optionPrior
+            ? { top: optionPrior.top, bottom: optionPrior.bottom, gapAfter: optionPrior.gapAfter ?? 0 }
+            : enteringFrom
+          const to = { ...viewport }
+          const fromOpacity = optionPrior ? option.opacity ?? 1 : 0
+          viewportAnimation.set(option, { from, to, fromOpacity, toOpacity: 1 })
+          if (layoutChanged) {
+            option.viewport = animateStackedLayout ? { ...from } : { ...to }
+            option.opacity = animateStackedLayout ? fromOpacity : 1
+          }
+        }
+      })
+      for (const item of exitingItems) {
+        const prior = panelStates.get(item.metricId)
+        if (!prior) continue
+        const from = viewportOf(prior)
+        const previousIndex = previousPanelIds.indexOf(item.metricId)
+        let exitBoundary: number | null = null
+        if (previousIndex >= 0) {
+          for (let sibling = previousIndex + 1; sibling < previousPanelIds.length; sibling++) {
+            const target = targetViewportById.get(previousPanelIds[sibling])
+            if (target) { exitBoundary = target.top; break }
+          }
+          if (exitBoundary === null) {
+            for (let sibling = previousIndex - 1; sibling >= 0; sibling--) {
+              const target = targetViewportById.get(previousPanelIds[sibling])
+              if (target) { exitBoundary = target.bottom; break }
+            }
+          }
+        }
+        exitBoundary ??= (from.top + from.bottom) / 2
+        const to = collapsedViewportAt(exitBoundary)
+        panelViewportAnimation.set(item.metricId, {
+          from,
+          to,
+          fromOpacity: prior.opacity ?? 1,
+          toOpacity: 0,
+        })
+        for (const option of optionsFor(item)) {
+          // Claimed options now belong to an entering panel and move with it.
+          if (claimedOptions.has(option)) continue
+          const optionPrior = option.viewport
+          const optionFrom: StackedViewport = optionPrior
+            ? { top: optionPrior.top, bottom: optionPrior.bottom, gapAfter: optionPrior.gapAfter ?? 0 }
+            : from
+          const fromOpacity = option.opacity ?? 1
+          viewportAnimation.set(option, { from: optionFrom, to, fromOpacity, toOpacity: 0 })
+          exitingOptions.add(option)
+          // Series options belong to the ref-held chart (see the viewport reset above).
+          // eslint-disable-next-line react-hooks/immutability
+          option.viewport = { ...optionFrom }
+          option.opacity = fromOpacity
+          option.visible = item.metricId === 'delta' || option.name.startsWith('current:') || !!comparison
+        }
+      }
+      if (layoutChanged) {
+        // Options no panel draws are hidden. Drop their stale placement so a
+        // later re-entry fades in from its new panel instead of jumping there.
+        for (const option of chart.options.series) {
+          if (claimedOptions.has(option) || exitingOptions.has(option)) continue
+          option.viewport = undefined
+          option.opacity = 1
+        }
+      }
+    }
+    // A combined card and its corner cards can share options; queue each once.
+    const drawOrder: TimeChartSeriesOptions[] = []
+    const queued = new Set<TimeChartSeriesOptions>()
+    const queue = (option: TimeChartSeriesOptions) => {
+      if (queued.has(option)) return
+      queued.add(option)
+      drawOrder.push(option)
+    }
+    for (const item of [...selected].reverse()) {
+      if (!item.visible) continue
+      if (item.metricId === 'delta') {
+        if (showDelta) optionsFor(item).forEach(queue)
+        continue
+      }
+      for (const option of optionsFor(item)) {
+        if (option.name.startsWith('current:') || comparison) queue(option)
+      }
+    }
+    for (const item of [...exitingItems].reverse()) {
+      for (const option of optionsFor(item)) if (exitingOptions.has(option)) queue(option)
+    }
+    const visibleOptions = new Set(drawOrder)
+    const hidden = chart.options.series.filter(option => {
+      return !visibleOptions.has(option)
+    })
+    // Keep the array identity stable for every plugin/renderer that received it
+    // at chart construction while still updating the live GPU draw order.
+    chart.options.series.splice(0, chart.options.series.length, ...drawOrder, ...hidden)
+
+    const axis = isDark ? '#7c8098' : '#596168'
+    // Tick positions stay at fixed fractions of the axis; their labels follow
+    // the fitted range, read at draw time so zoom and new data relabel them.
+    const axisValue = (key: string, fraction: number) => {
+      const range = yRangesRef.current.get(key)
+      return range ? range.lo + fraction * (range.hi - range.lo) : fraction
+    }
+    fitYRangesRef.current?.()
+    if (stackedMode) {
+      const left = panelItems.some(item => item.showYAxis) ? 48 : 12
+      const renderedPanelItems = [...panelItems, ...exitingItems]
+        .filter(item => panelViewportAnimation.has(item.metricId))
+      const axisPanels = renderedPanelItems.map((item): StackedAxisPanel => {
+        const def = analyzeSeriesScaleDef(item.metricId)
+        const isDelta = item.metricId === 'delta'
+        const panelKey = item.metricId
+        const transition = panelViewportAnimation.get(item.metricId)!
+        // During an existing animation, `from` is the series' current
+        // interpolated viewport. This keeps frequent telemetry-driven effect
+        // updates from snapping the canvas axes to their final positions.
+        const position = layoutChanged && !animateStackedLayout ? transition.to : transition.from
+        return {
+          ...position,
+          opacity: layoutChanged && !animateStackedLayout ? transition.toOpacity : transition.fromOpacity,
+          showYAxis: item.showYAxis,
+          yAxisColor: isDelta ? themedDeltaPositive : themeSeriesColor(item.color, isDark),
+          yTickValues: Y_TICKS,
+          yTickColor: isDelta
+            ? (normalized: number) => normalized < 0.5 ? themedDeltaNegative : normalized > 0.5 ? themedDeltaPositive : axis
+            : undefined,
+          yTickFormat: (normalized: number) => isDelta
+            ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
+            : def ? def.axisFormat(def.min + axisValue(panelKey, normalized) * (def.max - def.min)) : '',
+        }
+      })
+      stackedAxisPanelsRef.current = new Map(renderedPanelItems.map((item, index) => [item.metricId, axisPanels[index]]))
+      axisHolder.current = {
+        axisColor: axis,
+        gridColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
+        borderColor: isDark ? '#1e2136' : '#afb1ae',
+        font: '10px "Cascadia Code", ui-monospace, monospace',
+        xTickSpacePx: 80,
+        xTickFormat,
+        xTickValues,
+        yTickValues: () => [],
+        yTickFormat: () => '',
+        xGap: 2,
+        yGap: 4,
+        showYGrid: true,
+        panels: axisPanels,
+      }
+      const paddingBottom = showXAxis ? 24 : 8
+      Object.assign(chart.options, {
+        paddingLeft: left, paddingRight: 12, paddingBottom,
+        renderPaddingLeft: left, renderPaddingRight: 12, renderPaddingBottom: paddingBottom,
+      })
+      chart.contentBoxDetector.setPadding(left, 12, chart.options.paddingTop, paddingBottom)
+      hostRef.current?.style.setProperty('--background-overlay', isDark ? '#12141f' : '#f1f0ec')
+      if (hostRef.current) hostRef.current.style.color = axis
+      chart.update()
+      chart.model.resize(chart.clientWidth, chart.clientHeight)
+      stackedLayoutReadyRef.current = true
+      stackedLayoutSignatureRef.current = stackedLayoutSignature
+      stackedMembershipRef.current = stackedMembership
+      if (animateStackedLayout && viewportAnimation.size > 0) {
+        const startedAt = performance.now()
+        const duration = ANALYSIS_MOTION_DURATION
+        const animate = (now: number) => {
+          const progress = Math.min(1, (now - startedAt) / duration)
+          const eased = easeInOutCubic(progress)
+          for (const [option, { from, to, fromOpacity, toOpacity }] of viewportAnimation) {
+            option.viewport = {
+              top: from.top + (to.top - from.top) * eased,
+              bottom: from.bottom + (to.bottom - from.bottom) * eased,
+              gapAfter: from.gapAfter + (to.gapAfter - from.gapAfter) * eased,
+            }
+            option.opacity = fromOpacity + (toOpacity - fromOpacity) * eased
+          }
+          for (const [metricId, { from, to, fromOpacity, toOpacity }] of panelViewportAnimation) {
+            const panel = stackedAxisPanelsRef.current.get(metricId)
+            if (!panel) continue
+            panel.top = from.top + (to.top - from.top) * eased
+            panel.bottom = from.bottom + (to.bottom - from.bottom) * eased
+            panel.gapAfter = from.gapAfter + (to.gapAfter - from.gapAfter) * eased
+            panel.opacity = fromOpacity + (toOpacity - fromOpacity) * eased
+          }
+          chart.update()
+          if (progress < 1) stackedViewportAnimationRef.current = requestAnimationFrame(animate)
+          else {
+            stackedViewportAnimationRef.current = 0
+            for (const option of exitingOptions) {
+              option.visible = false
+              option.viewport = undefined
+              option.opacity = 1
+            }
+            for (const item of exitingItems) stackedAxisPanelsRef.current.delete(item.metricId)
+            stackedExitingMetricIdsRef.current.clear()
+            stackedPanelConfigsRef.current = new Map(selected.map(item => [item.metricId, item]))
+            axisHolder.current.panels = panelItems
+              .map(item => stackedAxisPanelsRef.current.get(item.metricId))
+              .filter((panel): panel is StackedAxisPanel => !!panel)
+            chart.update()
+          }
+        }
+        stackedViewportAnimationRef.current = requestAnimationFrame(animate)
+      }
+      return
+    }
+
+    const seenScales = new Set<string>()
+    const axes: Array<
+      | { kind: 'delta'; item: AnalyzeSeriesConfig }
+      | { kind: 'metric'; item: AnalyzeSeriesConfig; def: (typeof ANALYZE_METRICS)[number] }
+    > = []
+    for (const item of selected) {
+      if (!item.visible || !item.showYAxis) continue
+      if (item.metricId === 'delta') {
+        if (showDelta) axes.push({ kind: 'delta', item })
+        continue
+      }
+      const def = analyzeSeriesScaleDef(item.metricId)
+      if (!def || seenScales.has(def.scaleKey)) continue
+      seenScales.add(def.scaleKey)
+      axes.push({ kind: 'metric', item, def })
+    }
+    const axisCount = axes.length
+    const leftCount = Math.ceil(axisCount / 2)
+    const rightCount = Math.floor(axisCount / 2)
+    const left = axisCount > 0 ? Math.max(44, 12 + leftCount * 54) : 12
+    const right = axisCount > 0 ? Math.max(12, 12 + rightCount * 54) : 12
+    const first = axes[0]
+    const axisColorFor = (entry: (typeof axes)[number]) => entry.kind === 'delta'
+      ? themedDeltaPositive
+      : themeSeriesColor(entry.item.color, isDark)
+    const extraYAxes = axes.slice(1).map((entry, index) => {
+      const axisIndex = index + 1
+      const side = axisIndex % 2 === 1 ? 'right' as const : 'left' as const
+      const slot = Math.floor(axisIndex / 2)
+      return {
+        side, offset: 4 + slot * 54,
+        color: axisColorFor(entry),
+        colorForValue: entry.kind === 'delta'
+          ? (normalized: number) => normalized < 0.5 ? themedDeltaNegative : normalized > 0.5 ? themedDeltaPositive : axis
+          : undefined,
+        values: Y_TICKS,
+        format: (normalized: number) => entry.kind === 'delta'
+          ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
+          : entry.def.axisFormat(entry.def.min + axisValue(entry.def.scaleKey, normalized) * (entry.def.max - entry.def.min)),
+      }
+    })
+    axisHolder.current = {
+      axisColor: axis,
+      yAxisColor: first ? axisColorFor(first) : themeSeriesColor(axis, isDark),
+      gridColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
+      borderColor: isDark ? '#1e2136' : '#afb1ae',
+      font: '10px "Cascadia Code", ui-monospace, monospace',
+      xTickSpacePx: 80, xTickFormat,
+      xTickValues,
+      yTickValues: () => first ? Y_TICKS : [],
+      yTickColor: first?.kind === 'delta'
+        ? normalized => normalized < 0.5 ? themedDeltaNegative : normalized > 0.5 ? themedDeltaPositive : axis
+        : undefined,
+      yTickFormat: normalized => first?.kind === 'delta'
+        ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
+        : first?.kind === 'metric' ? first.def.axisFormat(first.def.min + axisValue(first.def.scaleKey, normalized) * (first.def.max - first.def.min)) : '',
+      xGap: 2, yGap: 4, showYGrid: axisCount > 0,
+      extraYAxes,
+    }
+    const paddingBottom = showXAxis ? 24 : 8
+    Object.assign(chart.options, {
+      paddingLeft: left, paddingRight: right, paddingBottom,
+      renderPaddingLeft: left, renderPaddingRight: right, renderPaddingBottom: paddingBottom,
+    })
+    chart.contentBoxDetector.setPadding(left, right, chart.options.paddingTop, paddingBottom)
+    hostRef.current?.style.setProperty('--background-overlay', isDark ? '#12141f' : '#f1f0ec')
+    if (hostRef.current) hostRef.current.style.color = axis
+    chart.update()
+    chart.model.resize(chart.clientWidth, chart.clientHeight)
+  }, [comparison, comparisonSelected, current, distanceMode, isDark, sectorBoundaries, selected, showXAxis, stackedMode, themedDeltaNegative, themedDeltaPositive, trackLengthM, yAxis])
+
+  useEffect(() => {
+    let animationFrame = 0
+    const unsubscribe = subscribePlaybackCursor(() => {
+      if (!realtimeCurrent || animationFrame) return
+      animationFrame = requestAnimationFrame(() => {
+        animationFrame = 0
+        syncPlaybackCursorRef.current?.()
+      })
+    })
+    return () => {
+      unsubscribe()
+      if (animationFrame) cancelAnimationFrame(animationFrame)
+    }
+  }, [realtimeCurrent])
+
+  // The comparison clock lives on the map, which owns playback in split mode.
+  // Follow it on its own animation frame: the cursor moves every frame while a
+  // lap plays, and neither React nor the WebGL traces need to repaint for it.
+  useEffect(() => {
+    const cfg = cursorCfgRef.current
+    if (!cfg) return
+    const redraw = () => cursorHandleRef.current?.redraw?.()
+    const laps = showMapCursors
+      ? [
+          { lap: current, color: mapCurrentColor },
+          ...(comparison ? [{ lap: comparison, color: mapComparisonColor }] : []),
+        ].filter(entry => entry.lap.endSessionTime > entry.lap.startSessionTime)
+      : []
+    if (laps.length === 0) {
+      cfg.current = { lines: [] }
+      redraw()
+      return
+    }
+    // Compared laps are immutable, so build their distance lookups here rather
+    // than inside the frame, exactly as the data sync does.
+    const progressByLap = laps.map(entry => distanceMode ? buildLapProgressMap(entry.lap) : null)
+    const lines: CursorLine[] = laps.map(entry => ({ x: NaN, color: entry.color }))
+    cfg.current = { lines }
+    redraw()
+    let animationFrame = 0
+    const tick = () => {
+      animationFrame = requestAnimationFrame(tick)
+      const elapsed = getAnalyzeCursorElapsed()
+      let moved = false
+      for (let index = 0; index < laps.length; index++) {
+        const { lap } = laps[index]
+        const progress = progressByLap[index]
+        // Hold each cursor at its own lap end, just as the map holds its marker.
+        const clamped = elapsed === null
+          ? NaN
+          : Math.max(0, Math.min(lap.endSessionTime - lap.startSessionTime, elapsed))
+        const x = Number.isNaN(clamped)
+          ? NaN
+          : distanceMode
+            ? progress ? interpolateDistanceAtTime(progress, lap.startSessionTime + clamped) : NaN
+            : clamped
+        if (x === lines[index].x || (Number.isNaN(x) && Number.isNaN(lines[index].x))) continue
+        lines[index].x = x
+        moved = true
+      }
+      if (moved) redraw()
+    }
+    tick()
+    return () => {
+      cancelAnimationFrame(animationFrame)
+      cfg.current = { lines: [] }
+      redraw()
+    }
+  }, [comparison, current, distanceMode, mapComparisonColor, mapCurrentColor, showMapCursors])
+
+  useEffect(() => {
+    const chart = chartRef.current
+    const buffers = buffersRef.current
+    if (!chart || !buffers) return
+    // The indexed lap is immutable. Build its distance lookup once when the
+    // cache/revision changes, not on every playback-cursor animation frame.
+    const progressByRole: Record<Role, LapProgressMap | null> = {
+      current: distanceMode ? buildLapProgressMap(current) : null,
+      comparison: distanceMode ? buildLapProgressMap(comparison) : null,
+    }
+    const syncData = () => {
+      const currentCutoff = realtimeCurrent ? getPlaybackCursorTime() ?? -Infinity : Infinity
+      const cursorRewound = realtimeCurrent &&
+        Number.isFinite(currentCutoff) &&
+        Number.isFinite(lastRealtimeCutoffRef.current) &&
+        currentCutoff < lastRealtimeCutoffRef.current
+      lastRealtimeCutoffRef.current = realtimeCurrent ? currentCutoff : -Infinity
+      if (cursorRewound) {
+        // Cursor notifications can beat the seek-flush revision by one frame.
+        // Force the current buffers to rebuild immediately so future samples
+        // from the old cursor are never left visible during that gap.
+        for (const source of activeSourcesRef.current) revisionsRef.current[`current:${source}`] = ''
+        deltaSamplesRef.current = { source: null, renderedCount: 0, renderedRange: 0 }
+      }
+      let changed = false
+      for (const role of ['current', 'comparison'] as Role[]) {
+        const lap = role === 'current' ? current : comparison
+        const maxSessionTime = role === 'current' ? currentCutoff : Infinity
+        for (const source of activeSourcesRef.current) {
+          // Current-lap rows, lap metadata and the playback-state cursor arrive on
+          // separate channels. Keep the origin fixed for the lifetime of a lap;
+          // otherwise a one-frame metadata mismatch shifts every X value and
+          // alternates the chart between a full lap and a one-point rebuild.
+          const revision = lap
+            ? role === 'current'
+              ? `${distanceMode ? 'distance' : 'time'}:${currentRevision}:${source}`
+              : `${distanceMode ? 'distance' : 'time'}:${lap.lapNum}:${lap.startSessionTime}:${source}`
+            : `${distanceMode ? 'distance' : 'time'}:none:${source}`
+          const revisionKey = `${role}:${source}`
+          let rebuild = revisionsRef.current[revisionKey] !== revision
+          revisionsRef.current[revisionKey] = revision
+          if (rebuild) {
+            originsRef.current[revisionKey] = lap?.startSessionTime ?? 0
+          }
+          const rows = lap ? rowsFor(lap, source) : EMPTY_ROWS
+          const buffer = buffers[role][source]!
+          const defs = metricsBySourceRef.current[source]
+          if (distanceMode) {
+            const cursor = distanceCursorsRef.current[revisionKey] ??= { value: -Infinity }
+            if (syncSourceDistance(
+              buffer, rows, defs, progressByRole[role], rebuild,
+              scratchRef.current[source]!, cursor, maxSessionTime,
+            )) changed = true
+            continue
+          }
+          if (rows.length === 0) {
+            if (syncSource(buffer, rows, defs, 0, rebuild, scratchRef.current[source]!, maxSessionTime)) changed = true
+            // Only an explicit revision is allowed to invalidate the origin.
+            // A normal cross-channel empty publication must remain a no-op.
+            if (role === 'current' && rebuild) originsRef.current[revisionKey] = NaN
+            continue
+          }
+          let origin = originsRef.current[revisionKey]
+          if (!Number.isFinite(origin)) {
+            origin = lap?.startSessionTime ?? 0
+            originsRef.current[revisionKey] = origin
+            rebuild = true
+          }
+          if (syncSource(buffer, rows, defs, origin, rebuild, scratchRef.current[source]!, maxSessionTime)) changed = true
+        }
+      }
+      if (distanceMode) {
+        const currentProgress = progressByRole.current
+        const cursorDistance = realtimeCurrent && currentProgress
+          ? interpolateDistanceAtTime(currentProgress, currentCutoff)
+          : Infinity
+        const currentMaxDistance = realtimeCurrent
+          ? Number.isFinite(cursorDistance) ? cursorDistance : 0
+          : Infinity
+        const deltaResult = syncNativeDelta(
+          buffers.deltaPositive, buffers.deltaNegative,
+          deltaData,
+          deltaSamplesRef.current,
+          currentMaxDistance,
+        )
+        deltaRangeRef.current = deltaResult.range
+        if (deltaResult.changed) changed = true
+      } else if (buffers.deltaPositive.length || buffers.deltaNegative.length) {
+        deltaSamplesRef.current = { source: null, renderedCount: 0, renderedRange: 0 }
+        buffers.deltaPositive.clear()
+        buffers.deltaNegative.clear()
+        changed = true
+      }
+      if (!changed) return
+      let max = distanceMode && trackLengthM > 0 ? trackLengthM : 1
+      for (const role of ['current', 'comparison'] as Role[]) {
+        const lap = role === 'current' ? current : comparison
+        const cutoff = role === 'current' ? currentCutoff : Infinity
+        // Derive a common domain from every loaded source, even when this
+        // compact panel buffers only one metric. All stacked panels therefore
+        // remain pixel-aligned despite different packet cadences.
+        if (!distanceMode && lap) {
+          for (const source of SOURCES) {
+            const rows = rowsFor(lap, source)
+            if (!rows.length) continue
+            max = Math.max(max, Math.min(rows.time(rows.length - 1), cutoff) - lap.startSessionTime)
+          }
+        }
+        for (const source of activeSourcesRef.current) {
+          const buffer = buffers[role][source]!
+          if (buffer.length) max = Math.max(max, buffer.lastX)
+        }
+      }
+      chart.options.xRange = { min: 0, max }
+      fullXRangeRef.current = { min: 0, max }
+      fitYRangesRef.current?.()
+      chart.model.requestRedraw()
+    }
+    syncPlaybackCursorRef.current = syncData
+    syncData()
+    return () => {
+      if (syncPlaybackCursorRef.current === syncData) syncPlaybackCursorRef.current = null
+    }
+  }, [comparison, current, currentRevision, deltaData, distanceMode, realtimeCurrent, trackLengthM])
+
+  useEffect(() => {
+    if (!tooltipEnabled) hide()
+  }, [hide, tooltipEnabled])
+
+  useEffect(() => {
+    hide()
+  }, [hide, syncedTooltip])
+
+  useEffect(() => {
+    const node = chartRef.current?.contentBoxDetector.node
+    // A DOM node of the ref-held chart, which the compiler aliases with the creation effect's captures.
+    // eslint-disable-next-line react-hooks/immutability
+    if (node) node.style.cursor = interactionEnabled && zoomEnabled ? 'grab' : ''
+    if (!zoomEnabled) controlsRef.current?.reset()
+  }, [controlsRef, interactionEnabled, zoomEnabled])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null
+    const observer = new ResizeObserver(() => {
+      if (resizeTimer !== null) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null
+        chartRef.current?.onResize()
+      }, 120)
+    })
+    observer.observe(container)
+    return () => {
+      observer.disconnect()
+      if (resizeTimer !== null) clearTimeout(resizeTimer)
+    }
+  }, [])
+
+  return <>
+    <div className="absolute inset-0" ref={containerRef}><div ref={hostRef} className="absolute inset-0" /></div>
+    <ChartTooltipPortal tooltipRef={tooltipRef} />
+  </>
+}

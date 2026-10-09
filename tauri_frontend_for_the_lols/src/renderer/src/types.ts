@@ -1,0 +1,825 @@
+import type { ColumnView } from './lib/columnStore'
+
+export type AlignedTable = Float64Array[]
+
+// Optional V6 additions preserve compatibility with player-only/older rows.
+export interface TelemetryCar {
+  idx: number
+  speed_kph: number
+  rpm: number
+  gear: number
+  drs: number
+  slm: number
+  rev_lights_pct: number
+  rev_lights_bit_value: number
+  throttle: number | null
+  brake: number | null
+  steering: number | null
+  tyre_temp_surface_rl: number; tyre_temp_surface_rr: number
+  tyre_temp_surface_fl: number; tyre_temp_surface_fr: number
+  tyre_temp_inner_rl: number; tyre_temp_inner_rr: number
+  tyre_temp_inner_fl: number; tyre_temp_inner_fr: number
+  brake_temp_rl: number; brake_temp_rr: number
+  brake_temp_fl: number; brake_temp_fr: number
+  engine_temp: number
+}
+
+export interface TyreWearCar {
+  idx: number
+  tyre_wear_rl: number | null; tyre_wear_rr: number | null
+  tyre_wear_fl: number | null; tyre_wear_fr: number | null
+  tyre_dmg_rl?: number | null; tyre_dmg_rr?: number | null
+  tyre_dmg_fl?: number | null; tyre_dmg_fr?: number | null
+  brake_dmg_rl?: number | null; brake_dmg_rr?: number | null
+  brake_dmg_fl?: number | null; brake_dmg_fr?: number | null
+  blisters_rl?: number | null; blisters_rr?: number | null
+  blisters_fl?: number | null; blisters_fr?: number | null
+  wing_fl?: number | null; wing_fr?: number | null; wing_rear?: number | null
+  floor_damage?: number | null; diffuser_damage?: number | null; sidepod_damage?: number | null
+  gearbox_damage?: number | null; engine_damage?: number | null
+  drs_fault?: number | null; ers_fault?: number | null
+  engine_mguh_wear?: number | null; engine_es_wear?: number | null; engine_ce_wear?: number | null
+  engine_ice_wear?: number | null; engine_mguk_wear?: number | null; engine_tc_wear?: number | null
+  engine_blown?: number | null; engine_seized?: number | null
+}
+
+export interface TelemetryRow {
+  type: 'telemetry'
+  ts: string
+  session_time: number
+  speed_kph: number
+  rpm: number
+  gear: number
+  throttle: number
+  brake: number
+  steering: number
+  drs: number
+  rev_lights_pct?: number
+  rev_lights_bit_value?: number
+  slm: number   // 2026 active-aero / straight line mode (0/1), separate from drs
+  tyre_temp_surface_rl: number; tyre_temp_surface_rr: number
+  tyre_temp_surface_fl: number; tyre_temp_surface_fr: number
+  tyre_temp_inner_rl: number;   tyre_temp_inner_rr: number
+  tyre_temp_inner_fl: number;   tyre_temp_inner_fr: number
+  brake_temp_rl: number; brake_temp_rr: number
+  brake_temp_fl: number; brake_temp_fr: number
+  engine_temp: number
+  cars?: TelemetryCar[]
+}
+
+export interface MotionRow {
+  type: 'motion'
+  ts: string
+  session_time: number
+  g_lat: number   // lateral G (+ve = right)
+  g_long: number  // longitudinal G (+ve = acceleration, -ve = braking)
+  g_vert: number  // vertical G
+}
+
+export interface MotionExRow {
+  type: 'motion_ex'
+  ts: string
+  session_time: number
+  front_aero_height_mm: number  // front plank edge height above road surface (mm)
+  rear_aero_height_mm: number   // rear plank edge height above road surface (mm)
+}
+
+export interface LapRow {
+  type: 'lap'
+  ts: string
+  session_time: number
+  last_lap_ms: number
+  current_lap_ms: number
+  lap_distance_m: number
+  s1_ms: number
+  s2_ms: number
+  position: number
+  lap_num: number
+  pit_status: number   // 0=none 1=pitting 2=in pit area
+  num_pit_stops: number
+  sector: number       // current sector 0/1/2
+  lap_invalid: boolean
+  penalties_s: number
+  driver_status?: number // 0=garage 1=flying 2=inlap 3=outlap 4=ontrack; absent in older files
+}
+
+export interface LapProgressPoint {
+  session_time: number
+  current_lap_ms: number
+  lap_distance_m: number
+  sector?: number
+  s1_ms?: number
+  s2_ms?: number
+}
+
+export interface AnalyzeDeltaSample {
+  lap_distance_m: number
+  delta_seconds: number
+  valid: boolean
+}
+
+export interface AnalyzeDeltaData {
+  currentLapNum: number
+  comparisonLapNum: number
+  sectorDelta: boolean
+  maxAbsDeltaSeconds: number
+  samples: AnalyzeDeltaSample[]
+}
+
+export interface StatusRow {
+  type: 'status'
+  ts: string
+  session_time: number
+  fuel_mix: number         // 0=lean 1=std 2=rich 3=max
+  front_brake_bias: number // %
+  fuel_kg: number
+  fuel_laps: number
+  drs_allowed: boolean
+  tyre_compound: number    // actual: 16=C5 17=C4 18=C3 19=C2 20=C1 7=Int 8=Wet
+  visual_compound: number  // visual: 16=soft 17=med 18=hard 7=int 8=wet
+  tyre_age_laps: number
+  ers_j: number
+  ers_pct: number
+  ers_mode: number         // 0=none 1=auto 2=hotlap 3=overtake
+  ers_deployed_j: number
+  engine_power_ice_kw: number
+  engine_power_mguk_kw: number
+  ers_harvested_mguk_j: number
+  ers_harvested_mguh_j: number
+}
+
+export interface DamageRow {
+  type: 'damage'
+  ts: string
+  session_time: number
+  tyre_wear_rl: number; tyre_wear_rr: number
+  tyre_wear_fl: number; tyre_wear_fr: number
+  tyre_dmg_rl: number;  tyre_dmg_rr: number
+  tyre_dmg_fl: number;  tyre_dmg_fr: number
+  brake_dmg_rl: number; brake_dmg_rr: number
+  brake_dmg_fl: number; brake_dmg_fr: number
+  blisters_rl: number; blisters_rr: number
+  blisters_fl: number; blisters_fr: number
+  wing_fl: number
+  wing_fr: number
+  wing_rear: number
+  floor_damage: number
+  diffuser_damage: number
+  sidepod_damage: number
+  drs_fault: number   // 0=OK 1=fault
+  ers_fault: number   // 0=OK 1=fault
+  gearbox_damage: number
+  engine_damage: number
+  // Power-unit component wear (%); absent in recordings made before these were parsed.
+  engine_mguh_wear?: number
+  engine_es_wear?: number
+  engine_ce_wear?: number
+  engine_ice_wear?: number
+  engine_mguk_wear?: number
+  engine_tc_wear?: number
+  engine_blown?: number   // 0=OK 1=fault
+  engine_seized?: number  // 0=OK 1=fault
+  cars?: TyreWearCar[]
+}
+
+export interface CarPosition {
+  idx: number
+  x:   number
+  z:   number
+  g_lat?: number | null
+  g_long?: number | null
+  g_vert?: number | null
+}
+
+export interface PositionsMsg {
+  type:       'positions'
+  ts:         string
+  player_idx: number
+  cars:       CarPosition[]
+}
+
+export interface TimingCar {
+  lap_distance_m?: number | null
+  idx: number
+  position: number
+  lap_num: number
+  current_lap_ms: number
+  last_lap_ms: number
+  s1_ms: number
+  s2_ms: number
+  gap_ms: number
+  pit_status: number
+  lap_invalid: boolean
+  penalties_s: number
+  num_dt_pens: number
+  num_sg_pens: number
+  sector: number
+  result_status: number  // 0=invalid 1=inactive 2=active 3=finished 4=dnf 5=dsq 7=retired
+  driver_status: number  // 0=garage 1=flying 2=inlap 3=outlap 4=ontrack
+}
+
+export interface TimingMsg {
+  type: 'timing'
+  ts: string
+  player_idx: number
+  cars: TimingCar[]
+}
+
+export interface DriverInfo {
+  your_telemetry?: number | null
+  idx: number
+  name: string
+  team_id: number
+  race_number: number
+  ai: boolean
+  livery_color: string
+}
+
+export interface ParticipantsMsg {
+  type: 'participants'
+  ts: string
+  drivers: DriverInfo[]
+}
+
+export interface CarStatusEntry {
+  idx: number
+  fuel_mix: number
+  front_brake_bias: number
+  fuel_kg: number
+  fuel_laps: number
+  drs_allowed: boolean
+  tyre_compound: number
+  visual_compound: number
+  tyre_age_laps: number
+  ers_j: number
+  ers_pct: number
+  ers_mode: number
+  ers_deployed_j: number
+  engine_power_ice_kw: number
+  engine_power_mguk_kw: number
+  ers_harvested_mguk_j: number
+  ers_harvested_mguh_j: number
+}
+
+export interface AllStatusMsg {
+  type: 'all_status'
+  ts: string
+  cars: CarStatusEntry[]
+}
+
+export interface TyreSetEntry {
+  idx: number
+  actual_compound: number
+  visual_compound: number
+  wear: number
+  available: boolean
+  recommended_session: number
+  life_span: number
+  usable_life: number
+  lap_delta_ms: number
+  fitted: boolean
+  // Wear per lap on this set in the current session; absent until it has
+  // done a lap this session.
+  avg_wear_per_lap?: number
+}
+
+export interface TyreSetsMsg {
+  type: 'tyre_sets'
+  ts: string
+  session_time: number
+  car_idx?: number
+  sets: TyreSetEntry[]
+  fitted_idx: number
+}
+
+export interface StrategyLapTarget { lap_num:number; required_ms:number; actual_ms:number; delta_lap_ms:number; delta_stint_ms:number; delta_total_ms:number; has_actual:boolean }
+export interface StrategyStint { compound_name:string; actual_compound:number; visual_compound:number; stint_number:number; start_lap:number; end_lap:number; expected_laps:number; actual_laps:number; is_last:boolean; rows:StrategyLapTarget[] }
+export interface StrategyPlan { stops:number; mode:'defensive'|'attacking'; target_idx:number; target_name:string; reason:string; confidence:number; legal:boolean; legality_reason:string; requires_compound_change:boolean; stints:StrategyStint[] }
+export interface StrategyCallMsg { kind:'cover'|'undercut'|'overcut'; target_idx:number; target_name:string; gap_ms:number; crossover_laps?:number; reason:string; detected_lap:number }
+export interface StrategyRival { idx:number; name:string; direction:'ahead'|'behind'; position:number; result_status:number; gap_ms:number; retired:boolean; threat_score:number; pace_ms:number; pace_delta_ms:number; closing_ms_per_lap:number; tyre_age_laps:number; actual_compound:number; visual_compound:number; last_pit_lap:number; pit_reaction:string }
+export interface StrategyPosition { idx:number; name:string; livery_color:string; role:'ahead'|'player'|'behind'; position:number; pit_status:number; num_pit_stops:number; gap_ms:number; gap_trend:-1|0|1; immediate:boolean }
+export interface StrategyWearWarning { text:string; severity:'danger'|'warning'|'caution'; priority:number }
+export interface StrategyFactor { code:string; text:string; impact_ms:number }
+export interface StrategyNeutralisation { kind:'safety_car'|'virtual_safety_car'; recommendation:'box'|'stay_out'; reason:string; normal_pit_loss_ms:number; effective_pit_loss_ms:number; queue_loss_ms:number; recoverable_time_ms:number; net_time_ms:number; box_now_cost_ms:number; box_later_cost_ms:number; box_now_advantage_ms:number; box_later_lap:number; current_position:number; projected_box_position:number; projected_stay_position:number; projected_later_box_position:number; positions_lost:number; rivals_boxing:number; decision_lap:number; confidence:number; data_age_s:number; position_basis:'deployment_gaps'; laps_to_recover?:number; factors:StrategyFactor[] }
+export interface StrategyWeatherDecision { recommendation:'stay_dry'|'stay_wet'|'prepare_intermediates'|'prepare_wets'|'prepare_slicks'; target_compound:string; forecast_weather:number; rain_percentage:number; crossover_lap:number; minutes_until_change:number; confidence:number; reason:string; lap_delta_ms?:number; set_wear?:number }
+export interface StrategyDecisionRecord { event:'lap_plan'|'neutralisation'; lap_num:number; session_time:number; recommendation:string; reason:string; target_idx:number; target_name:string; start_position:number; projected_position:number; start_num_pit_stops:number; actual_position?:number; followed?:boolean; successful?:boolean }
+export interface StrategySnapshotMsg {
+  type:'strategy'; session_time:number; state:'non_race'|'waiting'|'ready'; lap_num:number; total_laps:number
+  current_actual_compound:number; current_visual_compound:number; current_compound_name:string
+  current_tyre_age_laps:number
+  average_wear:number; wear_per_lap:number; limiting_corner:string; limiting_wear:number; limiting_wear_per_lap:number
+  cliff_lap:number; laps_until_cliff:number; is_monaco:boolean; confidence:number; data_age_s:number; explanation:StrategyFactor[]
+  conservative:StrategyPlan; aggressive:StrategyPlan
+  call?:StrategyCallMsg; neutralisation?:StrategyNeutralisation; weather_strategy?:StrategyWeatherDecision; decision_history:StrategyDecisionRecord[]; rivals:StrategyRival[]; positions:StrategyPosition[]
+  wear_fl:number; wear_fr:number; wear_rl:number; wear_rr:number; wear_warnings:StrategyWearWarning[]
+}
+
+export interface FastestLapMsg {
+  type: 'fastest_lap'
+  ts: string
+  car_idx: number
+  lap_time_s: number
+}
+
+export interface SessionHistoryFastestMsg {
+  type: 'session_history_fastest'
+  ts: string
+  car_idx: number
+  best_lap_time_ms: number
+  latest_lap_num?: number
+  latest_lap_time_ms?: number
+}
+
+export interface DriverLapHistoryLap {
+  lap_num: number
+  lap_time_ms: number
+  s1_ms: number
+  s2_ms: number
+  s3_ms: number
+  lap_valid: boolean
+  s1_valid: boolean
+  s2_valid: boolean
+  s3_valid: boolean
+}
+
+// One car's completed laps: live from its session history, in playback up to
+// the cursor.
+export interface DriverLapHistory {
+  type: 'driver_lap_history'
+  car_idx: number
+  best_lap_num?: number
+  laps: DriverLapHistoryLap[]
+  // First lap of the tyre stint in use (at the cursor in playback); 0 = unknown.
+  stint_start_lap: number
+  // Fastest valid sector times across every car (0 = none yet).
+  overall_best_s1_ms: number
+  overall_best_s2_ms: number
+  overall_best_s3_ms: number
+}
+
+export interface RaceEventMsg {
+  type: 'race_event'
+  ts: string
+  session_time?: number
+  code: string
+  car_idx?: number
+  lap_time_s?: number
+  safety_car_type?: number        // 1=Full 2=Virtual 3=Formation
+  event_type?: number             // 0=Deployed 1=Returning 2=Returned 3=Resume
+  penalty_type?: number           // 0=DT 1=SG 2=Grid 4=Time 5=Warning 6=DSQ
+  infringement_type?: number      // resolved through the shared `infringe.<id>` label catalog
+  penalty_time_s?: number         // seconds (SG and time penalties)
+  flashback_frame_identifier?: number
+  flashback_session_time?: number
+  overtaking_car_idx?: number     // OVTK: car doing the overtake
+  being_overtaken_car_idx?: number // OVTK: car being overtaken
+  speed_kph?: number              // SPTP: speed at the speed trap
+  is_overall_fastest?: boolean    // SPTP: new session fastest
+  is_driver_fastest?: boolean     // SPTP: new personal fastest for this driver
+}
+
+export interface WeatherForecastSample {
+  time_offset: number
+  weather: number
+  rain_percentage: number
+  /** The session this sample forecasts; absent in older recordings. */
+  session_type?: number
+}
+
+export interface MarshalZoneInfo {
+  zone_start: number   // 0.0–1.0 fraction of lap
+  flag: number         // -1=invalid, 0=none, 1=green, 2=blue, 3=yellow
+}
+
+export interface SessionMsg {
+  type: 'session'
+  ts: string
+  weather: number
+  track_temp: number
+  air_temp: number
+  track_length_m: number
+  track_id: number
+  formula?: number
+  session_type: number
+  total_laps: number
+  session_time_left: number
+  session_duration: number
+  pit_speed_limit: number
+  pit_stop_window_ideal_lap: number
+  pit_stop_window_latest_lap: number
+  pit_stop_rejoin_position: number
+  num_marshal_zones: number
+  marshal_zones: MarshalZoneInfo[]
+  weather_forecast_samples: WeatherForecastSample[]
+  safety_car_status: number
+  forecast_accuracy: number
+  ai_difficulty: number
+  time_of_day: number
+  num_safety_car_periods: number
+  num_virtual_sc_periods: number
+  num_red_flag_periods: number
+  active_aero_track_status?: number   // 2026 SLM: 0 = Full, 1 = Partial, -1 = n/a
+}
+
+export interface LapData {
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  telemetry: TelemetryRow[]
+  motion: MotionRow[]
+  statusHistory: StatusRow[]
+}
+
+// One lap of history, held as column views (see lib/columnStore.ts).
+export interface AnalyzeLapData {
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  telemetry: ColumnView<TelemetryRow>
+  motion: ColumnView<MotionRow>
+  motionEx: ColumnView<MotionExRow>
+  statusHistory: ColumnView<StatusRow>
+  damageHistory: ColumnView<DamageRow>
+  lapProgress: ColumnView<LapProgressPoint>
+  playerPositions: PlayerPositionPoint[]
+  rowTypeMask?: number
+}
+
+export interface PlayerPositionPoint {
+  session_time: number
+  x: number
+  z: number
+}
+
+export interface PlaybackLapDataMsg {
+  type: 'playback_lap_data'
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  telemetry: TelemetryRow[]
+  statusHistory: StatusRow[]
+  motionHistory: MotionRow[]
+  motionExHistory: MotionExRow[]
+  damageHistory: DamageRow[]
+  timingHistory?: TimingMsg[]
+  allStatusHistory?: AllStatusMsg[]
+  positionsHistory?: PositionsMsg[]
+  participantsHistory?: ParticipantsMsg[]
+  lapProgress: LapProgressPoint[]
+  playerPositions: PlayerPositionPoint[]
+  rowTypeMask?: number
+}
+
+export interface AnalysisDriverLapCatalog {
+  driverIndex: number
+  driverName: string
+  isPlayer: boolean
+  blocks: Array<{
+    lapNum: number
+    startSessionTime: number
+    endSessionTime: number
+    telemetry: Array<{ type: 'telemetry'; session_time: number; speed_kph: number; rpm: number }>
+    statusHistory: Array<{ type: 'status'; session_time: number; ers_pct: number; tyre_compound: number; visual_compound: number }>
+    sector1EndDistanceM?: number
+    sector2EndDistanceM?: number
+  }>
+  laps: Array<{ lapNum: number; lapTimeMs: number }>
+  fastestLapNum: number
+}
+
+export interface LiveFastestLapDataMsg {
+  type: 'live_fastest_lap_data'
+  requestId: number
+  lapNum: number
+  lapTimeMs: number
+  startSessionTime: number
+  endSessionTime: number
+  // The lap's chart families from the engine's live V6 store: a V6H1 payload
+  // (lib/columnStore.ts decodeV6History), delivered beside the JSON header.
+  history: Uint8Array
+}
+
+// One of the player's laps from the engine's live V6 store (getLiveLap).
+export interface LiveLapDataMsg extends Omit<LiveFastestLapDataMsg, 'type'> {
+  type: 'live_lap_data'
+}
+
+// Mirrors PlaybackState in src/main/bridgeManager.ts, sent on 'playback_state'.
+export interface PlaybackState {
+  isPlaying: boolean
+  speed: number
+  progressPct: number
+  currentTime: number
+  totalTime: number
+  filename: string | null
+  isScanning: boolean
+}
+
+export interface PlaybackLapBlock {
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  telemetry: Array<{ type: 'telemetry'; session_time: number; speed_kph: number; rpm: number }>
+  statusHistory: Array<{ type: 'status'; session_time: number; ers_pct: number; tyre_compound: number; visual_compound: number }>
+  sector1EndDistanceM?: number
+  sector2EndDistanceM?: number
+}
+
+export interface PlaybackFastestLapMsg {
+  type: 'playback_fastest_lap'
+  data: LapData
+}
+
+export interface PlaybackPreviousLapMsg {
+  type: 'playback_previous_lap'
+  data: LapData
+}
+
+export interface PlaybackSeekFlushMsg {
+  type: 'playback_seek_flush'
+  telemetry: TelemetryRow[]
+  motion: MotionRow[]
+  status: StatusRow[]
+  damage: DamageRow[]
+  currentLapStart: number
+  lapNum: number
+}
+
+export interface PlaybackLoadedMsg {
+  type: 'playback_loaded'
+  ok: boolean
+  header: { track_id: number; track_name: string; formula?: number; regulations_2026?: boolean } | null
+}
+
+export interface PlaybackControlMsg {
+  type:
+    | 'playback_close'
+    | 'playback_seek_flush_failed'
+}
+
+// A seek's history payload, broadcast by bridgeManager's seek-flush callback.
+export interface PlaybackSeekFlushBinMsg {
+  type: 'playback_seek_flush_bin'
+  binary: Uint8Array | ArrayBuffer | null
+  coldJson: string | null
+  currentLapStart: number
+  lapNum: number
+  allHistory: boolean
+  requestId: number
+  authoritativeSeek: boolean
+  rowTypeMask: number
+  historyStart: number
+  // Present on a host restore after the window was hidden: chart families in
+  // rowTypeMask replace [chartFrom, through], race events [eventsFrom, through].
+  restore?: HostRestoreRanges
+}
+
+export interface HostRestoreRanges {
+  chartFrom: number
+  includesEvents: boolean
+  eventsFrom: number
+  through: number
+  sessionChanged: boolean
+}
+
+export interface PlaybackLapBlocksMsg {
+  type: 'playback_lap_blocks'
+  blocks: PlaybackLapBlock[]
+  fastestLapNum: number
+  playbackDriverIndex?: number | null
+  events?: RaceEventMsg[]
+  laps?: Array<{ lapNum: number; lapTimeMs: number }>
+  initialFuelKg?: number
+  trackLengthM?: number
+  lapDistanceAvailable?: boolean
+  deltaAvailable?: boolean
+  tnrdVersion?: string
+  analysisDrivers?: AnalysisDriverLapCatalog[]
+}
+
+export type GatewayMsg =
+  | TelemetryRow
+  | MotionRow
+  | MotionExRow
+  | LapRow
+  | StatusRow
+  | DamageRow
+  | TimingMsg
+  | ParticipantsMsg
+  | AllStatusMsg
+  | FastestLapMsg
+  | SessionHistoryFastestMsg
+  | DriverLapHistory
+  | RaceEventMsg
+  | SessionMsg
+  | TyreSetsMsg
+  | PositionsMsg
+  | ProtocolStatusMsg
+  | ProtocolWarningMsg
+  | StrategySnapshotMsg
+  | PlaybackFastestLapMsg
+  | PlaybackPreviousLapMsg
+  | PlaybackSeekFlushMsg
+  | PlaybackLoadedMsg
+  | PlaybackLapDataMsg
+  | LiveFastestLapDataMsg
+  | LiveLapDataMsg
+  | PlaybackControlMsg
+  | PlaybackSeekFlushBinMsg
+  | PlaybackLapBlocksMsg
+
+export interface ProtocolCapabilities {
+  gameYear:        24 | 25 | 26 | null  // null = no packets received yet
+  hasBlisters:     boolean
+  hasLiveryColors: boolean
+  hasLapPositions: boolean
+  hasMguh:         boolean
+}
+
+export interface ColorRuleSpec {
+  on:    string
+  op:    'lt' | 'lte' | 'gt' | 'gte' | 'eq'
+  value: number
+  color: string
+}
+export interface ColorSpec {
+  default: string
+  rules:   ColorRuleSpec[]
+}
+
+export interface ProtocolStatusMsg {
+  type:            'protocol_status'
+  detected_format: 2024 | 2025 | 2026 | null
+  active_format:   2024 | 2025 | 2026 | null
+  presentation_format?: 2024 | 2025 | 2026 | null // Formula-gated UI format
+  formula?:        number | null // Raw PacketSessionData::m_formula
+  regulations_2026?: boolean | null // Car Telemetry 2 m_2026Regulations, one car for the session
+  override:        'auto' | 'f1_24' | 'f1_25' | 'f1_26'
+  capabilities:    ProtocolCapabilities
+  labels?:         Record<string, string>
+  cardColors?:     Record<string, ColorSpec>
+  aero_mode?:      'drs' | 'slm'   // overtaking-aid mode for the active format
+}
+
+export interface ProtocolWarningMsg {
+  type:            'protocol_warning'
+  detected_format: 2024 | 2025 | 2026
+  forced_format:   2024 | 2025 | 2026
+}
+
+export interface RecordingErrorMsg {
+  operation: string
+  message: string
+  path: string
+}
+
+export interface AvailableUpdate {
+  currentVersion: string
+  latestVersion: string
+  releaseUrl: string
+  publishedAt: string | null
+}
+
+export interface PairServiceState {
+  enabled: boolean
+  serverId: string
+  port: number
+  pairingOpen: boolean
+  pairingExpiresAt: number
+  matchingCode: string | null
+  qrPayload: string | null
+  devices: Array<{ id: string; name: string; pairedAt: number; lastSeenAt: number; connected: boolean }>
+  error: string | null
+}
+
+declare global {
+  interface DebugSettingsPayload {
+    additionalLogging: boolean
+    reactScan: boolean
+    webglMonitor: boolean
+    memoryLog: boolean
+    nodeApiExceptions: boolean
+  }
+
+  interface TimeChartStatsBridge {
+    register(element: HTMLElement, canvas: HTMLCanvasElement): void
+    unregister(element: HTMLElement): void
+    begin(element: HTMLElement): void
+    end(element: HTMLElement): void
+  }
+
+  interface Window {
+    __timeChartStats?: TimeChartStatsBridge
+    platform: string
+    windowControls: {
+      minimize:   () => void
+      maximize:   () => void
+      close:      () => void
+      fullscreen: () => void
+      minimizeToTray: () => void
+      onMaximizeChange:   (cb: (isMaximized: boolean) => void) => () => void
+      onFullscreenChange: (cb: (isFullscreen: boolean) => void) => () => void
+    }
+    udpBridge: {
+      getStatus: () => Promise<{ ok: boolean; error?: string }>
+      restart: () => Promise<{ ok: boolean; error?: string }>
+      onStatusChange: (cb: (status: { ok: boolean; error?: string }) => void) => () => void
+    }
+    debugBridge: {
+      get: () => Promise<DebugSettingsPayload>
+      setAdditionalLogging: (enabled: boolean) => void
+      setReactScan: (enabled: boolean) => void
+      setWebglMonitor: (enabled: boolean) => void
+      setMemoryLog: (enabled: boolean) => void
+      setNodeApiExceptions: (enabled: boolean) => void
+      onChange: (cb: (settings: DebugSettingsPayload) => void) => () => void
+    }
+    protocolBridge: {
+      getConfig:   () => Promise<{ override: string; detected: number | null; lastDetected: number | null; active: number | null }>
+      setOverride: (value: 'auto' | 'f1_24' | 'f1_25' | 'f1_26') => void
+      getTeamColors: () => Promise<{
+        catalog: Record<string, Array<{ id: number; name: string; color: string; group: string }>>
+        overrides: Record<string, Record<string, string>>
+      }>
+      setTeamColors: (value: Record<string, Record<string, string>>) => void
+      requestStatus: () => void
+    }
+    strategyBridge: {
+      setMinimumStops: (value: number) => void
+    }
+    fsBridge: {
+      openLaunchDiagnostics: () => Promise<void>
+      selectDirectory: () => Promise<string | null>
+      selectTNRDFile: () => Promise<string | null>
+    }
+    recordingBridge: {
+      onError: (cb: (error: RecordingErrorMsg) => void) => () => void
+    }
+    updateBridge: {
+      checkOnStartup: () => Promise<AvailableUpdate | null>
+      skipVersion: (version: string) => void
+      openDownloadPage: () => Promise<void>
+    }
+    pairingBridge: {
+      getState: () => Promise<PairServiceState>
+      setEnabled: (enabled: boolean) => Promise<PairServiceState>
+      openWindow: () => Promise<PairServiceState>
+      closeWindow: () => Promise<PairServiceState>
+      removeDevice: (id: string) => Promise<PairServiceState>
+      onState: (callback: (state: PairServiceState) => void) => () => void
+    }
+    playerBridge: {
+      setPageVisible: (visible: boolean) => void
+      load: (filePath: string) => Promise<{ ok: boolean; error?: string }>
+      play: () => void
+      pause: () => void
+      seek: (pct: number) => void
+      setAllLapsMode: (enabled: boolean, rowTypeMask?: number, windowSeconds?: number) => void
+      setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number,
+                            v6Types?: number[], v6HistoryTypes?: number[]) => void
+      onSeekStart: (callback: (allHistory: boolean) => void) => () => void
+      seekInstalled: (requestId: number) => void
+      setSpeed: (mult: number) => void
+      setDriver: (driverIndex: number, useRecordedRows?: boolean) => void
+      setFocusDriver: (driverIndex: number) => void
+      getLapData: (lapNum: number, rowTypeMask?: number) => void
+      getLiveFastestLap: (requestId: number) => void
+      getLiveLap: (requestId: number, lapNum: number) => void
+      // The car whose lap-times view is open (-1 when closed); the engine
+      // pushes its driver_lap_history row as it changes.
+      setLapHistoryCar: (carIdx: number) => void
+      getAllLapsData: (rowTypeMask?: number) => void
+      getWindowData: (windowSeconds: number, rowTypeMask?: number) => void
+      close: () => void
+      exportXlsx: () => Promise<{ ok: boolean; error?: string }>
+      onExportProgress: (cb: (pct: number, stage: string) => void) => () => void
+      onStateChange: (cb: (state: PlaybackState) => void) => () => void
+      onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void
+      onLoadFailed: (cb: (reason: string) => void) => () => void
+    }
+    analysisBridge: {
+      loadFile: (filePath: string) => Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }>
+      getLapData: (
+        lapNum: number, rowTypeMask?: number,
+        source?: 'file1' | 'file2', driverIndex?: number,
+      ) => Promise<unknown | null>
+      compareLaps: (
+        currentLapNum: number,
+        currentSource: 'file1' | 'file2',
+        currentDriverIndex: number,
+        comparisonLapNum: number,
+        comparisonSource: 'file1' | 'file2',
+        comparisonDriverIndex: number,
+        sectorDelta: boolean,
+      ) => Promise<unknown | null>
+      closeFile: () => void
+    }
+
+  }
+}
+
+declare module 'react' {
+  interface CSSProperties {
+    WebkitAppRegion?: 'drag' | 'no-drag'
+  }
+}

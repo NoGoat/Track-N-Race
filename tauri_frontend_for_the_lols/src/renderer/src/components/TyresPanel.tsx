@@ -1,0 +1,413 @@
+import { useState, useMemo, useCallback, useRef, memo } from 'react'
+import { flushSync } from 'react-dom'
+import { Maximize2, Minimize2 } from 'lucide-react'
+import type { AlignedTable, TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow } from '../types'
+import { useLabels } from '../lib/labels'
+import { tyreCompoundColor, dryTyreCompoundOrder } from '../lib/tyreCompounds'
+import TyreTrendCharts from './TyreTrendCharts'
+import type { ColumnView } from '../lib/columnStore'
+import { WheelCard, type TyreCardViews } from './ThermalPanel'
+import { useColorFn } from '../lib/cards'
+import { useSize } from '../hooks/useSize'
+import type { TyreYAxisGroupState } from '../lib/graphSections'
+import { useChartCoordinates } from '../lib/chartCoordinates'
+import type { TyresPageLayout } from '../app/appConfig'
+
+interface Props {
+  tyreSets:      TyreSetsMsg | null
+  latest:        TelemetryRow | null
+  damage:        DamageRow | null
+  damageHistory: ColumnView<DamageRow>
+  telemetry:     ColumnView<TelemetryRow>
+  tyreWearMode:  'wear' | 'life'
+  isDark:        boolean
+  visibleGraphs: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean }
+  graphViews?:   { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
+  cardViews?:    TyreCardViews
+  sessionType:   number | null
+  windowSeconds?: number
+  yAxis:          TyreYAxisGroupState
+  chartLayout?:   TyresPageLayout
+}
+
+const EMPTY_HISTORY: AlignedTable = [new Float64Array(0)]
+const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> = {
+  fl: EMPTY_HISTORY, fr: EMPTY_HISTORY, rl: EMPTY_HISTORY, rr: EMPTY_HISTORY,
+}
+
+const CORNERS = ['fl', 'fr', 'rl', 'rr'] as const
+type Corner = typeof CORNERS[number]
+type TyresViewTransition = {
+  ready: Promise<unknown>
+  finished: Promise<unknown>
+  skipTransition?: () => void
+}
+
+function useCornerHistories(telemetry: ColumnView<TelemetryRow>, enabled: Record<Corner, boolean>, skip: boolean): Record<Corner, AlignedTable> {
+  return useMemo(() => {
+    if (skip) return EMPTY_CORNER_HISTORIES
+    const requested = CORNERS.filter(corner => enabled[corner])
+    if (requested.length === 0) return EMPTY_CORNER_HISTORIES
+    const n = telemetry.length
+    const ts = new Float64Array(n)
+    const histories = { ...EMPTY_CORNER_HISTORIES }
+    for (const corner of requested) histories[corner] = [ts, new Float64Array(n), new Float64Array(n), new Float64Array(n)]
+    for (let i = 0; i < n; i++) {
+      ts[i] = telemetry.time(i)
+      for (const corner of requested) {
+        const history = histories[corner]
+        ;(history[1] as Float64Array)[i] = telemetry.num(`tyre_temp_surface_${corner}`, i)
+        ;(history[2] as Float64Array)[i] = telemetry.num(`tyre_temp_inner_${corner}`, i)
+        ;(history[3] as Float64Array)[i] = telemetry.num(`brake_temp_${corner}`, i)
+      }
+    }
+    return histories
+  }, [telemetry, enabled, skip])
+}
+
+const WET_COMPOUNDS = new Set([7, 8, 15])
+
+
+const SESSION_LABELS: Record<number, string> = {
+  0: '—', 1: 'FP1', 2: 'FP2', 3: 'FP3', 4: 'Q1', 5: 'Q2', 6: 'Q3', 7: 'Race',
+}
+
+const WET_SORT: Record<number, number> = { 7: 0, 8: 1 }
+
+function sortDry(a: TyreSetEntry, b: TyreSetEntry) {
+  const ao = dryTyreCompoundOrder(a.actual_compound, a.visual_compound)
+  const bo = dryTyreCompoundOrder(b.actual_compound, b.visual_compound)
+  return ao !== bo ? ao - bo : a.idx - b.idx
+}
+
+function sortWet(a: TyreSetEntry, b: TyreSetEntry) {
+  const ao = WET_SORT[a.actual_compound] ?? 2
+  const bo = WET_SORT[b.actual_compound] ?? 2
+  return ao !== bo ? ao - bo : a.idx - b.idx
+}
+
+function getSessionOrder(sessType: number): number {
+  if (sessType >= 1 && sessType <= 3) return sessType; // FP1=1, FP2=2, FP3=3
+  if (sessType === 4) return 3; // Short Practice -> FP3 slot
+  if (sessType === 5) return 4; // Q1
+  if (sessType === 6) return 5; // Q2
+  if (sessType === 7) return 6; // Q3
+  if (sessType >= 8 && sessType <= 9) return 6; // Other Qualis -> Q3 slot
+  if (sessType === 10) return 4; // Sprint Shootout 1 -> Q1 slot
+  if (sessType === 11) return 5; // Sprint Shootout 2 -> Q2 slot
+  if (sessType === 12) return 6; // Sprint Shootout 3 -> Q3 slot
+  if (sessType >= 13 && sessType <= 14) return 6; // Other Sprint Shootouts -> Q3 slot
+  return 7; // Race, Sprint Race, Time Trial, etc. -> Race slot (7)
+}
+
+function getStatus(s: TyreSetEntry, sessionType: number | null): 'FITTED' | 'NEW' | 'USED' | 'RESERVED' | 'RETURNED' {
+  if (s.fitted)                    return 'FITTED'
+  if (s.available && s.wear === 0) return 'NEW'
+  if (s.available && s.wear > 0)   return 'USED'
+  
+  // If unavailable:
+  if (sessionType !== null) {
+    const currentOrder = getSessionOrder(sessionType);
+    if (s.recommended_session > currentOrder) {
+      return 'RESERVED';
+    }
+  } else {
+    // Fallback: recommended session is Q1 (4) or later
+    if (s.recommended_session >= 4) {
+      return 'RESERVED';
+    }
+  }
+  
+  return 'RETURNED'
+}
+
+const AllocationWearBar = memo(function AllocationWearBar({ pct, isDark = true }: { pct: number; isDark?: boolean }) {
+  const color = useColorFn(null, null, isDark)('wear', pct) ?? '#888'
+  return (
+    <div className="w-full h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
+      <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
+    </div>
+  )
+})
+
+const SetRow = memo(function SetRow({ set, isDark = true, sessionType }: { set: TyreSetEntry; isDark?: boolean; sessionType: number | null }) {
+  const { tn }     = useLabels()
+  const colorFn    = useColorFn(null, null, isDark)
+  const status     = getStatus(set, sessionType)
+  const compName   = tn('tyre.actual', set.actual_compound)
+  const compColor  = tyreCompoundColor(set.actual_compound, set.visual_compound) ?? '#ffffff'
+  const isReturned = status === 'RETURNED'
+  const isReserved = status === 'RESERVED'
+  const isFitted   = status === 'FITTED'
+
+  const statusColor =
+    isFitted             ? (isDark ? '#5794F2' : '#0B57D0') :
+    status === 'NEW'     ? (isDark ? '#37872D' : '#137333') :
+    status === 'USED'    ? (isDark ? '#d4ad04' : '#8B5200') :
+    isReserved           ? (isDark ? '#a78bfa' : '#6d28d9') :
+    (isDark ? '#484c62' : '#565B70')
+
+  const showDelta = !isFitted && set.available && set.lap_delta_ms !== 0
+  const deltaStr  = showDelta
+    ? (set.lap_delta_ms > 0 ? `+${(set.lap_delta_ms / 1000).toFixed(3)}s` : `${(set.lap_delta_ms / 1000).toFixed(3)}s`)
+    : null
+
+  return (
+    <div
+      className={`flex items-center gap-2 px-3 py-1 border-b border-[var(--border)] ${
+        isFitted ? (isDark ? 'bg-[#5794F2]/10' : 'bg-[#0B57D0]/10') : isReturned ? 'opacity-40' : ''
+      }`}
+    >
+      <span className="text-[10px] text-[var(--text-secondary)] tabular-nums w-5 shrink-0">
+        #{set.idx + 1}
+      </span>
+      <span className="text-[10px] font-black tabular-nums w-8 shrink-0" style={{ color: compColor }}>
+        {compName}
+      </span>
+      <span
+        className="text-[9px] font-bold py-0.5 rounded border shrink-0 w-16 text-center inline-block"
+        style={{ color: statusColor, borderColor: statusColor, background: `${statusColor}18` }}
+      >
+        {status}
+      </span>
+      <div className="flex-1 min-w-0 flex items-center gap-2">
+        <div className="flex-1 min-w-0">
+          <AllocationWearBar pct={set.wear} isDark={isDark} />
+        </div>
+        <span className="text-[10px] tabular-nums w-8 text-center shrink-0" style={{ color: colorFn('wear', set.wear) ?? '#888' }}>
+          {set.wear}%
+        </span>
+      </div>
+      <span className="text-[10px] tabular-nums text-[var(--text-secondary)] w-12 text-center shrink-0">
+        {set.avg_wear_per_lap != null ? `${set.avg_wear_per_lap.toFixed(2)}%` : '—'}
+      </span>
+      <span className="text-[10px] tabular-nums text-[var(--text-secondary)] w-14 text-center shrink-0">
+        {set.life_span}/{set.usable_life}L
+      </span>
+      <span className="text-[10px] text-[var(--text-secondary)] w-8 text-center shrink-0">
+        {SESSION_LABELS[set.recommended_session] ?? '—'}
+      </span>
+      <span
+        className="text-[10px] tabular-nums w-14 text-right shrink-0"
+        style={{ color: deltaStr ? (set.lap_delta_ms > 0 ? '#C4162A' : (isDark ? '#37872D' : '#137333')) : 'transparent' }}
+      >
+        {deltaStr ?? '—'}
+      </span>
+    </div>
+  )
+})
+
+const COLUMN_HEADERS = (
+  <div className="flex gap-2 text-[9px] text-[var(--text-secondary)]">
+    <span className="w-8 text-center">Wear</span>
+    <span className="w-12 text-center whitespace-nowrap" title="Average wear per lap on this set in the current session">Wear/Lap</span>
+    <span className="w-14 text-center">Life</span>
+    <span className="w-8 text-center">Rec.</span>
+    <span className="w-14 text-right">Δ Lap</span>
+  </div>
+)
+
+const SetSection = memo(function SetSection({ title, sets, isDark = true, sessionType }: { title: string; sets: TyreSetEntry[]; isDark?: boolean; sessionType: number | null }) {
+  return (
+    <div className="flex flex-col overflow-hidden">
+      <div className="shrink-0 px-3 py-2 border-b border-[var(--border)] flex items-center justify-between">
+        <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest">{title}</span>
+        {COLUMN_HEADERS}
+      </div>
+      <div>
+        {sets.map(s => <SetRow key={s.idx} set={s} isDark={isDark} sessionType={sessionType} />)}
+      </div>
+    </div>
+  )
+})
+
+const EmptySection = memo(function EmptySection({ title, count }: { title: string; count: number }) {
+  return (
+    <div className="flex flex-col overflow-hidden">
+      <div className="shrink-0 px-3 py-2 border-b border-[var(--border)] flex items-center justify-between">
+        <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest">{title}</span>
+        {COLUMN_HEADERS}
+      </div>
+      <div>
+        {Array.from({ length: count }, (_, i) => (
+          <div key={i} className="flex items-center gap-2 px-3 py-1 border-b border-[var(--border)]">
+            <span className="text-[10px] text-[var(--text-secondary)] tabular-nums w-5">#{i + 1}</span>
+            <span className="text-[10px] text-[var(--text-muted)] w-8">—</span>
+            <span className="text-[9px] text-[var(--text-muted)] px-1.5 py-0.5 rounded border border-[var(--border)]">—</span>
+            <div className="flex-1 min-w-0">
+              <div className="w-full h-1.5 bg-[var(--border)] rounded-full" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+})
+
+export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30, yAxis, chartLayout = 'grid' }: Props) {
+  const fullLapMode = useChartCoordinates().allLapsMode
+  const { tn } = useLabels()
+  const colorFn = useColorFn(null, null, isDark)
+  const [expanded, setExpanded] = useState(false)
+  const activeViewTransitionRef = useRef<TyresViewTransition | null>(null)
+  const { ref: cardsRef, height: cardsHeight } = useSize()
+  // Expanded mode renders the shared TimeCharts directly. Building thirteen
+  // full-window Float64 columns for the hidden wheel cards was pure allocation
+  // churn (hundreds of MB/s at long 60 Hz windows), so skip it entirely.
+  const tableCorners = useMemo(() => Object.fromEntries(CORNERS.map(corner => [
+    corner,
+    !expanded && cardViews?.[corner] === 'table',
+  ])) as Record<Corner, boolean>, [cardViews, expanded])
+  const cornerHistory = useCornerHistories(telemetry, tableCorners, fullLapMode)
+
+  const drySets = useMemo(() => {
+    return tyreSets?.sets.filter(s => s.actual_compound !== 0 && !WET_COMPOUNDS.has(s.actual_compound)).sort(sortDry) ?? null
+  }, [tyreSets])
+
+  const wetSets = useMemo(() => {
+    return tyreSets?.sets.filter(s =>  WET_COMPOUNDS.has(s.actual_compound)).sort(sortWet) ?? null
+  }, [tyreSets])
+
+  const noData = !latest
+  const compact = cardsHeight > 0 && cardsHeight < 720
+
+  const setExpandedAnimated = useCallback((next: boolean) => {
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => TyresViewTransition
+    }
+    const motionReduced = document.documentElement.dataset.reduceAnimations === 'true'
+    const root = document.documentElement
+
+    if (motionReduced || !transitionDocument.startViewTransition) {
+      activeViewTransitionRef.current?.skipTransition?.()
+      activeViewTransitionRef.current = null
+      delete root.dataset.tyresViewTransition
+      delete root.dataset.tyresViewTransitionPhase
+      setExpanded(next)
+      return
+    }
+
+    // A click during the tail of the previous animation should reverse it,
+    // rather than being lost while Chromium finishes the old transition.
+    activeViewTransitionRef.current?.skipTransition?.()
+    root.dataset.tyresViewTransition = next ? 'graphs' : 'allocation'
+    root.dataset.tyresViewTransitionPhase = 'preparing'
+    try {
+      const transition = transitionDocument.startViewTransition(() => {
+        flushSync(() => setExpanded(next))
+      })
+      activeViewTransitionRef.current = transition
+      void transition.ready.then(() => {
+        // WebGL chart construction can occupy the first frame after capture.
+        // Keep the compositor animation paused until that work has yielded so
+        // its first presented frame really is animation frame zero.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (activeViewTransitionRef.current !== transition) return
+          root.dataset.tyresViewTransitionPhase = 'running'
+        }))
+      }, () => {})
+      const clearTransition = () => {
+        if (activeViewTransitionRef.current !== transition) return
+        activeViewTransitionRef.current = null
+        delete root.dataset.tyresViewTransition
+        delete root.dataset.tyresViewTransitionPhase
+      }
+      void transition.finished.then(clearTransition, clearTransition)
+    } catch {
+      activeViewTransitionRef.current = null
+      delete root.dataset.tyresViewTransition
+      delete root.dataset.tyresViewTransitionPhase
+      setExpanded(next)
+    }
+  }, [])
+
+  if (expanded) {
+    return (
+      <div className="tyres-view-transition h-full flex flex-col bg-[var(--bg-panel)] overflow-hidden">
+        <div className="shrink-0 px-3 py-2 border-b border-[var(--border)] flex items-center">
+          <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest w-32 shrink-0">Tyre Conditions</span>
+          <div className="flex-1 flex justify-center items-center gap-2">
+            {(() => {
+              const fitted = tyreSets?.sets.find(s => s.fitted)
+              if (!fitted) return null
+              const name  = tn('tyre.actual', fitted.actual_compound)
+              const color = tyreCompoundColor(fitted.actual_compound, fitted.visual_compound)  ?? 'var(--text-primary)'
+              return <>
+                <span className="text-[11px] font-black tabular-nums" style={{ color }}>{name}</span>
+                <span className="text-[10px] text-[var(--text-secondary)]">·</span>
+                <span className="text-[10px] tabular-nums" style={{ color: colorFn('wear', fitted.wear) ?? '#888' }}>{fitted.wear}% wear</span>
+                <span className="text-[10px] text-[var(--text-secondary)]">·</span>
+                <span className="text-[10px] tabular-nums text-[var(--text-secondary)]">{fitted.life_span}L remaining</span>
+              </>
+            })()}
+          </div>
+          <button
+            onClick={() => setExpandedAnimated(false)}
+            className="flex select-none items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors w-32 shrink-0 justify-end"
+          >
+            <Minimize2 size={11} />
+            <span>Allocation</span>
+          </button>
+        </div>
+        <div className="flex-1 min-h-0">
+          <TyreTrendCharts
+            telemetry={telemetry}
+            damageHistory={damageHistory}
+            tyreWearMode={tyreWearMode}
+            visibleGraphs={visibleGraphs}
+            graphViews={graphViews}
+            isDark={isDark}
+            layout={chartLayout}
+            windowSeconds={windowSeconds}
+            yAxis={yAxis}
+            sectionGroup="tyres"
+          />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="tyres-view-transition h-full flex bg-[var(--bg-panel)] divide-x divide-[var(--border)] overflow-hidden">
+      {/* Left: allocation table */}
+      <div className="flex-1 min-w-0 h-full overflow-y-auto divide-y divide-[var(--border)]">
+        {drySets
+          ? <SetSection title="Dry Sets (Slicks)" sets={drySets} isDark={isDark} sessionType={sessionType} />
+          : <EmptySection title="Dry Sets (Slicks)" count={13} />
+        }
+        {wetSets
+          ? <SetSection title="Wet / Inter Sets" sets={wetSets} isDark={isDark} sessionType={sessionType} />
+          : <EmptySection title="Wet / Inter Sets" count={7} />
+        }
+      </div>
+
+      {/* Right: wheel condition cards */}
+      <div className="w-64 shrink-0 h-full flex flex-col overflow-hidden divide-y divide-[var(--border)]">
+        <div className="shrink-0 px-3 py-2 flex items-center justify-between">
+          <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest">Conditions</span>
+          <button
+            onClick={() => setExpandedAnimated(true)}
+            className="flex select-none items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+          >
+            <Maximize2 size={11} />
+            <span>Graphs</span>
+          </button>
+        </div>
+        <div ref={cardsRef} className="flex-1 flex flex-col divide-y divide-[var(--border)]">
+          <WheelCard pos="Front Left" corner="fl" surface={latest?.tyre_temp_surface_fl ?? 0} inner={latest?.tyre_temp_inner_fl ?? 0} brake={latest?.brake_temp_fl ?? 0}
+            wear={damage?.tyre_wear_fl ?? null} blisters={damage?.blisters_fl ?? null} noData={noData} compact={compact} isDark={isDark}
+            view={cardViews?.fl} history={cornerHistory.fl} telemetry={telemetry} />
+          <WheelCard pos="Front Right" corner="fr" surface={latest?.tyre_temp_surface_fr ?? 0} inner={latest?.tyre_temp_inner_fr ?? 0} brake={latest?.brake_temp_fr ?? 0}
+            wear={damage?.tyre_wear_fr ?? null} blisters={damage?.blisters_fr ?? null} noData={noData} compact={compact} isDark={isDark}
+            view={cardViews?.fr} history={cornerHistory.fr} telemetry={telemetry} />
+          <WheelCard pos="Rear Left" corner="rl" surface={latest?.tyre_temp_surface_rl ?? 0} inner={latest?.tyre_temp_inner_rl ?? 0} brake={latest?.brake_temp_rl ?? 0}
+            wear={damage?.tyre_wear_rl ?? null} blisters={damage?.blisters_rl ?? null} noData={noData} compact={compact} isDark={isDark}
+            view={cardViews?.rl} history={cornerHistory.rl} telemetry={telemetry} />
+          <WheelCard pos="Rear Right" corner="rr" surface={latest?.tyre_temp_surface_rr ?? 0} inner={latest?.tyre_temp_inner_rr ?? 0} brake={latest?.brake_temp_rr ?? 0}
+            wear={damage?.tyre_wear_rr ?? null} blisters={damage?.blisters_rr ?? null} noData={noData} compact={compact} isDark={isDark}
+            view={cardViews?.rr} history={cornerHistory.rr} telemetry={telemetry} />
+        </div>
+      </div>
+    </div>
+  )
+}

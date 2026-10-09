@@ -1,0 +1,1142 @@
+import { memo, useEffect, useState } from 'react'
+import type { LapRow, StatusRow, TimingCar, DriverInfo, CarStatusEntry } from '../types'
+import { useLabels } from '../lib/labels'
+import { tyreCompoundColor } from '../lib/tyreCompounds'
+import type { DensityMode } from '../lib/graphSections'
+
+interface Props {
+  lap: LapRow | null
+  status: StatusRow | null
+  selectedCar: TimingCar | null
+  selectedDriver: DriverInfo | null
+  selectedCarStatus: CarStatusEntry | null
+  playerIdx: number | null
+  isDark: boolean
+  cards?: {
+    timing?: boolean
+    energyRecovery?: boolean
+    strategy?: boolean
+  }
+  compactTiming?: DensityMode | boolean
+  compactErs?: DensityMode | boolean
+  compactStrategy?: DensityMode | boolean
+}
+
+function fmtMs(ms: number): string {
+  if (ms <= 0) return '--:--.---'
+  const m     = Math.floor(ms / 60_000)
+  const s     = Math.floor((ms % 60_000) / 1000)
+  const mills = ms % 1000
+  return `${m}:${String(s).padStart(2, '0')}.${String(mills).padStart(3, '0')}`
+}
+
+function fmtSector(ms: number): string {
+  if (ms <= 0) return '—'
+  const s     = Math.floor(ms / 1000)
+  const mills = ms % 1000
+  return `${s}.${String(mills).padStart(3, '0')}`
+}
+
+const FUEL_MIX   = ['Lean', 'Standard', 'Rich', 'Max power']
+const PIT_STATUS = ['', 'Pitting', 'In pit lane']
+
+
+// Every card passes a plain string here, so memoizing keeps these labels out of
+// the timing card's per-packet renders.
+const SectionLabel = memo(function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest mb-2">{children}</div>
+  )
+})
+
+function Panel({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={className || 'p-4'}>
+      {children}
+    </div>
+  )
+}
+
+// The standings sidebar re-renders with every lap and status packet. These two
+// cards take the values they print instead of the status row, so they only
+// re-render when one of those values actually changes.
+const ErsCard = memo(function ErsCard({
+  compact, drsAllowed, ersBarColor, ersBarWidth, ersDeployedJ, ersJ, ersMode, ersPct,
+  harvestedMgukJ, harvestedMguhJ, hasStatus, isDark,
+}: {
+  compact: DensityMode | boolean
+  drsAllowed: boolean
+  ersBarColor: string
+  ersBarWidth: number
+  ersDeployedJ: number
+  ersJ: number
+  ersMode: number
+  ersPct: number
+  harvestedMgukJ: number
+  harvestedMguhJ: number
+  hasStatus: boolean
+  isDark: boolean
+}) {
+  const { t, tn } = useLabels()
+  const isCompactErs = compact === true || compact === 'compact'
+  const isSpaciousErs = compact === 'spacious'
+  return (
+      <Panel className={isCompactErs ? 'p-3' : isSpaciousErs ? 'p-6' : 'p-4'}>
+        <SectionLabel>Energy Recovery</SectionLabel>
+
+        {isCompactErs ? (
+          /* Compact ERS Layout */
+          hasStatus ? (
+            <div className="space-y-2">
+              <div className="flex justify-between items-baseline">
+                <span className="text-xl font-black tabular-nums" style={{ color: ersBarColor }}>
+                  {ersPct.toFixed(1)}%
+                </span>
+                <span
+                  className="text-xs font-bold"
+                  style={{
+                    color: ersMode === 0 ? 'var(--text-secondary)' :
+                           ersMode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
+                           ersMode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
+                           '#C4162A'
+                  }}
+                >
+                  {tn('ers.mode', ersMode)}
+                </span>
+              </div>
+
+              <div className="w-full h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{ width: `${ersBarWidth}%`, background: ersBarColor }}
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5 pt-1.5 border-t border-[var(--border)] -mx-3 px-3 text-xs">
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Store</div>
+                  <div className="text-[11px] font-bold text-[var(--text-primary)] tabular-nums">
+                    {(ersJ / 1_000_000).toFixed(2)}M
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="text-[11px] font-bold text-[var(--text-primary)] tabular-nums">
+                    {(ersDeployedJ / 1_000_000).toFixed(2)}M
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className={`text-[11px] font-bold ${drsAllowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
+                    {drsAllowed ? 'AVAIL' : 'LOCKED'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex justify-between items-baseline">
+                <span className="text-xl font-black tabular-nums text-[var(--text-muted)]">—%</span>
+                <span className="text-xs font-bold text-[var(--text-muted)]">—</span>
+              </div>
+              <div className="w-full h-1.5 bg-[var(--border)] rounded-full overflow-hidden" />
+              <div className="grid grid-cols-3 gap-1.5 pt-1.5 border-t border-[var(--border)] -mx-3 px-3 text-xs">
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Store</div>
+                  <div className="text-[11px] font-bold text-[var(--text-muted)]">—</div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="text-[11px] font-bold text-[var(--text-muted)]">—</div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className="text-[11px] font-bold text-[var(--text-muted)]">—</div>
+                </div>
+              </div>
+            </div>
+          )
+        ) : isSpaciousErs ? (
+          /* Spacious ERS Layout */
+          hasStatus ? (
+            <div className="space-y-6">
+              {/* Energy bar */}
+              <div>
+                <div className="flex justify-between items-baseline mb-2">
+                  <span className="text-4xl font-black tabular-nums"
+                        style={{ color: ersBarColor }}>
+                    {ersPct.toFixed(1)}%
+                  </span>
+                  <span
+                    className="text-base font-black"
+                    style={{
+                      color: ersMode === 0 ? 'var(--text-secondary)' :
+                             ersMode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
+                             ersMode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
+                             '#C4162A'
+                    }}
+                  >
+                    {tn('ers.mode', ersMode)}
+                  </span>
+                </div>
+                <div className="w-full h-4 bg-[var(--border)] rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{ width: `${ersBarWidth}%`, background: ersBarColor }}
+                  />
+                </div>
+                <div className="text-xs font-semibold text-[var(--text-secondary)] mt-1.5">
+                  {(ersJ / 1_000_000).toFixed(2)} MJ / 4.00 MJ
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 text-base">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="text-xl font-black text-[var(--text-primary)]">
+                    {(ersDeployedJ / 1_000_000).toFixed(2)} MJ
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className={`text-xl font-black ${drsAllowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
+                    {drsAllowed ? 'AVAILABLE' : 'LOCKED'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Harvested</div>
+                  <div className="text-xl font-black text-[var(--text-primary)]">
+                    {(((harvestedMgukJ ?? 0) + (harvestedMguhJ ?? 0)) / 1_000_000).toFixed(2)} MJ
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">ERS Mode</div>
+                  <div className="text-xl font-black text-[var(--text-secondary)]">
+                    {tn('ers.mode', ersMode)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div>
+                <div className="flex justify-between items-baseline mb-2">
+                  <span className="text-4xl font-black tabular-nums text-[var(--text-muted)]">—%</span>
+                  <span className="text-base font-black text-[var(--text-muted)]">—</span>
+                </div>
+                <div className="w-full h-4 bg-[var(--border)] rounded-full overflow-hidden" />
+                <div className="text-xs font-semibold text-[var(--text-muted)] mt-1.5">— MJ / 4.00 MJ</div>
+              </div>
+              <div className="grid grid-cols-2 gap-4 text-base">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">— MJ</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">—</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Harvested</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">— MJ</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">ERS Mode</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">—</div>
+                </div>
+              </div>
+            </div>
+          )
+        ) : (
+          /* Normal ERS Layout */
+          hasStatus ? (
+            <div className="space-y-4">
+              {/* Energy bar */}
+              <div>
+                <div className="flex justify-between items-baseline mb-1.5">
+                  <span className="text-3xl font-black tabular-nums"
+                        style={{ color: ersBarColor }}>
+                    {ersPct.toFixed(1)}%
+                  </span>
+                  <span
+                    className="text-sm font-bold"
+                    style={{
+                      color: ersMode === 0 ? 'var(--text-secondary)' :
+                             ersMode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
+                             ersMode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
+                             '#C4162A'
+                    }}
+                  >
+                    {tn('ers.mode', ersMode)}
+                  </span>
+                </div>
+                <div className="w-full h-3 bg-[var(--border)] rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{ width: `${ersBarWidth}%`, background: ersBarColor }}
+                  />
+                </div>
+                <div className="text-[9px] text-[var(--text-secondary)] mt-1">
+                  {(ersJ / 1_000_000).toFixed(2)} MJ / 4.00 MJ
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="font-bold text-[var(--text-primary)]">
+                    {(ersDeployedJ / 1_000_000).toFixed(2)} MJ
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className={`font-bold ${drsAllowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
+                    {drsAllowed ? 'AVAILABLE' : 'LOCKED'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <div className="flex justify-between items-baseline mb-1.5">
+                  <span className="text-3xl font-black tabular-nums text-[var(--text-muted)]">—%</span>
+                  <span className="text-sm font-bold text-[var(--text-muted)]">—</span>
+                </div>
+                <div className="w-full h-3 bg-[var(--border)] rounded-full overflow-hidden" />
+                <div className="text-[9px] text-[var(--text-muted)] mt-1">— MJ / 4.00 MJ</div>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="font-bold text-[var(--text-muted)]">— MJ</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className="font-bold text-[var(--text-muted)]">—</div>
+                </div>
+              </div>
+            </div>
+          )
+        )}
+      </Panel>
+  )
+})
+
+const StrategyCard = memo(function StrategyCard({
+  compact, frontBrakeBias, fuelKg, fuelLaps, fuelMix, hasStatus, isDark, tyreAge, tyreColor, tyreName,
+}: {
+  compact: DensityMode | boolean
+  frontBrakeBias: number | null
+  fuelKg: number
+  fuelLaps: number
+  fuelMix: number
+  hasStatus: boolean
+  isDark: boolean
+  tyreAge: number | null
+  tyreColor: string
+  tyreName: string | null
+}) {
+  const isCompactStrategy = compact === true || compact === 'compact'
+  const isSpaciousStrategy = compact === 'spacious'
+  return (
+      <Panel className={isCompactStrategy ? 'p-3' : isSpaciousStrategy ? 'p-6' : 'p-4'}>
+        <SectionLabel>Strategy</SectionLabel>
+
+        {isCompactStrategy ? (
+          /* Compact Strategy Layout */
+          hasStatus ? (
+            <div className="grid grid-cols-2 gap-3">
+              {/* Left Column: Fuel */}
+              <div className="space-y-0.5">
+                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Fuel</div>
+                <div className="flex items-baseline gap-1">
+                  <span
+                    className="text-xl font-black tabular-nums"
+                    style={{
+                      color: fuelLaps > 1 ? (isDark ? '#37872D' : '#137333') :
+                             fuelLaps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
+                             '#C4162A'
+                    }}
+                  >
+                    {fuelKg.toFixed(1)}
+                  </span>
+                  <span className="text-[var(--text-secondary)] text-[10px]">kg</span>
+                </div>
+                <div className="text-[11px] font-semibold text-[var(--text-secondary)] tabular-nums">
+                  {fuelLaps >= 0 ? '+' : ''}{fuelLaps.toFixed(1)} laps
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)]">Mix: {FUEL_MIX[fuelMix] ?? ''}</div>
+              </div>
+
+              {/* Right Column: Tyre & Brake */}
+              <div className="space-y-0.5">
+                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Tyre</div>
+                <div className="flex items-baseline gap-1.5">
+                  {tyreName ? (
+                    <span className="text-xl font-black" style={{ color: tyreColor }}>
+                      {tyreName}
+                    </span>
+                  ) : (
+                    <span className="text-xl font-black text-[var(--text-muted)]">—</span>
+                  )}
+                  <span className="text-[11px] font-semibold text-[var(--text-secondary)] tabular-nums">
+                    {tyreAge === null ? '—' : `${tyreAge}L`}
+                  </span>
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)]">
+                  BB: {frontBrakeBias === null ? '—' : `${frontBrakeBias}% F`}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-0.5">
+                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Fuel</div>
+                <div className="text-xl font-black text-[var(--text-muted)]">— kg</div>
+                <div className="text-[11px] text-[var(--text-muted)]">— laps</div>
+                <div className="text-[10px] text-[var(--text-muted)]">Mix: —</div>
+              </div>
+              <div className="space-y-0.5">
+                <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Tyre</div>
+                <div className="text-xl font-black text-[var(--text-muted)]">—</div>
+                <div className="text-[10px] text-[var(--text-muted)]">BB: —%</div>
+              </div>
+            </div>
+          )
+        ) : isSpaciousStrategy ? (
+          /* Spacious Strategy Layout */
+          hasStatus ? (
+            <div className="space-y-6">
+              {/* Fuel */}
+              <div>
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Fuel</div>
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className="text-4xl font-black tabular-nums"
+                    style={{
+                      color: fuelLaps > 1 ? (isDark ? '#37872D' : '#137333') :
+                             fuelLaps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
+                             '#C4162A'
+                    }}
+                  >
+                    {fuelKg.toFixed(1)}
+                  </span>
+                  <span className="text-[var(--text-secondary)] text-base font-semibold">kg</span>
+                </div>
+                <div className="text-base font-semibold text-[var(--text-secondary)] mt-1">
+                  {fuelLaps >= 0 ? '+' : ''}{fuelLaps.toFixed(1)} laps vs finish
+                </div>
+                <div className="text-sm text-[var(--text-secondary)] mt-1.5">Mix: {FUEL_MIX[fuelMix] ?? ''}</div>
+              </div>
+
+              {/* Tyre */}
+              <div className="pt-4 -mx-6 px-6 border-t border-[var(--border)]">
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Tyre</div>
+                <div className="flex items-center gap-3">
+                  {tyreName ? (
+                    <span className="text-3xl font-black" style={{ color: tyreColor }}>
+                      {tyreName}
+                    </span>
+                  ) : (
+                    <span className="text-3xl font-black text-[var(--text-muted)]">—</span>
+                  )}
+                  <div className="text-base font-semibold text-[var(--text-secondary)]">
+                    Age: {tyreAge === null ? '—' : `${tyreAge} laps`}
+                  </div>
+                </div>
+                <div className="text-sm text-[var(--text-secondary)] mt-1">
+                  {frontBrakeBias === null
+                    ? 'Brake bias: —'
+                    : `Brake bias: ${frontBrakeBias}% front · ${(100 - frontBrakeBias).toFixed(0)}% rear`}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div>
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Fuel</div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-4xl font-black tabular-nums text-[var(--text-muted)]">—</span>
+                  <span className="text-[var(--text-muted)] text-base font-semibold">kg</span>
+                </div>
+                <div className="text-base font-semibold text-[var(--text-muted)] mt-1">— laps vs finish</div>
+                <div className="text-sm text-[var(--text-muted)] mt-1.5">Mix: —</div>
+              </div>
+              <div className="pt-4 -mx-6 px-6 border-t border-[var(--border)]">
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Tyre</div>
+                <div className="flex items-center gap-3">
+                  <span className="text-3xl font-black text-[var(--text-muted)]">—</span>
+                  <div className="text-base font-semibold text-[var(--text-muted)]">Age: — laps</div>
+                </div>
+                <div className="text-sm text-[var(--text-muted)] mt-1">Brake bias: —% front · —% rear</div>
+              </div>
+            </div>
+          )
+        ) : (
+          /* Normal Strategy Layout */
+          hasStatus ? (
+            <div className="space-y-4">
+              {/* Fuel */}
+              <div>
+                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Fuel</div>
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className="text-3xl font-black tabular-nums"
+                    style={{
+                      color: fuelLaps > 1 ? (isDark ? '#37872D' : '#137333') :
+                             fuelLaps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
+                             '#C4162A'
+                    }}
+                  >
+                    {fuelKg.toFixed(1)}
+                  </span>
+                  <span className="text-[var(--text-secondary)] text-sm">kg</span>
+                </div>
+                <div className="text-sm text-[var(--text-secondary)]">
+                  {fuelLaps >= 0 ? '+' : ''}{fuelLaps.toFixed(1)} laps vs finish
+                </div>
+                <div className="text-xs text-[var(--text-secondary)] mt-1">Mix: {FUEL_MIX[fuelMix] ?? ''}</div>
+              </div>
+
+              {/* Tyre */}
+              <div className="pt-3 -mx-4 px-4 border-t border-[var(--border)]">
+                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Tyre</div>
+                <div className="flex items-center gap-2">
+                  {tyreName ? (
+                    <span className="text-2xl font-black" style={{ color: tyreColor }}>
+                      {tyreName}
+                    </span>
+                  ) : (
+                    <span className="text-2xl font-black text-[var(--text-muted)]">—</span>
+                  )}
+                  <div className="text-sm text-[var(--text-secondary)]">
+                    Age: {tyreAge === null ? '—' : `${tyreAge} laps`}
+                  </div>
+                </div>
+                <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                  Brake bias: {frontBrakeBias === null ? '—' : `${frontBrakeBias}% front`}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Fuel</div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-black tabular-nums text-[var(--text-muted)]">—</span>
+                  <span className="text-[var(--text-muted)] text-sm">kg</span>
+                </div>
+                <div className="text-sm text-[var(--text-muted)]">— laps vs finish</div>
+                <div className="text-xs text-[var(--text-muted)] mt-1">Mix: —</div>
+              </div>
+              <div className="pt-3 -mx-4 px-4 border-t border-[var(--border)]">
+                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Tyre</div>
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl font-black text-[var(--text-muted)]">—</span>
+                  <div className="text-sm text-[var(--text-muted)]">Age: — laps</div>
+                </div>
+                <div className="text-xs text-[var(--text-muted)] mt-0.5">Brake bias: —% front</div>
+              </div>
+            </div>
+          )
+        )}
+      </Panel>
+  )
+})
+
+const SECTOR_FREEZE_MS = 7_000
+
+interface SectorTracking {
+  lapTs: string | null
+  prevLap: LapRow | null
+  s3Snapshot: { s1: number; s2: number; lap: number } | null
+  frozen: { s1: number; s2: number; s3: number } | null
+}
+
+const RacePanel = memo(function RacePanel({
+  lap,
+  status,
+  selectedCar,
+  selectedDriver,
+  selectedCarStatus,
+  playerIdx,
+  isDark,
+  cards,
+  compactTiming = false,
+  compactErs = false,
+  compactStrategy = false
+}: Props) {
+  const isCompactTiming = compactTiming === true || compactTiming === 'compact'
+  const isSpaciousTiming = compactTiming === 'spacious'
+
+  // Hooks must come before any early return
+  const { tn } = useLabels()
+  const [sectors, setSectors] = useState<SectorTracking>({ lapTs: null, prevLap: null, s3Snapshot: null, frozen: null })
+
+  // Process new lap data once per message
+  if (lap && lap.ts !== sectors.lapTs) {
+    const prev = sectors.prevLap
+    let { s3Snapshot, frozen } = sectors
+
+    // Capture s1+s2 when entering sector 3 so we can compute s3 on lap completion
+    if (lap.sector === 2 && lap.s1_ms > 0 && lap.s2_ms > 0) {
+      if (!s3Snapshot || s3Snapshot.lap !== lap.lap_num)
+        s3Snapshot = { s1: lap.s1_ms, s2: lap.s2_ms, lap: lap.lap_num }
+    }
+
+    // Lap just completed: compute s3, freeze previous sector times for 7 s
+    if (prev && lap.lap_num > prev.lap_num) {
+      const s3 = (s3Snapshot && s3Snapshot.lap === prev.lap_num && lap.last_lap_ms > 0)
+        ? Math.max(0, lap.last_lap_ms - s3Snapshot.s1 - s3Snapshot.s2) : 0
+      frozen = { s1: prev.s1_ms, s2: prev.s2_ms, s3 }
+    }
+
+    setSectors({ lapTs: lap.ts, prevLap: lap, s3Snapshot, frozen })
+  }
+
+  useEffect(() => {
+    if (!sectors.frozen) return
+    const expiring = sectors.frozen
+    const timer = setTimeout(() => setSectors(current =>
+      current.frozen === expiring ? { ...current, frozen: null } : current), SECTOR_FREEZE_MS)
+    return () => clearTimeout(timer)
+  }, [sectors.frozen])
+
+  // Determine what sector times to display (player's own data)
+  const frozen = sectors.frozen
+  const useFrozen = !!lap && !!frozen
+
+  const displayS1  = useFrozen ? frozen!.s1 : (lap?.s1_ms ?? 0)
+  const displayS2  = useFrozen ? frozen!.s2 : (lap?.s2_ms ?? 0)
+  const displayS3  = useFrozen ? frozen!.s3 : 0
+  const s1Done     = useFrozen ? frozen!.s1 > 0 : (!!lap && lap.sector >= 1)
+  const s2Done     = useFrozen ? frozen!.s2 > 0 : (!!lap && lap.sector >= 2)
+  const s3Done     = displayS3 > 0
+
+  // When a different driver is selected, show their data instead of the player's
+  const viewingOther = selectedCar !== null && selectedCar.idx !== playerIdx
+  const teamColor    = selectedDriver?.livery_color ?? '#8e8e8e'
+
+  // Active status: selected driver's when viewing other, player's otherwise
+  const activeStatus = viewingOther ? selectedCarStatus : status
+
+
+  const ersPct = activeStatus?.ers_pct ?? 0
+  const ersBarWidth = Math.min(100, Math.max(0, ersPct))
+  const ersBarColor =
+    ersPct > 60 ? (isDark ? '#5794F2' : '#0B57D0') :
+    ersPct > 30 ? (isDark ? '#d4ad04' : '#765900') :
+    '#C4162A'
+
+  const tyreCompound = activeStatus?.tyre_compound
+  const tyreAgeLaps = activeStatus?.tyre_age_laps
+  const hasTyre = typeof tyreCompound === 'number' && tyreCompound > 0
+  const tyreName = hasTyre ? tn('tyre.actual', tyreCompound) : null
+  const tyreColor = hasTyre ? (tyreCompoundColor(tyreCompound, activeStatus?.visual_compound ?? 0) ?? '#ffffff') : '#ffffff'
+  const tyreAge = hasTyre && typeof tyreAgeLaps === 'number' && Number.isFinite(tyreAgeLaps) ? tyreAgeLaps : null
+  const frontBrakeBias = typeof activeStatus?.front_brake_bias === 'number' && Number.isFinite(activeStatus.front_brake_bias)
+    ? activeStatus.front_brake_bias
+    : null
+
+  const showTiming = cards?.timing ?? true
+  const showErs = cards?.energyRecovery ?? true
+  const showStrategy = cards?.strategy ?? true
+
+  return (
+    <div className="flex flex-col divide-y divide-[var(--border)] border-b border-[var(--border)]">
+
+      {/* ── Lap timing ── */}
+      {showTiming && (
+        <Panel className={isCompactTiming ? 'p-3' : isSpaciousTiming ? 'p-6' : 'p-4'}>
+        <div className="flex items-center justify-between mb-2">
+          <SectionLabel>Timing</SectionLabel>
+          {selectedDriver && (
+            <div className={`flex items-center ${isSpaciousTiming ? 'gap-2 mb-3' : 'gap-1.5 mb-2'}`}>
+              <div className={`${isSpaciousTiming ? 'w-2 h-5' : 'w-1.5 h-4'} rounded-full shrink-0`} style={{ background: teamColor }} />
+              <span className={`${isSpaciousTiming ? 'text-sm font-black max-w-[160px]' : 'text-xs font-bold max-w-[120px]'} text-[var(--text-primary)] truncate`}>{selectedDriver.name}</span>
+            </div>
+          )}
+        </div>
+
+        {isCompactTiming ? (
+          /* Compact Timing Layout */
+          viewingOther && selectedCar ? (
+            <>
+              <div className="flex items-center justify-between gap-2 mb-2 min-h-[30px]">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-xl font-black text-[var(--text-primary)] tabular-nums">
+                    P{selectedCar.position}
+                  </span>
+                  <span className="text-[10px] text-[var(--text-secondary)]">Lap {selectedCar.lap_num}</span>
+                </div>
+                <div className="flex gap-1 flex-wrap justify-end items-center">
+                  {selectedCar.pit_status > 0 && (
+                    <span className="text-[9px] font-bold text-[var(--compound-medium)] bg-[var(--compound-medium)]/10 border border-[var(--compound-medium)] px-1.5 py-0.5 rounded whitespace-nowrap">
+                      {PIT_STATUS[selectedCar.pit_status]}
+                    </span>
+                  )}
+                  {selectedCar.lap_invalid && (
+                    <span className="text-[9px] font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-1.5 py-0.5 rounded whitespace-nowrap">
+                      INV
+                    </span>
+                  )}
+                  {selectedCar.penalties_s > 0 && (
+                    <span className="text-[9px] font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-1.5 py-0.5 rounded whitespace-nowrap">
+                      +{selectedCar.penalties_s}s
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-sm font-bold text-[var(--text-primary)] tabular-nums">
+                    {fmtMs(selectedCar.current_lap_ms)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-xs font-bold text-[var(--text-secondary)] tabular-nums">
+                    {fmtMs(selectedCar.last_lap_ms)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 -mx-3 px-3 border-t border-[var(--border)] grid grid-cols-3 gap-1.5">
+                {[
+                  { label: 'S1', ms: selectedCar.s1_ms, done: selectedCar.sector >= 1 && selectedCar.s1_ms > 0 },
+                  { label: 'S2', ms: selectedCar.s2_ms, done: selectedCar.sector >= 2 && selectedCar.s2_ms > 0 },
+                  { label: 'S3', ms: 0, done: false },
+                ].map(s => (
+                  <div key={s.label}>
+                    <div className="text-[8px] text-[var(--text-secondary)]">{s.label}</div>
+                    <div className={`text-[11px] font-bold tabular-nums ${s.done && s.ms > 0 ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+                      {s.done && s.ms > 0 ? fmtSector(s.ms) : '—'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : lap ? (
+            <>
+              <div className="flex items-center justify-between gap-2 mb-2 min-h-[30px]">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-xl font-black text-[var(--text-primary)] tabular-nums">
+                    P{lap.position}
+                  </span>
+                  <span className="text-[10px] text-[var(--text-secondary)]">Lap {lap.lap_num}</span>
+                </div>
+                <div className="flex gap-1 flex-wrap justify-end items-center">
+                  {lap.pit_status > 0 && (
+                    <span className="text-[9px] font-bold text-[var(--compound-medium)] bg-[var(--compound-medium)]/10 border border-[var(--compound-medium)] px-1.5 py-0.5 rounded whitespace-nowrap">
+                      {PIT_STATUS[lap.pit_status]}
+                    </span>
+                  )}
+                  {lap.lap_invalid && (
+                    <span className="text-[9px] font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-1.5 py-0.5 rounded whitespace-nowrap">
+                      INV
+                    </span>
+                  )}
+                  {lap.penalties_s > 0 && (
+                    <span className="text-[9px] font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-1.5 py-0.5 rounded whitespace-nowrap">
+                      +{lap.penalties_s}s
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-sm font-bold text-[var(--text-primary)] tabular-nums">
+                    {fmtMs(lap.current_lap_ms)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-xs font-bold text-[var(--text-secondary)] tabular-nums">
+                    {fmtMs(lap.last_lap_ms)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 -mx-3 px-3 border-t border-[var(--border)] grid grid-cols-3 gap-1.5">
+                {[
+                  { label: 'S1', ms: displayS1, done: s1Done },
+                  { label: 'S2', ms: displayS2, done: s2Done },
+                  { label: 'S3', ms: displayS3, done: s3Done },
+                ].map(s => (
+                  <div key={s.label}>
+                    <div className="text-[8px] text-[var(--text-secondary)]">{s.label}</div>
+                    <div className={`text-[11px] font-bold tabular-nums ${s.done && s.ms > 0 ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+                      {s.done && s.ms > 0 ? fmtSector(s.ms) : '—'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-2 mb-2 min-h-[30px]">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-xl font-black text-[var(--text-muted)] tabular-nums">P—</span>
+                  <span className="text-[10px] text-[var(--text-muted)]">Lap —</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-sm font-bold text-[var(--text-muted)] tabular-nums">--:--.---</div>
+                </div>
+                <div>
+                  <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-xs font-bold text-[var(--text-muted)] tabular-nums">--:--.---</div>
+                </div>
+              </div>
+              <div className="pt-2 -mx-3 px-3 border-t border-[var(--border)] grid grid-cols-3 gap-1.5">
+                {['S1', 'S2', 'S3'].map(s => (
+                  <div key={s}>
+                    <div className="text-[8px] text-[var(--text-secondary)]">{s}</div>
+                    <div className="text-[11px] font-bold text-[var(--text-muted)] tabular-nums">—</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )
+        ) : isSpaciousTiming ? (
+          /* Spacious Timing Layout */
+          viewingOther && selectedCar ? (
+            <>
+              <div className="flex items-center justify-between mb-4 min-h-[44px]">
+                <div>
+                  <div className="text-xs font-bold text-[var(--text-secondary)]">Lap {selectedCar.lap_num}</div>
+                  <div className="text-4xl font-black text-[var(--text-primary)] tabular-nums">
+                    P{selectedCar.position}
+                  </div>
+                </div>
+                <div className="flex gap-1.5 flex-wrap justify-end items-center min-h-[32px]">
+                  {selectedCar.pit_status > 0 && (
+                    <div className="text-xs font-black text-[var(--compound-medium)] bg-[var(--compound-medium)]/10 border border-[var(--compound-medium)] px-2.5 py-1 rounded whitespace-nowrap">
+                      {PIT_STATUS[selectedCar.pit_status]}
+                    </div>
+                  )}
+                  {selectedCar.lap_invalid && (
+                    <div className="text-xs font-black text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2.5 py-1 rounded whitespace-nowrap">
+                      INVALID
+                    </div>
+                  )}
+                  {selectedCar.penalties_s > 0 && (
+                    <div className="text-xs font-black text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2.5 py-1 rounded whitespace-nowrap">
+                      +{selectedCar.penalties_s}s
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-3xl font-black text-[var(--text-primary)] tabular-nums">
+                    {fmtMs(selectedCar.current_lap_ms)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-2xl font-bold text-[var(--text-secondary)] tabular-nums">
+                    {fmtMs(selectedCar.last_lap_ms)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 pt-4 -mx-6 px-6 border-t border-[var(--border)] grid grid-cols-3 gap-3">
+                {[
+                  { label: 'S1', ms: selectedCar.s1_ms, done: selectedCar.sector >= 1 && selectedCar.s1_ms > 0 },
+                  { label: 'S2', ms: selectedCar.s2_ms, done: selectedCar.sector >= 2 && selectedCar.s2_ms > 0 },
+                  { label: 'S3', ms: 0, done: false },
+                ].map(s => (
+                  <div key={s.label}>
+                    <div className="text-[11px] font-bold text-[var(--text-secondary)]">{s.label}</div>
+                    <div className={`text-sm font-black tabular-nums ${s.done && s.ms > 0 ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+                      {s.done && s.ms > 0 ? fmtMs(s.ms) : '–:––.–––'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : lap ? (
+            <>
+              <div className="flex items-center justify-between mb-4 min-h-[44px]">
+                <div>
+                  <div className="text-xs font-bold text-[var(--text-secondary)]">Lap {lap.lap_num}</div>
+                  <div className="text-4xl font-black text-[var(--text-primary)] tabular-nums">
+                    P{lap.position}
+                  </div>
+                </div>
+                <div className="flex gap-1.5 flex-wrap justify-end items-center min-h-[32px]">
+                  {lap.pit_status > 0 && (
+                    <div className="text-xs font-black text-[var(--compound-medium)] bg-[var(--compound-medium)]/10 border border-[var(--compound-medium)] px-2.5 py-1 rounded whitespace-nowrap">
+                      {PIT_STATUS[lap.pit_status]}
+                    </div>
+                  )}
+                  {lap.lap_invalid && (
+                    <div className="text-xs font-black text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2.5 py-1 rounded whitespace-nowrap">
+                      INVALID
+                    </div>
+                  )}
+                  {lap.penalties_s > 0 && (
+                    <div className="text-xs font-black text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2.5 py-1 rounded whitespace-nowrap">
+                      +{lap.penalties_s}s
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-3xl font-black text-[var(--text-primary)] tabular-nums">
+                    {fmtMs(lap.current_lap_ms)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-2xl font-bold text-[var(--text-secondary)] tabular-nums">
+                    {fmtMs(lap.last_lap_ms)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sectors */}
+              <div className="mt-4 pt-4 -mx-6 px-6 border-t border-[var(--border)] grid grid-cols-3 gap-3">
+                {[
+                  { label: 'S1', ms: displayS1, done: s1Done },
+                  { label: 'S2', ms: displayS2, done: s2Done },
+                  { label: 'S3', ms: displayS3, done: s3Done },
+                ].map(s => (
+                  <div key={s.label}>
+                    <div className="text-[11px] font-bold text-[var(--text-secondary)]">{s.label}</div>
+                    <div className={`text-sm font-black tabular-nums ${s.done && s.ms > 0 ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+                      {s.done && s.ms > 0 ? fmtMs(s.ms) : '–:––.–––'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-4 min-h-[44px]">
+                <div>
+                  <div className="text-xs font-bold text-[var(--text-muted)]">Lap —</div>
+                  <div className="text-4xl font-black tabular-nums text-[var(--text-muted)]">P—</div>
+                </div>
+                <div className="min-h-[32px]" />
+              </div>
+              <div className="space-y-3">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-3xl font-black tabular-nums text-[var(--text-muted)]">--:--.---</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-2xl font-bold tabular-nums text-[var(--text-muted)]">--:--.---</div>
+                </div>
+              </div>
+              <div className="mt-4 pt-4 -mx-6 px-6 border-t border-[var(--border)] grid grid-cols-3 gap-3">
+                {['S1', 'S2', 'S3'].map(s => (
+                  <div key={s}>
+                    <div className="text-[11px] font-bold text-[var(--text-secondary)]">{s}</div>
+                    <div className="text-sm font-black tabular-nums text-[var(--text-muted)]">–:––.–––</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )
+        ) : (
+          /* Normal Timing Layout */
+          viewingOther && selectedCar ? (
+            <>
+              <div className="flex items-center justify-between mb-3 min-h-[38px]">
+                <div>
+                  <div className="text-[10px] text-[var(--text-secondary)]">Lap {selectedCar.lap_num}</div>
+                  <div className="text-2xl font-black text-[var(--text-primary)] tabular-nums">
+                    P{selectedCar.position}
+                  </div>
+                </div>
+                <div className="flex gap-1 flex-wrap justify-end items-center min-h-[26px]">
+                  {selectedCar.pit_status > 0 && (
+                    <div className="text-xs font-bold text-[var(--compound-medium)] bg-[var(--compound-medium)]/10 border border-[var(--compound-medium)] px-2 py-0.5 rounded whitespace-nowrap">
+                      {PIT_STATUS[selectedCar.pit_status]}
+                    </div>
+                  )}
+                  {selectedCar.lap_invalid && (
+                    <div className="text-xs font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2 py-0.5 rounded whitespace-nowrap">
+                      INVALID
+                    </div>
+                  )}
+                  {selectedCar.penalties_s > 0 && (
+                    <div className="text-xs font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2 py-0.5 rounded whitespace-nowrap">
+                      +{selectedCar.penalties_s}s
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-xl font-bold text-[var(--text-primary)] tabular-nums">
+                    {fmtMs(selectedCar.current_lap_ms)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-lg font-bold text-[var(--text-secondary)] tabular-nums">
+                    {fmtMs(selectedCar.last_lap_ms)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 pt-3 -mx-4 px-4 border-t border-[var(--border)] grid grid-cols-3 gap-2">
+                {[
+                  { label: 'S1', ms: selectedCar.s1_ms, done: selectedCar.sector >= 1 && selectedCar.s1_ms > 0 },
+                  { label: 'S2', ms: selectedCar.s2_ms, done: selectedCar.sector >= 2 && selectedCar.s2_ms > 0 },
+                  { label: 'S3', ms: 0, done: false },
+                ].map(s => (
+                  <div key={s.label}>
+                    <div className="text-[9px] text-[var(--text-secondary)]">{s.label}</div>
+                    <div className={`text-xs font-bold tabular-nums ${s.done && s.ms > 0 ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+                      {s.done && s.ms > 0 ? fmtMs(s.ms) : '–:––.–––'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : lap ? (
+            <>
+              <div className="flex items-center justify-between mb-3 min-h-[38px]">
+                <div>
+                  <div className="text-[10px] text-[var(--text-secondary)]">Lap {lap.lap_num}</div>
+                  <div className="text-2xl font-black text-[var(--text-primary)] tabular-nums">
+                    P{lap.position}
+                  </div>
+                </div>
+                <div className="flex gap-1 flex-wrap justify-end items-center min-h-[26px]">
+                  {lap.pit_status > 0 && (
+                    <div className="text-xs font-bold text-[var(--compound-medium)] bg-[var(--compound-medium)]/10 border border-[var(--compound-medium)] px-2 py-0.5 rounded whitespace-nowrap">
+                      {PIT_STATUS[lap.pit_status]}
+                    </div>
+                  )}
+                  {lap.lap_invalid && (
+                    <div className="text-xs font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2 py-0.5 rounded whitespace-nowrap">
+                      INVALID
+                    </div>
+                  )}
+                  {lap.penalties_s > 0 && (
+                    <div className="text-xs font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2 py-0.5 rounded whitespace-nowrap">
+                      +{lap.penalties_s}s
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-xl font-bold text-[var(--text-primary)] tabular-nums">
+                    {fmtMs(lap.current_lap_ms)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-lg font-bold text-[var(--text-secondary)] tabular-nums">
+                    {fmtMs(lap.last_lap_ms)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sectors */}
+              <div className="mt-3 pt-3 -mx-4 px-4 border-t border-[var(--border)] grid grid-cols-3 gap-2">
+                {[
+                  { label: 'S1', ms: displayS1, done: s1Done },
+                  { label: 'S2', ms: displayS2, done: s2Done },
+                  { label: 'S3', ms: displayS3, done: s3Done },
+                ].map(s => (
+                  <div key={s.label}>
+                    <div className="text-[9px] text-[var(--text-secondary)]">{s.label}</div>
+                    <div className={`text-xs font-bold tabular-nums ${s.done && s.ms > 0 ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+                      {s.done && s.ms > 0 ? fmtMs(s.ms) : '–:––.–––'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-3 min-h-[38px]">
+                <div>
+                  <div className="text-[10px] text-[var(--text-muted)]">Lap —</div>
+                  <div className="text-2xl font-black tabular-nums text-[var(--text-muted)]">P—</div>
+                </div>
+                <div className="min-h-[26px]" />
+              </div>
+              <div className="space-y-1.5">
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-xl font-bold tabular-nums text-[var(--text-muted)]">--:--.---</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-lg font-bold tabular-nums text-[var(--text-muted)]">--:--.---</div>
+                </div>
+              </div>
+              <div className="mt-3 pt-3 -mx-4 px-4 border-t border-[var(--border)] grid grid-cols-3 gap-2">
+                {['S1', 'S2', 'S3'].map(s => (
+                  <div key={s}>
+                    <div className="text-[9px] text-[var(--text-secondary)]">{s}</div>
+                    <div className="text-xs font-bold tabular-nums text-[var(--text-muted)]">–:––.–––</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )
+        )}
+      </Panel>
+      )}
+
+      {/* ── ERS ── */}
+      {showErs && <ErsCard
+        compact={compactErs}
+        drsAllowed={activeStatus?.drs_allowed ?? false}
+        ersBarColor={ersBarColor}
+        ersBarWidth={ersBarWidth}
+        ersDeployedJ={activeStatus?.ers_deployed_j ?? 0}
+        ersJ={activeStatus?.ers_j ?? 0}
+        ersMode={activeStatus?.ers_mode ?? 0}
+        ersPct={ersPct}
+        harvestedMgukJ={activeStatus?.ers_harvested_mguk_j ?? 0}
+        harvestedMguhJ={activeStatus?.ers_harvested_mguh_j ?? 0}
+        hasStatus={!!activeStatus}
+        isDark={isDark}
+      />}
+
+      {/* ── Fuel & Tyre ── */}
+      {showStrategy && <StrategyCard
+        compact={compactStrategy}
+        frontBrakeBias={frontBrakeBias}
+        fuelKg={activeStatus?.fuel_kg ?? 0}
+        fuelLaps={activeStatus?.fuel_laps ?? 0}
+        fuelMix={activeStatus?.fuel_mix ?? 0}
+        hasStatus={!!activeStatus}
+        isDark={isDark}
+        tyreAge={tyreAge}
+        tyreColor={tyreColor}
+        tyreName={tyreName}
+      />}
+
+
+    </div>
+  )
+})
+export default RacePanel

@@ -1,0 +1,5 @@
+const BUTTON_BASE_CLASS = 'h-8 rounded border inline-flex items-center justify-center gap-2 px-4 shadow-sm transition-[background-color,border-color,color,box-shadow,filter] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-info)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-panel)] disabled:pointer-events-none disabled:opacity-40 disabled:shadow-none'
+
+export const BUTTON_CLASS = `${BUTTON_BASE_CLASS} text-[10px] font-semibold normal-case tracking-normal border-[var(--border-muted)] bg-[var(--bg-card)] text-[var(--text-primary)] hover:border-[var(--border-focus)] hover:bg-[var(--bg-hover)] hover:brightness-110`
+
+export const PRIMARY_BUTTON_CLASS = `${BUTTON_BASE_CLASS} text-[11px] font-medium normal-case tracking-normal border-[color:color-mix(in_srgb,var(--color-info)_58%,transparent)] bg-[color:color-mix(in_srgb,var(--color-info)_8%,var(--bg-card))] text-[var(--color-info)] shadow-[0_2px_10px_color-mix(in_srgb,var(--color-info)_10%,transparent)] hover:border-[var(--color-info)] hover:bg-[color:color-mix(in_srgb,var(--color-info)_14%,var(--bg-card))] hover:brightness-110 active:brightness-95`

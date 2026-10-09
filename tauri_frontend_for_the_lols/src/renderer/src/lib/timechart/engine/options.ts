@@ -1,0 +1,135 @@
+import { ColorCommonInstance, ColorSpaceObject, rgb } from 'd3-color';
+import { SeriesData } from './core/alignedData';
+import { TimeChartPlugin } from './plugins';
+
+type ColorSpecifier = ColorSpaceObject | ColorCommonInstance | string
+
+export interface AxisZoomOptions {
+    autoRange: boolean;
+    minDomain: number;
+    maxDomain: number;
+    minDomainExtent: number;
+    maxDomainExtent: number;
+}
+
+export interface ZoomOptions {
+    x?: Partial<AxisZoomOptions>;
+    y?: Partial<AxisZoomOptions>;
+}
+
+export interface ResolvedZoomOptions {
+    x?: AxisZoomOptions;
+    y?: AxisZoomOptions;
+}
+
+interface ScaleBase {
+    (x: number | {valueOf(): number}): number;
+    domain(): number[] | Date[];
+    range(): number[];
+    copy(): this;
+    domain(domain: Array<number>): this;
+    range(range: ReadonlyArray<number>): this;
+}
+
+export interface TooltipOptions {
+    enabled: boolean;
+    xLabel: string;
+    xFormatter: (x: number) => string;
+}
+
+interface TimeChartRenderOptions {
+    pixelRatio: number;
+    lineWidth: number;
+    backgroundColor: ColorSpecifier;
+    color: ColorSpecifier;
+
+    paddingLeft: number;
+    paddingRight: number;
+    paddingTop: number;
+    paddingBottom: number;
+
+    renderPaddingLeft: number;
+    renderPaddingRight: number;
+    renderPaddingTop: number;
+    renderPaddingBottom: number;
+
+    legend: boolean;
+    tooltip: Partial<TooltipOptions>;
+
+    xRange: { min: number | Date, max: number | Date } | 'auto' | null;
+    yRange: { min: number, max: number } | 'auto' | null;
+    realTime: boolean;
+
+    /** Milliseconds since `new Date(0)`. Every x in data are relative to this.
+     *
+     * Set this option and keep the absolute value of x small for higher floating point precision.
+     **/
+    baseTime: number;
+    xScaleType: () => ScaleBase;
+
+    debugWebGL: boolean;
+}
+
+export type TimeChartPlugins = Readonly<Record<string, TimeChartPlugin>>;
+export type NoPlugin = Readonly<Record<string, never>>;
+
+export type TimeChartOptions<TPlugins extends TimeChartPlugins> =
+    TimeChartOptionsBase &
+    {plugins?: TPlugins};
+
+export interface TimeChartOptionsBase extends Partial<TimeChartRenderOptions> {
+    series?: Partial<TimeChartSeriesOptions>[];
+    zoom?: ZoomOptions;
+}
+
+export interface ResolvedCoreOptions extends TimeChartRenderOptions {
+    series: TimeChartSeriesOptions[];
+}
+
+export interface ResolvedOptions extends ResolvedCoreOptions {
+    zoom: ResolvedZoomOptions;
+}
+
+export enum LineType {
+    Line,
+    Step,
+    NativeLine,
+    NativePoint,
+};
+
+export interface TimeChartSeriesOptions {
+    data: SeriesData;
+    lineWidth?: number;
+    /** Multiplies the resolved line/fill alpha without changing its theme color. */
+    opacity?: number;
+    name: string;
+    color?: ColorSpecifier;
+    /** Optional WebGL area fill rendered beneath this series. */
+    fill?: ColorSpecifier;
+    fillBaseline?: number;
+    visible: boolean;
+    lineType: LineType;
+    stepLocation: number;
+    /**
+     * Optional normalized vertical slice of the chart's render area. Series
+     * with the same slice share a panel while still using this chart's single
+     * canvas and WebGL context.
+     */
+    viewport?: { top: number; bottom: number; gapAfter?: number };
+    /**
+     * Optional value range drawn across this series' plot area (or viewport)
+     * instead of the chart's shared y domain, so series on one canvas can each
+     * keep their own y scale.
+     */
+    yRange?: { min: number; max: number };
+    /**
+     * Which point the hover marker picks: the nearest (default), the first at
+     * or after the pointer, such as the value closing the lap under it, or none.
+     */
+    nearestSnap?: 'nearest' | 'next' | 'none';
+}
+
+export function resolveColorRGBA(color: ColorSpecifier): [number, number, number, number] {
+    const rgbColor = typeof color === 'string' ? rgb(color) : rgb(color);
+    return [rgbColor.r / 255, rgbColor.g / 255, rgbColor.b / 255, rgbColor.opacity];
+}

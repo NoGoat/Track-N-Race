@@ -1,0 +1,221 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { flushSync } from 'react-dom'
+import { useAppConfig } from '../../hooks/useAppConfig'
+import { configureChartFrameRates, type ChartFrameRate } from '../../lib/timechart/frameRate'
+import { DEFAULT_CHART_Y_AXIS, DEFAULT_COMPACT, DEFAULT_GRAPH_VIEW, type ChartYAxisState, type CompactState, type DensityMode, type GraphViewState, type TyreYAxisGroupState } from '../../lib/graphSections'
+
+function normalizeDensity(val: unknown): DensityMode {
+  if (val === true || val === 'compact') return 'compact'
+  if (val === 'spacious') return 'spacious'
+  return 'normal'
+}
+import { DEFAULT_CORE_LAYOUT, DEFAULT_DAMAGE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_PAGE_LAYOUTS, DEFAULT_POWER_LAYOUT, DEFAULT_SESSION_LAYOUT, DEFAULT_STANDINGS_LAYOUT, DEFAULT_TRENDS_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type DamageLayout, type InputLayout, type MiscLayout, type PageLayouts, type PowerLayout, type SessionLayout, type StandingsLayout, type Theme, type TitlebarUpdateInterval, type TrendsLayout, type TyresLayout } from '../appConfig'
+
+export function useAppConfiguration() {
+  const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
+  const [theme, rawSetTheme] = useAppConfig<Theme>('theme', 'dark')
+  const [chartWindow, setChartWindow] = useAppConfig<ChartWindow>('chartWindow', (() => {
+    const legacyMode = window.electronStore.get('chartWindowMode', 'time') as 'time' | 'CL'
+    if (legacyMode === 'CL') return 'CL'
+    return window.electronStore.get('timeWindow', 30) as number
+  })())
+  const seconds = typeof chartWindow === 'number' ? chartWindow : 30
+  const [mapTimeout, setMapTimeout] = useAppConfig<number>('mapTimeout', 10)
+  const [tyreView, setTyreView] = useAppConfig<'cards' | 'graphs'>('tyreView', 'cards')
+  const [tyreWearMode, setTyreWearMode] = useAppConfig<'wear' | 'life'>('tyreWearMode', 'life')
+  const [rawCoreLayout, setCoreLayout] = useAppConfig<CoreLayout>('coreLayout', DEFAULT_CORE_LAYOUT)
+  const [rawInputLayout, setInputLayout] = useAppConfig<InputLayout>('inputLayout', DEFAULT_INPUT_LAYOUT)
+  const [rawPageLayouts, setPageLayouts] = useAppConfig<PageLayouts>('pageLayouts', DEFAULT_PAGE_LAYOUTS)
+  const [rawMiscLayout, setMiscLayout] = useAppConfig<MiscLayout>('miscLayout', DEFAULT_MISC_LAYOUT)
+  const [rawPowerLayout, setPowerLayout] = useAppConfig<PowerLayout>('powerLayout', DEFAULT_POWER_LAYOUT)
+  const [rawTrendsLayout, setTrendsLayout] = useAppConfig<TrendsLayout>('trendsLayout', DEFAULT_TRENDS_LAYOUT)
+  const [rawDamageLayout, setDamageLayout] = useAppConfig<DamageLayout>('damageLayout', DEFAULT_DAMAGE_LAYOUT)
+  const [rawSessionLayout, setSessionLayout] = useAppConfig<SessionLayout>('sessionLayout', DEFAULT_SESSION_LAYOUT)
+  const [rawStandingsLayout, setStandingsLayout] = useAppConfig<StandingsLayout>('standingsLayout', DEFAULT_STANDINGS_LAYOUT)
+  const [rawTyresLayout, setTyresLayout] = useAppConfig<TyresLayout>('tyresLayout', DEFAULT_TYRES_LAYOUT)
+  const [rawGraphView, setGraphView] = useAppConfig<GraphViewState>('graphView', DEFAULT_GRAPH_VIEW)
+  const [rawCompact, setCompact] = useAppConfig<CompactState>('compact', DEFAULT_COMPACT)
+  const [rawChartYAxis, setChartYAxis] = useAppConfig<ChartYAxisState>('tyreYAxis', DEFAULT_CHART_Y_AXIS)
+  const [bannerDuration, setBannerDuration] = useAppConfig<number>('bannerDuration', 3)
+  const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
+  const [mapDimmed, setMapDimmed] = useAppConfig<boolean>('mapDimmed', false)
+  const [inputCursorSyncEnabled, setInputCursorSyncEnabled] = useAppConfig<boolean>('inputCursorSyncEnabled', false)
+  const [sectorBoundariesEnabled, setSectorBoundariesEnabled] = useAppConfig<boolean>('sectorBoundariesEnabled', false)
+  const [secondaryHorizontalCrosshairEnabled, setSecondaryHorizontalCrosshairEnabled] = useAppConfig<boolean>('secondaryHorizontalCrosshairEnabled', false)
+  const [secondaryVerticalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled] = useAppConfig<boolean>('secondaryVerticalCrosshairEnabled', true)
+  const [nativeTitlebar, setNativeTitlebar] = useAppConfig<boolean>('nativeTitlebar', false)
+  const [titlebarUpdateInterval, setTitlebarUpdateInterval] = useAppConfig<TitlebarUpdateInterval>('titlebarUpdateInterval', 0)
+  const [reduceAnimations, setReduceAnimations] = useAppConfig<boolean>('reduceAnimations', false)
+  const [fpsInFocus, setFpsInFocus] = useAppConfig<ChartFrameRate>('chartFpsInFocus', 'display')
+  const [fpsOutOfFocus, setFpsOutOfFocus] = useAppConfig<ChartFrameRate>('chartFpsOutOfFocus', 30)
+  const [driversMode, setDriversMode] = useAppConfig<'dots' | 'both' | 'labels'>('driversMode', (() => {
+    const legacy = window.electronStore.get('showLabels', null) as boolean | null
+    if (legacy === true) return 'both'
+    if (legacy === false) return 'dots'
+    return 'both'
+  })())
+
+  const setTheme = useCallback((nextTheme: Theme) => {
+    if (nextTheme === theme) return
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => { finished: Promise<unknown> }
+    }
+    const motionReduced = reduceAnimations
+      || document.documentElement.dataset.reduceAnimations === 'true'
+
+    if (motionReduced || !transitionDocument.startViewTransition) {
+      document.documentElement.setAttribute('data-theme', nextTheme)
+      rawSetTheme(nextTheme)
+      return
+    }
+
+    try {
+      const root = document.documentElement
+      root.dataset.themeTransition = 'true'
+      const transition = transitionDocument.startViewTransition(() => {
+        flushSync(() => {
+          root.setAttribute('data-theme', nextTheme)
+          rawSetTheme(nextTheme)
+        })
+      })
+      const clearThemeTransition = () => {
+        delete root.dataset.themeTransition
+      }
+      void transition.finished.then(clearThemeTransition, clearThemeTransition)
+    } catch {
+      delete document.documentElement.dataset.themeTransition
+      document.documentElement.setAttribute('data-theme', nextTheme)
+      rawSetTheme(nextTheme)
+    }
+  }, [reduceAnimations, theme, rawSetTheme])
+
+  useEffect(() => { document.documentElement.setAttribute('data-theme', theme) }, [theme])
+  useEffect(() => { configureChartFrameRates(fpsInFocus, fpsOutOfFocus) }, [fpsInFocus, fpsOutOfFocus])
+
+  const coreLayout = useMemo<CoreLayout>(() => ({
+    ...DEFAULT_CORE_LAYOUT, ...rawCoreLayout,
+    statsCards: { ...DEFAULT_CORE_LAYOUT.statsCards, ...(rawCoreLayout?.statsCards ?? {}) },
+    thermalGraphs: { ...DEFAULT_CORE_LAYOUT.thermalGraphs, ...(rawCoreLayout?.thermalGraphs ?? {}) },
+    thermalCards: { ...DEFAULT_CORE_LAYOUT.thermalCards, ...(rawCoreLayout?.thermalCards ?? {}) },
+    damageItems: { ...DEFAULT_CORE_LAYOUT.damageItems, ...(rawCoreLayout?.damageItems ?? {}) },
+  }), [rawCoreLayout])
+  const inputLayout = useMemo<InputLayout>(() => {
+    const raw = (rawInputLayout ?? {}) as unknown as Partial<InputLayout> & { showInputs?: boolean }
+    const legacyPedals = typeof raw.showInputs === 'boolean' ? raw.showInputs : true
+    return {
+      showGear: raw.showGear ?? DEFAULT_INPUT_LAYOUT.showGear,
+      showAccelerator: raw.showAccelerator ?? legacyPedals,
+      showBrake: raw.showBrake ?? legacyPedals,
+      showSteering: raw.showSteering ?? DEFAULT_INPUT_LAYOUT.showSteering,
+    }
+  }, [rawInputLayout])
+  const powerLayout = useMemo<PowerLayout>(() => ({
+    statsCards: { ...DEFAULT_POWER_LAYOUT.statsCards, ...(rawPowerLayout?.statsCards ?? {}) },
+    charts: { ...DEFAULT_POWER_LAYOUT.charts, ...(rawPowerLayout?.charts ?? {}) },
+  }), [rawPowerLayout])
+  const trendsLayout = useMemo<TrendsLayout>(() => ({
+    statsCards: { ...DEFAULT_TRENDS_LAYOUT.statsCards, ...(rawTrendsLayout?.statsCards ?? {}) },
+    charts: { ...DEFAULT_TRENDS_LAYOUT.charts, ...(rawTrendsLayout?.charts ?? {}) },
+  }), [rawTrendsLayout])
+  const damageLayout = useMemo<DamageLayout>(() => ({
+    statusCards: { ...DEFAULT_DAMAGE_LAYOUT.statusCards, ...(rawDamageLayout?.statusCards ?? {}) },
+    showDiagram: typeof rawDamageLayout?.showDiagram === 'boolean' ? rawDamageLayout.showDiagram : DEFAULT_DAMAGE_LAYOUT.showDiagram,
+    wearTiles: { ...DEFAULT_DAMAGE_LAYOUT.wearTiles, ...(rawDamageLayout?.wearTiles ?? {}) },
+  }), [rawDamageLayout])
+  const tyresLayout = useMemo<TyresLayout>(() => ({ charts: { ...DEFAULT_TYRES_LAYOUT.charts, ...(rawTyresLayout?.charts ?? {}) } }), [rawTyresLayout])
+  const sessionLayout = useMemo<SessionLayout>(() => ({
+    ...DEFAULT_SESSION_LAYOUT,
+    ...(rawSessionLayout ?? {}),
+    header: { ...DEFAULT_SESSION_LAYOUT.header, ...(rawSessionLayout?.header ?? {}) },
+    sidebarPct: typeof rawSessionLayout?.sidebarPct === 'number'
+      ? Math.max(15, Math.min(60, rawSessionLayout.sidebarPct))
+      : DEFAULT_SESSION_LAYOUT.sidebarPct,
+    statsCards: { ...DEFAULT_SESSION_LAYOUT.statsCards, ...(rawSessionLayout?.statsCards ?? {}) },
+  }), [rawSessionLayout])
+  const standingsLayout = useMemo<StandingsLayout>(() => ({
+    ...DEFAULT_STANDINGS_LAYOUT,
+    ...(rawStandingsLayout ?? {}),
+    sidebarPct: typeof rawStandingsLayout?.sidebarPct === 'number'
+      ? Math.max(15, Math.min(60, rawStandingsLayout.sidebarPct))
+      : DEFAULT_STANDINGS_LAYOUT.sidebarPct,
+    cards: { ...DEFAULT_STANDINGS_LAYOUT.cards, ...(rawStandingsLayout?.cards ?? {}) },
+  }), [rawStandingsLayout])
+  const graphView = useMemo<GraphViewState>(() => ({ ...DEFAULT_GRAPH_VIEW, ...(rawGraphView ?? {}) }), [rawGraphView])
+  const pageLayouts = useMemo<PageLayouts>(() => ({
+    input: rawPageLayouts?.input === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.input,
+    inputPedals: rawPageLayouts?.inputPedals === 'split' || rawPageLayouts?.inputPedals === 'combined2'
+      ? rawPageLayouts.inputPedals
+      : DEFAULT_PAGE_LAYOUTS.inputPedals,
+    miscGForce: rawPageLayouts?.miscGForce === 'split' ? 'split' : DEFAULT_PAGE_LAYOUTS.miscGForce,
+    miscRideHeight: rawPageLayouts?.miscRideHeight === 'split' ? 'split' : DEFAULT_PAGE_LAYOUTS.miscRideHeight,
+    power: rawPageLayouts?.power === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.power,
+    tyres: rawPageLayouts?.tyres === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.tyres,
+    trends: rawPageLayouts?.trends === 'combined' || rawPageLayouts?.trends === 'combinedNoRecharge' || rawPageLayouts?.trends === 'bars'
+      ? rawPageLayouts.trends
+      : DEFAULT_PAGE_LAYOUTS.trends,
+  }), [rawPageLayouts])
+  const miscLayout = useMemo<MiscLayout>(() => {
+    const legacyGForce = typeof rawMiscLayout?.showGForce === 'boolean' ? rawMiscLayout.showGForce : DEFAULT_MISC_LAYOUT.showGForce
+    const legacyRideHeight = typeof rawMiscLayout?.showRideHeight === 'boolean' ? rawMiscLayout.showRideHeight : DEFAULT_MISC_LAYOUT.showRideHeight
+    return {
+      showGForce: legacyGForce,
+      showGLateral: typeof rawMiscLayout?.showGLateral === 'boolean' ? rawMiscLayout.showGLateral : legacyGForce,
+      showGLongitudinal: typeof rawMiscLayout?.showGLongitudinal === 'boolean' ? rawMiscLayout.showGLongitudinal : legacyGForce,
+      showRideHeight: legacyRideHeight,
+      showRideFront: typeof rawMiscLayout?.showRideFront === 'boolean' ? rawMiscLayout.showRideFront : legacyRideHeight,
+      showRideRear: typeof rawMiscLayout?.showRideRear === 'boolean' ? rawMiscLayout.showRideRear : legacyRideHeight,
+    }
+  }, [rawMiscLayout])
+  const compact = useMemo<CompactState>(() => {
+    const raw = (rawCompact ?? {}) as unknown as Record<string, unknown>
+    const legacyWeather = raw.sessionWeather
+    const sessionWeather = typeof legacyWeather === 'boolean' ? (legacyWeather ? 2 : 0) : Math.max(0, Math.min(4, Number(legacyWeather) || 0))
+    const legacyHeader = raw.sessionHeader
+    const sessionHeader = typeof legacyHeader === 'boolean' ? (legacyHeader ? 1 : 0) : Math.max(0, Math.min(3, Number(legacyHeader) || 0))
+    const overviewTyres = Math.max(0, Math.min(6, Number(raw.overviewTyres) || 0))
+    return {
+      overviewStats:     normalizeDensity(raw.overviewStats),
+      overviewDamage:    normalizeDensity(raw.overviewDamage),
+      overviewTyres,
+      standingsTable:    normalizeDensity(raw.standingsTable),
+      standingsTiming:   normalizeDensity(raw.standingsTiming),
+      standingsErs:      normalizeDensity(raw.standingsErs),
+      standingsStrategy: normalizeDensity(raw.standingsStrategy),
+      sessionCards:      normalizeDensity(raw.sessionCards),
+      sessionProximity:  normalizeDensity(raw.sessionProximity),
+      sessionEvents:     normalizeDensity(raw.sessionEvents),
+      sessionWeather,
+      sessionHeader,
+      powerCards:        normalizeDensity(raw.powerCards),
+      strategySummary:   normalizeDensity(raw.strategySummary),
+      stintSummary:      normalizeDensity(raw.stintSummary),
+      damageSummary:     normalizeDensity(raw.damageSummary),
+      playbackBar:       normalizeDensity(raw.playbackBar),
+    }
+  }, [rawCompact])
+  const chartYAxis = useMemo<ChartYAxisState>(() => {
+    const legacyRaw = (rawChartYAxis ?? {}) as unknown as Partial<TyreYAxisGroupState>
+    const legacy: Partial<TyreYAxisGroupState> = {}
+    for (const key of ['surfaceTemp', 'innerTemp', 'brakeTemp', 'tyreLife'] as const) {
+      const value = legacyRaw[key]
+      if (value === 'fixed' || value === 'dynamic') legacy[key] = value
+    }
+    return {
+      overview: { ...DEFAULT_CHART_Y_AXIS.overview, ...legacy, ...(rawChartYAxis?.overview ?? {}) },
+      tyres: { ...DEFAULT_CHART_Y_AXIS.tyres, ...legacy, ...(rawChartYAxis?.tyres ?? {}) },
+      power: { ...DEFAULT_CHART_Y_AXIS.power, ...(rawChartYAxis?.power ?? {}) },
+      analysis: { ...DEFAULT_CHART_Y_AXIS.analysis, ...(rawChartYAxis?.analysis ?? {}) },
+    }
+  }, [rawChartYAxis])
+
+  return {
+    actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, damageLayout, driversMode,
+    fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, sectorBoundariesEnabled,
+    nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, sessionLayout, standingsLayout, titlebarUpdateInterval,
+    setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDamageLayout, setDriversMode,
+    setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
+    setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
+    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorBoundariesEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTrendsLayout, setTyreView, setTyreWearMode, setTyresLayout,
+    theme, trendsLayout, tyreView, tyreWearMode, tyresLayout,
+  }
+}

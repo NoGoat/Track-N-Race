@@ -1,0 +1,199 @@
+import { useRef, useState, useLayoutEffect, useCallback, useEffect } from 'react'
+import { ChevronDown } from 'lucide-react'
+import type { AlignedTable } from '../types'
+import { BUTTON_CLASS } from '../lib/buttonStyles'
+import { formatChartDistance, useChartCoordinates } from '../lib/chartCoordinates'
+import { subscribeAllLapsData } from '../stores/telemetryStore'
+import { HISTORY_ROW } from '../lib/historyDependencies'
+import type { ColumnView } from '../lib/columnStore'
+
+// Raw-values table shown in place of a telemetry graph (the Chart→Table view mode
+// ported from qt_frontend's GraphTable). One leading time column + one column
+// per series, oldest at the top / newest at the bottom, holding every sample in the
+// data the chart already built. Full-lap modes read the store's in-place source
+// rows directly and share its imperative update signal with the WebGL charts.
+// Auto-scrolls to the newest row unless the user has scrolled up to inspect
+// history. Only the handful of on-screen rows are rendered (fixed-height
+// virtualisation), so a full race of streaming data stays cheap.
+
+export interface GraphTableColumn {
+  header: string
+  color?: string
+  format: (v: number) => string
+}
+
+const ROW_H = 26
+const OVERSCAN = 6
+const FULL_LAP_REFRESH_MS = 200
+
+function fmtTime(s: number): string {
+  const m   = Math.floor(s / 60)
+  const sec = Math.floor(s % 60)
+  const ms  = Math.floor((s % 1) * 1000)
+  return `${m}:${String(sec).padStart(2, '0')}.${String(ms).padStart(3, '0')}`
+}
+
+export default function GraphTable<T extends { session_time: number }>({ columns, data, liveRows, getLiveValues, allLapsDataMask = HISTORY_ROW.telemetry, edgePadRem = 1, noBorderTop = false }: {
+  columns: GraphTableColumn[]
+  data: AlignedTable
+  // Full-lap store views grow in place to avoid copying an entire race on
+  // every packet. Read those columns directly and repaint this virtual table
+  // at a bounded UI rate; finite/distance modes continue using `data`.
+  liveRows?: ColumnView<T>
+  getLiveValues?: (rows: ColumnView<T>, i: number) => readonly number[]
+  allLapsDataMask?: number
+  // How far (in rem) the table should break out of its container's padding on the
+  // right/bottom so it sits flush against the panel edge/border instead of
+  // floating with a gap — matches the parent's own padding (defaults to 1rem).
+  // The left edge never breaks out: .chart-panel has no left padding, so a
+  // negative left offset would push the first column outside the panel.
+  edgePadRem?: number
+  // Omit the top border — for callers whose container already has a border/divider
+  // immediately above the table, where the default border-t would double up.
+  noBorderTop?: boolean
+}) {
+  const coordinates = useChartCoordinates()
+  const scrollRef   = useRef<HTMLDivElement>(null)
+  const pinnedRef   = useRef(true)              // mirrors `pinned` for subscription callbacks
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewH, setViewH]         = useState(0)
+  const [pinned, setPinned]       = useState(true) // are we pinned to the live edge?
+  const [frozenN, setFrozenN]     = useState<number | null>(null) // row count snapshot while scrolled away
+  const [, forceLiveRender]       = useState(0)
+  const [revisions, setRevisions] = useState({ lap: coordinates.lapRevision, history: coordinates.historyRevision })
+
+  if ((coordinates.distanceMode && revisions.lap !== coordinates.lapRevision) ||
+      revisions.history !== coordinates.historyRevision) {
+    setRevisions({ lap: coordinates.lapRevision, history: coordinates.historyRevision })
+    setPinned(true)
+    setFrozenN(null)
+  }
+  useLayoutEffect(() => { pinnedRef.current = pinned }, [pinned])
+
+  useEffect(() => {
+    if (!coordinates.allLapsMode || !liveRows || !getLiveValues) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const unsubscribe = subscribeAllLapsData(allLapsDataMask, () => {
+      if (!pinnedRef.current || timer !== null) return
+      timer = setTimeout(() => {
+        timer = null
+        if (pinnedRef.current) forceLiveRender(revision => revision + 1)
+      }, FULL_LAP_REFRESH_MS)
+    })
+    return () => {
+      unsubscribe()
+      if (timer !== null) clearTimeout(timer)
+    }
+  }, [allLapsDataMask, coordinates.allLapsMode, getLiveValues, liveRows])
+
+  const xs = (data[0] as Float64Array | undefined) ?? new Float64Array()
+  const useLiveRows = coordinates.allLapsMode && liveRows !== undefined && getLiveValues !== undefined
+  const liveStart = useLiveRows && coordinates.stintLapsMode
+    ? liveRows.lowerBound(coordinates.historyStartTime, true)
+    : 0
+  const liveN = useLiveRows ? liveRows.length - liveStart : xs.length
+  // While scrolled away from the bottom, freeze the rendered row count at the
+  // snapshot taken when the user scrolled off — new samples keep landing in `data`
+  // in the background, but the table itself doesn't grow/shift under the user.
+  const n = pinned ? liveN : (frozenN ?? liveN)
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setViewH(el.clientHeight))
+    ro.observe(el)
+    setViewH(el.clientHeight)
+    return () => ro.disconnect()
+  }, [])
+
+  // Keep the newest row in view as data streams in, unless the user scrolled up.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (el && pinned) el.scrollTop = el.scrollHeight
+  }, [n, viewH, pinned])
+
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    // Only the "Scroll to Bottom" button re-pins — manually scrolling back down to the
+    // (frozen) bottom edge should NOT resume autoscroll on its own.
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW_H * 1.5
+    if (!atBottom && pinnedRef.current) {
+      pinnedRef.current = false
+      setFrozenN(liveN)
+      setPinned(false)
+    }
+    setScrollTop(el.scrollTop)
+  }, [liveN])
+
+  const scrollToBottom = useCallback(() => {
+    pinnedRef.current = true
+    setFrozenN(null)
+    setPinned(true)
+    // Wait for the re-render (with the live row count) to size the scroller before jumping.
+    requestAnimationFrame(() => {
+      const el = scrollRef.current
+      if (el) el.scrollTop = el.scrollHeight
+    })
+  }, [])
+
+  // Time column + one column per series, all equal-width so they fill the available
+  // width (left-aligned cells, Standings styling).
+  const gridCols = Array(columns.length + 1).fill('minmax(0, 1fr)').join(' ')
+  const total    = n * ROW_H
+  const first    = Math.max(0, Math.min(Math.max(0, n - 1), Math.floor(scrollTop / ROW_H) - OVERSCAN))
+  const count    = Math.max(0, Math.min(n - first, Math.ceil(viewH / ROW_H) + OVERSCAN * 2))
+
+  const rows: React.ReactNode[] = []
+  for (let k = 0; k < count; k++) {
+    const i = first + k
+    const liveIndex = useLiveRows && liveStart + i < liveRows.length ? liveStart + i : -1
+    const rowTime = liveIndex >= 0 ? liveRows!.time(liveIndex) : xs[i]
+    const liveValues = liveIndex >= 0 && getLiveValues ? getLiveValues(liveRows!, liveIndex) : undefined
+    rows.push(
+      <div
+        key={i}
+        style={{ position: 'absolute', top: i * ROW_H, height: ROW_H, left: 0, right: 0, gridTemplateColumns: gridCols }}
+        className={`grid items-center hover:bg-[var(--bg-hover)] ${i < n - 1 ? 'border-b border-[var(--border)]' : ''}`}
+      >
+        <span className="px-3 text-[13px] tabular-nums text-[var(--text-secondary)]">{coordinates.distanceMode ? formatChartDistance(coordinates.getX(rowTime)) : fmtTime(rowTime)}</span>
+        {columns.map((c, ci) => (
+          <span key={ci} className="px-3 text-[13px] font-medium tabular-nums truncate" style={{ color: c.color }}>
+            {c.format(liveValues?.[ci] ?? (data[ci + 1] as Float64Array)[i])}
+          </span>
+        ))}
+      </div>,
+    )
+  }
+
+  return (
+    <div
+      style={{ top: 0, left: 0, right: `-${edgePadRem}rem`, bottom: `-${edgePadRem}rem` }}
+      className={`absolute flex flex-col bg-[var(--bg-panel)] overflow-hidden ${noBorderTop ? '' : 'border-t border-[var(--border)]'}`}
+    >
+      <div className="overflow-x-auto flex-1 min-h-0 flex flex-col">
+        <div
+          style={{ gridTemplateColumns: gridCols }}
+          className="grid shrink-0 border-b border-[var(--border)] bg-[var(--bg-panel)]"
+        >
+          <span className="px-3 py-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)] font-normal">{coordinates.distanceMode ? 'Distance' : 'Time'}</span>
+          {columns.map((c, ci) => (
+            <span key={ci} className="px-3 py-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)] font-normal">{c.header}</span>
+          ))}
+        </div>
+        <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto relative">
+          <div style={{ height: total, position: 'relative' }}>{rows}</div>
+        </div>
+      </div>
+      {!pinned && (
+        <button
+          onClick={scrollToBottom}
+          className={`${BUTTON_CLASS} absolute bottom-3 right-3 z-10 !bg-[var(--bg-menu)] shadow-[0_2px_8px_rgba(0,0,0,0.35)] hover:!bg-[var(--bg-hover)]`}
+        >
+          <ChevronDown size={12} />
+          <span>Scroll to Bottom</span>
+        </button>
+      )}
+    </div>
+  )
+}

@@ -1,0 +1,132 @@
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { ChartTooltipPortal, useChartTooltip } from '../hooks/useChartTooltip'
+
+// 'lap' charts plot one point per lap number and map laps to session time
+// through their own rows.
+export type ChartCursorAxisKind = 'time' | 'distance' | 'lap'
+
+export interface ChartCursorSyncParticipant {
+  id: string
+  order: number
+  axisKind: ChartCursorAxisKind
+  resolveAxisX: (axisX: number) => { sessionTime: number; sampledAxisX: number } | null
+  formatAxisX: (axisX: number) => string
+  syncToSessionTime: (sessionTime: number, axisX: number, plotYRatio: number | null, sourceAxisKind: ChartCursorAxisKind, source: boolean, secondaryVerticalCrosshair: boolean) => {
+    current: string
+    comparison?: string
+    comparisonLabel?: string
+    comparisonKey?: string
+  }
+  clear: () => void
+}
+
+interface ChartCursorSyncContextValue {
+  isEnabled: () => boolean
+  register: (participant: ChartCursorSyncParticipant) => () => void
+  publish: (sourceId: string, axisX: number, plotYRatio: number, clientX: number, clientY: number) => void
+  clear: (sourceId: string) => void
+}
+
+const ChartCursorSyncContext = createContext<ChartCursorSyncContextValue | null>(null)
+
+export function useChartCursorSync() {
+  return useContext(ChartCursorSyncContext)
+}
+
+export function ChartCursorSyncProvider({ enabled, secondaryHorizontalCrosshair = false, secondaryVerticalCrosshair = true, children }: { enabled: boolean; secondaryHorizontalCrosshair?: boolean; secondaryVerticalCrosshair?: boolean; children: React.ReactNode }) {
+  const boundaryRef = useRef<HTMLDivElement>(null)
+  const enabledRef = useRef(enabled)
+  const secondaryHorizontalCrosshairRef = useRef(secondaryHorizontalCrosshair)
+  const secondaryVerticalCrosshairRef = useRef(secondaryVerticalCrosshair)
+  const participantsRef = useRef(new Map<string, ChartCursorSyncParticipant>())
+  const activeSourceRef = useRef<string | null>(null)
+  const { tooltipRef, showAtClient, hide } = useChartTooltip(boundaryRef)
+  useLayoutEffect(() => {
+    enabledRef.current = enabled
+    secondaryHorizontalCrosshairRef.current = secondaryHorizontalCrosshair
+    secondaryVerticalCrosshairRef.current = secondaryVerticalCrosshair
+  })
+
+  const value = useMemo<ChartCursorSyncContextValue>(() => {
+    const clearAll = () => {
+      activeSourceRef.current = null
+      for (const participant of participantsRef.current.values()) participant.clear()
+      hide()
+    }
+    return {
+      isEnabled: () => enabledRef.current,
+      register: participant => {
+        participantsRef.current.set(participant.id, participant)
+        return () => {
+          participant.clear()
+          participantsRef.current.delete(participant.id)
+          if (activeSourceRef.current === participant.id) clearAll()
+        }
+      },
+      publish: (sourceId, axisX, plotYRatio, clientX, clientY) => {
+        if (!enabledRef.current) return
+        const source = participantsRef.current.get(sourceId)
+        const resolved = source?.resolveAxisX(axisX)
+        if (!source || !resolved) return clearAll()
+        const { sessionTime, sampledAxisX } = resolved
+        activeSourceRef.current = sourceId
+        const samples = [...participantsRef.current.values()]
+          .sort((a, b) => a.order - b.order)
+          .map(participant => participant.syncToSessionTime(
+            sessionTime,
+            axisX,
+            secondaryHorizontalCrosshairRef.current ? plotYRatio : null,
+            source.axisKind,
+            participant.id === sourceId,
+            secondaryVerticalCrosshairRef.current,
+          ))
+        const fragments = samples.map(sample => sample.current).filter(Boolean)
+        const comparisonGroups = new Map<string, { label: string; fragments: string[] }>()
+        for (const sample of samples) {
+          if (!sample.comparison || !sample.comparisonLabel) continue
+          const key = sample.comparisonKey ?? sample.comparisonLabel
+          const group = comparisonGroups.get(key)
+          if (group) group.fragments.push(sample.comparison)
+          else comparisonGroups.set(key, { label: sample.comparisonLabel, fragments: [sample.comparison] })
+        }
+        if (!boundaryRef.current || (fragments.length === 0 && comparisonGroups.size === 0)) return clearAll()
+        const header = `<div style="color:var(--text-secondary);margin-bottom:4px">${source.formatAxisX(sampledAxisX)}</div>`
+        const comparison = [...comparisonGroups.values()].map(group =>
+          `<div style="color:var(--text-secondary);border-top:1px solid var(--border);margin-top:5px;padding-top:4px">${group.label}</div><div style="opacity:0.35">${group.fragments.join('')}</div>`,
+        ).join('')
+        showAtClient(`${header}${fragments.join('')}${comparison}`, clientX, clientY)
+      },
+      clear: sourceId => {
+        if (activeSourceRef.current === sourceId) clearAll()
+      },
+    }
+  }, [hide, showAtClient])
+
+  useEffect(() => {
+    if (enabled) return
+    activeSourceRef.current = null
+    for (const participant of participantsRef.current.values()) participant.clear()
+    hide()
+  }, [enabled, hide])
+
+  useEffect(() => {
+    if (secondaryHorizontalCrosshair) return
+    activeSourceRef.current = null
+    for (const participant of participantsRef.current.values()) participant.clear()
+    hide()
+  }, [hide, secondaryHorizontalCrosshair])
+
+  useEffect(() => {
+    if (secondaryVerticalCrosshair) return
+    activeSourceRef.current = null
+    for (const participant of participantsRef.current.values()) participant.clear()
+    hide()
+  }, [hide, secondaryVerticalCrosshair])
+
+  return <ChartCursorSyncContext.Provider value={value}>
+    <div ref={boundaryRef} className="relative h-full min-h-0">
+      {children}
+    </div>
+    <ChartTooltipPortal tooltipRef={tooltipRef} />
+  </ChartCursorSyncContext.Provider>
+}
