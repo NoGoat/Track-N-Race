@@ -91,8 +91,11 @@ document.addEventListener('DOMContentLoaded', () => {
             window.addEventListener('resize', () => updateCarousel(currentSlideIndex, false));
         }
 
+        const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
         const resetAutoPlay = () => {
             clearInterval(autoPlayInterval);
+            if (reduceMotion) return;
             autoPlayInterval = setInterval(() => {
                 updateCarousel(currentSlideIndex + 1);
             }, 5000);
@@ -150,7 +153,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }, { passive: true });
 
         // Auto-play interval
-        let autoPlayInterval = setInterval(() => {
+        let autoPlayInterval = reduceMotion ? null : setInterval(() => {
             updateCarousel(currentSlideIndex + 1);
         }, 5000);
 
@@ -160,11 +163,60 @@ document.addEventListener('DOMContentLoaded', () => {
         carouselContainer?.addEventListener('mouseleave', () => resetAutoPlay());
     }
 
+    // Module switcher ("Everything else"): one tab per module, one visible screenshot
+    const moduleTabs = Array.from(document.querySelectorAll('.module-tab'));
+    const modulePanes = Array.from(document.querySelectorAll('.module-pane'));
+
+    if (moduleTabs.length > 0 && moduleTabs.length === modulePanes.length) {
+        const moduleList = moduleTabs[0].parentElement;
+
+        const selectModule = (index, focus = false) => {
+            moduleTabs.forEach((tab, i) => {
+                const isActive = i === index;
+                tab.classList.toggle('active', isActive);
+                tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+                tab.tabIndex = isActive ? 0 : -1;
+                modulePanes[i].classList.toggle('active', isActive);
+                if (isActive) {
+                    modulePanes[i].removeAttribute('aria-hidden');
+                } else {
+                    modulePanes[i].setAttribute('aria-hidden', 'true');
+                }
+            });
+
+            const tab = moduleTabs[index];
+            if (focus) tab.focus({ preventScroll: true });
+
+            // On phones the list is a horizontal strip: keep the active tab centred in it
+            if (moduleList.scrollWidth > moduleList.clientWidth) {
+                moduleList.scrollTo({
+                    left: tab.offsetLeft - (moduleList.clientWidth - tab.offsetWidth) / 2,
+                    behavior: 'smooth'
+                });
+            }
+        };
+
+        moduleTabs.forEach((tab, i) => {
+            tab.addEventListener('click', () => selectModule(i));
+
+            tab.addEventListener('keydown', (e) => {
+                const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+                let target = null;
+                if (step) target = (i + step + moduleTabs.length) % moduleTabs.length;
+                else if (e.key === 'Home') target = 0;
+                else if (e.key === 'End') target = moduleTabs.length - 1;
+                if (target === null) return;
+                e.preventDefault();
+                selectModule(target, true);
+            });
+        });
+    }
+
     // Lightbox Logic & Fluid GPU Zoom & Pan Algorithm
     const lightbox = document.getElementById('lightbox');
     const lightboxImg = lightbox?.querySelector('img');
     const lightboxClose = document.getElementById('lightboxClose');
-    const clickableImages = document.querySelectorAll('.card-img-wrapper, .mockup-img');
+    const clickableImages = document.querySelectorAll('.mockup-img');
 
     if (lightbox && lightboxImg) {
         let currentScale = 1;
@@ -399,95 +451,61 @@ document.addEventListener('DOMContentLoaded', () => {
         }, { passive: false });
     }
 
-    // Smooth Accordion Animation for Attributions
-    const accordions = document.querySelectorAll('.attribution-accordion');
-    accordions.forEach(accordion => {
-        const summary = accordion.querySelector('.attribution-section-title');
-        if (!summary) return;
-
-        let isAnimating = false;
-
-        summary.addEventListener('click', (e) => {
-            e.preventDefault();
-            if (isAnimating) return;
-            isAnimating = true;
-
-            if (accordion.open) {
-                const startHeight = accordion.offsetHeight;
-                const endHeight = summary.offsetHeight;
-
-                accordion.style.height = `${startHeight}px`;
-                accordion.style.overflow = 'hidden';
-                accordion.classList.add('is-collapsing');
-
-                requestAnimationFrame(() => {
-                    accordion.style.transition = 'height 0.35s cubic-bezier(0.16, 1, 0.3, 1)';
-                    accordion.style.height = `${endHeight}px`;
-                });
-
-                setTimeout(() => {
-                    accordion.open = false;
-                    accordion.style.height = '';
-                    accordion.style.overflow = '';
-                    accordion.style.transition = '';
-                    accordion.classList.remove('is-collapsing');
-                    isAnimating = false;
-                }, 350);
-            } else {
-                accordion.open = true;
-                const endHeight = accordion.offsetHeight;
-                const startHeight = summary.offsetHeight;
-
-                accordion.style.height = `${startHeight}px`;
-                accordion.style.overflow = 'hidden';
-
-                requestAnimationFrame(() => {
-                    accordion.style.transition = 'height 0.35s cubic-bezier(0.16, 1, 0.3, 1)';
-                    accordion.style.height = `${endHeight}px`;
-                });
-
-                setTimeout(() => {
-                    accordion.style.height = '';
-                    accordion.style.overflow = '';
-                    accordion.style.transition = '';
-                    isAnimating = false;
-                }, 350);
-            }
-        });
-    });
+    // License text, fetched once per file and shared by the pop-up and the credits reader
+    const licenseCache = new Map();
+    const loadLicense = (file) => {
+        if (!licenseCache.has(file)) {
+            licenseCache.set(file, fetch(`/assets/licenses/${file}`).then(response => {
+                if (!response.ok) throw new Error('Failed to load license');
+                return response.text();
+            }).catch(error => {
+                licenseCache.delete(file);
+                throw error;
+            }));
+        }
+        return licenseCache.get(file);
+    };
+    const licenseError = 'Error loading license text. Please try again later.';
 
     // License Modal Logic
-    const licenseBtns = document.querySelectorAll('[data-license]');
     const licenseModal = document.getElementById('licenseModal');
     const closeLicenseModal = document.getElementById('closeLicenseModal');
     const licenseTextContent = document.getElementById('licenseTextContent');
     const licenseModalTitle = document.getElementById('licenseModalTitle');
+    let licenseModalRequest = 0;
 
-    if (licenseBtns.length > 0 && licenseModal) {
-        licenseBtns.forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const licenseFile = btn.getAttribute('data-license');
-                const card = btn.closest('.attribution-card');
-                const projectName = card ? card.querySelector('.attribution-title').textContent : 'Track N Race';
-                
-                licenseModalTitle.textContent = `${projectName} License`;
-                licenseTextContent.textContent = 'Loading...';
-                licenseModal.classList.add('active');
-                document.documentElement.classList.add('modal-open');
-                document.body.classList.add('modal-open');
-                document.documentElement.style.overflow = 'hidden';
-                document.body.style.overflow = 'hidden';
+    const openLicenseModal = async (title, file) => {
+        if (!licenseModal) return;
+        const request = ++licenseModalRequest;
+        licenseModalTitle.textContent = title;
+        licenseTextContent.textContent = 'Loading...';
+        licenseModal.classList.add('active');
+        document.documentElement.classList.add('modal-open');
+        document.body.classList.add('modal-open');
+        document.documentElement.style.overflow = 'hidden';
+        document.body.style.overflow = 'hidden';
 
-                try {
-                    const response = await fetch(`/assets/licenses/${licenseFile}`);
-                    if (!response.ok) throw new Error('Failed to load license');
-                    const text = await response.text();
-                    licenseTextContent.textContent = text;
-                } catch (error) {
-                    licenseTextContent.textContent = 'Error loading license text. Please try again later.';
-                    console.error(error);
-                }
-            });
+        try {
+            const text = await loadLicense(file);
+            if (request === licenseModalRequest) licenseTextContent.textContent = text;
+        } catch (error) {
+            if (request === licenseModalRequest) licenseTextContent.textContent = licenseError;
+            console.error(error);
+        }
+    };
+
+    if (licenseModal) {
+        // Footer GPL link (a non-button trigger, so it needs keyboard activation too)
+        document.querySelectorAll('[data-license]').forEach(btn => {
+            if (btn.tagName !== 'BUTTON') {
+                btn.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        btn.click();
+                    }
+                });
+            }
+            btn.addEventListener('click', () => openLicenseModal('Track N Race License', btn.getAttribute('data-license')));
         });
 
         const closeModal = () => {
@@ -505,6 +523,82 @@ document.addEventListener('DOMContentLoaded', () => {
                 closeModal();
             }
         });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && licenseModal.classList.contains('active')) {
+                closeModal();
+            }
+        });
+    }
+
+    // Credits library browser: selecting a project shows its license in the reader.
+    // On phones the list is a horizontal strip above the reader.
+    const libraryItems = Array.from(document.querySelectorAll('.library-item'));
+    const libraryReader = document.getElementById('library-reader');
+
+    if (libraryItems.length > 0 && libraryReader) {
+        const readerName = libraryReader.querySelector('.reader-name');
+        const readerStack = libraryReader.querySelector('.reader-stack');
+        const readerSpdx = libraryReader.querySelector('.reader-spdx');
+        const readerLink = libraryReader.querySelector('.reader-link');
+        const readerText = libraryReader.querySelector('.reader-text');
+        const libraryList = libraryItems[0].closest('.library-list');
+        const stackLabels = { core: 'Core', electron: 'Electron', qt: 'Qt' };
+        let readerRequest = 0;
+
+        const showInReader = async (item) => {
+            libraryItems.forEach(other => {
+                const isActive = other === item;
+                other.classList.toggle('active', isActive);
+                other.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            });
+
+            // Keep the selected project in view inside the list: centred in the phone strip,
+            // scrolled into view in the desktop column (the page itself never scrolls)
+            if (libraryList) {
+                const listRect = libraryList.getBoundingClientRect();
+                const itemRect = item.getBoundingClientRect();
+                if (libraryList.scrollWidth > libraryList.clientWidth) {
+                    libraryList.scrollBy({
+                        left: itemRect.left - listRect.left - (listRect.width - itemRect.width) / 2,
+                        behavior: 'smooth'
+                    });
+                } else if (itemRect.top < listRect.top || itemRect.bottom > listRect.bottom) {
+                    libraryList.scrollBy({
+                        top: itemRect.top - listRect.top - (listRect.height - itemRect.height) / 2,
+                        behavior: 'smooth'
+                    });
+                }
+            }
+
+            const name = item.querySelector('.library-name').textContent;
+            readerName.textContent = name;
+            readerStack.dataset.stack = item.dataset.stack;
+            readerStack.textContent = stackLabels[item.dataset.stack] || '';
+            readerSpdx.textContent = item.dataset.spdx;
+            readerLink.href = item.dataset.href;
+            readerLink.setAttribute('aria-label', `${name} website`);
+
+            const request = ++readerRequest;
+            readerText.classList.add('is-loading');
+            try {
+                const text = await loadLicense(item.dataset.file);
+                if (request !== readerRequest) return;
+                readerText.textContent = text;
+                readerText.scrollTop = 0;
+            } catch (error) {
+                if (request === readerRequest) readerText.textContent = licenseError;
+                console.error(error);
+            } finally {
+                if (request === readerRequest) readerText.classList.remove('is-loading');
+            }
+        };
+
+        libraryItems.forEach(item => {
+            item.addEventListener('click', () => showInReader(item));
+        });
+
+        showInReader(libraryItems.find(item => item.classList.contains('active')) || libraryItems[0]);
     }
 
     // Setup Page Scenario Selector (Single PC vs Dual System)

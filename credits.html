@@ -15,7 +15,7 @@
     <meta name="author" content="NoGoat">
     <meta name="application-name" content="Track N Race">
     <meta name="apple-mobile-web-app-title" content="Track N Race">
-    <meta name="theme-color" content="#06080c">
+    <meta name="theme-color" content="#09090b">
 
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="article">
@@ -98,14 +98,14 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
         rel="stylesheet">
 
     <!-- Styles -->
     <link rel="stylesheet" href="/styles.css">
 </head>
 
-<body>
+<body class="page-fit">
     <header class="navbar">
         <div class="nav-container">
             <a href="/" class="brand-link" aria-label="Track N Race Home">
@@ -121,7 +121,16 @@
                 <a href="/credits" class="nav-btn active">Credits</a>
             </nav>
             <div class="nav-actions">
-                <a href="https://github.com/NoGoat/Track-N-Race" target="_blank" class="github-link-btn"
+                <!-- Discord invite link: replace the href below -->
+                <a href="https://discord.gg/UMVRrN3RbR" target="_blank" rel="noopener" class="discord-link-btn"
+                    aria-label="Discord Server">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path
+                            d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.865-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.74 19.74 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.1 13.1 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .078-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.246.198.373.292a.077.077 0 0 1-.006.127 12.3 12.3 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.182 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
+                    </svg>
+                    <span>Discord</span>
+                </a>
+                <a href="https://github.com/NoGoat/Track-N-Race" target="_blank" rel="noopener" class="github-link-btn"
                     aria-label="GitHub Repository">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                         <path
@@ -143,12 +152,12 @@
     </header>
 
     <main>
-        <!-- Attributions & Open Source Section -->
+        <!-- Credits: open source library browser -->
         <section id="attributions" class="section attributions-section">
             <div class="attributions-container">
-                <div class="section-header" style="text-align: center; margin-bottom: 2.5rem;">
+                <div class="page-header">
                     <h1 class="main-title">Credits</h1>
-                    <p class="section-desc attributions-desc" style="margin: 0.8rem auto 0; max-width: 680px;">
+                    <p class="section-desc">
                         The following open source projects made Track N Race possible. Note that this is in no way
                         trying to
                         affiliate Track N Race with these projects. I just felt that it was appropriate to shout out
@@ -156,186 +165,240 @@
                     </p>
                 </div>
 
-                <div class="attributions-sections">
-                    <details class="attribution-accordion" open>
-                        <summary class="attribution-section-title">
-                            <span>Core Parser / Shared Addons</span>
-                            <span class="accordion-icon"></span>
-                        </summary>
-                        <div class="attributions-grid">
-                            <div class="attribution-card">
-                                <a href="https://zlib.net" target="_blank" class="attribution-title">zlib</a>
-                                <button class="card-btn primary license-btn" data-license="Zlib.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://facebook.github.io/zstd/" target="_blank"
-                                    class="attribution-title">Zstandard</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="zstandard.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/stephenberry/glaze" target="_blank"
-                                    class="attribution-title">glaze</a>
-                                <button class="card-btn primary license-btn" data-license="glaze.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://libxlsxwriter.github.io" target="_blank"
-                                    class="attribution-title">libxlsxwriter</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="libxlsxwriter.txt">License</button>
-                            </div>
-                        </div>
-                    </details>
+                <!-- Library browser: grouped project list beside a license reader.
+                     On phones the reader is hidden and licenses open in the pop-up instead. -->
+                <div class="library">
+                    <nav class="library-list" aria-label="Open source projects">
+                    <section class="library-group" data-stack="core">
+                        <h2 class="library-group-title">Core <span class="library-count">04</span></h2>
+                        <ul class="library-items">
+                            <li>
+                                <button class="library-item active" aria-pressed="true" aria-controls="library-reader"
+                                    data-file="Zlib.txt" data-spdx="Zlib" data-href="https://zlib.net" data-stack="core">
+                                    <span class="library-name">zlib</span>
+                                    <span class="library-spdx">Zlib</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="zstandard.txt" data-spdx="BSD-3-Clause" data-href="https://facebook.github.io/zstd/" data-stack="core">
+                                    <span class="library-name">Zstandard</span>
+                                    <span class="library-spdx">BSD-3-Clause</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="glaze.txt" data-spdx="MIT" data-href="https://github.com/stephenberry/glaze" data-stack="core">
+                                    <span class="library-name">glaze</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="libxlsxwriter.txt" data-spdx="BSD-2-Clause" data-href="https://libxlsxwriter.github.io" data-stack="core">
+                                    <span class="library-name">libxlsxwriter</span>
+                                    <span class="library-spdx">BSD-2-Clause</span>
+                                </button>
+                            </li>
+                        </ul>
+                    </section>
+                    <section class="library-group" data-stack="electron">
+                        <h2 class="library-group-title">Electron <span class="library-count">17</span></h2>
+                        <ul class="library-items">
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="electron.txt" data-spdx="MIT" data-href="https://electronjs.org" data-stack="electron">
+                                    <span class="library-name">Electron</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="react.txt" data-spdx="MIT" data-href="https://react.dev" data-stack="electron">
+                                    <span class="library-name">React</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="react-dom.txt" data-spdx="MIT" data-href="https://react.dev" data-stack="electron">
+                                    <span class="library-name">React DOM</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="electron-store.txt" data-spdx="MIT" data-href="https://github.com/sindresorhus/electron-store" data-stack="electron">
+                                    <span class="library-name">electron-store</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="lucide-react.txt" data-spdx="ISC" data-href="https://lucide.dev" data-stack="electron">
+                                    <span class="library-name">lucide-react</span>
+                                    <span class="library-spdx">ISC</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="react-select.txt" data-spdx="MIT" data-href="https://react-select.com" data-stack="electron">
+                                    <span class="library-name">react-select</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="uiw-react-color.txt" data-spdx="MIT" data-href="https://github.com/uiwjs/react-color" data-stack="electron">
+                                    <span class="library-name">@uiw/react-color</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="zustand.txt" data-spdx="MIT" data-href="https://zustand.docs.pmnd.rs/" data-stack="electron">
+                                    <span class="library-name">zustand</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="timechart.txt" data-spdx="MIT" data-href="https://github.com/huww98/TimeChart" data-stack="electron">
+                                    <span class="library-name">TimeChart</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="d3-axis.txt" data-spdx="ISC" data-href="https://d3js.org/d3-axis/" data-stack="electron">
+                                    <span class="library-name">d3-axis</span>
+                                    <span class="library-spdx">ISC</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="d3-color.txt" data-spdx="ISC" data-href="https://d3js.org/d3-color/" data-stack="electron">
+                                    <span class="library-name">d3-color</span>
+                                    <span class="library-spdx">ISC</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="d3-scale.txt" data-spdx="ISC" data-href="https://d3js.org/d3-scale/" data-stack="electron">
+                                    <span class="library-name">d3-scale</span>
+                                    <span class="library-spdx">ISC</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="d3-selection.txt" data-spdx="ISC" data-href="https://d3js.org/d3-selection/" data-stack="electron">
+                                    <span class="library-name">d3-selection</span>
+                                    <span class="library-spdx">ISC</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="gl-matrix.txt" data-spdx="MIT" data-href="https://glmatrix.net/" data-stack="electron">
+                                    <span class="library-name">gl-matrix</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="tslib.txt" data-spdx="0BSD" data-href="https://github.com/microsoft/tslib" data-stack="electron">
+                                    <span class="library-name">tslib</span>
+                                    <span class="library-spdx">0BSD</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="cascadia-code.txt" data-spdx="OFL-1.1" data-href="https://github.com/microsoft/cascadia-code" data-stack="electron">
+                                    <span class="library-name">Cascadia Code</span>
+                                    <span class="library-spdx">OFL-1.1</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="node-addon-api.txt" data-spdx="MIT" data-href="https://github.com/nodejs/node-addon-api" data-stack="electron">
+                                    <span class="library-name">node-addon-api</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                        </ul>
+                    </section>
+                    <section class="library-group" data-stack="qt">
+                        <h2 class="library-group-title">Qt <span class="library-count">07</span></h2>
+                        <ul class="library-items">
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="LGPL-3.0.txt" data-spdx="LGPL-3.0" data-href="https://www.qt.io" data-stack="qt">
+                                    <span class="library-name">Qt</span>
+                                    <span class="library-spdx">LGPL-3.0</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="GPL-3.0.txt" data-spdx="GPL-3.0" data-href="https://www.qcustomplot.com" data-stack="qt">
+                                    <span class="library-name">QCustomPlot</span>
+                                    <span class="library-spdx">GPL-3.0</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="MIT-qt-toast.txt" data-spdx="MIT" data-href="https://github.com/niklashenning/qt-toast" data-stack="qt">
+                                    <span class="library-name">qt-toast (fork)</span>
+                                    <span class="library-spdx">MIT</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="OFL-1.1-Noto.txt" data-spdx="OFL-1.1" data-href="https://fonts.google.com/noto/specimen/Noto+Sans" data-stack="qt">
+                                    <span class="library-name">Noto Sans</span>
+                                    <span class="library-spdx">OFL-1.1</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="GPL-2.0.txt" data-spdx="GPL-2.0" data-href="https://invent.kde.org/plasma/breeze" data-stack="qt">
+                                    <span class="library-name">Breeze style (Plasma)</span>
+                                    <span class="library-spdx">GPL-2.0</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="LGPL-3.0.txt" data-spdx="LGPL-3.0" data-href="https://invent.kde.org/frameworks/breeze-icons" data-stack="qt">
+                                    <span class="library-name">Breeze Icons</span>
+                                    <span class="library-spdx">LGPL-3.0</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button class="library-item" aria-pressed="false" aria-controls="library-reader"
+                                    data-file="LGPL-2.1.txt" data-spdx="LGPL-2.1" data-href="https://develop.kde.org/products/frameworks/" data-stack="qt">
+                                    <span class="library-name">KDE Frameworks</span>
+                                    <span class="library-spdx">LGPL-2.1</span>
+                                </button>
+                            </li>
+                        </ul>
+                    </section>
+                    </nav>
 
-                    <details class="attribution-accordion">
-                        <summary class="attribution-section-title">
-                            <span>Electron Frontend</span>
-                            <span class="accordion-icon"></span>
-                        </summary>
-                        <div class="attributions-grid">
-                            <div class="attribution-card">
-                                <a href="https://electronjs.org" target="_blank" class="attribution-title">Electron</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="electron.txt">License</button>
+                    <article class="library-reader" id="library-reader" aria-live="polite">
+                        <header class="reader-head">
+                            <div class="reader-title">
+                                <h3 class="reader-name">zlib</h3>
+                                <p class="reader-meta"><span class="reader-stack" data-stack="core">Core</span><span class="reader-spdx">Zlib</span></p>
                             </div>
-                            <div class="attribution-card">
-                                <a href="https://react.dev" target="_blank" class="attribution-title">React</a>
-                                <button class="card-btn primary license-btn" data-license="react.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://react.dev" target="_blank" class="attribution-title">React DOM</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="react-dom.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/sindresorhus/electron-store" target="_blank"
-                                    class="attribution-title">electron-store</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="electron-store.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://lucide.dev" target="_blank" class="attribution-title">lucide-react</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="lucide-react.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://react-select.com" target="_blank"
-                                    class="attribution-title">react-select</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="react-select.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/uiwjs/react-color" target="_blank"
-                                    class="attribution-title">@uiw/react-color</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="uiw-react-color.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://zustand.docs.pmnd.rs/" target="_blank"
-                                    class="attribution-title">zustand</a>
-                                <button class="card-btn primary license-btn" data-license="zustand.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/huww98/TimeChart" target="_blank"
-                                    class="attribution-title">TimeChart</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="timechart.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://d3js.org/d3-axis/" target="_blank"
-                                    class="attribution-title">d3-axis</a>
-                                <button class="card-btn primary license-btn" data-license="d3-axis.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://d3js.org/d3-color/" target="_blank"
-                                    class="attribution-title">d3-color</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="d3-color.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://d3js.org/d3-scale/" target="_blank"
-                                    class="attribution-title">d3-scale</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="d3-scale.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://d3js.org/d3-selection/" target="_blank"
-                                    class="attribution-title">d3-selection</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="d3-selection.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://glmatrix.net/" target="_blank" class="attribution-title">gl-matrix</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="gl-matrix.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/microsoft/tslib" target="_blank"
-                                    class="attribution-title">tslib</a>
-                                <button class="card-btn primary license-btn" data-license="tslib.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/microsoft/cascadia-code" target="_blank"
-                                    class="attribution-title">Cascadia Code</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="cascadia-code.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/nodejs/node-addon-api" target="_blank"
-                                    class="attribution-title">node-addon-api</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="node-addon-api.txt">License</button>
-                            </div>
-                        </div>
-                    </details>
-
-                    <details class="attribution-accordion">
-                        <summary class="attribution-section-title">
-                            <span>Qt Frontend</span>
-                            <span class="accordion-icon"></span>
-                        </summary>
-                        <div class="attributions-grid">
-                            <div class="attribution-card">
-                                <a href="https://www.qt.io" target="_blank" class="attribution-title">Qt</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="LGPL-3.0.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://www.qcustomplot.com" target="_blank"
-                                    class="attribution-title">QCustomPlot</a>
-                                <button class="card-btn primary license-btn" data-license="GPL-3.0.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/niklashenning/qt-toast" target="_blank"
-                                    class="attribution-title">qt-toast (fork)</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="MIT-qt-toast.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://fonts.google.com/noto/specimen/Noto+Sans" target="_blank"
-                                    class="attribution-title">Noto Sans</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="OFL-1.1-Noto.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://invent.kde.org/plasma/breeze" target="_blank"
-                                    class="attribution-title">Breeze style (Plasma)</a>
-                                <button class="card-btn primary license-btn" data-license="GPL-2.0.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://invent.kde.org/frameworks/breeze-icons" target="_blank"
-                                    class="attribution-title">Breeze Icons</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="LGPL-3.0.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://develop.kde.org/products/frameworks/" target="_blank"
-                                    class="attribution-title">KDE Frameworks</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="LGPL-2.1.txt">License</button>
-                            </div>
-                        </div>
-                    </details>
+                            <a class="reader-link" href="https://zlib.net" target="_blank" rel="noopener">
+                                <span>Website</span>
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M7 17 17 7"></path>
+                                    <path d="M7 7h10v10"></path>
+                                </svg>
+                            </a>
+                        </header>
+                        <pre class="reader-text">Loading...</pre>
+                    </article>
                 </div>
             </div>
         </section>
@@ -348,7 +411,7 @@
                 <span class="footer-brand"><span class="brand-accent">Track</span> N Race</span>
                 <p class="footer-desc">
                     Copyright &copy; 2026 NoGoat. Track N Race is distributed under the <span
-                        class="attribution-title footer-license" data-license="GPL-3.0.txt" style="cursor: pointer;">GNU
+                        class="footer-license" data-license="GPL-3.0.txt" role="button" tabindex="0">GNU
                         General Public License v3.0</span>
                 </p>
                 <p class="footer-disclaimer">
@@ -356,14 +419,22 @@
                     the FIA, the drivers or the teams participating in Formula One.
                 </p>
             </div>
+            <ul class="footer-links">
+                <li><a href="/">Home</a></li>
+                <li><a href="/setup">Setup</a></li>
+                <li><a href="/credits">Credits</a></li>
+                <li><a href="https://github.com/NoGoat/Track-N-Race" target="_blank" rel="noopener">GitHub</a></li>
+                <!-- Discord invite link: replace the href below -->
+                <li><a href="https://discord.gg/UMVRrN3RbR" target="_blank" rel="noopener">Discord</a></li>
+            </ul>
         </div>
     </footer>
 
     <!-- Lightbox Modal -->
     <div class="lightbox" id="lightbox">
-        <button class="lightbox-close" id="lightboxClose" aria-label="Close lightbox">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
-                stroke-linecap="round" stroke-linejoin="round">
+        <button class="lightbox-close" id="lightboxClose" aria-label="Close image">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
                 <line x1="6" y1="6" x2="18" y2="18"></line>
             </svg>
