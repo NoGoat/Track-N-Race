@@ -87,10 +87,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        let carouselVisible = true;
 
         const resetAutoPlay = () => {
             clearInterval(autoPlayInterval);
-            if (reduceMotion) return;
+            if (reduceMotion || !carouselVisible) return;
             autoPlayInterval = setInterval(() => {
                 updateCarousel(currentSlideIndex + 1);
             }, 5000);
@@ -156,6 +157,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const carouselContainer = document.querySelector('.carousel-container');
         carouselContainer?.addEventListener('mouseenter', () => clearInterval(autoPlayInterval));
         carouselContainer?.addEventListener('mouseleave', () => resetAutoPlay());
+
+        // Pause while scrolled out of view, so it doesn't keep animating unseen
+        if (carouselContainer && window.IntersectionObserver) {
+            new IntersectionObserver(([entry]) => {
+                carouselVisible = entry.isIntersecting;
+                if (carouselVisible) {
+                    resetAutoPlay();
+                } else {
+                    clearInterval(autoPlayInterval);
+                }
+            }).observe(carouselContainer);
+        }
     }
 
     // Module switcher ("Everything else"): one tab per module, one visible screenshot
@@ -289,13 +302,10 @@ document.addEventListener('DOMContentLoaded', () => {
             wrapper.addEventListener('click', () => {
                 const img = wrapper.tagName === 'IMG' ? wrapper : wrapper.querySelector('img');
                 if (img && img.src) {
-                    // If the browser picked the AVIF source, open its largest (full-size) candidate;
-                    // otherwise fall back to the full-size WebP in <img src>.
-                    const avifSource = img.closest('picture')?.querySelector('source[type="image/avif"]');
-                    const fullAvif = avifSource && img.currentSrc.endsWith('.avif')
-                        ? avifSource.srcset.split(',').pop().trim().split(' ')[0]
-                        : null;
-                    openLightbox(fullAvif || img.src, img.currentSrc || img.src);
+                    // Open the lossless full-size PNG that sits next to every screenshot's WebP
+                    // (e.g. overview.webp -> overview.png); the compressed card image shows meanwhile.
+                    const fullPng = img.src.replace(/\.[a-z0-9]+(?=$|[?#])/i, '.png');
+                    openLightbox(fullPng, img.currentSrc || img.src);
                 }
             });
         });
