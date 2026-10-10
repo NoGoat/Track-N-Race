@@ -211,8 +211,8 @@ void AnalysisPage::showSlotPage(int index) {
     fitLapPanel();
 }
 
-QString AnalysisPage::stageComparison(const QString& driverA, int lapA,
-                                      const QString& driverB, int lapB,
+QString AnalysisPage::stageComparison(const QString& driverA, int lapA, const QString& labelA,
+                                      const QString& driverB, int lapB, const QString& labelB,
                                       const QStringList& metricIds) {
     if (!playback_ || !primary_) return QStringLiteral("no recording is open");
     auto refOf = [this](const QString& name) {
@@ -238,6 +238,8 @@ QString AnalysisPage::stageComparison(const QString& driverA, int lapA,
     refreshLapChoices();
     if (!lapASlot_->selectLap(lapA)) return QStringLiteral("%1 has no lap %2").arg(driverA).arg(lapA);
     if (!lapBSlot_->selectLap(lapB)) return QStringLiteral("%1 has no lap %2").arg(driverB).arg(lapB);
+    lapASlot_->setLabel(labelA);
+    lapBSlot_->setLabel(labelB);
 
     // Exactly these metrics, in this order: drop the rest (delta always stays
     // first), then append the wanted ones.

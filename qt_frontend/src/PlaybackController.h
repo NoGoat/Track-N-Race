@@ -46,6 +46,7 @@ public:
     float displayTime() const { return displayTime_; }
     float displayTotal() const { return displayTotal_; }
     void seekToDisplayTime(float seconds);
+    void play();
     void pause();
     bool handleControlRow(const QByteArray& json);
     void handleSeekFlush(const std::shared_ptr<EngineSeekFlush>& flush);

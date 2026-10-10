@@ -502,6 +502,10 @@ void PlaybackController::seekToDisplayTime(float seconds) {
     player_->seek(qBound(0.0f, seconds / displayTotal_, 1.0f));
 }
 
+void PlaybackController::play() {
+    if (player_) player_->play();
+}
+
 void PlaybackController::pause() {
     if (player_) player_->pause();
 }

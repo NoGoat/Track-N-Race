@@ -239,6 +239,7 @@ private:
     void toggleScreenshotTour();
     QPixmap grabForScreenshot();
     void showScreenshotNotice(const QString& text, int msecs = 3000);
+    bool clearScreenshotNotice();   // restores the real title; false when none was shown
     QPointer<ScreenshotTour> screenshotTour_;
     QString screenshotNotice_;        // title shown after a capture; empty when none
     QString titleBeforeScreenshot_;   // restored when the notice expires

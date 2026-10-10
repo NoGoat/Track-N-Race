@@ -11,6 +11,7 @@
 #include "PlaybackController.h"
 #include "components/ChartView.h"
 #include "components/EditOverviewLayoutDialog.h"
+#include "components/OverviewPage.h"
 #include "components/DriverLapsDialog.h"
 #include "components/StandingsPage.h"
 #include "components/Toast.h"
@@ -96,8 +97,21 @@ void MainWindow::showScreenshotNotice(const QString& text, int msecs) {
     });
 }
 
+bool MainWindow::clearScreenshotNotice() {
+    if (screenshotNotice_.isEmpty()) return false;
+    if (windowTitle() == screenshotNotice_) setWindowTitle(titleBeforeScreenshot_);
+    screenshotNotice_.clear();   // its pending expiry timer now does nothing
+    return true;
+}
+
 void MainWindow::captureScreenshot() {
     if (screenshotTour_) return;   // the tour owns the window while it runs
+    // A previous capture's notice would be in the title bar: restore the real
+    // title and give the window manager a moment to repaint it.
+    if (clearScreenshotNotice()) {
+        QTimer::singleShot(300, this, &MainWindow::captureScreenshot);
+        return;
+    }
     const QPixmap shot = grabForScreenshot();
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation)
                         + "/Track N Race Screenshots";
@@ -148,6 +162,8 @@ public:
 
     void start() {
         QDir().mkpath(outDir_);
+        w_->clearScreenshotNotice();
+        applyElectronLayout();
         w_->sizeForScreenshot();
         w_->raise();
         w_->activateWindow();
@@ -186,9 +202,9 @@ private:
     bool waitingForSeek_ = false;
     std::function<void()> afterSeek_;
 
+    // Progress goes to the log only: the title bar is part of every capture.
     void status(const QString& text) {
         qInfo().noquote() << "[screenshot-tour]" << text;
-        w_->showScreenshotNotice("Screenshot tour: " + text, 0);
     }
 
     // Runs `next` after `ms`, reporting `what`.
@@ -239,18 +255,28 @@ private:
                 return;
             }
         }
-        auto settle = [this, index] {
+        const QString label = QStringLiteral("%1 (%2/%3)").arg(shot.file).arg(index + 1).arg(shots_.size());
+        auto finishShot = [this, index] {
             const Shot& s = shots_[index];
-            step(QStringLiteral("%1 (%2/%3)").arg(s.file).arg(index + 1).arg(shots_.size()),
-                 s.settleMs, [this, index] {
-                const Shot& s = shots_[index];
-                if (!s.beforeCapture) { capture(index); return; }
-                s.beforeCapture();
-                step(s.file, 800, [this, index] { capture(index); });
-            });
+            if (!s.beforeCapture) { capture(index); return; }
+            s.beforeCapture();
+            step(s.file, 800, [this, index] { capture(index); });
         };
-        if (shot.time >= 0) seekThen(shot.time, settle);
-        else settle();
+        if (shot.time < 0) {
+            step(label, shot.settleMs, finishShot);
+            return;
+        }
+        // Rows only fill in while the file plays: seek settleMs before the
+        // Electron time, play (1x) up to it, then pause for the capture, as
+        // the Electron screenshots were.
+        const float lead = shot.settleMs / 1000.0f;
+        seekThen(qMax(0.0f, shot.time - lead), [this, index, label, finishShot] {
+            w_->playback_->play();
+            step(label, shots_[index].settleMs, [this, finishShot] {
+                w_->playback_->pause();
+                step(QStringLiteral("paused"), 300, finishShot);
+            });
+        });
     }
 
     void capture(int index) {
@@ -280,6 +306,39 @@ private:
         qInfo().noquote() << "[screenshot-tour]" << result;
         w_->showScreenshotNotice("Screenshot tour: " + result, 8000);
         deleteLater();
+    }
+
+    // The Electron screenshots' compact and page layouts (its config.json),
+    // applied live and saved, as the Settings dialog does.
+    void applyElectronLayout() {
+        using CS = tnr::CompactSection;
+        using D = tnr::DensityMode;
+        using P = MainWindow::Page;
+        w_->setDensitySection(CS::OverviewStats, D::Compact);
+        w_->setDensitySection(CS::OverviewDamage, D::Compact);
+        w_->setTyresCompactLevel(3);
+        w_->overviewPage_->setTyreView(OverviewLayout::TyreCards);
+        w_->setDensitySection(CS::StandingsTable, D::Normal);
+        w_->setDensitySection(CS::StandingsTiming, D::Normal);
+        w_->setDensitySection(CS::StandingsErs, D::Normal);
+        w_->setDensitySection(CS::StandingsStrategy, D::Normal);
+        w_->setDensitySection(CS::SessionCards, D::Compact);
+        w_->setDensitySection(CS::SessionProximity, D::Compact);
+        w_->setDensitySection(CS::SessionEvents, D::Compact);
+        w_->setWeatherCompactLevel(3);
+        w_->setHeaderCompactLevel(1);
+        w_->setDensitySection(CS::PowerCards, D::Compact);
+        w_->setDensitySection(CS::StrategySummary, D::Compact);
+        w_->setDensitySection(CS::TrendsSummary, D::Compact);
+        w_->setDensitySection(CS::DamageSummary, D::Compact);
+        w_->setDensitySection(CS::PlaybackBar, D::Compact);
+        w_->setVerticalChartLayout(P::Input, true);
+        w_->setVerticalChartLayout(P::Power, true);
+        w_->setVerticalChartLayout(P::Tyres, true);
+        w_->setInputPedalLayout(QStringLiteral("split"));
+        w_->setMiscSplitLayout(true, true);    // G-force
+        w_->setMiscSplitLayout(false, true);   // ride height
+        w_->setTrendsChartLayout(QStringLiteral("combinedNoRecharge"));
     }
 
     // ── Helpers for the shot list ──
@@ -364,7 +423,7 @@ private:
         shots_ << Shot{"analyze.png", P::Analyze, -1,
                        [this] {
                            return w_->analyzePage_->stageComparison(
-                               "ANTONELLI", 4, "LECLERC", 3,
+                               "ANTONELLI", 4, "Antonelli", "LECLERC", 3, "Leclerc",
                                {"delta", "throttle", "speed", "ers", "brake"});
                        },
                        [this] { w_->analyzePage_->focusMapElapsed(54.5); },
