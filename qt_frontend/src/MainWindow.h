@@ -14,6 +14,7 @@
 #include <optional>
 
 #include <tnrp/AnyRow.h>
+#include <tnrp/RecordingScope.h>
 
 #include "PlaybackPatchMerger.h"
 #include "CompactSettings.h"
@@ -69,6 +70,9 @@ struct PairServiceState {
     qint64 pairingExpiresAt = 0;
     QString matchingCode;
     QString qrPayload;
+    // A phone that proved the QR or code and waits for this desktop to allow it.
+    QString pendingDeviceId;
+    QString pendingDeviceName;
     QVector<PairDeviceState> devices;
     QString error;
 };
@@ -107,6 +111,11 @@ public:
     void    setOutputDirectory(const QString& dir);
     bool    autoRecordEnabled() const { return wantRecord; }
     void    setAutoRecord(bool checked);
+    // Which drivers a session category records: category is practice,
+    // qualifying, race or time_trial; scope is all_drivers, driver_only, both
+    // or ask (tnrp::RecordingScope).
+    QString recordingScope(const QString& category) const;
+    void    setRecordingScope(const QString& category, const QString& scope);
     QString currentTheme() const { return settings.value("theme", "system").toString(); }
     void    setTheme(const QString& theme);
     QString currentStyleName() const { return settings.value("style", "system").toString(); }
@@ -196,6 +205,7 @@ public:
     void setPairServiceEnabled(bool enabled);
     void openPairingWindow();
     void closePairingWindow();
+    void respondToPairing(bool approve);
     void removePairDevice(const QString& id);
 
 signals:
@@ -212,6 +222,15 @@ private slots:
     void onEngineBinary(const QByteArray& batch);
 
 private:
+    // ── Website screenshots ───────────────────────────────────────
+    // F7 saves the window's contents (no WM decorations) at 2x, GPU charts
+    // included, to Pictures/Track N Race Screenshots. Shift+F7 restores and
+    // sizes the window to 1200x700, the Electron screenshots' window size.
+    void captureScreenshot();
+    void sizeForScreenshot();
+    QString screenshotNotice_;        // title shown after a capture; empty when none
+    QString titleBeforeScreenshot_;   // restored when the notice expires
+
     // ── Overview tab ──────────────────────────────────────────────
     // Self-contained page widget (stat cards, telemetry chart, tyre section,
     // damage rows); fed rows synchronously via on*() from emitLiveData and
@@ -333,6 +352,10 @@ private:
     std::unique_ptr<tnrp::Engine> engine_;
     EngineSink*                   engineSink_ = nullptr;
     PairServiceState              pairServiceState_;
+    QByteArray                    storedPairEngineState_;
+    // The saved document is sealed but could not be opened this session; the
+    // engine runs on a fresh identity and must not overwrite the pairings.
+    bool                          keepStoredPairState_ = false;
     void applyEngineLogging();   // push wantRecord/outputDirectory to the engine
     QString recreateEngine();    // stop/create/start using the current persisted host config
     void showUdpListenerStatus(const QString& error);   // titlebar "UDP ERROR"; empty clears it
@@ -354,10 +377,22 @@ private:
                           const QString& fallbackError = {});
     void syncPairStateFromEngine(const QString& fallbackError = {});
     void persistPairStateFromEngine();
+    // Writes the engine document through PairStateVault, skipping unchanged
+    // documents (a keyring write is a D-Bus round trip on Linux).
+    void storePairEngineState(const QByteArray& json);
     bool handleRecordingErrorRow(const QByteArray& json);
     void showRecordingError(const QString& operation, const QString& message,
                             const QString& path);
     QMessageBox* recordingErrorDialog_ = nullptr;
+    // Ask scope: a finished recording wrote both files and the user picks
+    // which to keep. Choices queue while one is open; the prompt cannot be
+    // dismissed without one.
+    tnrp::RecordingScopes recordingScopes() const;
+    bool handleRecordingFinishedRow(const QByteArray& json);
+    struct RecordingChoice { QString allPath, driverPath, sessionName, trackName; };
+    QList<RecordingChoice> pendingRecordingChoices_;
+    QMessageBox* recordingChoiceDialog_ = nullptr;
+    void showNextRecordingChoice();
 
     // Cached from the most recent protocol_status row (see onEngineRow()) so the
     // on-demand Settings dialog can show "Detected Protocol" without a push

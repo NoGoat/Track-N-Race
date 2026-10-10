@@ -17,6 +17,9 @@
     <!-- libxlsxwriter (the Excel export engine) is BSD 2-Clause; its own license
          file also reproduces the notices for its bundled minizip/tmpfileplus/md5. -->
     <file alias="BSD-2-Clause-libxlsxwriter.txt">licenses/BSD-2-Clause-libxlsxwriter.txt</file>
+    <!-- Paired-display encryption: libsodium (ISC) and CPace (BSD 2-Clause). -->
+    <file alias="ISC-libsodium.txt">licenses/ISC-libsodium.txt</file>
+    <file alias="BSD-2-Clause-cpace.txt">licenses/BSD-2-Clause-cpace.txt</file>
     <!-- Noto Sans (bundled under fonts.qrc) ships under the SIL Open Font
          License 1.1; the OFL requires the licence to accompany the font. -->
     <file alias="OFL-1.1-Noto.txt">licenses/OFL-1.1-Noto.txt</file>

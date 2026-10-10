@@ -289,6 +289,24 @@ struct RecordingErrorRow {
     std::string path;
 };
 
+// Emitted by the recording disk thread when a recording's files are finished.
+// A path is empty when that file was not written. With `ask`, the user's
+// recording scope for this session category is Ask: both files were written
+// and the host asks which to keep, deleting the other (or neither). Like
+// recording_error, hosts intercept it before row parsing. Not emitted at
+// engine shutdown, where both files are simply kept.
+struct RecordingFinishedRow {
+    std::string type{"recording_finished"};
+    std::string reason;        // send, session_change, disabled, playback, reset, closed
+    bool        ask{};
+    std::string category;      // practice, qualifying, race, time_trial, unknown
+    int         session_type{};
+    std::string session_name;
+    std::string track_name;
+    std::string all_path;
+    std::string driver_path;
+};
+
 // ── TNRD file header (writer emits, reader parses) ─────────────────────────
 
 struct HeaderRow {

@@ -46,16 +46,6 @@ DriverLapsDialog::DriverLapsDialog(const QString& driverName, int carIdx,
 
     auto* root = new QVBoxLayout(this);
 
-    auto* header = new QHBoxLayout;
-    header->setContentsMargins(0, 0, 0, 0);
-    auto* name = new QLabel(driverName);
-    QFont nameFont = name->font();
-    nameFont.setBold(true);
-    nameFont.setPointSize(nameFont.pointSize() + 2);
-    name->setFont(nameFont);
-    header->addWidget(name, 1);
-    root->addLayout(header);
-
     table_ = new QTableWidget(0, 5);
     table_->setHorizontalHeaderLabels({"LAP", "TIME", "S1", "S2", "S3"});
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);

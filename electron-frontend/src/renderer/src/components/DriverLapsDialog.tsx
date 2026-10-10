@@ -75,7 +75,7 @@ export default function DriverLapsDialog({ target, fastestLapCarIdx, onClose }: 
       onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}
     >
       <div className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[min(50vw,1100px)] max-w-[calc(100vw-2rem)] max-h-[75vh] flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-3 py-4 border-b border-[var(--border)] shrink-0 select-none">
+        <div className="flex items-center justify-between px-3 h-[55px] border-b border-[var(--border)] shrink-0 select-none">
           <div
             id="driver-laps-title"
             className="text-xs font-mono font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2 min-w-0"
@@ -85,9 +85,9 @@ export default function DriverLapsDialog({ target, fastestLapCarIdx, onClose }: 
           <button
             onClick={onClose}
             aria-label="Close lap times"
-            className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors shrink-0"
+            className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors shrink-0"
           >
-            <X size={18} />
+            <X size={16} />
           </button>
         </div>
 

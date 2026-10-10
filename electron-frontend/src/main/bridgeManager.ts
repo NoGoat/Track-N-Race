@@ -243,6 +243,7 @@ interface NativeEngine extends NativePairEngine {
   destroy(): void
   flushRecording(): void
   setLogging(enabled: boolean, dir: string): void
+  setRecordingScopes?(scopes: RecordingScopes): void
   setDiagnosticsEnabled?(enabled: boolean): void
   setNativeExceptionReporting?(enabled: boolean): void
   liveDiagnostics?(): unknown
@@ -601,6 +602,92 @@ function handleRecordingError(row: Record<string, unknown>): void {
   }
 }
 
+// Which drivers each session category records (tnrp::RecordingScope).
+export type RecordingScope = 'all_drivers' | 'driver_only' | 'both' | 'ask'
+export interface RecordingScopes {
+  practice: RecordingScope
+  qualifying: RecordingScope
+  race: RecordingScope
+  timeTrial: RecordingScope
+}
+const RECORDING_SCOPES: readonly RecordingScope[] = ['all_drivers', 'driver_only', 'both', 'ask']
+
+function storedRecordingScopes(): RecordingScopes {
+  const read = (key: string): RecordingScope => {
+    const value = store.get(`logging.scope.${key}`, 'all_drivers')
+    return RECORDING_SCOPES.includes(value as RecordingScope) ? value as RecordingScope : 'all_drivers'
+  }
+  return {
+    practice: read('practice'),
+    qualifying: read('qualifying'),
+    race: read('race'),
+    timeTrial: read('timeTrial'),
+  }
+}
+
+// An Ask-scope recording finished with both files on disk; the renderer asks
+// which to keep. Only paths the engine reported here can ever be deleted.
+export type RecordingChoice = 'driver_only' | 'all_drivers' | 'both'
+export interface PendingRecordingChoice {
+  id: number
+  allPath: string
+  driverPath: string
+  sessionName: string
+  trackName: string
+}
+const pendingRecordingChoices = new Map<number, PendingRecordingChoice>()
+let nextRecordingChoiceId = 1
+
+function handleRecordingFinished(row: Record<string, unknown>): void {
+  const text = (value: unknown): string => typeof value === 'string' ? value : ''
+  const allPath = text(row.all_path)
+  const driverPath = text(row.driver_path)
+  console.info('[recording] Finished:', { reason: text(row.reason), allPath, driverPath })
+  if (row.ask !== true || !allPath || !driverPath) return
+  const choice: PendingRecordingChoice = {
+    id: nextRecordingChoiceId++,
+    allPath,
+    driverPath,
+    sessionName: text(row.session_name),
+    trackName: text(row.track_name),
+  }
+  pendingRecordingChoices.set(choice.id, choice)
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('recording-choice', choice)
+  }
+}
+
+export function getPendingRecordingChoices(): PendingRecordingChoice[] {
+  return [...pendingRecordingChoices.values()]
+}
+
+export async function resolveRecordingChoice(id: number, choice: RecordingChoice): Promise<boolean> {
+  const pending = pendingRecordingChoices.get(id)
+  if (!pending) return false
+  pendingRecordingChoices.delete(id)
+  const discard = choice === 'driver_only' ? pending.allPath
+    : choice === 'all_drivers' ? pending.driverPath
+    : null
+  if (!discard) return true
+  try {
+    await fs.promises.unlink(discard)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true
+    console.error('[recording] Could not delete the discarded recording:', discard, err)
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('recording-error', {
+          operation: 'delete',
+          message: 'The recording you chose not to keep could not be deleted.',
+          path: discard,
+        })
+      }
+    }
+    return false
+  }
+  return true
+}
+
 let addonModule: NativeAddon | null = null
 function loadAddon(): NativeAddon {
   // Try to load the N-API module
@@ -635,9 +722,12 @@ function pushLogging(): void {
   if (engine) {
     const enabled = store.get('logging.enabled', false) as boolean
     const dir = store.get('logging.directory', '') as string
+    const scopes = storedRecordingScopes()
     if (additionalLoggingEnabled) {
-      console.info('[telemetry-diagnostics][main] applying recording settings:', { enabled, directory: dir || '<default>' })
+      console.info('[telemetry-diagnostics][main] applying recording settings:', { enabled, directory: dir || '<default>', scopes })
     }
+    // Scopes first, so a file the logging change opens already follows them.
+    engine.setRecordingScopes?.(scopes)
     engine.setLogging(enabled, dir)
   }
 }
@@ -737,7 +827,8 @@ export function startBridge(): BridgeStartResult {
       if (batch.includes('"type":"protocol_status"') ||
           batch.includes('"type":"playback_state"') ||
           batch.includes('"type":"playback_close"') ||
-          batch.includes('"type":"recording_error"')) {
+          batch.includes('"type":"recording_error"') ||
+          batch.includes('"type":"recording_finished"')) {
         let start = 0
         while (start < batch.length) {
           let end = batch.indexOf('\n', start)
@@ -749,6 +840,10 @@ export function startBridge(): BridgeStartResult {
             } else if (rowStr.includes('"type":"recording_error"')) {
               try { handleRecordingError(JSON.parse(rowStr)) } catch (e) {
                 console.error('[recording] Failed to parse native writer error:', e, rowStr)
+              }
+            } else if (rowStr.includes('"type":"recording_finished"')) {
+              try { handleRecordingFinished(JSON.parse(rowStr)) } catch (e) {
+                console.error('[recording] Failed to parse finished recording:', e, rowStr)
               }
             } else if (rowStr.includes('"type":"playback_state"') ||
                        rowStr.includes('"type":"playback_close"')) {
@@ -829,6 +924,7 @@ export function startBridge(): BridgeStartResult {
     unsubLogging = [
       store.onDidChange('logging.enabled', () => pushLogging()),
       store.onDidChange('logging.directory', () => pushLogging()),
+      store.onDidChange('logging.scope', () => pushLogging()),
       store.onDidChange('debug.additionalLogging', value => configureAdditionalLogging(value === true)),
       store.onDidChange('debug.nodeApiExceptions', value =>
         engine?.setNativeExceptionReporting?.(value === true)),

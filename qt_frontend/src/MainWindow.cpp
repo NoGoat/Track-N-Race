@@ -5,6 +5,7 @@
 #include "PlaybackController.h"
 #include "SessionModel.h"
 #include "EngineSink.h"
+#include "PairStateVault.h"
 #include "Labels.h"
 #include "components/EditOverviewLayoutDialog.h"
 #include "components/SeekLoadingOverlay.h"
@@ -52,6 +53,9 @@
 #include <QWidget>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QAbstractButton>
+#include <QFile>
+#include <QPushButton>
 #include <QFileInfo>
 #include <QDir>
 #include <QProgressBar>
@@ -78,6 +82,11 @@
 #include <QJsonObject>
 #include <QHostInfo>
 #include <QRegularExpression>
+#include <QShortcut>
+#include <QKeySequence>
+#include <QDebug>
+#include <QPixmap>
+#include <QStandardPaths>
 
 #include <algorithm>
 #include <exception>
@@ -483,6 +492,12 @@ MainWindow::MainWindow(QWidget* parent)
     vbox->addWidget(playback_->separator());
     vbox->addWidget(playback_->bar());
     setCentralWidget(container_);
+
+    // Website screenshot helpers (see MainWindow.h).
+    connect(new QShortcut(QKeySequence(Qt::Key_F7), this), &QShortcut::activated,
+            this, &MainWindow::captureScreenshot);
+    connect(new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F7), this), &QShortcut::activated,
+            this, &MainWindow::sizeForScreenshot);
 
     // Event toast notifications, rendered inside the central content widget.
     toasts_ = new ToastHost(container_);
@@ -1195,6 +1210,29 @@ void MainWindow::setAutoRecord(bool checked) {
     applyEngineLogging();
 }
 
+QString MainWindow::recordingScope(const QString& category) const {
+    const QString value = settings.value(QStringLiteral("recording/scope/") + category).toString();
+    // Round-trip through the library so an unknown value reads as its default.
+    return QString::fromLatin1(tnrp::toString(tnrp::recordingScopeFromString(value.toStdString())));
+}
+
+void MainWindow::setRecordingScope(const QString& category, const QString& scope) {
+    settings.setValue(QStringLiteral("recording/scope/") + category, scope);
+    if (engine_) engine_->setRecordingScopes(recordingScopes());
+}
+
+tnrp::RecordingScopes MainWindow::recordingScopes() const {
+    const auto read = [this](const char* category) {
+        return tnrp::recordingScopeFromString(recordingScope(QString::fromLatin1(category)).toStdString());
+    };
+    tnrp::RecordingScopes scopes;
+    scopes.practice   = read("practice");
+    scopes.qualifying = read("qualifying");
+    scopes.race       = read("race");
+    scopes.timeTrial  = read("time_trial");
+    return scopes;
+}
+
 // Push the current record intent to the engine's writer. Recording is suppressed
 // while a clip is loaded for playback (matching the old "live UDP ignored during
 // playback" behaviour) and resumed when the clip is closed.
@@ -1819,7 +1857,7 @@ void MainWindow::receivePairState(const QByteArray& publicStateJson,
                                   const QByteArray& persistedStateJson,
                                   const QString& fallbackError) {
     if (!persistedStateJson.isEmpty()) {
-        settings.setValue("pairing/engineState", persistedStateJson);
+        storePairEngineState(persistedStateJson);
         QJsonParseError persistedError;
         const QJsonDocument persisted = QJsonDocument::fromJson(
             persistedStateJson, &persistedError);
@@ -1851,6 +1889,9 @@ void MainWindow::receivePairState(const QByteArray& publicStateJson,
     next.pairingExpiresAt = object.value("pairingExpiresAt").toInteger(0);
     next.matchingCode = object.value("matchingCode").toString();
     next.qrPayload = object.value("qrPayload").toString();
+    const QJsonObject pending = object.value("pendingDevice").toObject();
+    next.pendingDeviceId = pending.value("id").toString();
+    next.pendingDeviceName = pending.value("name").toString();
     next.error = object.value("error").toString();
     if (next.error.isEmpty()) next.error = fallbackError;
     const QJsonArray devices = object.value("devices").toArray();
@@ -1894,7 +1935,7 @@ void MainWindow::persistPairStateFromEngine() {
     if (persistedState.empty()) return;
     const QByteArray encoded(persistedState.data(),
                              static_cast<qsizetype>(persistedState.size()));
-    settings.setValue("pairing/engineState", encoded);
+    storePairEngineState(encoded);
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(encoded, &parseError);
     if (parseError.error == QJsonParseError::NoError && document.isObject() &&
@@ -1902,6 +1943,12 @@ void MainWindow::persistPairStateFromEngine() {
         settings.setValue("pairing/enabled",
                           document.object().value("enabled").toBool());
     }
+}
+
+void MainWindow::storePairEngineState(const QByteArray& json) {
+    if (keepStoredPairState_ || json == storedPairEngineState_) return;
+    settings.setValue("pairing/engineState", PairStateVault::seal(json));
+    storedPairEngineState_ = json;
 }
 
 void MainWindow::setPairServiceEnabled(bool enabled) {
@@ -1932,6 +1979,12 @@ void MainWindow::openPairingWindow() {
 void MainWindow::closePairingWindow() {
     if (!engine_) return;
     engine_->pairCloseWindow();
+    syncPairStateFromEngine();
+}
+
+void MainWindow::respondToPairing(bool approve) {
+    if (!engine_) return;
+    engine_->pairRespond(approve);
     syncPairStateFromEngine();
 }
 
@@ -2025,9 +2078,18 @@ QString MainWindow::recreateEngine() {
     const QString hostName = QHostInfo::localHostName().trimmed();
     cfg.pairName        = (hostName.isEmpty() ? QStringLiteral("Track N Race") : hostName)
                               .toStdString();
-    cfg.pairStateJson   = settings.value("pairing/engineState").toByteArray().toStdString();
+    {
+        const auto opened = PairStateVault::open(
+            settings.value("pairing/engineState").toByteArray());
+        keepStoredPairState_ = !opened.has_value();
+        if (keepStoredPairState_)
+            qWarning("[pair] saved pairings could not be decrypted; kept but unused this session");
+        storedPairEngineState_ = opened.value_or(QByteArray());
+        cfg.pairStateJson = storedPairEngineState_.toStdString();
+    }
     cfg.loggingEnabled  = wantRecord && !outputDirectory.isEmpty() && !inPlayback_;
     cfg.outputDirectory = outputDirectory.toStdString();
+    cfg.recordingScopes = recordingScopes();
     if (udpForwardingEnabled()) {
         for (const UdpForwardTargetSetting& target : udpForwardTargets()) {
             const QString address = target.address.trimmed();
@@ -2054,9 +2116,9 @@ QString MainWindow::recreateEngine() {
         return QStringLiteral("engine-startup:Unknown native engine exception");
     }
 
+    // As Electron: a failed bind leaves the engine running unbound, so file
+    // analysis, playback and pairing still work; only UDP status reports it.
     const QString nativeError = QString::fromStdString(engine_->udpLastError());
-    if (playback_) playback_->setEngine(nullptr);
-    engine_.reset();
     if (!nativeError.isEmpty()) return nativeError;
     return QString("Failed to bind to UDP port %1.\n"
                    "Is another telemetry tool or Track-N-Race already open?")
@@ -2087,6 +2149,78 @@ bool MainWindow::handleRecordingErrorRow(const QByteArray& json) {
               qUtf8Printable(operation), qUtf8Printable(message), qUtf8Printable(path));
     showRecordingError(operation, message, path);
     return true;
+}
+
+bool MainWindow::handleRecordingFinishedRow(const QByteArray& json) {
+    // Like recording_error, a host-control row outside AnyRow.
+    if (!json.contains("recording_finished")) return false;
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(json, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject())
+        return false;
+    const QJsonObject object = document.object();
+    if (object.value("type").toString() != QStringLiteral("recording_finished"))
+        return false;
+
+    RecordingChoice choice;
+    choice.allPath     = object.value("all_path").toString();
+    choice.driverPath  = object.value("driver_path").toString();
+    choice.sessionName = object.value("session_name").toString();
+    choice.trackName   = object.value("track_name").toString();
+    qInfo("[recording] Finished (%s): all='%s' driver='%s'",
+          qUtf8Printable(object.value("reason").toString()),
+          qUtf8Printable(choice.allPath), qUtf8Printable(choice.driverPath));
+    if (!object.value("ask").toBool() || choice.allPath.isEmpty() || choice.driverPath.isEmpty())
+        return true;
+    pendingRecordingChoices_.append(choice);
+    showNextRecordingChoice();
+    return true;
+}
+
+void MainWindow::showNextRecordingChoice() {
+    if (recordingChoiceDialog_ || pendingRecordingChoices_.isEmpty()) return;
+    const RecordingChoice choice = pendingRecordingChoices_.takeFirst();
+
+    QString session = choice.sessionName;
+    if (!choice.trackName.isEmpty())
+        session = session.isEmpty() ? choice.trackName : choice.trackName + QStringLiteral(" – ") + session;
+    auto* box = new QMessageBox(QMessageBox::Question,
+        QStringLiteral("Save Recording"),
+        session.isEmpty() ? QStringLiteral("Which recording do you want to keep?")
+                          : QStringLiteral("Which recording of %1 do you want to keep?").arg(session),
+        QMessageBox::NoButton, this);
+    box->setInformativeText(QStringLiteral(
+        "Driver Only keeps just your car's telemetry. All Drivers keeps every car's. "
+        "The file you don't keep is deleted."));
+    // No escape button: Esc and the title-bar close do nothing, so a choice
+    // is always made.
+    QPushButton* driverOnly = box->addButton(QStringLiteral("Driver Only"), QMessageBox::AcceptRole);
+    QPushButton* allDrivers = box->addButton(QStringLiteral("All Drivers"), QMessageBox::AcceptRole);
+    QPushButton* both       = box->addButton(QStringLiteral("Both"), QMessageBox::AcceptRole);
+    box->setDefaultButton(both);
+    box->setWindowModality(Qt::ApplicationModal);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    recordingChoiceDialog_ = box;
+
+    connect(box, &QMessageBox::buttonClicked, this,
+            [this, box, choice, driverOnly, allDrivers](QAbstractButton* clicked) {
+        QString discard;
+        if (clicked == driverOnly) discard = choice.allPath;
+        else if (clicked == allDrivers) discard = choice.driverPath;
+        if (!discard.isEmpty() && QFile::exists(discard) && !QFile::remove(discard)) {
+            qWarning("[recording] Could not delete '%s'", qUtf8Printable(discard));
+            showRecordingError(QStringLiteral("delete"),
+                               QStringLiteral("The recording you chose not to keep could not be deleted."),
+                               discard);
+        }
+        if (recordingChoiceDialog_ == box) recordingChoiceDialog_ = nullptr;
+        QTimer::singleShot(0, this, [this] { showNextRecordingChoice(); });
+    });
+    (void)both;
+    box->open();
+    box->raise();
+    box->activateWindow();
 }
 
 void MainWindow::showRecordingError(const QString& operation, const QString& message,
@@ -2280,6 +2414,7 @@ void MainWindow::onEngineRow(const QByteArray& json) {
         diagnosticJsonBytes_ += static_cast<quint64>(json.size());
     }
     if (handleRecordingErrorRow(json)) return;
+    if (handleRecordingFinishedRow(json)) return;
 
     // Playback lifecycle/state payloads belong to the engine-backed player
     // facade, not AnyRow. Handling playback_loaded synchronously flips
@@ -3028,4 +3163,46 @@ void MainWindow::updatePlaybackDataRequirements() {
         const uint32_t missing = model_->missingPlaybackLapMask(lap, lapMask);
         if (missing) playback_->requestLapData(lap, missing);
     }
+}
+
+void MainWindow::captureScreenshot() {
+    // The Electron screenshots are macOS HiDPI window captures: 2 device pixels
+    // per logical pixel. Render at that scale whatever this screen's ratio is;
+    // the charts draw their GPU frames at it too, so traces stay sharp.
+    constexpr qreal scale = 2.0;
+    ChartView::setCaptureScale(scale);
+    QPixmap shot((QSizeF(size()) * scale).toSize());
+    shot.setDevicePixelRatio(scale);
+    shot.fill(Qt::transparent);
+    render(&shot);
+    ChartView::setCaptureScale(0);
+
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation)
+                        + "/Track N Race Screenshots";
+    QDir().mkpath(dir);
+    const QString name = "tnr-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".png";
+    const bool ok = shot.save(dir + "/" + name);
+    qInfo().noquote() << "[screenshot]" << (ok ? "saved" : "FAILED to save") << dir + "/" + name
+                      << QString("%1x%2").arg(shot.width()).arg(shot.height());
+
+    // Report in the title bar: a toast would land inside the next capture.
+    // Repeated captures keep the original title to restore, and a title the
+    // app set meanwhile (session/playback change) is left alone.
+    if (screenshotNotice_.isEmpty() || windowTitle() != screenshotNotice_)
+        titleBeforeScreenshot_ = windowTitle();
+    screenshotNotice_ = ok ? QString("Screenshot: saved %1 (%2x%3)").arg(name).arg(shot.width()).arg(shot.height())
+                           : QString("Screenshot: could not write to %1").arg(dir);
+    setWindowTitle(screenshotNotice_);
+    QTimer::singleShot(3000, this, [this, notice = screenshotNotice_] {
+        if (screenshotNotice_ != notice) return;   // a newer capture owns the title
+        if (windowTitle() == notice) setWindowTitle(titleBeforeScreenshot_);
+        screenshotNotice_.clear();
+    });
+}
+
+void MainWindow::sizeForScreenshot() {
+    // 1200x700 logical (2400x1400 at 2x) is the window size in every Electron
+    // screenshot; it is also this window's minimum size.
+    showNormal();
+    resize(1200, 700);
 }

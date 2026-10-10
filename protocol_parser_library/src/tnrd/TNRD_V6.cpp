@@ -1258,18 +1258,29 @@ struct TnrdV6Writer::Impl {
     std::FILE* file{};
     // openMemory(): committed chunks keep the frames a file would hold,
     // indexed by V6ChunkInfo::offset (null once uncommitted), and shared
-    // records stay plain JSON. While a file is attached the same frames are
-    // also appended to it; fileChunks and fileShared are its index, and a
-    // write that fails closes it with fileError set instead of failing the
-    // session.
+    // records stay plain JSON. While files are attached the same frames are
+    // also appended to them; each one's chunks and shared records are its
+    // index, and a write that fails closes that file with an error in
+    // fileErrors instead of failing the session.
     bool memory{};
     std::vector<std::shared_ptr<const std::vector<uint8_t>>> memoryPayloads;
     std::vector<V6SharedRecord> memoryShared;
     size_t memoryPayloadBytes{}, memorySharedBytes{};
     uint64_t uncommittedLaps{};
-    std::vector<V6ChunkInfo> fileChunks;
-    std::vector<V6Metadata::StoredShared> fileShared;
-    std::string fileError;
+    // A file the memory session is recorded to. A player-only file takes the
+    // player's chunks, laps and driver header alone; shared records go to
+    // every file.
+    struct AttachedFile {
+        std::FILE* file{};
+        std::string path;
+        bool playerOnly{};
+        std::vector<V6ChunkInfo> chunks;
+        std::vector<V6Metadata::StoredShared> shared;
+        std::map<uint8_t, std::string> lastSharedByType;
+    };
+    static constexpr size_t kMaxAttachedFiles = 2;
+    std::vector<AttachedFile> files;
+    std::vector<std::pair<std::string, std::string>> fileErrors;  // path, why
     std::string path;
     HeaderRow session;
     static constexpr uint8_t kDriverSlots = 24;
@@ -1459,33 +1470,56 @@ struct TnrdV6Writer::Impl {
     // the next sequence number; a lap clock has none.
     // Appends one chunk record, `info` plus its `size`-byte frame, to the
     // file; `payloadOffset` is where the frame landed.
-    bool writeChunkRecord(const V6ChunkInfo& info, const uint8_t* frame, size_t size, uint64_t& payloadOffset) {
-        if (!seekEnd(file)) return false;
-        const uint64_t prefixOffset = tellFile(file);
+    bool writeChunkRecord(std::FILE* output, const V6ChunkInfo& info, const uint8_t* frame, size_t size,
+                          uint64_t& payloadOffset) {
+        if (!seekEnd(output)) return false;
+        const uint64_t prefixOffset = tellFile(output);
         std::vector<uint8_t> prefix; put32(prefix, CHUNK_MAGIC); prefix.push_back(info.driverIndex);
         prefix.push_back(info.typeId); prefix.push_back(info.flags);
         prefix.push_back(static_cast<uint8_t>(info.phase)); put32(prefix, info.lapId);
         put64(prefix, size); put64(prefix, info.uncompressedSize); put32(prefix, info.sampleCount);
-        if (!writeAll(file, prefix.data(), prefix.size()) || !writeAll(file, frame, size)) return false;
+        if (!writeAll(output, prefix.data(), prefix.size()) || !writeAll(output, frame, size)) return false;
         payloadOffset = prefixOffset + CHUNK_PREFIX_SIZE;
         return true;
     }
-    // Memory mode: the attached file failed. It is closed where it stands (a
+    bool hasAttachedFile() const {
+        return std::any_of(files.begin(), files.end(), [](const AttachedFile& f) { return f.file != nullptr; });
+    }
+    // Whether an attached file takes this driver's chunks and laps.
+    bool accepts(const AttachedFile& target, uint8_t driver) const {
+        return !target.playerOnly || (player && *player == driver);
+    }
+    // The committed driver headers and laps a file's index lists.
+    std::vector<V6DriverHeader> headersFor(const AttachedFile& target,
+                                           const std::map<uint8_t, V6DriverHeader>& from) const {
+        std::vector<V6DriverHeader> out;
+        for (const auto& [index, header] : from) if (accepts(target, index)) out.push_back(header);
+        return out;
+    }
+    std::vector<V6LapSummary> lapsFor(const AttachedFile& target, const std::vector<V6LapSummary>& from) const {
+        std::vector<V6LapSummary> out;
+        for (const auto& lap : from) if (accepts(target, lap.driverIndex)) out.push_back(lap);
+        return out;
+    }
+    // Memory mode: an attached file failed. It is closed where it stands (a
     // reader's recovery scan still finds what reached it) and the session
     // carries on without it.
-    void fileFailed(std::string why) {
-        if (file) std::fclose(file);
-        file = nullptr; fileError = std::move(why);
-        fileChunks.clear(); fileShared.clear(); lastSharedByType.clear();
+    void fileFailed(AttachedFile& target, std::string why) {
+        if (target.file) std::fclose(target.file);
+        target.file = nullptr; fileErrors.emplace_back(target.path, std::move(why));
+        target.chunks.clear(); target.shared.clear(); target.lastSharedByType.clear();
     }
+    // Where appendEncoded() writes a chunk for one file alone (see below).
+    struct FileOnlyTarget { std::FILE* file{}; std::vector<V6ChunkInfo>* directory{}; };
     // Compresses `encoded` and appends it as a chunk record. A data chunk takes
     // the next sequence number; a lap clock has none. A file holds it at a file
-    // offset; memory at an index into memoryPayloads, and an attached file
-    // gets a copy. With `fileOnly` it goes to the file alone and is listed
-    // there instead, which is how detachFile() writes laps still being built.
+    // offset; memory at an index into memoryPayloads, and each attached file
+    // that takes the driver gets a copy. With `fileOnly` it goes to that file
+    // alone and is listed there instead, which is how detachFile() writes laps
+    // still being built.
     bool appendEncoded(uint8_t driver, uint32_t lapId, V6Phase chunkPhase, uint8_t typeId, uint8_t flags,
                        uint32_t count, float first, float last, V6ChunkInfo& info, std::string* errorOut,
-                       std::vector<V6ChunkInfo>* fileOnly = nullptr) {
+                       const FileOnlyTarget* fileOnly = nullptr) {
         if (encoded.size() > MAX_CHUNK_PLAIN || chunks.size() >= MAX_CHUNKS) {
             fail(errorOut, "V6 chunk exceeds its format limit"); return false;
         }
@@ -1496,21 +1530,23 @@ struct TnrdV6Writer::Impl {
                 static_cast<uint32_t>(::crc32(0, encoded.data(), static_cast<uInt>(encoded.size()))),
                 typeId == CLOCK_TYPE_ID ? 0 : nextSequence++};
         if (fileOnly) {
-            if (!writeChunkRecord(info, scratch.data(), size, info.offset)) {
+            if (!writeChunkRecord(fileOnly->file, info, scratch.data(), size, info.offset)) {
                 fail(errorOut, "failed while appending V6 chunk"); return false;
             }
-            fileOnly->push_back(info);
+            fileOnly->directory->push_back(info);
         } else if (memory) {
             info.offset = memoryPayloads.size();
             memoryPayloads.push_back(std::make_shared<const std::vector<uint8_t>>(
                 scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(size)));
             memoryPayloadBytes += size;
-            if (file) {
+            for (auto& target : files) {
+                if (!target.file || !accepts(target, driver)) continue;
                 V6ChunkInfo stored = info;
-                if (writeChunkRecord(stored, scratch.data(), size, stored.offset)) fileChunks.push_back(stored);
-                else fileFailed("failed while appending V6 chunk");
+                if (writeChunkRecord(target.file, stored, scratch.data(), size, stored.offset))
+                    target.chunks.push_back(stored);
+                else fileFailed(target, "failed while appending V6 chunk");
             }
-        } else if (!writeChunkRecord(info, scratch.data(), size, info.offset)) {
+        } else if (!writeChunkRecord(file, info, scratch.data(), size, info.offset)) {
             fail(errorOut, "failed while appending V6 chunk"); return false;
         }
         ++chunkWrites; plainBytes += encoded.size(); compressedBytes += size;
@@ -1519,7 +1555,7 @@ struct TnrdV6Writer::Impl {
     }
     bool writeChunk(uint8_t driver, uint32_t lapId, V6Phase chunkPhase, V6DataType type,
                     const Builder& builder, const ClockUse* clock, V6ChunkInfo& info, std::string* errorOut,
-                    std::vector<V6ChunkInfo>* fileOnly = nullptr) {
+                    const FileOnlyTarget* fileOnly = nullptr) {
         if (!builder.count) return true;
         if (!builder.columns.encode(encoded, clock)) { fail(errorOut, "V6 chunk exceeds its format limit"); return false; }
         return appendEncoded(driver, lapId, chunkPhase, static_cast<uint8_t>(type),
@@ -1527,7 +1563,7 @@ struct TnrdV6Writer::Impl {
                              builder.count, builder.first, builder.last, info, errorOut, fileOnly);
     }
     bool writeClock(uint8_t driver, uint32_t lapId, V6Phase chunkPhase, const Builder& source,
-                    V6ChunkInfo& info, std::string* errorOut, std::vector<V6ChunkInfo>* fileOnly = nullptr) {
+                    V6ChunkInfo& info, std::string* errorOut, const FileOnlyTarget* fileOnly = nullptr) {
         SampleColumns clock;
         for (const float time : source.columns.times()) clock.append(time, {});
         if (!clock.encode(encoded)) { fail(errorOut, "V6 lap clock exceeds its format limit"); return false; }
@@ -1563,7 +1599,9 @@ struct TnrdV6Writer::Impl {
     // costs about what changed. Records are still written one at a time, so an
     // interrupted recording keeps every record that reached the file. The
     // reader decodes them in file order, which is the order they chain in.
-    bool writeShared(const V6SharedRecord& record, V6Metadata::StoredShared& info,
+    // `output` and its `lastByType` chain: the file's own, or an attached one's.
+    bool writeShared(std::FILE* output, std::map<uint8_t, std::string>& lastByType,
+                     const V6SharedRecord& record, V6Metadata::StoredShared& info,
                      std::string* errorOut) {
         if (record.json.empty() || record.json.size() > MAX_CHUNK_PLAIN) {
             fail(errorOut, "V6 shared record exceeds its format limit"); return false;
@@ -1571,18 +1609,18 @@ struct TnrdV6Writer::Impl {
         // Only the known row types chain; the reader keys the chain on them.
         const uint8_t type = sharedRowType(record.json);
         std::string unchained;
-        auto& previous = type ? lastSharedByType[type] : unchained;
+        auto& previous = type ? lastByType[type] : unchained;
         size_t size{};
         if (!compressFrame(record.json.data(), record.json.size(), previous, size, errorOut)) return false;
-        if (!seekEnd(file)) { fail(errorOut, "could not append V6 shared record"); return false; }
+        if (!seekEnd(output)) { fail(errorOut, "could not append V6 shared record"); return false; }
         const uint32_t checksum = static_cast<uint32_t>(::crc32(0,
             reinterpret_cast<const Bytef*>(record.json.data()), static_cast<uInt>(record.json.size())));
-        const uint64_t prefixOffset = tellFile(file); std::vector<uint8_t> prefix;
+        const uint64_t prefixOffset = tellFile(output); std::vector<uint8_t> prefix;
         put32(prefix, SHARED_MAGIC); prefix.push_back(static_cast<uint8_t>(record.phase));
         prefix.push_back(type);
         while (prefix.size() < 8) prefix.push_back(0);
         put64(prefix, size); put64(prefix, record.json.size()); put32(prefix, checksum); put32(prefix, 0);
-        if (!writeAll(file, prefix.data(), prefix.size()) || !writeAll(file, scratch.data(), size)) {
+        if (!writeAll(output, prefix.data(), prefix.size()) || !writeAll(output, scratch.data(), size)) {
             fail(errorOut, "failed while appending V6 shared record"); return false;
         }
         info = {record.phase, record.sessionTime, prefixOffset + CHUNK_PREFIX_SIZE,
@@ -1635,10 +1673,12 @@ struct TnrdV6Writer::Impl {
                 ParticipantsRow row; if (!glz::read<kPartialRead>(row, shared->json)) applyParticipant(row, true);
             }
             if (memory) {
-                if (file) {
+                for (auto& target : files) {
+                    if (!target.file) continue;
                     V6Metadata::StoredShared stored; std::string error;
-                    if (writeShared(*shared, stored, &error)) fileShared.push_back(stored);
-                    else fileFailed(error);
+                    if (writeShared(target.file, target.lastSharedByType, *shared, stored, &error))
+                        target.shared.push_back(stored);
+                    else fileFailed(target, error);
                 }
                 committedThrough[phaseIndex(shared->phase)] = std::max(committedThrough[phaseIndex(shared->phase)], shared->sessionTime);
                 memorySharedBytes += shared->json.capacity();
@@ -1646,7 +1686,7 @@ struct TnrdV6Writer::Impl {
                 continue;
             }
             V6Metadata::StoredShared stored;
-            if (!writeShared(*shared, stored, errorOut)) return false;
+            if (!writeShared(file, lastSharedByType, *shared, stored, errorOut)) return false;
             committedThrough[phaseIndex(shared->phase)] = std::max(committedThrough[phaseIndex(shared->phase)], shared->sessionTime);
             committedShared.push_back(stored); shared = pendingShared.erase(shared);
         }
@@ -1809,15 +1849,22 @@ struct TnrdV6Writer::Impl {
     }
 
     bool snapshot(std::string* errorOut) {
-        return memory ? snapshotTo(file, fileChunks, fileShared, true, errorOut)
-                      : snapshotTo(file, chunks, committedShared, true, errorOut);
+        if (!memory) return snapshotTo(file, chunks, committedShared, true, errorOut);
+        bool ok = true;
+        for (auto& target : files) {
+            if (!target.file) continue;
+            const auto headers = headersFor(target, committedHeaders);
+            const auto laps = lapsFor(target, committedLaps);
+            ok = snapshotTo(target.file, target.chunks, target.shared, true, errorOut, &headers, &laps) && ok;
+        }
+        return ok;
     }
 
     // Writes the session HeaderRow as an uncompressed SES6 record directly
     // after the file header. A recording interrupted before its index is
     // written has no metadata JSON, so this is the only place the track,
     // session type and protocol survive for the recovery scan to find.
-    bool writeSessionRecord(std::string* errorOut) {
+    bool writeSessionRecord(std::FILE* output, std::string* errorOut) {
         const std::string json = jsonOf(session);
         if (json.empty() || json.size() > MAX_METADATA_BYTES) {
             fail(errorOut, "V6 session record exceeds its format limit"); return false;
@@ -1826,8 +1873,8 @@ struct TnrdV6Writer::Impl {
         while (prefix.size() < 8) prefix.push_back(0);
         put64(prefix, json.size()); put64(prefix, json.size());
         while (prefix.size() < CHUNK_PREFIX_SIZE) prefix.push_back(0);
-        if (!seekEnd(file) || !writeAll(file, prefix.data(), prefix.size()) ||
-            !writeAll(file, json.data(), json.size()) || std::fflush(file) != 0) {
+        if (!seekEnd(output) || !writeAll(output, prefix.data(), prefix.size()) ||
+            !writeAll(output, json.data(), json.size()) || std::fflush(output) != 0) {
             fail(errorOut, "could not write V6 session record"); return false;
         }
         return true;
@@ -1941,10 +1988,11 @@ struct TnrdV6Writer::Impl {
     bool appendRow(std::string_view, float, std::string*);
     bool rewind(float, std::string*);
     bool uncommit(float, std::string*);
-    bool writeFileBacklog(std::string*);
-    bool attachFile(const std::string&, const HeaderRow&, std::string*);
+    bool writeFileBacklog(AttachedFile&, std::string*);
+    bool attachFile(const std::string&, const HeaderRow&, bool playerOnly, std::string*);
+    bool detachOne(AttachedFile&, std::string*);
     bool detachFile(std::string*);
-    void rewriteFile();
+    void rewriteFile(AttachedFile&);
 };
 
 bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, std::string* errorOut) {
@@ -2219,7 +2267,7 @@ bool TnrdV6Writer::Impl::rewind(float time, std::string* errorOut) {
         if (!memory) { fail(errorOut,"unsupported rewind overlaps committed V6 data"); return false; }
         if (!uncommit(time, errorOut)) return false;
         // The file holds what was just taken back; it is written again.
-        if (file) rewriteFile();
+        for (auto& target : files) if (target.file) rewriteFile(target);
     }
     phaseTime[phaseIndex(phase)] = time;
     for (auto& state : drivers) {
@@ -2383,71 +2431,91 @@ bool TnrdV6Writer::Impl::uncommit(float time, std::string* errorOut) {
 }
 
 // Memory mode: a newly opened file's opening and everything committed so
-// far, in commit order, so the file reads as if it had been attached from the
-// session's start.
-bool TnrdV6Writer::Impl::writeFileBacklog(std::string* errorOut) {
-    fileChunks.clear(); fileShared.clear(); lastSharedByType.clear();
+// far that it takes, in commit order, so the file reads as if it had been
+// attached from the session's start.
+bool TnrdV6Writer::Impl::writeFileBacklog(AttachedFile& target, std::string* errorOut) {
+    target.chunks.clear(); target.shared.clear(); target.lastSharedByType.clear();
     const auto sentinel = makeHeader(0, 0, 0, 0, 0, 0, 0);
-    if (!writeAll(file, sentinel.data(), sentinel.size())) { fail(errorOut, "could not initialize V6 file"); return false; }
-    if (!writeSessionRecord(errorOut)) return false;
+    if (!writeAll(target.file, sentinel.data(), sentinel.size())) { fail(errorOut, "could not initialize V6 file"); return false; }
+    if (!writeSessionRecord(target.file, errorOut)) return false;
     for (const auto& chunk : chunks) {
         const auto& payload = chunk.offset < memoryPayloads.size() ? memoryPayloads[chunk.offset] : nullptr;
-        if (!payload) continue;
+        if (!payload || !accepts(target, chunk.driverIndex)) continue;
         V6ChunkInfo stored = chunk;
-        if (!writeChunkRecord(stored, payload->data(), payload->size(), stored.offset)) {
+        if (!writeChunkRecord(target.file, stored, payload->data(), payload->size(), stored.offset)) {
             fail(errorOut, "failed while appending V6 chunk"); return false;
         }
-        fileChunks.push_back(stored);
+        target.chunks.push_back(stored);
     }
     for (const auto& record : memoryShared) {
         V6Metadata::StoredShared stored;
-        if (!writeShared(record, stored, errorOut)) return false;
-        fileShared.push_back(stored);
+        if (!writeShared(target.file, target.lastSharedByType, record, stored, errorOut)) return false;
+        target.shared.push_back(stored);
     }
-    if (std::fflush(file) != 0) { fail(errorOut, "could not write V6 file"); return false; }
+    if (std::fflush(target.file) != 0) { fail(errorOut, "could not write V6 file"); return false; }
     return true;
 }
 
-bool TnrdV6Writer::Impl::attachFile(const std::string& filePath, const HeaderRow& header, std::string* errorOut) {
+bool TnrdV6Writer::Impl::attachFile(const std::string& filePath, const HeaderRow& header, bool playerOnly,
+                                    std::string* errorOut) {
     if (!memory) { fail(errorOut, "V6 writer keeps no session to record"); return false; }
-    if (file) { fail(errorOut, "V6 writer already has a file"); return false; }
-    file = openTnrdFile(filePath, "w+b");
-    if (!file) { fail(errorOut, "could not create V6 file: " + std::string(std::strerror(errno))); return false; }
-    path = filePath;
+    files.erase(std::remove_if(files.begin(), files.end(),
+        [](const AttachedFile& f) { return f.file == nullptr; }), files.end());
+    if (files.size() >= kMaxAttachedFiles) { fail(errorOut, "V6 writer already has its files"); return false; }
+    for (const auto& f : files)
+        if (f.path == filePath) { fail(errorOut, "V6 writer already has this file"); return false; }
+    AttachedFile target;
+    target.file = openTnrdFile(filePath, "w+b");
+    if (!target.file) { fail(errorOut, "could not create V6 file: " + std::string(std::strerror(errno))); return false; }
+    target.path = filePath; target.playerOnly = playerOnly;
     // Car Telemetry 2 may already have told the session its regulations.
     const auto regulations = session.regulations_2026;
     session = header; session.magic = "TNRD_V6"; session.compression = "zstd";
     if (!session.regulations_2026) session.regulations_2026 = regulations;
-    fileError.clear();
-    if (writeFileBacklog(errorOut)) return true;
-    std::fclose(file); file = nullptr;
-    fileChunks.clear(); fileShared.clear(); lastSharedByType.clear();
-    return false;
+    if (!writeFileBacklog(target, errorOut)) { std::fclose(target.file); return false; }
+    files.push_back(std::move(target));
+    return true;
 }
 
-// Memory mode: finishes the attached file the way finish() finishes a file,
-// without disturbing the session. The laps still being built go to the file
-// alone, an open one closed here as partial; the shared records still pending
-// follow; and the index lists them beside the committed ones.
+// Memory mode: finishes every attached file the way finish() finishes a
+// file, without disturbing the session. A file that fails does not stop the
+// others; the first error is reported.
 bool TnrdV6Writer::Impl::detachFile(std::string* errorOut) {
-    if (!file) return true;
-    auto directory = fileChunks;
-    auto shared = fileShared;
-    std::vector<V6LapSummary> laps = committedLaps;
+    bool ok = true;
+    for (auto& target : files) {
+        if (!target.file) continue;
+        std::string error;
+        if (!detachOne(target, &error)) {
+            if (ok && errorOut) *errorOut = error.empty() ? "could not finish V6 file" : error;
+            ok = false;
+        }
+    }
+    files.clear();
+    return ok;
+}
+
+// The laps still being built go to the file alone, an open one closed here as
+// partial; the shared records still pending follow; and the index lists them
+// beside the committed ones.
+bool TnrdV6Writer::Impl::detachOne(AttachedFile& target, std::string* errorOut) {
+    auto directory = target.chunks;
+    auto shared = target.shared;
+    std::vector<V6LapSummary> laps = lapsFor(target, committedLaps);
+    const FileOnlyTarget only{target.file, &directory};
     const float time = std::max(0.0f, now());
     bool ok = true;
     const auto writeLap = [&](uint8_t index, const V6LapSummary& summary,
                               const std::map<V6DataType, Builder>& lapChunks) {
-        if (!ok) return;
+        if (!ok || !accepts(target, index)) return;
         std::map<V6DataType, ClockUse> clockUses;
         V6ChunkInfo info;
         if (const Builder* clock = planClock(lapChunks, clockUses))
-            ok = writeClock(index, summary.lapId, summary.phase, *clock, info, errorOut, &directory);
+            ok = writeClock(index, summary.lapId, summary.phase, *clock, info, errorOut, &only);
         for (const auto& [type, builder] : lapChunks) {
             if (!ok) return;
             const auto use = clockUses.find(type);
             ok = writeChunk(index, summary.lapId, summary.phase, type, builder,
-                            use == clockUses.end() ? nullptr : &use->second, info, errorOut, &directory);
+                            use == clockUses.end() ? nullptr : &use->second, info, errorOut, &only);
         }
         laps.push_back(summary);
     };
@@ -2464,36 +2532,35 @@ bool TnrdV6Writer::Impl::detachFile(std::string* errorOut) {
     for (const auto& record : pendingShared) {
         if (!ok) break;
         V6Metadata::StoredShared stored;
-        ok = writeShared(record, stored, errorOut);
+        ok = writeShared(target.file, target.lastSharedByType, record, stored, errorOut);
         if (ok) shared.push_back(stored);
     }
-    std::vector<V6DriverHeader> headers;
-    for (const auto& [_, header] : liveHeaders) headers.push_back(header);
-    ok = ok && snapshotTo(file, directory, shared, false, errorOut, &headers, &laps);
-    if (std::fclose(file) != 0 && ok) { fail(errorOut, "could not close V6 file"); ok = false; }
-    file = nullptr;
-    fileChunks.clear(); fileShared.clear(); lastSharedByType.clear();
+    const std::vector<V6DriverHeader> headers = headersFor(target, liveHeaders);
+    ok = ok && snapshotTo(target.file, directory, shared, false, errorOut, &headers, &laps);
+    if (std::fclose(target.file) != 0 && ok) { fail(errorOut, "could not close V6 file"); ok = false; }
+    target.file = nullptr;
+    target.chunks.clear(); target.shared.clear(); target.lastSharedByType.clear();
     return ok;
 }
 
 // Memory mode: a rewind took committed laps back, and the attached file still
 // holds them. It is written again from memory beside the original and then
 // put in its place, so it never holds two timelines or loses the one kept.
-void TnrdV6Writer::Impl::rewriteFile() {
-    std::fclose(file); file = nullptr;
-    const std::string rewritePath = path + ".rewrite.tmp";
+void TnrdV6Writer::Impl::rewriteFile(AttachedFile& target) {
+    std::fclose(target.file); target.file = nullptr;
+    const std::string rewritePath = target.path + ".rewrite.tmp";
     std::string error;
-    file = openTnrdFile(rewritePath, "w+b");
-    bool written = file && writeFileBacklog(&error);
-    if (file && std::fclose(file) != 0 && written) { written = false; error = "could not write V6 file"; }
-    file = nullptr;
-    if (!written || !replaceFile(rewritePath, path)) {
+    target.file = openTnrdFile(rewritePath, "w+b");
+    bool written = target.file && writeFileBacklog(target, &error);
+    if (target.file && std::fclose(target.file) != 0 && written) { written = false; error = "could not write V6 file"; }
+    target.file = nullptr;
+    if (!written || !replaceFile(rewritePath, target.path)) {
         removeFile(rewritePath);
-        fileFailed(error.empty() ? "could not rewrite the V6 file after a flashback" : error);
+        fileFailed(target, error.empty() ? "could not rewrite the V6 file after a flashback" : error);
         return;
     }
-    file = openTnrdFile(path, "r+b");
-    if (!file || !seekEnd(file)) fileFailed("could not reopen the V6 file after a flashback");
+    target.file = openTnrdFile(target.path, "r+b");
+    if (!target.file || !seekEnd(target.file)) fileFailed(target, "could not reopen the V6 file after a flashback");
 }
 
 TnrdV6Writer::TnrdV6Writer() : impl_(std::make_unique<Impl>()) {}
@@ -2512,16 +2579,17 @@ std::shared_ptr<const V6MemoryImage> TnrdV6Writer::memoryImage(const V6ImageFilt
 void TnrdV6Writer::setProtocol(int protocol) {
     if (impl_) impl_->session.protocol = protocol;
 }
-bool TnrdV6Writer::attachFile(const std::string& path, const HeaderRow& header, std::string* errorOut) {
+bool TnrdV6Writer::attachFile(const std::string& path, const HeaderRow& header, std::string* errorOut,
+                              bool playerOnly) {
     if (!impl_) { fail(errorOut, "V6 writer is not open"); return false; }
-    return impl_->attachFile(path, header, errorOut);
+    return impl_->attachFile(path, header, playerOnly, errorOut);
 }
 bool TnrdV6Writer::detachFile(std::string* errorOut) {
     return !impl_ || !impl_->memory || impl_->detachFile(errorOut);
 }
-bool TnrdV6Writer::hasFile() const { return impl_ && impl_->file; }
-std::string TnrdV6Writer::takeFileError() {
-    return impl_ ? std::exchange(impl_->fileError, {}) : std::string{};
+bool TnrdV6Writer::hasFile() const { return impl_ && (impl_->file || impl_->hasAttachedFile()); }
+std::vector<std::pair<std::string, std::string>> TnrdV6Writer::takeFileErrors() {
+    return impl_ ? std::exchange(impl_->fileErrors, {}) : std::vector<std::pair<std::string, std::string>>{};
 }
 bool TnrdV6Writer::open(const std::string& path, const HeaderRow& header, std::string* errorOut) {
     if (isOpen()) { fail(errorOut,"V6 writer is already open"); return false; }
@@ -2541,7 +2609,7 @@ bool TnrdV6Writer::open(const std::string& path, const HeaderRow& header, std::s
     if (!writeAll(impl_->file,sentinel.data(),sentinel.size())) {
         fail(errorOut,"could not initialize V6 file"); std::fclose(impl_->file); impl_->file=nullptr; return false;
     }
-    if (!impl_->writeSessionRecord(errorOut)) {
+    if (!impl_->writeSessionRecord(impl_->file, errorOut)) {
         std::fclose(impl_->file); impl_->file=nullptr; return false;
     }
     return true;
@@ -2575,7 +2643,7 @@ bool TnrdV6Writer::checkpoint(std::string* errorOut) {
     const uint64_t snapshotsBefore = impl_->checkpoints;
     if (!impl_->commit(false,errorOut)) return false;
     // A memory session checkpoints its attached file, when there is one.
-    if (impl_->memory && !impl_->file) return true;
+    if (impl_->memory && !impl_->hasAttachedFile()) return true;
     return impl_->checkpoints != snapshotsBefore || impl_->snapshot(errorOut);
 }
 bool TnrdV6Writer::rewind(float time,std::string* errorOut) {
@@ -2584,6 +2652,8 @@ bool TnrdV6Writer::rewind(float time,std::string* errorOut) {
 void TnrdV6Writer::abort() {
     if (!isOpen()) return;
     if (impl_->file) std::fclose(impl_->file);
+    for (auto& target : impl_->files) if (target.file) std::fclose(target.file);
+    impl_->files.clear();
     impl_->file = nullptr; impl_->memory = false;
 }
 bool TnrdV6Writer::finish(std::string* errorOut) {

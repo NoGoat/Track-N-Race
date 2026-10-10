@@ -1081,6 +1081,26 @@ QWidget* SettingsDialog::buildRecordingPage() {
             dirLabel_->setText(dir);
         }
     });
+
+    addSection(form, "Drivers to Save");
+    struct Category { const char* key; const char* label; };
+    for (const Category& category : { Category{"practice", "Practice Sessions:"},
+                                      Category{"qualifying", "Qualifying Sessions:"},
+                                      Category{"race", "Race Sessions:"},
+                                      Category{"time_trial", "Time Trial Sessions:"} }) {
+        auto* combo = new QComboBox;
+        combo->addItem("All Drivers", QStringLiteral("all_drivers"));
+        combo->addItem("Driver Only", QStringLiteral("driver_only"));
+        combo->addItem("Both", QStringLiteral("both"));
+        combo->addItem("Ask", QStringLiteral("ask"));
+        const QString key = QString::fromLatin1(category.key);
+        const int current = combo->findData(mainWindow_->recordingScope(key));
+        combo->setCurrentIndex(current >= 0 ? current : 0);
+        form->addRow(category.label, combo);
+        connect(combo, &QComboBox::currentIndexChanged, this, [this, combo, key](int) {
+            mainWindow_->setRecordingScope(key, combo->currentData().toString());
+        });
+    }
     return page;
 }
 
@@ -1197,6 +1217,18 @@ QWidget* SettingsDialog::buildPairingPage() {
     codeLayout->addWidget(cancelButton, 0, Qt::AlignLeft);
     openLayout->addWidget(codeColumn, 1);
     pairBoxLayout->addWidget(pairingOpen_);
+
+    pairingPending_ = new QWidget(pairBox);
+    auto* pendingLayout = new QHBoxLayout(pairingPending_);
+    pendingLayout->setContentsMargins(0, 0, 0, 0);
+    pairingPendingLabel_ = new QLabel(pairingPending_);
+    pairingPendingLabel_->setWordWrap(true);
+    auto* denyButton = new QPushButton("Deny", pairingPending_);
+    auto* allowButton = new QPushButton("Allow", pairingPending_);
+    pendingLayout->addWidget(pairingPendingLabel_, 1);
+    pendingLayout->addWidget(denyButton);
+    pendingLayout->addWidget(allowButton);
+    pairBoxLayout->addWidget(pairingPending_);
     content->addWidget(pairBox);
 
     auto* devicesHeading = subHeading("Saved devices");
@@ -1228,6 +1260,10 @@ QWidget* SettingsDialog::buildPairingPage() {
             mainWindow_, &MainWindow::openPairingWindow);
     connect(cancelButton, &QPushButton::clicked,
             mainWindow_, &MainWindow::closePairingWindow);
+    connect(allowButton, &QPushButton::clicked, this,
+            [this] { mainWindow_->respondToPairing(true); });
+    connect(denyButton, &QPushButton::clicked, this,
+            [this] { mainWindow_->respondToPairing(false); });
     connect(mainWindow_, &MainWindow::pairServiceStateChanged,
             this, &SettingsDialog::refreshPairingUi);
     refreshPairingUi();
@@ -1242,9 +1278,17 @@ void SettingsDialog::refreshPairingUi() {
         pairingEnabledCheck_->setChecked(state.enabled);
     }
     pairingContent_->setVisible(state.enabled);
-    pairingClosed_->setVisible(!state.pairingOpen);
-    pairingOpen_->setVisible(state.pairingOpen);
-    pairingCodeLabel_->setText(state.matchingCode);
+    const bool pending = !state.pendingDeviceId.isEmpty();
+    pairingPending_->setVisible(pending);
+    pairingClosed_->setVisible(!pending && !state.pairingOpen);
+    pairingOpen_->setVisible(!pending && state.pairingOpen);
+    pairingPendingLabel_->setText(QStringLiteral(
+        "<b>Allow %1?</b><br>This phone entered the pairing code. "
+        "Only allow a phone you recognise.")
+        .arg(state.pendingDeviceName.toHtmlEscaped()));
+    pairingCodeLabel_->setText(state.matchingCode.size() == 8
+        ? state.matchingCode.left(4) + QLatin1Char(' ') + state.matchingCode.mid(4)
+        : state.matchingCode);
     if (state.pairingOpen && !state.qrPayload.isEmpty()) {
         const QImage qr = pairingQrCodeImage(state.qrPayload);
         if (!qr.isNull()) {
@@ -2035,6 +2079,9 @@ QWidget* SettingsDialog::buildAboutPage() {
         { "Zstandard",     "1.5.7",    "BSD 3-Clause", "© Meta Platforms, Inc. and affiliates", "https://facebook.github.io/zstd/", "facebook.github.io", ":/licenses/BSD-3-Clause-Zstandard.txt" },
         // libxlsxwriter powers the "Export to Excel" action; linked in every build.
         { "libxlsxwriter", "1.2.4",    "BSD 2-Clause", "© 2014–2026 John McNamara",         "https://libxlsxwriter.github.io", "libxlsxwriter.github.io", ":/licenses/BSD-2-Clause-libxlsxwriter.txt" },
+        // libsodium and CPace encrypt and authenticate the paired-display link.
+        { "libsodium",     "1.0.20",   "ISC",     "© 2013–2026 Frank Denis",                "https://libsodium.org",         "libsodium.org",   ":/licenses/ISC-libsodium.txt" },
+        { "CPace",         "—",        "BSD 2-Clause", "© 2020–2021 Frank Denis",           "https://github.com/jedisct1/cpace", "github.com",   ":/licenses/BSD-2-Clause-cpace.txt" },
         // Noto Sans is bundled (fonts.qrc) in every build as the Breeze UI font, so
         // it's credited here unconditionally — not under BREEZE_BUNDLED.
         { "Noto Sans",     "—",        "OFL 1.1", "© The Noto Project Authors",             "https://fonts.google.com/noto/specimen/Noto+Sans", "fonts.google.com", ":/licenses/OFL-1.1-Noto.txt" },

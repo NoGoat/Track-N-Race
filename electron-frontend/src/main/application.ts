@@ -10,6 +10,7 @@ import {
   onPairServiceState,
   openPairingWindow,
   removePairDevice,
+  respondToPairing,
   startPairService,
   stopPairService,
 } from './pairHostAdapter'
@@ -51,7 +52,10 @@ import {
   setOnPlaybackState,
   getActiveFilePath,
   sweepTempFiles,
-  type PlayerLoadResult
+  getPendingRecordingChoices,
+  resolveRecordingChoice,
+  type PlayerLoadResult,
+  type RecordingChoice
 } from './bridgeManager'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
@@ -241,6 +245,7 @@ ipcMain.handle('pairing:set-enabled', (_event, enabled: boolean) =>
   enabled ? startPairService() : stopPairService())
 ipcMain.handle('pairing:open-window', () => openPairingWindow())
 ipcMain.handle('pairing:close-window', () => closePairingWindow())
+ipcMain.handle('pairing:respond', (_event, approve: boolean) => respondToPairing(approve === true))
 ipcMain.handle('pairing:remove-device', (_event, id: string) => removePairDevice(id))
 onPairServiceState(state => {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -288,6 +293,13 @@ ipcMain.handle('dialog:showOpenDialogTNRD', async (event) => {
   if (canceled) return null
   rememberDialogDirectory(filePaths[0])
   return filePaths[0]
+})
+
+ipcMain.handle('recording:pending-choices', () => getPendingRecordingChoices())
+ipcMain.handle('recording:resolve-choice', (_event, id: unknown, choice: unknown) => {
+  if (typeof id !== 'number' ||
+      (choice !== 'driver_only' && choice !== 'all_drivers' && choice !== 'both')) return false
+  return resolveRecordingChoice(id, choice as RecordingChoice)
 })
 
 // Player IPC — all forwarded to the bridge over stdin commands.

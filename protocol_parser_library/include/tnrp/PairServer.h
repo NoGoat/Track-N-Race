@@ -17,8 +17,9 @@ struct PairServerConfig {
 };
 
 // Shared paired-display transport owned by libtnrp. Hosts only provide an
-// identity label, persist the opaque private-state JSON, and display the public
-// state JSON. The server owns discovery, WebSocket framing, authentication,
+// identity label, persist the opaque private-state JSON (it holds the signing
+// seed, so hosts store it encrypted), and display the public state JSON. The
+// server owns discovery, the encrypted channel (PairCrypto.h), authentication,
 // subscriptions, latest-state caches, and per-client backpressure.
 class PairServer {
 public:
@@ -57,6 +58,10 @@ public:
     void stop(bool persistDisabled = true);
     void openPairingWindow();
     void closePairingWindow();
+    // Allows or refuses the phone named in public state's pendingDevice. A
+    // phone that proved the QR secret or code still needs this before it is
+    // saved or receives telemetry.
+    void respondToPairing(bool approve);
     void removeDevice(const std::string& id);
 
     std::string publicStateJson() const;

@@ -1,6 +1,7 @@
 #include "tnrp/PairServer.h"
 
 #include "tnrp/BinaryRows.h"
+#include "tnrp/PairCrypto.h"
 #include "tnrp/PairDiscovery.h"
 
 #include <algorithm>
@@ -48,10 +49,13 @@ static constexpr PairSocket kInvalidPairSocket = -1;
 namespace tnrp {
 
 // External linkage is required for glaze reflection under MSVC.
+// Only a digest of each reconnect token is kept, so a copy of this state
+// cannot be replayed as a phone. The identity seed signs every handshake;
+// hosts store this document encrypted (safeStorage, DPAPI, libsecret).
 struct PairPersistedDevice {
     std::string id;
     std::string name;
-    std::string token;
+    std::string tokenHash;
     int64_t pairedAt{};
     int64_t lastSeenAt{};
 };
@@ -59,6 +63,7 @@ struct PairPersistedDevice {
 struct PairPersistedState {
     std::string serverId;
     bool enabled{};
+    std::string identitySeed;
     std::vector<PairPersistedDevice> devices;
 };
 
@@ -70,6 +75,13 @@ struct PairPublicDevice {
     bool connected{};
 };
 
+// A phone that proved the QR secret or matching code and waits for the
+// desktop user to allow it.
+struct PairPendingDevice {
+    std::string id;
+    std::string name;
+};
+
 struct PairPublicState {
     bool enabled{};
     std::string serverId;
@@ -78,6 +90,7 @@ struct PairPublicState {
     int64_t pairingExpiresAt{};
     std::optional<std::string> matchingCode;
     std::optional<std::string> qrPayload;
+    std::optional<PairPendingDevice> pendingDevice;
     std::vector<PairPublicDevice> devices;
     std::optional<std::string> error;
 };
@@ -86,11 +99,16 @@ struct PairIncomingMessage {
     std::string type;
     int pairProtocol{};
     int binaryRowsVersion{};
+    // hello (plaintext): handshake mode, ephemeral key, CPace message.
+    std::string mode;
+    std::string clientKey;
+    std::string cpace;
+    // auth (encrypted): one credential per mode.
     std::string deviceId;
     std::string name;
     std::string token;
     std::string secret;
-    std::string code;
+    std::string confirm;
     std::string rowType;
     uint32_t streamMask{};
     // V6DataType ids this phone needs while a V6 recording is playing.
@@ -152,10 +170,13 @@ struct PairPongFrame {
 
 struct PairWelcomeFrame {
     std::string type{"welcome"};
-    int pairProtocol{2};
-    int binaryRowsVersion{2};
+    int pairProtocol{pair::kProtocolVersion};
+    int binaryRowsVersion{pair::kBinaryRowsVersion};
     std::string serverId;
-    std::string token;
+    // The desktop's display name; a QR does not carry it.
+    std::string name;
+    // Issued once, when a new phone is approved; a resume keeps its token.
+    std::optional<std::string> token;
     std::string source{"desktop"};
     std::optional<int> protocolYear;
     std::optional<int> formula;
@@ -184,11 +205,18 @@ struct PairProtocolPeek {
 
 namespace {
 
-// Version 2: subscribe carries v6Types, and playback rows may be single-field
-// V6 patches that a client must merge instead of replacing.
-constexpr int kPairProtocolVersion = 2;
-constexpr int kBinaryRowsVersion = 2;
+// Version 3: an encrypted channel (PairCrypto.h) and desktop approval of new
+// phones. Version 2 added v6Types to subscribe and V6 patch rows.
+constexpr int kPairProtocolVersion = pair::kProtocolVersion;
+constexpr int kBinaryRowsVersion = pair::kBinaryRowsVersion;
 constexpr int64_t kPairWindowMs = 2 * 60 * 1000;
+// Guesses allowed per pairing window. CPace stops offline guessing, so this
+// bounds the online chance of a guessed 8-character code to 5 in 31^8.
+constexpr int kMaxPairingAttempts = 5;
+constexpr int64_t kFailedAttemptDelayMs = 1000;
+constexpr int64_t kApprovalTimeoutMs = 60 * 1000;
+constexpr const char* kTooManyAttempts =
+    "Pairing closed after too many wrong codes. Start pairing again.";
 constexpr size_t kMaxFrameBytes = 1024 * 1024;
 constexpr size_t kMaxBufferedBytes = 8 * 1024 * 1024;
 // Multi-car and session state that the game itself sends at 2 Hz. V6 playback
@@ -485,9 +513,7 @@ std::string headerValue(const std::string& request, std::string_view wanted) {
     return {};
 }
 
-std::vector<uint8_t> webSocketFrame(uint8_t opcode, const uint8_t* data, size_t length) {
-    std::vector<uint8_t> frame;
-    frame.reserve(length + 10);
+void appendFrameHeader(std::vector<uint8_t>& frame, uint8_t opcode, size_t length) {
     frame.push_back(static_cast<uint8_t>(0x80 | opcode));
     if (length < 126) {
         frame.push_back(static_cast<uint8_t>(length));
@@ -500,7 +526,27 @@ std::vector<uint8_t> webSocketFrame(uint8_t opcode, const uint8_t* data, size_t 
         for (int shift = 56; shift >= 0; shift -= 8)
             frame.push_back(static_cast<uint8_t>(static_cast<uint64_t>(length) >> shift));
     }
+}
+
+std::vector<uint8_t> webSocketFrame(uint8_t opcode, const uint8_t* data, size_t length) {
+    std::vector<uint8_t> frame;
+    frame.reserve(length + 10);
+    appendFrameHeader(frame, opcode, length);
     frame.insert(frame.end(), data, data + length);
+    return frame;
+}
+
+// A binary WebSocket frame carrying one sealed channel message, encrypted
+// straight into the frame buffer.
+std::vector<uint8_t> sealedFrame(pair::FrameCipher& cipher, uint8_t kind,
+                                 const uint8_t* data, size_t length) {
+    const size_t sealed = length + pair::FrameCipher::kOverhead;
+    std::vector<uint8_t> frame;
+    frame.reserve(sealed + 10);
+    appendFrameHeader(frame, 0x2, sealed);
+    const size_t at = frame.size();
+    frame.resize(at + sealed);
+    cipher.sealInto(frame.data() + at, kind, data, length);
     return frame;
 }
 
@@ -588,28 +634,6 @@ bool throttledRowType(uint8_t type) {
     return type == 5 || type == 7 || type == 9;
 }
 
-std::string localAddress() {
-    char host[256]{};
-    if (gethostname(host, sizeof(host) - 1) != 0) return "127.0.0.1";
-    addrinfo hints{};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    addrinfo* result = nullptr;
-    if (getaddrinfo(host, nullptr, &hints, &result) != 0) return "127.0.0.1";
-    std::string address = "127.0.0.1";
-    for (addrinfo* item = result; item; item = item->ai_next) {
-        const auto* endpoint = reinterpret_cast<const sockaddr_in*>(item->ai_addr);
-        char text[INET_ADDRSTRLEN]{};
-        if (inet_ntop(AF_INET, &endpoint->sin_addr, text, sizeof(text)) &&
-            std::string_view(text).substr(0, 4) != "127.") {
-            address = text;
-            break;
-        }
-    }
-    freeaddrinfo(result);
-    return address;
-}
-
 template <class T>
 std::string writeJson(const T& value) {
     std::string json;
@@ -645,11 +669,20 @@ struct PairServer::Impl {
 
     // One unit of output, delivered in order: a frame exactly as queued, or a
     // batch. A frame closes the batch before it, so state is never reordered
-    // across a control row such as timeline_reset.
+    // across a control row such as timeline_reset. Frames are sealed by the
+    // writer as they are sent, so the cipher counter follows send order; only
+    // the HTTP upgrade (raw) and the handshake (plain) go out in clear.
     struct OutboxUnit {
-        std::vector<uint8_t> frame;
+        std::vector<uint8_t> payload;
+        uint8_t opcode{0x1};
+        bool raw{};
+        bool plain{};
+        // Drop the connection once this frame is on the wire (refusals).
+        bool closeAfter{};
         std::unique_ptr<Batch> batch;
     };
+
+    enum class Stage : uint8_t { Hello, Auth, Approval, Ready };
 
     struct Client {
         PairSocket socket{kInvalidPairSocket};
@@ -672,6 +705,15 @@ struct PairServer::Impl {
 
         std::vector<uint8_t> incoming;
         bool upgraded{};
+        std::atomic<Stage> stage{Stage::Hello};
+        pair::Mode mode{pair::Mode::Resume};
+        // Reader thread only.
+        pair::FrameCipher receiver;
+        // Handed to the writer under outgoingMutex; the writer owns the cipher.
+        std::optional<pair::Key> pendingSendKey;
+        // Code mode: the confirmation the phone must return.
+        std::string expectedConfirmation;
+        // Set with the server mutex held once the phone may receive telemetry.
         bool authenticated{};
         std::string deviceId;
         uint32_t streamMask{};
@@ -697,9 +739,18 @@ struct PairServer::Impl {
     std::vector<std::shared_ptr<Client>> clients;
     std::vector<PairPersistedDevice> devices;
     std::string serverId;
+    pair::Identity identity;
     std::string pairingSecret;
     std::string matchingCode;
     int64_t pairingExpiresAt{};
+    int pairingAttempts{};
+    struct PendingApproval {
+        std::weak_ptr<Client> client;
+        std::string deviceId;
+        std::string name;
+        int64_t deadline{};
+    };
+    std::optional<PendingApproval> pendingApproval;
     std::string lastError;
     std::string latestProtocolStatus;
     std::string latestPlaybackLapBlocks;
@@ -763,7 +814,8 @@ struct PairServer::Impl {
     }
 
     std::string persistedStateLocked() const {
-        return writeJson(PairPersistedState{serverId, config.enabled, devices});
+        return writeJson(PairPersistedState{serverId, config.enabled,
+                                            pair::base64Url(identity.seed), devices});
     }
 
     std::string publicStateLocked() const {
@@ -775,10 +827,15 @@ struct PairServer::Impl {
         state.pairingExpiresAt = state.pairingOpen ? pairingExpiresAt : 0;
         if (state.pairingOpen) {
             state.matchingCode = matchingCode;
-            state.qrPayload = "tnrpair://v1/" + serverId + "?h=" + localAddress() +
+            // k pins the desktop identity: the phone refuses any other key.
+            state.qrPayload = "tnrpair://v3/" + serverId + "?h=" + primaryIpv4Address() +
                 "&p=" + std::to_string(config.port) + "&s=" + pairingSecret +
-                "&e=" + std::to_string(pairingExpiresAt);
+                "&e=" + std::to_string(pairingExpiresAt) +
+                "&k=" + pair::base64Url(identity.publicKey);
         }
+        if (pendingApproval)
+            state.pendingDevice = PairPendingDevice{pendingApproval->deviceId,
+                                                    pendingApproval->name};
         if (!lastError.empty()) state.error = lastError;
         for (const auto& device : devices) {
             const bool connected = std::any_of(clients.begin(), clients.end(),
@@ -888,18 +945,16 @@ struct PairServer::Impl {
     }
 
     // Queues a frame for in-order delivery.
-    bool enqueueFrame(const std::shared_ptr<Client>& client, std::vector<uint8_t> frame) {
+    bool enqueueFrame(const std::shared_ptr<Client>& client, OutboxUnit unit) {
         if (!client->running.load()) return false;
-        const size_t frameBytes = frame.size();
+        const size_t frameBytes = unit.payload.size();
         size_t pendingBytes = 0;
         size_t queuedUnits = 0;
         {
             std::lock_guard lock(client->outgoingMutex);
             // Rows held back by the throttle predate this frame.
             releaseHeldLocked(*client, nowMs(), true);
-            client->pendingBytes += frame.size();
-            OutboxUnit unit;
-            unit.frame = std::move(frame);
+            client->pendingBytes += frameBytes;
             client->outgoing.push_back(std::move(unit));
             pendingBytes = client->pendingBytes;
             queuedUnits = client->outgoing.size();
@@ -975,8 +1030,33 @@ struct PairServer::Impl {
         return checkOverflow(client, pendingBytes, queuedUnits, length);
     }
 
+    static OutboxUnit frameUnit(uint8_t opcode, const uint8_t* data, size_t length) {
+        OutboxUnit unit;
+        unit.opcode = opcode;
+        unit.payload.assign(data, data + length);
+        return unit;
+    }
+
+    static OutboxUnit textUnit(const std::string& json) {
+        return frameUnit(0x1, reinterpret_cast<const uint8_t*>(json.data()), json.size());
+    }
+
+    // Encrypted text frame: everything after the handshake.
     void sendText(const std::shared_ptr<Client>& client, const std::string& json) {
-        enqueueFrame(client, webSocketFrame(0x1, json));
+        enqueueFrame(client, textUnit(json));
+    }
+
+    void sendBinary(const std::shared_ptr<Client>& client, const uint8_t* data, size_t length) {
+        enqueueFrame(client, frameUnit(0x2, data, length));
+    }
+
+    // Handshake frames, before the channel keys exist.
+    void sendPlainText(const std::shared_ptr<Client>& client, const std::string& json,
+                       bool closeAfter = false) {
+        OutboxUnit unit = textUnit(json);
+        unit.plain = true;
+        unit.closeAfter = closeAfter;
+        enqueueFrame(client, std::move(unit));
     }
 
     void sendRows(const std::shared_ptr<Client>& client,
@@ -986,6 +1066,15 @@ struct PairServer::Impl {
 
     void sendError(const std::shared_ptr<Client>& client, const std::string& code) {
         sendText(client, writeJson(PairErrorFrame{"error", code}));
+    }
+
+    // Refuses and drops the connection once the reason is delivered. Sealed
+    // when the channel is up, plain during the handshake.
+    void refuse(const std::shared_ptr<Client>& client, const std::string& code) {
+        OutboxUnit unit = textUnit(writeJson(PairErrorFrame{"error", code}));
+        unit.plain = client->stage.load() == Stage::Hello;
+        unit.closeAfter = true;
+        enqueueFrame(client, std::move(unit));
     }
 
     void sendCachedParticipants(const std::shared_ptr<Client>& client, bool force) {
@@ -1031,107 +1120,261 @@ struct PairServer::Impl {
             }
         }
         sendRows(client, rows);
-        if (!binary.empty()) enqueueFrame(client, webSocketFrame(0x2, binary.data(), binary.size()));
+        if (!binary.empty()) sendBinary(client, binary.data(), binary.size());
     }
 
-    void authenticate(const std::shared_ptr<Client>& client,
-                      const PairIncomingMessage& message) {
-        if (message.pairProtocol != kPairProtocolVersion) {
-            diagnostic("authentication_rejected", client,
-                "reason=unsupported_pair_protocol offered=" +
-                std::to_string(message.pairProtocol));
-            sendError(client, "unsupported_pair_protocol");
-            return;
-        }
-        if (message.binaryRowsVersion != kBinaryRowsVersion) {
-            diagnostic("authentication_rejected", client,
-                "reason=unsupported_binary_rows offered=" +
-                std::to_string(message.binaryRowsVersion));
-            sendError(client, "unsupported_binary_rows");
-            return;
-        }
-        if (!validToken(message.deviceId, 128)) {
-            diagnostic("authentication_rejected", client, "reason=invalid_device");
-            sendError(client, "invalid_device");
-            return;
-        }
+    // One guess at the code or QR secret. False once the window is spent.
+    bool countPairingAttemptLocked() {
+        if (++pairingAttempts <= kMaxPairingAttempts) return true;
+        clearPairingWindowLocked();
+        lastError = kTooManyAttempts;
+        return false;
+    }
 
+    void clearPairingWindowLocked() {
+        pairingSecret.clear();
+        matchingCode.clear();
+        pairingExpiresAt = 0;
+        if (running.load()) discovery.update({serverId, config.name, config.port, false});
+    }
+
+    void delayAfterFailure() const {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kFailedAttemptDelayMs));
+    }
+
+    // The phone may now receive telemetry. Server mutex held.
+    PairWelcomeFrame admitLocked(const std::shared_ptr<Client>& client,
+                                 const std::string& deviceId) {
+        client->authenticated = true;
+        client->deviceId = deviceId;
+        // The client declares its visible page immediately after the
+        // welcome. Keep the stream closed until that first replacement
+        // subscription so no broad Android snapshot leaks through.
+        client->streamMask = 0;
+        client->v6Types.clear();
         PairWelcomeFrame welcome;
-        bool accepted = false;
-        bool resumed = false;
-        {
-            std::lock_guard lock(mutex);
-            auto existing = std::find_if(devices.begin(), devices.end(),
-                [&](const auto& device) { return device.id == message.deviceId; });
-            const bool resume = existing != devices.end() && !message.token.empty() &&
-                constantTimeEqual(existing->token, message.token);
-            const bool initial = pairingOpenLocked() &&
-                ((!pairingSecret.empty() && constantTimeEqual(pairingSecret, message.secret)) ||
-                 (!matchingCode.empty() && constantTimeEqual(matchingCode, message.code)));
-            if (!resume && !initial) {
-                // Queue after releasing the server mutex.
-            } else {
-                const int64_t now = nowMs();
-                const auto credentialBytes = randomBytes(32);
-                const std::string credential = resume
-                    ? existing->token
-                    : base64(credentialBytes.data(), credentialBytes.size(), true);
-                const int64_t pairedAt = resume ? existing->pairedAt : now;
-                PairPersistedDevice updated{
-                    message.deviceId,
-                    validToken(message.name, 96) ? message.name : "Android device",
-                    credential,
-                    pairedAt,
-                    now,
-                };
-                if (existing == devices.end()) devices.push_back(updated);
-                else *existing = updated;
-                client->authenticated = true;
-                client->deviceId = message.deviceId;
-                // The client declares its visible page immediately after the
-                // welcome. Keep the stream closed until that first replacement
-                // subscription so no broad Android snapshot leaks through.
-                client->streamMask = 0;
-                client->v6Types.clear();
-                if (initial) {
-                    pairingSecret.clear();
-                    matchingCode.clear();
-                    pairingExpiresAt = 0;
-                    discovery.update({serverId, config.name, config.port, false});
-                }
-                welcome.serverId = serverId;
-                welcome.token = credential;
-                if (!latestProtocolStatus.empty()) {
-                    PairProtocolPeek status;
-                    if (!glz::read<kPartialRead>(status,
-                            std::string_view(latestProtocolStatus))) {
-                        welcome.protocolYear = status.active_format
-                            ? status.active_format : status.detected_format;
-                        welcome.formula = status.formula;
-                        welcome.regulations2026 = status.regulations_2026;
-                    }
-                }
-                accepted = true;
-                resumed = resume;
+        welcome.serverId = serverId;
+        welcome.name = config.name;
+        if (!latestProtocolStatus.empty()) {
+            PairProtocolPeek status;
+            if (!glz::read<kPartialRead>(status, std::string_view(latestProtocolStatus))) {
+                welcome.protocolYear = status.active_format
+                    ? status.active_format : status.detected_format;
+                welcome.formula = status.formula;
+                welcome.regulations2026 = status.regulations_2026;
             }
         }
-        if (!accepted) {
-            bool open = false;
-            {
-                std::lock_guard lock(mutex);
-                open = pairingOpenLocked();
-            }
-            sendError(client, open ? "invalid_pairing_code" : "pairing_closed");
-            diagnostic("authentication_rejected", client,
-                open ? "reason=invalid_pairing_code" : "reason=pairing_closed");
-            return;
-        }
-        diagnostic("authentication_accepted", client,
-            std::string("mode=") + (resumed ? "resume" : "pair") +
-            " device_id=" + logSafe(message.deviceId));
+        return welcome;
+    }
+
+    void admit(const std::shared_ptr<Client>& client, const PairWelcomeFrame& welcome) {
+        client->stage.store(Stage::Ready);
         sendText(client, writeJson(welcome));
         notifyRequirements();
         notifyState();
+    }
+
+    // Plaintext hello: answer with the signed server_hello and set up the
+    // channel. No credential is accepted before the channel exists.
+    void handleHello(const std::shared_ptr<Client>& client,
+                     const PairIncomingMessage& message) {
+        if (message.type != "hello" || message.pairProtocol != kPairProtocolVersion) {
+            diagnostic("handshake_rejected", client,
+                "reason=unsupported_pair_protocol offered=" +
+                std::to_string(message.pairProtocol));
+            refuse(client, "unsupported_pair_protocol");
+            return;
+        }
+        if (message.binaryRowsVersion != kBinaryRowsVersion) {
+            diagnostic("handshake_rejected", client,
+                "reason=unsupported_binary_rows offered=" +
+                std::to_string(message.binaryRowsVersion));
+            refuse(client, "unsupported_binary_rows");
+            return;
+        }
+        const auto mode = pair::modeFromName(message.mode);
+        if (!mode) {
+            diagnostic("handshake_rejected", client, "reason=invalid_mode");
+            refuse(client, "invalid_handshake");
+            return;
+        }
+
+        std::string code;
+        std::string refusal;
+        pair::Identity signer;
+        std::string id;
+        {
+            std::lock_guard lock(mutex);
+            if (*mode != pair::Mode::Resume) {
+                if (!pairingOpenLocked()) refusal = "pairing_closed";
+                else if (pendingApproval) refusal = "pairing_busy";
+                // Every code handshake is one guess, whether or not the
+                // phone goes on: checking the desktop's confirmation already
+                // tells it whether the code was right.
+                else if (*mode == pair::Mode::Code && !countPairingAttemptLocked())
+                    refusal = "pairing_closed";
+                else if (*mode == pair::Mode::Code) code = matchingCode;
+            }
+            signer = identity;
+            id = serverId;
+        }
+        if (!refusal.empty()) {
+            diagnostic("handshake_rejected", client, "reason=" + refusal);
+            refuse(client, refusal);
+            notifyState();
+            return;
+        }
+
+        std::string error;
+        auto handshake = pair::respond(signer, id, *mode, message.clientKey,
+                                       message.cpace, code, &error);
+        if (!handshake) {
+            diagnostic("handshake_rejected", client, "reason=" + logSafe(error));
+            refuse(client, error.empty() ? "invalid_handshake" : error);
+            return;
+        }
+        client->mode = *mode;
+        client->expectedConfirmation = std::move(handshake->expectedConfirmation);
+        client->receiver.setKey(handshake->receiveKey);
+        {
+            std::lock_guard lock(client->outgoingMutex);
+            client->pendingSendKey = handshake->sendKey;
+        }
+        sendPlainText(client, handshake->serverHelloJson);
+        client->stage.store(Stage::Auth);
+        diagnostic("handshake_accepted", client,
+            "mode=" + std::string(pair::modeName(*mode)));
+    }
+
+    // First encrypted message: the credential for the handshake's mode.
+    void handleAuth(const std::shared_ptr<Client>& client,
+                    const PairIncomingMessage& message) {
+        if (message.type != "auth" || !validToken(message.deviceId, 128)) {
+            diagnostic("authentication_rejected", client, "reason=invalid_device");
+            refuse(client, "invalid_device");
+            return;
+        }
+        const std::string name = validToken(message.name, 96)
+            ? message.name : std::string("Android device");
+
+        if (client->mode == pair::Mode::Resume) {
+            const std::string presented = message.token.empty()
+                ? std::string{} : pair::tokenHash(message.token);
+            PairWelcomeFrame welcome;
+            bool accepted = false;
+            {
+                std::lock_guard lock(mutex);
+                auto existing = std::find_if(devices.begin(), devices.end(),
+                    [&](const auto& device) { return device.id == message.deviceId; });
+                if (existing != devices.end() && !presented.empty() &&
+                    constantTimeEqual(existing->tokenHash, presented)) {
+                    existing->name = name;
+                    existing->lastSeenAt = nowMs();
+                    welcome = admitLocked(client, message.deviceId);
+                    accepted = true;
+                }
+            }
+            if (!accepted) {
+                diagnostic("authentication_rejected", client, "reason=unknown_device");
+                delayAfterFailure();
+                refuse(client, "unknown_device");
+                return;
+            }
+            diagnostic("authentication_accepted", client,
+                "mode=resume device_id=" + logSafe(message.deviceId));
+            admit(client, welcome);
+            return;
+        }
+
+        // QR secret or code confirmation; then the desktop user decides.
+        std::string refusal;
+        {
+            std::lock_guard lock(mutex);
+            if (!pairingOpenLocked()) {
+                refusal = "pairing_closed";
+            } else if (pendingApproval) {
+                refusal = "pairing_busy";
+            } else {
+                const bool proved = client->mode == pair::Mode::Qr
+                    ? !pairingSecret.empty() &&
+                        constantTimeEqual(pairingSecret, message.secret)
+                    : !client->expectedConfirmation.empty() &&
+                        constantTimeEqual(client->expectedConfirmation, message.confirm);
+                if (!proved) {
+                    // A code guess was already counted at hello.
+                    if (client->mode == pair::Mode::Qr) countPairingAttemptLocked();
+                    refusal = "invalid_pairing_code";
+                } else {
+                    // One success per window: the secret and code die here.
+                    clearPairingWindowLocked();
+                    pendingApproval = PendingApproval{
+                        client, message.deviceId, name, nowMs() + kApprovalTimeoutMs};
+                }
+            }
+        }
+        if (!refusal.empty()) {
+            diagnostic("authentication_rejected", client, "reason=" + refusal);
+            if (refusal == "invalid_pairing_code") delayAfterFailure();
+            refuse(client, refusal);
+            notifyState();
+            return;
+        }
+        client->stage.store(Stage::Approval);
+        sendText(client, "{\"type\":\"approval_pending\"}");
+        diagnostic("approval_requested", client,
+            "device_id=" + logSafe(message.deviceId));
+        notifyState();
+    }
+
+    // The desktop user's answer for the waiting phone (or the timeout's).
+    void decidePending(bool approve, const std::string& reason) {
+        std::shared_ptr<Client> client;
+        std::string deviceId;
+        std::string name;
+        {
+            std::lock_guard lock(mutex);
+            if (!pendingApproval) return;
+            client = pendingApproval->client.lock();
+            deviceId = pendingApproval->deviceId;
+            name = pendingApproval->name;
+            pendingApproval.reset();
+        }
+        if (!client || !client->running.load() || client->stage.load() != Stage::Approval) {
+            notifyState();
+            return;
+        }
+        if (!approve) {
+            diagnostic("approval_refused", client, "reason=" + reason);
+            refuse(client, reason);
+            notifyState();
+            return;
+        }
+        const std::string token = pair::randomToken(32);
+        PairWelcomeFrame welcome;
+        {
+            std::lock_guard lock(mutex);
+            const int64_t now = nowMs();
+            PairPersistedDevice device{deviceId, name, pair::tokenHash(token), now, now};
+            auto existing = std::find_if(devices.begin(), devices.end(),
+                [&](const auto& saved) { return saved.id == deviceId; });
+            if (existing == devices.end()) devices.push_back(std::move(device));
+            else *existing = std::move(device);
+            welcome = admitLocked(client, deviceId);
+        }
+        welcome.token = token;
+        diagnostic("authentication_accepted", client,
+            "mode=" + std::string(pair::modeName(client->mode)) +
+            " device_id=" + logSafe(deviceId));
+        admit(client, welcome);
+    }
+
+    void expirePendingApproval() {
+        bool expired = false;
+        {
+            std::lock_guard lock(mutex);
+            expired = pendingApproval && pendingApproval->deadline <= nowMs();
+        }
+        if (expired) decidePending(false, "approval_timeout");
     }
 
     void handleText(const std::shared_ptr<Client>& client, std::string_view text) {
@@ -1141,14 +1384,14 @@ struct PairServer::Impl {
                 "reason=invalid_json bytes=" + std::to_string(text.size()));
             return;
         }
-        if (!client->authenticated) {
-            if (message.type == "pair" || message.type == "resume") {
-                authenticate(client, message);
-            } else {
-                diagnostic("message_ignored", client,
-                    "reason=authentication_required type=" + logSafe(message.type));
-            }
+        switch (client->stage.load()) {
+        case Stage::Hello: handleHello(client, message); return;
+        case Stage::Auth: handleAuth(client, message); return;
+        case Stage::Approval:
+            diagnostic("message_ignored", client,
+                "reason=awaiting_approval type=" + logSafe(message.type));
             return;
+        case Stage::Ready: break;
         }
         if (message.type == "subscribe") {
             {
@@ -1236,7 +1479,10 @@ struct PairServer::Impl {
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
             "Sec-WebSocket-Accept: " + webSocketAccept(key) + "\r\n\r\n";
-        enqueueFrame(client, std::vector<uint8_t>(response.begin(), response.end()));
+        OutboxUnit upgrade;
+        upgrade.raw = true;
+        upgrade.payload.assign(response.begin(), response.end());
+        enqueueFrame(client, std::move(upgrade));
         client->incoming.erase(client->incoming.begin(),
             client->incoming.begin() + static_cast<std::ptrdiff_t>(end + 4));
         client->upgraded = true;
@@ -1287,8 +1533,23 @@ struct PairServer::Impl {
                 payload[index] = static_cast<uint8_t>(source[index] ^ mask[index % 4]);
             offset += header + 4 + payload.size();
             if (opcode == 0x1) {
+                // The hello is the only plaintext a phone may send.
+                if (client->stage.load() != Stage::Hello) {
+                    diagnostic("frame_rejected", client, "reason=plaintext_after_handshake");
+                    return false;
+                }
                 handleText(client, std::string_view(
                     reinterpret_cast<const char*>(payload.data()), payload.size()));
+            } else if (opcode == 0x2) {
+                uint8_t kind = 0;
+                std::vector<uint8_t> message;
+                if (!client->receiver.open(payload.data(), payload.size(), kind, message) ||
+                    kind != pair::kFrameText) {
+                    diagnostic("frame_rejected", client, "reason=undecryptable");
+                    return false;
+                }
+                handleText(client, std::string_view(
+                    reinterpret_cast<const char*>(message.data()), message.size()));
             } else if (opcode == 0x8) {
                 uint16_t closeCode = 0;
                 std::string closeReason;
@@ -1301,7 +1562,9 @@ struct PairServer::Impl {
                     " reason=" + logSafe(closeReason));
                 return false;
             } else if (opcode == 0x9) {
-                enqueueFrame(client, webSocketFrame(0xA, payload.data(), payload.size()));
+                OutboxUnit pong = frameUnit(0xA, payload.data(), payload.size());
+                pong.plain = true;
+                enqueueFrame(client, std::move(pong));
             } else if (opcode != 0xA) {
                 diagnostic("frame_rejected", client,
                     "reason=unsupported_opcode opcode=" + std::to_string(opcode));
@@ -1321,8 +1584,10 @@ struct PairServer::Impl {
 
     // Takes the next outbox unit as one or two ready-to-send frames, waiting
     // for output or for a held row to fall due. False once the client retires.
-    bool nextOutgoing(const std::shared_ptr<Client>& client,
-                      std::vector<uint8_t>& text, std::vector<uint8_t>& binary) {
+    // Sealing happens here, on the writer thread, in send order.
+    bool nextOutgoing(const std::shared_ptr<Client>& client, pair::FrameCipher& cipher,
+                      std::vector<uint8_t>& text, std::vector<uint8_t>& binary,
+                      bool& closeAfter) {
         std::unique_lock lock(client->outgoingMutex);
         while (true) {
             if (!client->running.load()) return false;
@@ -1335,27 +1600,46 @@ struct PairServer::Impl {
                 client->outgoingReady.wait(lock);
             }
         }
+        if (client->pendingSendKey) {
+            cipher.setKey(*client->pendingSendKey);
+            client->pendingSendKey.reset();
+        }
         OutboxUnit unit = std::move(client->outgoing.front());
         client->outgoing.pop_front();
         if (!unit.batch) {
-            client->pendingBytes -= unit.frame.size();
-            text = std::move(unit.frame);
+            client->pendingBytes -= unit.payload.size();
+            lock.unlock();
+            closeAfter = unit.closeAfter;
+            if (unit.raw) {
+                text = std::move(unit.payload);
+            } else if (unit.plain) {
+                text = webSocketFrame(unit.opcode, unit.payload.data(), unit.payload.size());
+            } else {
+                if (!cipher.ready()) return false;
+                text = sealedFrame(cipher,
+                    unit.opcode == 0x2 ? pair::kFrameBinary : pair::kFrameText,
+                    unit.payload.data(), unit.payload.size());
+            }
             return true;
         }
         Batch& batch = *unit.batch;
         client->pendingBytes -= batch.bytes;
         lock.unlock();
+        // Batches only reach admitted phones, so the channel is always up.
+        if (!cipher.ready()) return false;
         if (!batch.rows.empty()) {
             PairRowsFrame frame;
             frame.rows.reserve(batch.rows.size());
             for (auto& entry : batch.rows) frame.rows.push_back(std::move(entry.second));
-            text = webSocketFrame(0x1, writeJson(frame));
+            const std::string json = writeJson(frame);
+            text = sealedFrame(cipher, pair::kFrameText,
+                reinterpret_cast<const uint8_t*>(json.data()), json.size());
         }
         if (batch.hasBinary) {
             std::vector<uint8_t> records;
             for (const auto& record : batch.binary)
                 records.insert(records.end(), record.begin(), record.end());
-            binary = webSocketFrame(0x2, records.data(), records.size());
+            binary = sealedFrame(cipher, pair::kFrameBinary, records.data(), records.size());
         }
         return true;
     }
@@ -1384,13 +1668,20 @@ struct PairServer::Impl {
     // The socket is passed in because the reader may clear client->socket while
     // this thread is still blocked in send().
     void writerLoop(const std::shared_ptr<Client>& client, PairSocket socket) {
+        pair::FrameCipher cipher;
         std::vector<uint8_t> text;
         std::vector<uint8_t> binary;
-        while (nextOutgoing(client, text, binary)) {
+        bool closeAfter = false;
+        while (nextOutgoing(client, cipher, text, binary, closeAfter)) {
             if (!transmit(client, socket, text) || !transmit(client, socket, binary)) break;
             text.clear();
             binary.clear();
+            if (closeAfter) {
+                retire(client);
+                break;
+            }
         }
+        cipher.clear();
         client->writerDone.store(true);
     }
 
@@ -1447,6 +1738,13 @@ struct PairServer::Impl {
             std::lock_guard lock(client->outgoingMutex);
             superseded = client->supersededRows;
             heldRows = client->heldRows;
+        }
+        {
+            std::lock_guard lock(mutex);
+            if (pendingApproval) {
+                const auto waiting = pendingApproval->client.lock();
+                if (!waiting || waiting == client) pendingApproval.reset();
+            }
         }
         diagnostic("client_loop_ended", client,
             "server_running=" + std::to_string(running.load() ? 1 : 0) +
@@ -1535,6 +1833,7 @@ struct PairServer::Impl {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
             retireStalledClients();
+            expirePendingApproval();
             reapClients();
         }
         reapClients();
@@ -1624,6 +1923,7 @@ struct PairServer::Impl {
             pairingSecret.clear();
             matchingCode.clear();
             pairingExpiresAt = 0;
+            pendingApproval.reset();
             hasRuntimeState = running.load() ||
                 listener != kInvalidPairSocket || acceptThread.joinable() ||
                 !clients.empty();
@@ -1697,17 +1997,26 @@ void PairServer::configure(PairServerConfig config, StateCallback stateCallback,
         impl_->lapDeltaCallback = std::move(lapDeltaCallback);
         impl_->lapDataCallback = std::move(lapDataCallback);
         impl_->diagnosticCallback = std::move(diagnosticCallback);
+        pair::init();
         PairPersistedState persisted;
+        std::optional<pair::Key> seed;
         if (!impl_->config.persistedStateJson.empty() &&
             !glz::read<kPartialRead>(persisted,
                 std::string_view(impl_->config.persistedStateJson))) {
             if (validToken(persisted.serverId, 128)) impl_->serverId = persisted.serverId;
+            seed = pair::keyFromBase64Url(persisted.identitySeed);
             impl_->devices.clear();
-            for (auto& device : persisted.devices) {
-                if (validToken(device.id, 128) && validToken(device.name, 96) &&
-                    validToken(device.token, 256)) impl_->devices.push_back(std::move(device));
+            // Phones paired before protocol 3 stored a plain token and never
+            // pinned this desktop's key; they pair again.
+            if (seed) {
+                for (auto& device : persisted.devices) {
+                    if (validToken(device.id, 128) && validToken(device.name, 96) &&
+                        validToken(device.tokenHash, 128))
+                        impl_->devices.push_back(std::move(device));
+                }
             }
         }
+        impl_->identity = seed ? pair::identityFromSeed(*seed) : pair::newIdentity();
         if (impl_->serverId.empty()) impl_->serverId = hex(randomBytes(16));
     }
     if (startEnabled) impl_->start(nullptr);
@@ -1724,16 +2033,10 @@ void PairServer::openPairingWindow() {
     if (!impl_->running.load() && !impl_->start(nullptr)) return;
     {
         std::lock_guard lock(impl_->mutex);
-        const auto secretBytes = randomBytes(24);
-        impl_->pairingSecret = base64(
-            secretBytes.data(), secretBytes.size(), true);
-        const auto random = randomBytes(4);
-        const uint32_t value = (static_cast<uint32_t>(random[0]) << 24) |
-            (static_cast<uint32_t>(random[1]) << 16) |
-            (static_cast<uint32_t>(random[2]) << 8) | random[3];
-        std::ostringstream code;
-        code << std::setw(6) << std::setfill('0') << value % 1000000;
-        impl_->matchingCode = code.str();
+        impl_->pairingSecret = pair::randomToken(24);
+        impl_->matchingCode = pair::newMatchingCode();
+        impl_->pairingAttempts = 0;
+        if (impl_->lastError == kTooManyAttempts) impl_->lastError.clear();
         impl_->pairingExpiresAt = nowMs() + kPairWindowMs;
         impl_->discovery.update({impl_->serverId, impl_->config.name,
                                  impl_->config.port, true});
@@ -1755,6 +2058,10 @@ void PairServer::closePairingWindow() {
     }
     impl_->diagnostic("pairing_window_closed");
     impl_->notifyState();
+}
+
+void PairServer::respondToPairing(bool approve) {
+    impl_->decidePending(approve, "pairing_denied");
 }
 
 void PairServer::removeDevice(const std::string& id) {

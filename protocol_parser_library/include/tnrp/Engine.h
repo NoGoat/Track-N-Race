@@ -183,6 +183,8 @@ public:
     void setLoggingZstd(bool enabled, const std::string& outputDir);
     [[deprecated("TNRD V1/gzip writing is retained only for compatibility; use setLoggingZstd")]]
     void setLoggingGzip(bool enabled, const std::string& outputDir);
+    // Which drivers each session category records, from the next recording.
+    void setRecordingScopes(const RecordingScopes& scopes);
     // Blocks until queued recording rows and the rolling buffer have reached a
     // recoverable codec/stdio flush point. Used before playback and by host
     // shutdown/crash hooks.
@@ -204,6 +206,8 @@ public:
     void pairStop(bool persistDisabled = true);
     void pairOpenWindow();
     void pairCloseWindow();
+    // Allows or refuses the phone waiting for approval (pendingDevice).
+    void pairRespond(bool approve);
     void pairRemoveDevice(const std::string& id);
     std::string pairStateJson() const;
     std::string pairPersistedStateJson() const;

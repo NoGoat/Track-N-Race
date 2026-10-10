@@ -8,9 +8,10 @@ import { useSize } from '../hooks/useSize'
 import { TRACK_MAPS, type TrackMapData } from '../lib/trackMaps'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 import { useLabels } from '../lib/labels'
+import DriverSelect from './DriverSelect'
+import { buildDriverOptions, type DriverOption } from '../lib/driverOptions'
 import type { CarPosition, ParticipantsMsg, PositionsMsg } from '../types'
 
-type DriverOption = { value: number; label: string }
 type ZoomOption = { value: number; label: string }
 type MapOption = { value: number; label: string }
 type AeroOverlay = 'drs' | 'slm-dry' | 'slm-wet'
@@ -794,30 +795,25 @@ let _cachedPlayerIdx: number               = 0
 
 interface FollowDriverSelectorProps {
   selectedDriverIdx: number | null
-  onChange: (opt: SingleValue<DriverOption>) => void
+  onChange: (driverIndex: number | null) => void
   options: DriverOption[]
   isDark: boolean
 }
 
-const FollowDriverSelector = memo(({ selectedDriverIdx, onChange, options, isDark }: FollowDriverSelectorProps) => {
-  const styles = useMemo(() => buildSelectStyles(isDark, { solidBg: true }), [isDark])
-  const val = useMemo(() => options.find(o => o.value === selectedDriverIdx) ?? null, [options, selectedDriverIdx])
-  
-  return (
-    <div className="w-40 shrink-0">
-      <Select<DriverOption>
-        value={val}
-        options={options}
-        onChange={onChange}
-        isClearable
-        isSearchable
-        placeholder="Follow driver…"
-        styles={styles}
-        components={selectComponents}
-      />
-    </div>
-  )
-})
+const FollowDriverSelector = memo(({ selectedDriverIdx, onChange, options, isDark }: FollowDriverSelectorProps) => (
+  <div className="w-40 shrink-0">
+    <DriverSelect
+      options={options}
+      selectedDriverIdx={selectedDriverIdx}
+      onChange={onChange}
+      clearable
+      placeholder="Follow driver…"
+      isDark={isDark}
+      solidBg
+      menuAlign="right"
+    />
+  </div>
+))
 FollowDriverSelector.displayName = 'FollowDriverSelector'
 
 interface ZoomSelectorProps {
@@ -1198,23 +1194,10 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     }
   }, [map, width, height])
 
-  const driverOptions = useMemo((): (DriverOption & { raceNumber: number })[] => {
-    return (participants?.drivers ?? [])
-      .filter(d => d.name.trim() !== '' || d.race_number > 0)
-      .map(d => {
-        const name = d.name.trim()
-        const lastName = name ? (name.split(/\s+/).pop() ?? name).toUpperCase() : `C${d.idx}`
-        return {
-          value: d.idx,
-          label: `${d.race_number} ${lastName}`,
-          raceNumber: d.race_number
-        }
-      })
-      .sort((a, b) => a.raceNumber - b.raceNumber)
-  }, [participants])
+  const driverOptions = useMemo(() => buildDriverOptions(participants?.drivers ?? []), [participants])
 
-  const handleDriverChange = useCallback((opt: SingleValue<DriverOption>) => {
-    setSelectedDriverIdx(opt?.value ?? null)
+  const handleDriverChange = useCallback((driverIndex: number | null) => {
+    setSelectedDriverIdx(driverIndex)
   }, [])
 
   const handleZoomChange = useCallback((opt: SingleValue<ZoomOption>) => {

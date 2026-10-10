@@ -585,6 +585,13 @@ void AppToolbar::setPlaybackDrivers(const QVector<PlaybackDriverOption>& drivers
     driverBtn_->setCurrentIndex(selected >= 0 ? selected :
         (driverBtn_->count() > 0 ? 0 : -1));
     driverBtn_->blockSignals(false);
+    // A driver-only recording holds one driver: nothing to switch to.
+    const bool singleDriver = drivers.size() <= 1;
+    driverBtn_->setEnabled(!singleDriver);
+    driverBtn_->setToolTip(singleDriver
+        ? QStringLiteral("This recording saved only your driver.")
+        : QStringLiteral("Playback driver. Drivers marked Public data only have private status "
+                         "and damage values hidden by the game."));
     playbackDriversVisible_ = !drivers.isEmpty();
     relayout();
 }
@@ -694,6 +701,7 @@ void AppToolbar::relayout() {
             QAction* driver = overflowMenu_->addAction(driverBtn_->itemText(i));
             driver->setCheckable(true);
             driver->setChecked(i == driverBtn_->currentIndex());
+            driver->setEnabled(driverBtn_->isEnabled());
             connect(driver, &QAction::triggered, this,
                     [this, i] { applyPlaybackDriver(i); });
         }

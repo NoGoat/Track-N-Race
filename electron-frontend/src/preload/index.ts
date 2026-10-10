@@ -245,6 +245,14 @@ const recordingBridge = {
     ipcRenderer.on('recording-error', handler)
     return () => ipcRenderer.removeListener('recording-error', handler)
   },
+  onChoice: (cb: (choice: unknown) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, choice: unknown) => cb(choice)
+    ipcRenderer.on('recording-choice', handler)
+    return () => ipcRenderer.removeListener('recording-choice', handler)
+  },
+  pendingChoices: (): Promise<unknown> => ipcRenderer.invoke('recording:pending-choices'),
+  resolveChoice: (id: number, choice: 'driver_only' | 'all_drivers' | 'both'): Promise<boolean> =>
+    ipcRenderer.invoke('recording:resolve-choice', id, choice),
 }
 
 const updateBridge = {
@@ -258,6 +266,7 @@ const pairingBridge = {
   setEnabled: (enabled: boolean): Promise<unknown> => ipcRenderer.invoke('pairing:set-enabled', enabled),
   openWindow: (): Promise<unknown> => ipcRenderer.invoke('pairing:open-window'),
   closeWindow: (): Promise<unknown> => ipcRenderer.invoke('pairing:close-window'),
+  respond: (approve: boolean): Promise<unknown> => ipcRenderer.invoke('pairing:respond', approve),
   removeDevice: (id: string): Promise<unknown> => ipcRenderer.invoke('pairing:remove-device', id),
   onState: (callback: (state: unknown) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)

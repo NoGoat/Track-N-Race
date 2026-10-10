@@ -117,6 +117,12 @@ public:
     // effect on restart because Qt fixes one API per top-level window.
     static void reapplyRenderSettings();
 
+    // Screenshot support: every visible chart renders its GPU traces at `scale`
+    // device pixels per logical pixel (2 for HiDPI captures on a 1x screen)
+    // until called again with 0. Grabbing the window then picks up the
+    // high-resolution frames.
+    static void setCaptureScale(qreal scale);
+
     // Memory-log snapshot across every live chart: retained series samples,
     // CPU staging caches, and allocated QRhi buffer bytes (GUI thread only).
     static QJsonObject retentionDiagnostics();

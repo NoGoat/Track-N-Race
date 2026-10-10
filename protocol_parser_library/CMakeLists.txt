@@ -84,6 +84,34 @@ if(NOT TARGET xlsxwriter)
     FetchContent_MakeAvailable(libxlsxwriter)
 endif()
 
+# Paired-display transport security. libsodium supplies X25519, Ed25519,
+# ChaCha20-Poly1305 and BLAKE2b; CPace (by libsodium's author) is the PAKE
+# behind matching-code pairing, so a short code is never sent and cannot be
+# brute-forced offline. libsodium-cmake wraps the unmodified 1.0.20 sources.
+if(NOT TARGET sodium)
+    set(SODIUM_DISABLE_TESTS ON CACHE BOOL "" FORCE)
+    set(SODIUM_MINIMAL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(Sodium
+        GIT_REPOSITORY https://github.com/robinlinden/libsodium-cmake.git
+        GIT_TAG 9b2848dfc1b917a9410f0de9d81059b26cbfaa8d
+        GIT_SUBMODULES libsodium)
+    FetchContent_MakeAvailable(Sodium)
+endif()
+
+FetchContent_Declare(cpace
+    GIT_REPOSITORY https://github.com/jedisct1/cpace.git
+    GIT_TAG 41701e79157d6d4d5792eac5713cc4008447e5a0)
+# No CMakeLists upstream, so this only downloads the sources.
+FetchContent_MakeAvailable(cpace)
+if(NOT TARGET tnrp_cpace)
+    enable_language(C)
+    add_library(tnrp_cpace STATIC ${cpace_SOURCE_DIR}/src/crypto_cpace.c)
+    target_include_directories(tnrp_cpace PUBLIC ${cpace_SOURCE_DIR}/src)
+    target_link_libraries(tnrp_cpace PUBLIC sodium)
+    set_target_properties(tnrp_cpace PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+set_target_properties(sodium PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 add_library(tnrp STATIC
     src/protocols/protocol.cpp
     src/protocols/f1_24.cpp
@@ -109,6 +137,7 @@ add_library(tnrp STATIC
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp
+    src/PairCrypto.cpp
     src/PairDiscovery.cpp
     src/PairLapData.cpp
     src/PairServer.cpp
@@ -123,9 +152,13 @@ target_include_directories(tnrp
 
 # glaze is in public headers. Both compression libraries are implementation
 # details, but static-library consumers still receive their link dependencies.
-target_link_libraries(tnrp PUBLIC glaze::glaze xlsxwriter PRIVATE zlibstatic libzstd_static)
+target_link_libraries(tnrp PUBLIC glaze::glaze xlsxwriter PRIVATE zlibstatic libzstd_static
+    sodium tnrp_cpace)
 
 # PairDiscovery and PairServer use the native socket API in both backend modes.
+# DNS-SD advertising uses the OS responder where there is one: Windows 10
+# 1809+ DnsServiceRegister (loaded at run time from dnsapi.dll) and Apple's
+# dns_sd. Elsewhere libtnrp answers mDNS itself.
 if(WIN32)
     target_link_libraries(tnrp PUBLIC ws2_32)
 endif()
@@ -174,6 +207,10 @@ if(TNRP_BUILD_TESTS)
     target_include_directories(tnrd_v6_recovery PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(tnrd_v6_recovery PRIVATE tnrp)
     add_test(NAME tnrd_v6_recovery COMMAND tnrd_v6_recovery)
+    add_executable(tnrd_v6_recording_scopes tests/TnrdV6RecordingScopes.cpp)
+    target_include_directories(tnrd_v6_recording_scopes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(tnrd_v6_recording_scopes PRIVATE tnrp)
+    add_test(NAME tnrd_v6_recording_scopes COMMAND tnrd_v6_recording_scopes)
     add_executable(tnrd_reader_versions tests/TnrdReaderVersions.cpp)
     target_include_directories(tnrd_reader_versions PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(tnrd_reader_versions PRIVATE tnrp)

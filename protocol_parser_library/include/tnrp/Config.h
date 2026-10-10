@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "tnrp/RecordingScope.h"
 #include "tnrp/TeamColors.h"
 
 namespace tnrp {
@@ -45,6 +46,9 @@ struct Config {
     Override    protocol       = Override::Auto;
     bool        loggingEnabled = false;
     std::string outputDirectory;        // where .tnrd files are written
+    // Which drivers each session category records (desktop hosts only; see
+    // TnrdWriter::setRecordingScopes). Every category defaults to all drivers.
+    RecordingScopes recordingScopes;
     int         strategyMinimumStops = 1;
     TeamColorOverrides teamColorOverrides;
 

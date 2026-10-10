@@ -673,6 +673,16 @@ export interface RecordingErrorMsg {
   path: string
 }
 
+// An Ask-scope recording that wrote both files; the user keeps one or both.
+export interface RecordingChoiceMsg {
+  id: number
+  allPath: string
+  driverPath: string
+  sessionName: string
+  trackName: string
+}
+export type RecordingChoice = 'driver_only' | 'all_drivers' | 'both'
+
 export interface AvailableUpdate {
   currentVersion: string
   latestVersion: string
@@ -688,6 +698,8 @@ export interface PairServiceState {
   pairingExpiresAt: number
   matchingCode: string | null
   qrPayload: string | null
+  // A phone that proved the QR or code and waits for this desktop to allow it.
+  pendingDevice: { id: string; name: string } | null
   devices: Array<{ id: string; name: string; pairedAt: number; lastSeenAt: number; connected: boolean }>
   error: string | null
 }
@@ -754,6 +766,9 @@ declare global {
     }
     recordingBridge: {
       onError: (cb: (error: RecordingErrorMsg) => void) => () => void
+      onChoice: (cb: (choice: RecordingChoiceMsg) => void) => () => void
+      pendingChoices: () => Promise<RecordingChoiceMsg[]>
+      resolveChoice: (id: number, choice: RecordingChoice) => Promise<boolean>
     }
     updateBridge: {
       checkOnStartup: () => Promise<AvailableUpdate | null>
@@ -765,6 +780,7 @@ declare global {
       setEnabled: (enabled: boolean) => Promise<PairServiceState>
       openWindow: () => Promise<PairServiceState>
       closeWindow: () => Promise<PairServiceState>
+      respond: (approve: boolean) => Promise<PairServiceState>
       removeDevice: (id: string) => Promise<PairServiceState>
       onState: (callback: (state: PairServiceState) => void) => () => void
     }

@@ -307,12 +307,16 @@ public:
     // happens. detachFile() writes the laps still being built and the index,
     // as finish() would, and closes the file; the session carries on in
     // memory. A rewind into committed laps rewrites the file from memory.
-    bool attachFile(const std::string& path, const HeaderRow&, std::string*);
+    // Up to two files can be attached at once. A `playerOnly` file takes only
+    // the player's chunks, laps and driver header; the shared records (session,
+    // participants, events) go to every file.
+    bool attachFile(const std::string& path, const HeaderRow&, std::string*, bool playerOnly = false);
+    // Finishes every attached file.
     bool detachFile(std::string*);
     bool hasFile() const;
-    // openMemory() only: why the attached file was closed where it failed,
-    // once; empty otherwise. The session itself is unaffected.
-    std::string takeFileError();
+    // openMemory() only: each attached file closed where a write failed, as
+    // (path, why), once; empty otherwise. The session itself is unaffected.
+    std::vector<std::pair<std::string, std::string>> takeFileErrors();
     bool append(const std::vector<V6SourceRow>&, std::string*);
     bool appendViews(const std::vector<std::pair<std::string_view, float>>&, std::string*);
     bool appendRow(std::string_view, float, std::string*);

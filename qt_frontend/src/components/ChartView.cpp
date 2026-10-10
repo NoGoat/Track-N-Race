@@ -502,8 +502,21 @@ public:
     }
     QRhi* rhiDevice() const { return device; }
 
+    // Render at `scale` device pixels per logical pixel regardless of the
+    // screen (2x screenshots on a 1x display); 0 returns to the screen's ratio.
+    void setCaptureScale(qreal scale) {
+        setFixedColorBufferSize(scale > 0 ? (QSizeF(size()) * scale).toSize() : QSize());
+    }
+
 
 protected:
+    // Device pixels per logical pixel of the target being drawn: the screen's
+    // ratio, unless a capture fixed the colour buffer to another scale.
+    double renderScale(QSize targetSize) const {
+        if (fixedColorBufferSize().isEmpty() || width() <= 0) return devicePixelRatioF();
+        return double(targetSize.width()) / width();
+    }
+
     // Called whenever QRhiWidget (re)creates its texture: first show and resize.
     void initialize(QRhiCommandBuffer*) override {
         if (device != rhi()) { releaseResources(); device = rhi(); }
@@ -603,7 +616,7 @@ protected:
         // reference lines, crosshairs and nearest-point markers). Geometry is
         // in logical pixels; hairlines snap to device-pixel centres and stay
         // one physical pixel wide, like the cosmetic pens they replace.
-        const double dpr = devicePixelRatioF();
+        const double dpr = renderScale(targetSize);
         const QSizeF logical(targetSize.width() / dpr, targetSize.height() / dpr);
         const float hair = float(.5 / dpr);
         auto snap = [dpr](double v) { return (std::floor(v * dpr) + .5) / dpr; };
@@ -797,7 +810,7 @@ protected:
         const QVector<ChromeDraw> underDraws = uploadChrome(under, 0, logical, up);
         const QVector<ChromeDraw> overDraws = uploadChrome(over, under.size(), logical, up);
         cb->beginPass(target.get(), palette().color(QPalette::Window), {1, 0}, up);
-        const double ratio = devicePixelRatioF();
+        const double ratio = dpr;
         auto viewport = [&](int id) {
             const QRect r = (*panels)[id].plot;
             const double left = r.x() * ratio, right = (r.x() + r.width()) * ratio;
@@ -1911,6 +1924,7 @@ QJsonObject ChartView::retentionDiagnostics() {
 }
 
 void ChartView::reapplyRenderSettings() { for (auto* v : liveCharts()) { v->d_->canvas->applySettings(); v->d_->overlay->update(); } }
+void ChartView::setCaptureScale(qreal scale) { for (auto* v : liveCharts()) if (v->isVisible()) v->d_->canvas->setCaptureScale(scale); }
 
 int ChartView::addAxis(const AxisSpec& s, int panel) {
     panel = qBound(0, panel, d_->panels.size()-1); Axis a; a.side=s.side; a.lo=s.min; a.hi=s.max;

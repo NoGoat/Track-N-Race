@@ -13,6 +13,8 @@ constexpr char kGlazeMit[] = R"TNR_GLAZE(@GLAZE_MIT_TEXT@)TNR_GLAZE";
 constexpr char kZlib[] = R"TNR_ZLIB(@ZLIB_LICENSE_TEXT@)TNR_ZLIB";
 constexpr char kZstandardBsd3[] = R"TNR_ZSTD(@ZSTD_BSD3_TEXT@)TNR_ZSTD";
 constexpr char kLibxlsxwriterBsd2[] = R"TNR_XLSX(@LIBXLSXWRITER_BSD2_TEXT@)TNR_XLSX";
+constexpr char kLibsodiumIsc[] = R"TNR_SODIUM(@LIBSODIUM_ISC_TEXT@)TNR_SODIUM";
+constexpr char kCpaceBsd2[] = R"TNR_CPACE(@CPACE_BSD2_TEXT@)TNR_CPACE";
 #ifdef TNR_MINIMAL_QT
 constexpr char kLgpl3[] = R"TNR_LGPL3(@LGPL3_TEXT@)TNR_LGPL3";
 #endif
@@ -33,6 +35,12 @@ constexpr Attribution kAttributions[] = {
     {"libxlsxwriter", "1.2.4", "BSD 2-Clause",
      "Copyright © 2014-2026 John McNamara",
      "https://libxlsxwriter.github.io", kLibxlsxwriterBsd2},
+    {"libsodium", "1.0.20", "ISC",
+     "Copyright © 2013-2026 Frank Denis",
+     "https://libsodium.org", kLibsodiumIsc},
+    {"CPace", "41701e7", "BSD 2-Clause",
+     "Copyright © 2020-2021 Frank Denis",
+     "https://github.com/jedisct1/cpace", kCpaceBsd2},
 #ifdef TNR_MINIMAL_QT
     {"Qt", QT_VERSION_STR, "LGPL v3",
      "Copyright © The Qt Company Ltd. and other contributors",

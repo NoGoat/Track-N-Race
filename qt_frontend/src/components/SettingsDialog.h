@@ -153,6 +153,8 @@ private:
     QWidget*      pairingContent_            = nullptr;
     QWidget*      pairingClosed_             = nullptr;
     QWidget*      pairingOpen_               = nullptr;
+    QWidget*      pairingPending_            = nullptr;
+    QLabel*       pairingPendingLabel_       = nullptr;
     QLabel*       pairingQrLabel_            = nullptr;
     QLabel*       pairingCodeLabel_          = nullptr;
     QLabel*       pairingErrorLabel_         = nullptr;

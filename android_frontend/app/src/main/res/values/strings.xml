@@ -92,7 +92,7 @@
     <string name="scanner_instruction_title">Find the desktop QR code</string>
     <string name="scanner_instruction_body">Keep the code inside the frame. Pairing starts automatically.</string>
     <string name="pairing_discovered">DISCOVERED DESKTOPS</string>
-    <string name="pairing_code_hint">6-digit matching code</string>
+    <string name="pairing_code_hint">8-character matching code</string>
     <string name="pairing_connect_code">Connect with code</string>
     <string name="pairing_select_desktop">Select a discovered desktop first.</string>
     <string name="pairing_selected">Selected %1$s — enter the code shown there.</string>

@@ -295,7 +295,8 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                 }
 
                 val disconnected = store.settings.source == PairedTelemetryClient.SOURCE_PAIRED &&
-                    (store.sourceStatus.state == "error" || store.sourceStatus.state == "disconnected")
+                    (store.sourceStatus.state == "error" || store.sourceStatus.state == "disconnected" ||
+                        store.sourceStatus.state == "reconnecting")
                 AnimatedVisibility(
                     visible = disconnected && screen != AppScreen.PAIRING,
                     modifier = Modifier.align(Alignment.BottomCenter),

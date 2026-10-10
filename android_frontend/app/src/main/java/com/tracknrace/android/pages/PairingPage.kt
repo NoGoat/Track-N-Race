@@ -31,10 +31,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.tracknrace.android.TelemetryController
 import com.tracknrace.android.TelemetryStore
+
+// The desktop's code alphabet: no 0/O or 1/I/L to confuse.
+private const val CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+private const val CODE_LENGTH = 8
 
 @Composable
 internal fun PairingScreen(
@@ -124,10 +129,16 @@ internal fun PairingScreen(
         item {
             OutlinedTextField(
                 value = code,
-                onValueChange = { value -> code = value.filter(Char::isDigit).take(6) },
+                onValueChange = { value ->
+                    code = value.uppercase().filter { it in CODE_ALPHABET }.take(CODE_LENGTH)
+                },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("6-digit matching code") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                label = { Text("8-character matching code") },
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Characters,
+                    autoCorrectEnabled = false,
+                    keyboardType = KeyboardType.Ascii,
+                ),
                 singleLine = true,
             )
         }
@@ -135,7 +146,7 @@ internal fun PairingScreen(
             Button(
                 onClick = { telemetry.pairCode(selected, code) },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = selected != null && code.isNotEmpty() && !store.pairingBusy,
+                enabled = selected != null && code.length == CODE_LENGTH && !store.pairingBusy,
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -150,6 +161,15 @@ internal fun PairingScreen(
                     }
                     Text(if (store.pairingBusy) "Connecting…" else "Pair selected desktop")
                 }
+            }
+        }
+        if (store.pairingBusy && store.sourceStatus.state == "awaiting_approval") {
+            item {
+                Text(
+                    "Allow this phone on the desktop to finish pairing.",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                )
             }
         }
     }

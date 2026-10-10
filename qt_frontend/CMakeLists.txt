@@ -60,6 +60,8 @@ set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    src/PairStateVault.cpp
+    src/PairStateVault.h
     src/AppToolbar.cpp
     src/AppToolbar.h
     src/PlaybackController.cpp
@@ -221,8 +223,11 @@ target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSIO
 target_link_libraries(native_recorder PRIVATE tnrp ${QT_LIBS})
 if(WIN32)
     # GetProcessMemoryInfo/GetGuiResources back the optional one-second
-    # diagnostics sampler.
-    target_link_libraries(native_recorder PRIVATE psapi user32)
+    # diagnostics sampler. crypt32 is DPAPI for the saved pairing state.
+    target_link_libraries(native_recorder PRIVATE psapi user32 crypt32)
+elseif(UNIX AND NOT APPLE)
+    # PairStateVault loads libsecret with dlopen.
+    target_link_libraries(native_recorder PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 qt_add_shaders(native_recorder "tnr_chart_shaders"

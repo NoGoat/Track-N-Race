@@ -23,6 +23,8 @@ import zlibLicense from '../assets/licenses/zlib.txt?raw'
 import zstandardLicense from '../assets/licenses/zstandard.txt?raw'
 import glazeLicense from '../assets/licenses/glaze.txt?raw'
 import libxlsxwriterLicense from '../assets/licenses/libxlsxwriter.txt?raw'
+import libsodiumLicense from '../assets/licenses/libsodium.txt?raw'
+import cpaceLicense from '../assets/licenses/cpace.txt?raw'
 import nodeAddonApiLicense from '../assets/licenses/node-addon-api.txt?raw'
 
 export type AttributionCategory = 'app' | 'font' | 'node-addon'
@@ -202,6 +204,22 @@ export const ATTRIBUTIONS: Attribution[] = [
     license: 'BSD-2-Clause',
     homepage: 'https://libxlsxwriter.github.io',
     licenseText: libxlsxwriterLicense,
+    category: 'node-addon',
+  },
+  {
+    name: 'libsodium',
+    version: '1.0.20',
+    license: 'ISC',
+    homepage: 'https://libsodium.org',
+    licenseText: libsodiumLicense,
+    category: 'node-addon',
+  },
+  {
+    name: 'CPace',
+    version: '41701e7',
+    license: 'BSD-2-Clause',
+    homepage: 'https://github.com/jedisct1/cpace',
+    licenseText: cpaceLicense,
     category: 'node-addon',
   },
   {

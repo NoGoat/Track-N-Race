@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 
+#include "tnrp/RecordingScope.h"
 #include "tnrp/TnrdFormat.h"
 #include "tnrp/control_rows.h"
 
@@ -39,7 +40,9 @@ namespace tnrp {
 // With setRetainSession() it is also the live session's V6 store: its one V6
 // writer keeps the whole session in memory whether or not anything is
 // recorded, and a recording attaches a file to that writer, starting with
-// everything held so far. Live history reads its memory images.
+// everything held so far. Live history reads its memory images. A retained
+// session's recording follows the RecordingScopes: one file of all drivers,
+// one of the player alone, or both side by side.
 //
 // Not thread-safe; the engine serializes all calls.
 class TnrdWriter {
@@ -47,6 +50,8 @@ public:
     using ErrorHandler = std::function<void(const std::string& operation,
                                             const std::string& message,
                                             const std::string& path)>;
+    // A retained session's recording finished (see RecordingFinishedRow).
+    using FinishedHandler = std::function<void(const RecordingFinishedRow&)>;
 
     struct MemoryStats {
         bool streamActive{};
@@ -136,7 +141,7 @@ public:
     };
     using MemoryImageCallback = std::function<void(std::shared_ptr<const detail::V6MemoryImage>)>;
 
-    explicit TnrdWriter(ErrorHandler errorHandler = {});
+    explicit TnrdWriter(ErrorHandler errorHandler = {}, FinishedHandler finishedHandler = {});
     ~TnrdWriter();
 
     // Source-compatible default recording entry point: writes TNRD V6.
@@ -149,6 +154,10 @@ public:
     [[deprecated("TNRD V1/gzip writing is retained only for compatibility; use setLoggingZstd")]]
     void setLoggingGzip(bool enabled, const std::string& outputDir);
     bool loggingEnabled() const { return wantRecord_; }
+    // Which drivers each session category records. Applies from the next
+    // recording file; one already open keeps the scope it started with.
+    // Only a retained session honours it; other recordings keep every driver.
+    void setRecordingScopes(const RecordingScopes& scopes);
 
     // Cheap atomic mirror of "logging enabled" intent, updated synchronously in
     // setLogging(). The engine checks this before doing any per-packet recording
@@ -173,8 +182,9 @@ public:
     // the UDP thread. flushToDisk keeps the stream open; closeActiveStream also
     // finalizes it. Both are safe to call from Engine control/shutdown threads.
     // A retained session survives closeActiveStream; only its file closes.
+    // `reason` is reported in RecordingFinishedRow; "shutdown" reports nothing.
     void flushToDisk();
-    void closeActiveStream();
+    void closeActiveStream(const std::string& reason = "closed");
     MemoryStats memoryStats() const;
 
     // Keep the live session's V6 writer in memory (see the class comment).
@@ -193,7 +203,7 @@ private:
     struct BufferEntry { std::string line; float sessionTime; };
 
     enum class EventType { SetLogging, Rewind, NotePacket, Record, Flush, Close,
-                           SetRetain, ResetSession, MemoryImage };
+                           SetRetain, ResetSession, MemoryImage, SetScopes };
 
     struct WriterEvent {
         EventType             type;
@@ -212,6 +222,8 @@ private:
         std::shared_ptr<std::promise<void>> completion;
         std::shared_ptr<const detail::V6ImageFilter> imageFilter;
         MemoryImageCallback   imageDone;
+        RecordingScopes       scopes;
+        std::string           reason;  // Close: why, for RecordingFinishedRow
     };
 
     static constexpr float BUFFER_WINDOW_S = 30.0f;
@@ -247,6 +259,15 @@ private:
     std::unique_ptr<detail::TnrdOutputStream> activeStream_;
     std::unique_ptr<detail::TnrdV6Writer> v6Writer_;
     std::string activePath_;
+    // A retained session's recording: its files (empty when not written),
+    // the scope it started with, and what the finished row reports.
+    RecordingScopes scopes_;
+    RecordingScope activeScope_ = RecordingScope::AllDrivers;
+    std::string activeAllPath_;
+    std::string activeDriverPath_;
+    int         activeSessionType_  = -1;
+    std::string activeSessionName_;
+    std::string activeTrackName_;
     int         currentTrackId_     = -1;
     int         currentSessionType_ = -1;
     float       lastSessionTime_    = -1.0f;
@@ -263,6 +284,7 @@ private:
     uint64_t                                      lastRollingDrainMs_{};
     std::unordered_map<std::string, std::string> dedupeCache_;
     ErrorHandler                                  errorHandler_;
+    FinishedHandler                               finishedHandler_;
     std::string                                   lastReportedError_;
     mutable std::mutex                            memoryStatsMutex_;
     MemoryStats                                   publishedMemoryStats_;
@@ -313,7 +335,8 @@ private:
     bool flushBufferToDisk(size_t entryCount, bool allowV4Checkpoint = true);
     void discardRollingPrefix(size_t entryCount);
     void flushToDiskOnWriterThread();
-    void closeActiveStreamOnWriterThread();
+    void closeActiveStreamOnWriterThread(const char* reason = "closed");
+    void reportFinished(const char* reason);
     void flushOldBufferEntries();
     void truncateTimeline(float newSessionTime, uint64_t wallClockMs);
     bool isDuplicate(const std::string& type, const std::string& json);

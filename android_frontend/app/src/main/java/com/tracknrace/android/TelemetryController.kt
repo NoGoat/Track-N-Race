@@ -14,7 +14,7 @@ import java.util.concurrent.Executors
 internal class TelemetryController(
     activity: Activity,
     internal val store: TelemetryStore,
-) : NativeTelemetry.Listener, PairedTelemetryClient.Listener, NativePairDiscovery.Listener {
+) : NativeTelemetry.Listener, PairedTelemetryClient.Listener, PairDiscovery.Listener {
     companion object {
         private const val UDP_PORT = 20777
         private const val PREF_TIMING_ONE_LINE = "timing_one_line"
@@ -26,7 +26,7 @@ internal class TelemetryController(
     }
     private val directTelemetry = NativeTelemetry(this)
     private val pairedTelemetry = PairedTelemetryClient(context, this)
-    private val discovery = NativePairDiscovery(this)
+    private val discovery = PairDiscovery(context, this)
     internal val analysis = AnalysisController(
         context,
         store,
@@ -38,8 +38,9 @@ internal class TelemetryController(
     @Volatile private var sourceGeneration = 0
     @Volatile private var pairingPending = false
     @Volatile private var discoveryRequested = false
+    // Looking for the saved desktop at a new address while reconnecting.
+    @Volatile private var desktopSearch = false
     @Volatile private var qrScannerActive = false
-    private var multicastLock: WifiManager.MulticastLock? = null
     private var lowLatencyLock: WifiManager.WifiLock? = null
 
     init {
@@ -56,12 +57,13 @@ internal class TelemetryController(
         holdLowLatencyWifi(true)
         sourceRequested = true
         restartConfiguredSource()
-        if (discoveryRequested) startDiscoveryInternal()
+        if (discoveryRequested) startDiscoveryInternal(clear = true)
     }
 
     fun onHostStop() {
         if (qrScannerActive) return
         holdLowLatencyWifi(false)
+        desktopSearch = false
         stopDiscoveryInternal()
         suspendSourcesAsync()
     }
@@ -73,6 +75,7 @@ internal class TelemetryController(
         sourceGeneration++
         pairingPending = false
         discoveryRequested = false
+        desktopSearch = false
         qrScannerActive = false
         stopDiscoveryInternal()
         holdLowLatencyWifi(false)
@@ -183,21 +186,16 @@ internal class TelemetryController(
 
     fun startDiscovery() {
         discoveryRequested = true
-        startDiscoveryInternal()
+        startDiscoveryInternal(clear = true)
     }
 
-    private fun startDiscoveryInternal() {
-        stopDiscoveryInternal()
-        store.clearDiscovery()
-        val wifi = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        multicastLock = wifi?.createMulticastLock("track-n-race-compose-pairing")?.apply {
-            setReferenceCounted(false)
-            acquire()
+    // DNS-SD runs in the system mDNS stack, so no multicast lock is needed.
+    private fun startDiscoveryInternal(clear: Boolean) {
+        if (clear) {
+            discovery.stop()
+            store.clearDiscovery()
         }
-        discovery.start()?.let { error ->
-            stopDiscoveryInternal()
-            store.showMessage("LAN discovery unavailable: $error. QR pairing still works.")
-        }
+        discovery.start()
     }
 
     /**
@@ -231,13 +229,11 @@ internal class TelemetryController(
 
     fun stopDiscovery() {
         discoveryRequested = false
-        stopDiscoveryInternal()
+        if (!desktopSearch) stopDiscoveryInternal()
     }
 
     private fun stopDiscoveryInternal() {
         discovery.stop()
-        multicastLock?.let { if (it.isHeld) it.release() }
-        multicastLock = null
     }
 
     fun qrScanOptions(): ScanOptions = ScanOptions().apply {
@@ -259,15 +255,18 @@ internal class TelemetryController(
     fun pairQr(payload: String) {
         try {
             val uri = Uri.parse(payload)
-            require(uri.scheme == "tnrpair" && uri.host == "v1") { "Unsupported pairing QR" }
+            require(uri.scheme == "tnrpair") { "Unsupported pairing QR" }
+            require(uri.host == "v3") { "Update Track N Race on the desktop, then show the QR again" }
             val serverId = uri.pathSegments.firstOrNull().orEmpty()
             val host = uri.getQueryParameter("h")
             val secret = uri.getQueryParameter("s")
+            val identityKey = uri.getQueryParameter("k")
             val port = uri.getQueryParameter("p")?.toIntOrNull()
             val expiry = uri.getQueryParameter("e")?.toLongOrNull()
             require(
                 serverId.isNotEmpty() && !host.isNullOrEmpty() && !secret.isNullOrEmpty() &&
-                    port != null && expiry != null && expiry >= System.currentTimeMillis(),
+                    !identityKey.isNullOrEmpty() && port != null && expiry != null &&
+                    expiry >= System.currentTimeMillis(),
             ) { "Pairing QR has expired or is incomplete" }
             prepareForPairing()
             pairedTelemetry.pair(
@@ -277,8 +276,8 @@ internal class TelemetryController(
                     host,
                     port,
                 ),
-                secret,
-                null,
+                // The QR pins the desktop's key: no other machine can answer.
+                PairedTelemetryClient.Credential.Qr(identityKey, secret),
             )
         } catch (error: Exception) {
             pairingPending = false
@@ -300,8 +299,8 @@ internal class TelemetryController(
                 desktop.host,
                 desktop.port,
             ),
-            null,
-            code.trim(),
+            // CPace: the code is proven, never sent.
+            PairedTelemetryClient.Credential.Code(code),
         )
     }
 
@@ -326,11 +325,13 @@ internal class TelemetryController(
         if (pairingPending && (state == "error" || state == "disconnected")) {
             pairingPending = false
             store.updatePairingBusy(false)
+            detail?.let(store::showMessage)
         }
         store.updateSource(state, detail)
     }
 
     override fun onPaired() {
+        endDesktopSearch()
         pairingPending = false
         sourceRequested = true
         store.updatePairingBusy(false)
@@ -340,7 +341,21 @@ internal class TelemetryController(
         store.notifyPairingSucceeded()
     }
 
-    override fun onService(service: NativePairDiscovery.Service) {
+    override fun onDesktopReached() = endDesktopSearch()
+
+    override fun onSearchForDesktop(serverId: String) {
+        if (desktopSearch) return
+        desktopSearch = true
+        startDiscoveryInternal(clear = false)
+    }
+
+    private fun endDesktopSearch() {
+        if (!desktopSearch) return
+        desktopSearch = false
+        if (!discoveryRequested) stopDiscoveryInternal()
+    }
+
+    override fun onService(service: PairDiscovery.Service) {
         store.discovered(
             DiscoveredDesktop(
                 service.serverId,
@@ -350,6 +365,17 @@ internal class TelemetryController(
                 service.pairing,
             ),
         )
+        // The saved desktop may have a new address after a DHCP renewal or a
+        // network change; its identity is checked by the handshake.
+        if (desktopSearch) {
+            pairedTelemetry.onDesktopFound(service.serverId, service.address, service.port)
+        }
+    }
+
+    override fun onDiscoveryError(message: String) {
+        if (discoveryRequested) {
+            store.showMessage("LAN discovery unavailable: $message. QR pairing still works.")
+        }
     }
 
     private fun preferences() = RecordingStorage.preferences(context)

@@ -191,6 +191,22 @@ type RestartStatus = 'idle' | 'applying' | 'ok' | 'error'
 type UdpForwardTarget = { address: string; port: number }
 type TeamColorFormat = '2024' | '2025' | '2026'
 type TeamColorPreset = { id: number; name: string; color: string; group: string }
+// Which drivers a recording keeps, per session category (tnrp::RecordingScope).
+type RecordingScope = 'all_drivers' | 'driver_only' | 'both' | 'ask'
+type RecordingScopeCategory = 'practice' | 'qualifying' | 'race' | 'timeTrial'
+const RECORDING_SCOPE_OPTIONS: { value: RecordingScope; label: string }[] = [
+  { value: 'all_drivers', label: 'All Drivers' },
+  { value: 'driver_only', label: 'Driver Only' },
+  { value: 'both', label: 'Both' },
+  { value: 'ask', label: 'Ask' },
+]
+const RECORDING_SCOPE_CATEGORIES: { key: RecordingScopeCategory; label: string }[] = [
+  { key: 'practice', label: 'Practice' },
+  { key: 'qualifying', label: 'Qualifying' },
+  { key: 'race', label: 'Race' },
+  { key: 'timeTrial', label: 'Time Trial' },
+]
+
 type TeamColorCatalog = Record<string, TeamColorPreset[]>
 type TeamColorOverrides = Record<string, Record<string, string>>
 const TEAM_COLOR_SOURCE_OPTIONS: Option<'fixed' | 'livery'>[] = [
@@ -352,6 +368,13 @@ const Settings = memo(function Settings({
   )
   const [updateChecksEnabled, setUpdateChecksEnabled] = useState<boolean>(() => window.electronStore.get('updates.enabled', true) as boolean)
   const [loggingDirectory, setLoggingDirectory] = useState<string>(() => window.electronStore.get('logging.directory', '') as string)
+  const [recordingScopes, setRecordingScopes] = useState<Record<RecordingScopeCategory, RecordingScope>>(() => {
+    const read = (category: RecordingScopeCategory): RecordingScope => {
+      const value = window.electronStore.get(`logging.scope.${category}`, 'all_drivers')
+      return RECORDING_SCOPE_OPTIONS.some(option => option.value === value) ? value as RecordingScope : 'all_drivers'
+    }
+    return { practice: read('practice'), qualifying: read('qualifying'), race: read('race'), timeTrial: read('timeTrial') }
+  })
   
   const [port, setPort]         = useState<number>(() => window.electronStore.get('udp.port', 20777) as number)
   const [addr, setAddr]         = useState<string>(() => window.electronStore.get('udp.bindAddress', '0.0.0.0') as string)
@@ -477,6 +500,11 @@ const Settings = memo(function Settings({
       setLoggingDirectory(dir)
       window.electronStore.set('logging.directory', dir)
     }
+  }
+
+  function handleRecordingScopeChange(category: RecordingScopeCategory, scope: RecordingScope) {
+    setRecordingScopes(current => ({ ...current, [category]: scope }))
+    window.electronStore.set(`logging.scope.${category}`, scope)
   }
 
   function handleLoggingToggle(val: boolean) {
@@ -1282,7 +1310,22 @@ const Settings = memo(function Settings({
       {pairing?.enabled && (
         <>
           <div className="mx-4 my-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-input)]/30 p-4">
-            {!pairing.pairingOpen ? (
+            {pairing.pendingDevice ? (
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-[var(--text-primary)]">Allow {pairing.pendingDevice.name}?</p>
+                  <p className="mt-1 text-[10px] text-[var(--text-muted)]">This phone entered the pairing code. Only allow a phone you recognise.</p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <button className={BUTTON_CLASS} onClick={() => void window.pairingBridge.respond(false).then(setPairing)}>
+                    Deny
+                  </button>
+                  <button className={BUTTON_CLASS} onClick={() => void window.pairingBridge.respond(true).then(setPairing)}>
+                    Allow
+                  </button>
+                </div>
+              </div>
+            ) : !pairing.pairingOpen ? (
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <p className="text-xs font-semibold text-[var(--text-primary)]">Add an Android display</p>
@@ -1297,7 +1340,9 @@ const Settings = memo(function Settings({
                 {pairQr && <img src={pairQr} alt="Desktop pairing QR code" className="h-44 w-44 rounded-lg bg-white p-1" />}
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Matching code</p>
-                  <p className="mt-2 font-mono text-3xl font-bold tracking-[0.3em] text-[var(--text-primary)]">{pairing.matchingCode}</p>
+                  <p className="mt-2 font-mono text-3xl font-bold tracking-[0.2em] text-[var(--text-primary)]">
+                    {pairing.matchingCode ? `${pairing.matchingCode.slice(0, 4)} ${pairing.matchingCode.slice(4)}` : ''}
+                  </p>
                   <p className="mt-3 text-[11px] text-[var(--text-secondary)]">Scan the QR in Android Settings, or select this desktop and enter the same code.</p>
                   <button className={`${BUTTON_CLASS} mt-4`} onClick={() => void window.pairingBridge.closeWindow().then(setPairing)}>
                     Cancel pairing
@@ -1356,6 +1401,19 @@ const Settings = memo(function Settings({
           </button>
         </div>
       </Row>
+      {RECORDING_SCOPE_CATEGORIES.map(({ key, label }) => (
+        <Row
+          key={key}
+          label={`${label} Sessions`}
+          description="Which drivers to save."
+        >
+          <SegmentedControl<RecordingScope>
+            options={RECORDING_SCOPE_OPTIONS}
+            value={recordingScopes[key]}
+            onChange={scope => handleRecordingScopeChange(key, scope)}
+          />
+        </Row>
+      ))}
     </div>
   )
 

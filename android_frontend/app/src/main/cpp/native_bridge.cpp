@@ -3,10 +3,11 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "tnrp/Config.h"
 #include "tnrp/BinaryRows.h"
-#include "tnrp/PairDiscovery.h"
+#include "tnrp/PairCrypto.h"
 #include "tnrp/Engine.h"
 #include "tnrp/Sink.h"
 
@@ -101,10 +102,6 @@ constexpr uint32_t kAndroidRowMask =
 
 std::unique_ptr<AndroidSink> gSink;
 std::unique_ptr<tnrp::Engine> gEngine;
-std::unique_ptr<tnrp::PairDiscoveryBrowser> gDiscovery;
-std::mutex gDiscoveryMutex;
-jobject gDiscoveryReceiver = nullptr;
-jmethodID gDiscoveryCallback = nullptr;
 
 void stopLocked() {
     gEngine.reset();
@@ -165,76 +162,132 @@ Java_com_tracknrace_android_NativeTelemetry_nativeSetRecording(
     gEngine->setLogging(enabled == JNI_TRUE, directory);
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_NativePairDiscovery_nativeStart(
-    JNIEnv* env, jobject receiver) {
-    std::unique_ptr<tnrp::PairDiscoveryBrowser> previous;
-    {
-        std::lock_guard lock(gDiscoveryMutex);
-        previous = std::move(gDiscovery);
-    }
-    if (previous) previous->stop();
-    std::lock_guard lock(gDiscoveryMutex);
-    if (gDiscoveryReceiver) env->DeleteGlobalRef(gDiscoveryReceiver);
-    gDiscoveryReceiver = env->NewGlobalRef(receiver);
-    jclass cls = env->GetObjectClass(receiver);
-    gDiscoveryCallback = env->GetMethodID(cls, "onNativeService",
-        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IZ)V");
-    env->DeleteLocalRef(cls);
-    gDiscovery = std::make_unique<tnrp::PairDiscoveryBrowser>();
-    std::string error;
-    const bool started = gDiscovery->start([](const tnrp::DiscoveredPairService& service) {
-        bool attached = false;
-        JNIEnv* callbackEnv = nullptr;
-        const jint state = gVm->GetEnv(reinterpret_cast<void**>(&callbackEnv), JNI_VERSION_1_6);
-        if (state == JNI_EDETACHED && gVm->AttachCurrentThread(&callbackEnv, nullptr) == JNI_OK)
-            attached = true;
-        if (!callbackEnv) return;
-        jobject receiverRef = nullptr;
-        jmethodID callback = nullptr;
-        {
-            std::lock_guard callbackLock(gDiscoveryMutex);
-            // Keep the receiver alive after releasing the mutex. Pairing-screen
-            // disposal and scanner lifecycle can call nativeStop() here and
-            // delete the global reference while this callback is in flight.
-            if (gDiscoveryReceiver)
-                receiverRef = callbackEnv->NewLocalRef(gDiscoveryReceiver);
-            callback = gDiscoveryCallback;
-        }
-        if (receiverRef && callback) {
-            jstring id = callbackEnv->NewStringUTF(service.serverId.c_str());
-            jstring name = callbackEnv->NewStringUTF(service.name.c_str());
-            jstring address = callbackEnv->NewStringUTF(service.address.c_str());
-            callbackEnv->CallVoidMethod(receiverRef, callback, id, name, address,
-                static_cast<jint>(service.port), service.pairing ? JNI_TRUE : JNI_FALSE);
-            callbackEnv->DeleteLocalRef(id);
-            callbackEnv->DeleteLocalRef(name);
-            callbackEnv->DeleteLocalRef(address);
-            if (callbackEnv->ExceptionCheck()) callbackEnv->ExceptionClear();
-        }
-        if (receiverRef) callbackEnv->DeleteLocalRef(receiverRef);
-        if (attached) gVm->DetachCurrentThread();
-    }, &error);
-    if (!started) {
-        gDiscovery.reset();
-        env->DeleteGlobalRef(gDiscoveryReceiver);
-        gDiscoveryReceiver = nullptr;
-        gDiscoveryCallback = nullptr;
-        return env->NewStringUTF(error.c_str());
-    }
-    return nullptr;
+
+// ── Paired desktop channel ───────────────────────────────────────────────
+// The handshake and frame encryption are libtnrp's PairCrypto, the same code
+// the desktop runs. Kotlin serialises calls per channel.
+
+namespace {
+
+struct PairChannelHandle {
+    tnrp::pair::ClientHandshake handshake;
+};
+
+PairChannelHandle* channelOf(jlong handle) {
+    return reinterpret_cast<PairChannelHandle*>(static_cast<intptr_t>(handle));
+}
+
+std::string utf8(JNIEnv* env, jstring value) {
+    if (!value) return {};
+    const char* chars = env->GetStringUTFChars(value, nullptr);
+    if (!chars) return {};
+    std::string out(chars);
+    env->ReleaseStringUTFChars(value, chars);
+    return out;
+}
+
+jstring javaString(JNIEnv* env, const std::string& value) {
+    return env->NewStringUTF(value.c_str());
+}
+
+jbyteArray javaBytes(JNIEnv* env, const std::vector<uint8_t>& value) {
+    jbyteArray out = env->NewByteArray(static_cast<jsize>(value.size()));
+    if (out && !value.empty())
+        env->SetByteArrayRegion(out, 0, static_cast<jsize>(value.size()),
+                                reinterpret_cast<const jbyte*>(value.data()));
+    return out;
+}
+
+} // namespace
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_tracknrace_android_PairChannel_nativeNew(JNIEnv*, jobject) {
+    return static_cast<jlong>(reinterpret_cast<intptr_t>(new PairChannelHandle()));
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativePairDiscovery_nativeStop(JNIEnv* env, jobject) {
-    std::unique_ptr<tnrp::PairDiscoveryBrowser> browser;
-    {
-        std::lock_guard lock(gDiscoveryMutex);
-        browser = std::move(gDiscovery);
-    }
-    if (browser) browser->stop();
-    std::lock_guard lock(gDiscoveryMutex);
-    if (gDiscoveryReceiver) env->DeleteGlobalRef(gDiscoveryReceiver);
-    gDiscoveryReceiver = nullptr;
-    gDiscoveryCallback = nullptr;
+Java_com_tracknrace_android_PairChannel_nativeFree(JNIEnv*, jobject, jlong handle) {
+    delete channelOf(handle);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_tracknrace_android_PairChannel_nativeBegin(
+    JNIEnv* env, jobject, jlong handle, jint mode, jstring serverId,
+    jstring identityKey, jstring code) {
+    auto* channel = channelOf(handle);
+    if (!channel) return javaString(env, "Pairing channel is closed");
+    const auto chosen = mode == 1 ? tnrp::pair::Mode::Qr
+        : mode == 2 ? tnrp::pair::Mode::Code : tnrp::pair::Mode::Resume;
+    std::string error;
+    if (channel->handshake.begin(chosen, utf8(env, serverId), utf8(env, identityKey),
+                                 utf8(env, code), &error)) return nullptr;
+    return javaString(env, error.empty() ? "Could not start the connection" : error);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_tracknrace_android_PairChannel_nativeHello(JNIEnv* env, jobject, jlong handle) {
+    auto* channel = channelOf(handle);
+    return javaString(env, channel ? channel->handshake.helloJson() : std::string{});
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_tracknrace_android_PairChannel_nativeAccept(
+    JNIEnv* env, jobject, jlong handle, jstring serverHello) {
+    auto* channel = channelOf(handle);
+    if (!channel) return javaString(env, "invalid_server_hello");
+    std::string error;
+    if (channel->handshake.accept(utf8(env, serverHello), &error)) return nullptr;
+    return javaString(env, error.empty() ? "invalid_server_hello" : error);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_tracknrace_android_PairChannel_nativeIdentityKey(JNIEnv* env, jobject, jlong handle) {
+    auto* channel = channelOf(handle);
+    return javaString(env, channel ? channel->handshake.identityKey() : std::string{});
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_tracknrace_android_PairChannel_nativeServerId(JNIEnv* env, jobject, jlong handle) {
+    auto* channel = channelOf(handle);
+    return javaString(env, channel ? channel->handshake.serverId() : std::string{});
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_tracknrace_android_PairChannel_nativeConfirmation(JNIEnv* env, jobject, jlong handle) {
+    auto* channel = channelOf(handle);
+    return javaString(env, channel ? channel->handshake.confirmation() : std::string{});
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_tracknrace_android_PairChannel_nativeSeal(
+    JNIEnv* env, jobject, jlong handle, jbyteArray text) {
+    auto* channel = channelOf(handle);
+    if (!channel || !text || !channel->handshake.sender().ready()) return nullptr;
+    const jsize length = env->GetArrayLength(text);
+    std::vector<uint8_t> plain(static_cast<size_t>(length));
+    if (length > 0)
+        env->GetByteArrayRegion(text, 0, length, reinterpret_cast<jbyte*>(plain.data()));
+    return javaBytes(env, channel->handshake.sender().seal(
+        tnrp::pair::kFrameText, plain.data(), plain.size()));
+}
+
+// Returns the payload and writes its kind (1 text, 2 binary) to kindOut[0];
+// null when the frame fails authentication.
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_tracknrace_android_PairChannel_nativeOpen(
+    JNIEnv* env, jobject, jlong handle, jbyteArray frame, jintArray kindOut) {
+    auto* channel = channelOf(handle);
+    if (!channel || !frame) return nullptr;
+    const jsize length = env->GetArrayLength(frame);
+    std::vector<uint8_t> sealed(static_cast<size_t>(length));
+    if (length > 0)
+        env->GetByteArrayRegion(frame, 0, length, reinterpret_cast<jbyte*>(sealed.data()));
+    uint8_t kind = 0;
+    std::vector<uint8_t> plain;
+    if (!channel->handshake.receiver().open(sealed.data(), sealed.size(), kind, plain))
+        return nullptr;
+    const jint kindValue = kind;
+    if (kindOut && env->GetArrayLength(kindOut) > 0)
+        env->SetIntArrayRegion(kindOut, 0, 1, &kindValue);
+    return javaBytes(env, plain);
 }

@@ -429,6 +429,7 @@ public:
             InstanceMethod("setLogging", &TNRPAddon::SetLogging),
             InstanceMethod("setLoggingZstd", &TNRPAddon::SetLoggingZstd),
             InstanceMethod("setLoggingGzip", &TNRPAddon::SetLoggingGzip),
+            InstanceMethod("setRecordingScopes", &TNRPAddon::SetRecordingScopes),
             InstanceMethod("flushRecording", &TNRPAddon::FlushRecording),
             InstanceMethod("setDataRequirements", &TNRPAddon::SetDataRequirements),
             InstanceMethod("playerLoad", &TNRPAddon::PlayerLoad),
@@ -455,6 +456,7 @@ public:
             InstanceMethod("pairStop", &TNRPAddon::PairStop),
             InstanceMethod("pairOpenWindow", &TNRPAddon::PairOpenWindow),
             InstanceMethod("pairCloseWindow", &TNRPAddon::PairCloseWindow),
+            InstanceMethod("pairRespond", &TNRPAddon::PairRespond),
             InstanceMethod("pairRemoveDevice", &TNRPAddon::PairRemoveDevice),
             InstanceMethod("pairGetState", &TNRPAddon::PairGetState),
             InstanceMethod("telemetryRetention", &TNRPAddon::TelemetryRetention),
@@ -1085,6 +1087,12 @@ private:
         return PairGetState(info);
     }
 
+    Napi::Value PairRespond(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1 && info[0].IsBoolean())
+            engine->pairRespond(info[0].As<Napi::Boolean>().Value());
+        return PairGetState(info);
+    }
+
     Napi::Value PairRemoveDevice(const Napi::CallbackInfo& info) {
         if (engine && info.Length() >= 1 && info[0].IsString())
             engine->pairRemoveDevice(info[0].As<Napi::String>().Utf8Value());
@@ -1564,6 +1572,27 @@ private:
             bool enabled = info[0].As<Napi::Boolean>().Value();
             std::string dir = info[1].As<Napi::String>().Utf8Value();
             engine->setLoggingZstd(enabled, dir);
+        }
+        return info.Env().Undefined();
+    }
+
+    // { practice, qualifying, race, timeTrial }: each "all_drivers",
+    // "driver_only", "both" or "ask". A missing or unknown value keeps every
+    // driver.
+    Napi::Value SetRecordingScopes(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1 && info[0].IsObject()) {
+            const Napi::Object object = info[0].As<Napi::Object>();
+            const auto read = [&object](const char* key) {
+                const Napi::Value value = object.Get(key);
+                return tnrp::recordingScopeFromString(
+                    value.IsString() ? value.As<Napi::String>().Utf8Value() : std::string());
+            };
+            tnrp::RecordingScopes scopes;
+            scopes.practice   = read("practice");
+            scopes.qualifying = read("qualifying");
+            scopes.race       = read("race");
+            scopes.timeTrial  = read("timeTrial");
+            engine->setRecordingScopes(scopes);
         }
         return info.Env().Undefined();
     }

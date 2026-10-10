@@ -169,6 +169,8 @@ Engine::Engine(const Config& config, Sink* sink)
           row.message   = message;
           row.path      = path;
           sink->onRow(writeJson(row));
+      }, [sink](const RecordingFinishedRow& row) {
+          if (sink) sink->onRow(writeJson(row));
       }) {
     TRACE("Engine ctor: start");
     config_.teamColorOverrides = sanitizeTeamColorOverrides(config.teamColorOverrides);
@@ -199,6 +201,7 @@ Engine::Engine(const Config& config, Sink* sink)
     strategyThread_ = std::thread(&Engine::strategyLoop, this);
     enqueueLiveStrategyWork({StrategyWorkKind::Reset, liveStrategyGeneration_,
                              2025, config_.strategyMinimumStops, false, {}});
+    writer_.setRecordingScopes(config_.recordingScopes);
     writer_.setLogging(config.loggingEnabled, config.outputDirectory);
     TRACE("Engine ctor: writer_.setLogging done");
     pairServer_.configure({config.pairPort, config.pairName,
@@ -257,7 +260,7 @@ Engine::~Engine() {
     udp_.stop();
     stopStrategyThread();
     liveV6_.reset();
-    writer_.closeActiveStream();
+    writer_.closeActiveStream("shutdown");
 }
 
 void Engine::emitRow(const std::string& json) {
@@ -309,6 +312,7 @@ void Engine::pairStop(bool persistDisabled) {
 
 void Engine::pairOpenWindow() { pairServer_.openPairingWindow(); }
 void Engine::pairCloseWindow() { pairServer_.closePairingWindow(); }
+void Engine::pairRespond(bool approve) { pairServer_.respondToPairing(approve); }
 
 void Engine::pairRemoveDevice(const std::string& id) {
     pairServer_.removeDevice(id);
@@ -1208,6 +1212,12 @@ void Engine::setLoggingZstd(bool enabled, const std::string& outputDir) {
     writer_.setLoggingZstd(enabled, outputDir);
 }
 
+void Engine::setRecordingScopes(const RecordingScopes& scopes) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    config_.recordingScopes = scopes;
+    writer_.setRecordingScopes(scopes);
+}
+
 void Engine::setLoggingGzip(bool enabled, const std::string& outputDir) {
     std::lock_guard<std::mutex> lk(mutex_);
     config_.loggingEnabled  = enabled;
@@ -1515,7 +1525,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             // Playback suspends live ingest. Finalize the live recording on its
             // owner thread so it is complete and a later return to live starts
             // a fresh stream on the next session packet.
-            writer_.closeActiveStream();
+            writer_.closeActiveStream("playback");
             liveLatestRows_ = {};
             liveLapHistoryRows_ = {};
             writer_.resetSession();

@@ -243,8 +243,8 @@ void TnrdWriter::publishMemoryStatsOnWriterThread(bool force) {
     lastMemoryStatsPublishMs_ = now;
 }
 
-TnrdWriter::TnrdWriter(ErrorHandler errorHandler)
-    : errorHandler_(std::move(errorHandler)) {
+TnrdWriter::TnrdWriter(ErrorHandler errorHandler, FinishedHandler finishedHandler)
+    : errorHandler_(std::move(errorHandler)), finishedHandler_(std::move(finishedHandler)) {
     diskThread_ = std::thread(&TnrdWriter::writerLoop, this);
 }
 
@@ -273,6 +273,7 @@ TnrdWriter::~TnrdWriter() {
         std::unique_lock<std::mutex> lk(mu_);
         WriterEvent ev;
         ev.type = EventType::Close;
+        ev.reason = "shutdown";
         pushEventLocked(std::move(ev));
         stop_.store(true);
     }
@@ -294,13 +295,14 @@ void TnrdWriter::flushToDisk() {
     done.wait();
 }
 
-void TnrdWriter::closeActiveStream() {
+void TnrdWriter::closeActiveStream(const std::string& reason) {
     auto completion = std::make_shared<std::promise<void>>();
     auto done = completion->get_future();
     {
         std::unique_lock<std::mutex> lk(mu_);
         WriterEvent ev;
         ev.type = EventType::Close;
+        ev.reason = reason;
         ev.completion = std::move(completion);
         pushEventLocked(std::move(ev));
     }
@@ -319,6 +321,17 @@ void TnrdWriter::setLoggingZstd(bool enabled, const std::string& outputDir) {
 
 void TnrdWriter::setLoggingGzip(bool enabled, const std::string& outputDir) {
     setLoggingForFormat(enabled, outputDir, TnrdFormat::GzipV1);
+}
+
+void TnrdWriter::setRecordingScopes(const RecordingScopes& scopes) {
+    {
+        std::unique_lock<std::mutex> lk(mu_);
+        WriterEvent ev;
+        ev.type = EventType::SetScopes;
+        ev.scopes = scopes;
+        pushEventLocked(std::move(ev));
+    }
+    cv_.notify_one();
 }
 
 void TnrdWriter::setRetainSession(bool retain) {
@@ -379,10 +392,9 @@ void TnrdWriter::ensureSessionWriter(uint16_t format) {
 // carries on; the next session packet starts another file holding all of it.
 void TnrdWriter::noteV6FileError() {
     if (!retainSession_ || !v6Writer_) return;
-    const std::string error = v6Writer_->takeFileError();
-    if (error.empty()) return;
-    reportError("data write", error, activePath_);
-    if (!activeStream_) activePath_.clear();
+    for (const auto& [path, error] : v6Writer_->takeFileErrors())
+        reportError("data write", error, path);
+    if (!activeStream_ && !v6Writer_->hasFile()) activePath_.clear();
 }
 
 // Drops the retained session for a new one, finishing its file. A damaged
@@ -400,6 +412,7 @@ void TnrdWriter::dropSession(bool damaged) {
             activePath_.clear();
             currentTrackId_ = -1;
             currentSessionType_ = -1;
+            reportFinished("reset");
         }
     }
     sessionLatest_ = -std::numeric_limits<float>::infinity();
@@ -520,6 +533,7 @@ void TnrdWriter::writerLoop() {
         if (ev.type == EventType::SetLogging) {
             const bool formatChanged = wantRecord_ && writeFormat_ != ev.tnrdFormat;
             const bool directoryChanged = wantRecord_ && outputDirectory_ != ev.outputDir;
+            const char* reason = !ev.enabled ? "disabled" : "settings";
             wantRecord_ = ev.enabled;
             outputDirectory_ = ev.outputDir;
             writeFormat_ = ev.tnrdFormat;
@@ -528,7 +542,9 @@ void TnrdWriter::writerLoop() {
             // file. The next session packet starts a new recording in the new
             // directory, instead of requiring an application restart.
             if (!ev.enabled || formatChanged || directoryChanged)
-                closeActiveStreamOnWriterThread();
+                closeActiveStreamOnWriterThread(reason);
+        } else if (ev.type == EventType::SetScopes) {
+            scopes_ = ev.scopes;
         } else if (ev.type == EventType::SetRetain) {
             // Only before a session or file exists; the engine sets it first.
             if (!v6Writer_) retainSession_ = ev.enabled;
@@ -605,7 +621,7 @@ void TnrdWriter::writerLoop() {
                 // A legacy stream beside a retained session closes both below.
                 if (!activeStream_) {
                     if (sessionEnd && streamActive()) {
-                        closeActiveStreamOnWriterThread();
+                        closeActiveStreamOnWriterThread("send");
                         publishMemoryStatsOnWriterThread(true);
                     }
                     continue;
@@ -618,7 +634,7 @@ void TnrdWriter::writerLoop() {
             line.push_back('\n');
             rollingBuffer_.push_back({std::move(line), entryTime});
             if (sessionEnd) {
-                closeActiveStreamOnWriterThread();
+                closeActiveStreamOnWriterThread("send");
                 publishMemoryStatsOnWriterThread(true);
                 continue;
             }
@@ -627,7 +643,7 @@ void TnrdWriter::writerLoop() {
             flushToDiskOnWriterThread();
             if (ev.completion) ev.completion->set_value();
         } else if (ev.type == EventType::Close) {
-            closeActiveStreamOnWriterThread();
+            closeActiveStreamOnWriterThread(ev.reason.empty() ? "closed" : ev.reason.c_str());
             if (ev.completion) ev.completion->set_value();
             if (stop_.load() && queue_.empty()) break;
         }
@@ -653,11 +669,36 @@ void TnrdWriter::flushToDiskOnWriterThread() {
     rowsSinceFlush_ = 0;
 }
 
-void TnrdWriter::closeActiveStreamOnWriterThread() {
+void TnrdWriter::reportFinished(const char* reason) {
+    if (activeAllPath_.empty() && activeDriverPath_.empty()) return;
+    RecordingFinishedRow row;
+    row.reason = reason;
+    row.ask = activeScope_ == RecordingScope::Ask &&
+        !activeAllPath_.empty() && !activeDriverPath_.empty();
+    row.category = RecordingScopes::categoryFor(activeSessionType_);
+    row.session_type = activeSessionType_;
+    row.session_name = activeSessionName_;
+    row.track_name = activeTrackName_;
+    row.all_path = std::move(activeAllPath_);
+    row.driver_path = std::move(activeDriverPath_);
+    activeAllPath_.clear();
+    activeDriverPath_.clear();
+    // At shutdown both files are simply kept; nobody is left to ask.
+    if (std::string_view(reason) == "shutdown" || !finishedHandler_) return;
+    try {
+        finishedHandler_(row);
+    } catch (...) {
+        // Reporting must never terminate the recording disk thread.
+    }
+}
+
+void TnrdWriter::closeActiveStreamOnWriterThread(const char* reason) {
     if (v6Writer_ && retainSession_) {
-        // The session stays in memory; only its file is finished.
+        // The session stays in memory; only its files are finished.
         std::string err;
         if (v6Writer_->hasFile() && !v6Writer_->detachFile(&err)) reportError("close", err, activePath_);
+        noteV6FileError();
+        reportFinished(reason);
     } else if (v6Writer_) {
         std::string err;
         if (!v6Writer_->finish(&err)) reportError("close", err, activePath_);
@@ -686,7 +727,7 @@ void TnrdWriter::closeActiveStreamOnWriterThread() {
 }
 
 void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int sessionType, int format) {
-    closeActiveStreamOnWriterThread();
+    closeActiveStreamOnWriterThread("session_change");
     if (!wantRecord_ || outputDirectory_.empty()) return;
 
     const std::string proto = RecordingFilenamePrefix(format);
@@ -704,10 +745,13 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int 
     std::string sName = (itSess != SESSION_NAMES.end())
         ? sanitizeName(itSess->second) : "session_" + std::to_string(sessionType);
 
-    std::string filename = proto + "_" + std::to_string(trackId) + "_"
-                         + tName + "_" + sName + "_" + filenameTimestamp() + ".tnrd";
+    // An all-drivers file ends in -all, a player-only one in -driver.
+    const std::string basePath = outputDirectory_ + "/" + proto + "_" + std::to_string(trackId) + "_"
+                         + tName + "_" + sName + "_" + filenameTimestamp();
+    const std::string allPath = basePath + "-all.tnrd";
+    const std::string driverPath = basePath + "-driver.tnrd";
 
-    activePath_ = outputDirectory_ + "/" + filename;
+    activePath_ = allPath;
     HeaderRow hdr;
     hdr.protocol     = format;
     hdr.track_id     = trackId;
@@ -722,10 +766,30 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int 
 
     std::string openError;
     if (writeFormat_ == TnrdFormat::ChunkedV6 && retainSession_) {
-        // The recording joins the session kept in memory: the file starts
+        // The recording joins the session kept in memory: each file starts
         // with everything held so far, then takes each commit with it.
-        if (!v6Writer_) openError = "there is no live session to record";
-        else (void)v6Writer_->attachFile(activePath_, hdr, &openError);
+        const RecordingScope scope = scopes_.forSession(sessionType);
+        activeScope_ = scope;
+        activeSessionType_ = sessionType;
+        activeSessionName_ = hdr.session_name;
+        activeTrackName_ = resolvedTrackName;
+        if (!v6Writer_) {
+            openError = "there is no live session to record";
+        } else {
+            if (scope != RecordingScope::DriverOnly) {
+                std::string error;
+                if (v6Writer_->attachFile(allPath, hdr, &error)) activeAllPath_ = allPath;
+                else reportError("open", error, allPath);
+            }
+            if (scope != RecordingScope::AllDrivers) {
+                std::string error;
+                if (v6Writer_->attachFile(driverPath, hdr, &error, true)) activeDriverPath_ = driverPath;
+                else reportError("open", error, driverPath);
+            }
+            activePath_ = !activeAllPath_.empty() ? activeAllPath_ : activeDriverPath_;
+            // Each failure was reported above with its own path.
+            if (!streamActive()) { activePath_.clear(); return; }
+        }
     } else if (writeFormat_ == TnrdFormat::ChunkedV6) {
         v6Writer_ = std::make_unique<detail::TnrdV6Writer>();
         v6Writer_->setCompressionLevel(compressionLevel_);

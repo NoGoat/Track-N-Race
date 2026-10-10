@@ -831,6 +831,53 @@ A phone is dropped when a single `send()` stays blocked for 15 s, when its
 outbox exceeds 8 MiB (frames only accumulate there, since batches are bounded by
 their keys), or on any socket error.
 
+### 10.6 Pair Protocol v3: security as built
+
+`pairProtocol` is `3`. A v2 phone is refused with `unsupported_pair_protocol`,
+and phones paired under v2 pair again: they never pinned the desktop's key and
+the desktop kept only plain tokens. The code is `PairCrypto` in libtnrp
+(libsodium 1.0.20 and CPace-Ristretto255), shared by the desktop and, through
+JNI, the phone.
+
+- **Identity.** The desktop has an Ed25519 key; only its seed is persisted, in
+  the engine state document, which hosts store encrypted (Electron
+  `safeStorage`, Windows DPAPI, the Linux Secret Service).
+- **Handshake.** Over `ws://`: the phone's `hello` carries an X25519 ephemeral
+  key and its mode (`resume`, `qr`, `code`). `server_hello` returns the
+  desktop's ephemeral key, identity key and a signature over a transcript of
+  both keys, the identity, the server id and any CPace messages. The phone
+  accepts the identity only if it equals the pinned key (resume), the `k` in
+  the QR (qr), or the CPace confirmation matches (code). Everything after that
+  is ChaCha20-Poly1305 with per-direction keys from the ephemeral exchange and
+  an implicit counter nonce: binary WebSocket frames of `kind || ciphertext`,
+  where kind 1 is a JSON text message and 2 a packed-row batch. A forged,
+  replayed or reordered frame closes the connection. TLS was not used: Electron
+  and Qt would need a TLS server and certificate handling for an identity the
+  signature already pins.
+- **Credentials** travel only inside the channel, in the first message
+  (`auth`): the resume token, the QR secret, or the CPace client confirmation.
+  The desktop keeps a BLAKE2b digest of each token.
+- **Matching code.** Eight characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`.
+  The code is never sent: CPace binds it to the discovered server id and the
+  phone's ephemeral key, so a wrong guess yields unrelated keys and cannot be
+  tested offline. Each code handshake counts as one guess; the fifth failure
+  closes the window, and every failed proof is answered after one second.
+- **Approval.** A phone that proved the QR secret or code is held in
+  `pendingDevice` until the desktop user allows or denies it (60 s). Only then
+  is a token issued and the device saved. One success per window.
+- **QR.** `tnrpair://v3/<serverId>?h=<ip>&p=<port>&s=<secret>&e=<expiry>&k=<identity key>`.
+- **Discovery.** DNS-SD `_tracknrace-pair._tcp`, TXT `v=3`, `id=<serverId>`,
+  `pair=0|1`. Windows 10 1809+ uses `DnsServiceRegister` (resolved at run time),
+  Apple uses `dns_sd`, Linux uses a small responder in libtnrp. Android browses
+  with `NsdManager`.
+- **Reconnect.** The phone retries the saved desktop after 0.5, 1, 2, 4, then
+  every 8 s (±20 % jitter) while paired mode is in use, and browses DNS-SD for
+  the saved server id meanwhile, so an address change needs no re-pairing.
+  `unknown_device` (revoked) forgets the pairing; an identity mismatch stops
+  retrying.
+- **Phone storage.** The token is AES-GCM encrypted with a non-exportable
+  Android Keystore key; a backup restored elsewhere reads as unpaired.
+
 ## 11. Live behavior
 
 On connection in live mode:

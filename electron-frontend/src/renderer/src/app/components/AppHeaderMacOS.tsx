@@ -9,13 +9,14 @@ import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab, ty
 import type { BannerItem } from '../bannerHelpers'
 import SessionTimer from './SessionTimer'
 import AnimatedAutoWidth from './AnimatedAutoWidth'
+import DriverSelect from '../../components/DriverSelect'
+import type { DriverOption } from '../../lib/driverOptions'
 import { formatTabOptionLabel } from './TabOptionLabel'
 import SyncedTooltipIcon from './SyncedTooltipIcon'
 
 const selectStyles = buildSelectStyles(true)
 const tabSelectStyles = buildSelectStyles(true, { menuWidth: '120px' })
 const windowSelectStyles = buildSelectStyles(true, { labelStyleGroupHeadings: true, menuWidth: '7rem', scrollableMenu: false })
-const driverSelectStyles = buildSelectStyles(true, { menuWidth: '13rem' })
 
 interface AppHeaderProps {
   actualNativeTitlebar: boolean
@@ -30,8 +31,9 @@ interface AppHeaderProps {
   onClosePlayback: () => void
   onSelectPlaybackFile: () => void
   chartWindow: ChartWindow
-  driverOptions: Array<{ value: number; label: string; isDisabled: boolean }>
+  driverOptions: DriverOption[]
   driverSelectorVisible: boolean
+  driverSelectorDisabled: boolean
   selectedDriverIdx: number | null
   clAvailable: boolean
   referenceLapNum: number | null
@@ -55,7 +57,7 @@ interface AppHeaderProps {
 
 export default memo(function AppHeader({
   actualNativeTitlebar, activeBanner, editOpen, filename, isFullscreen, inputCursorSyncEnabled, sectorBoundariesEnabled,
-  onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, driverOptions, driverSelectorVisible, selectedDriverIdx, setEditOpen,
+  onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, driverOptions, driverSelectorVisible, driverSelectorDisabled, selectedDriverIdx, setEditOpen,
   referenceLapNum, referenceLapOptions, setInputCursorSyncEnabled, setSectorBoundariesEnabled, setChartWindow, setSelectedDriverIdx, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
   titlebarUpdateInterval, udpListenerError, onOpenUdpSettings,
 }: AppHeaderProps) {
@@ -142,19 +144,11 @@ export default memo(function AppHeader({
         </div>
 
         {driverSelectorVisible && (
-          <div title="Drivers marked Public data only have private status and damage values hidden by the game." style={{ WebkitAppRegion: 'no-drag' }}>
+          <div title={driverSelectorDisabled
+            ? 'This recording saved only your driver.'
+            : 'Drivers marked Public have private status and damage values hidden by the game.'} style={{ WebkitAppRegion: 'no-drag' }}>
             <AnimatedAutoWidth measureKey={String(selectedDriverIdx)}>
-              <Select
-                options={driverOptions}
-                value={driverOptions.find(option => option.value === selectedDriverIdx) ?? null}
-                onChange={option => option && setSelectedDriverIdx(option.value)}
-                isOptionDisabled={option => option.isDisabled}
-                placeholder="Driver"
-                styles={driverSelectStyles}
-                components={selectComponents}
-                isSearchable={false}
-                menuPortalTarget={document.body}
-              />
+              <DriverSelect options={driverOptions} selectedDriverIdx={selectedDriverIdx} disabled={driverSelectorDisabled} onChange={idx => { if (idx !== null) setSelectedDriverIdx(idx) }} portal />
             </AnimatedAutoWidth>
           </div>
         )}

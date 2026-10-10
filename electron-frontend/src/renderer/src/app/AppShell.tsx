@@ -20,6 +20,7 @@ import LayoutEditor from './components/LayoutEditor'
 import PlaybackDialogs from './components/PlaybackDialogs'
 import RaceLeaderWatcher from './components/RaceLeaderWatcher'
 import RecordingErrorDialog from './components/RecordingErrorDialog'
+import RecordingChoiceDialog from './components/RecordingChoiceDialog'
 import UpdateAvailableDialog from './components/UpdateAvailableDialog'
 import type { AvailableUpdate, RecordingErrorMsg } from '../types'
 import { ChartCoordinatesProvider } from '../lib/chartCoordinates'
@@ -31,6 +32,7 @@ import {
   type ChartWindowOverrides,
 } from '../lib/chartWindowOverrides'
 import type { GraphSection } from '../lib/graphSections'
+import { buildDriverOptions } from '../lib/driverOptions'
 
 const LIVE_LAP_FAMILY_MASK = DATA_ROW.telemetry | DATA_ROW.status |
   DATA_ROW.damage | DATA_ROW.lap | DATA_ROW.motion | DATA_ROW.motionEx
@@ -264,23 +266,26 @@ export default function AppShell() {
   const clAvailable = clCapability !== 'legacy'
   const recordingOpen = !!playback.state?.filename
   const driverSelectorVisible = recordingOpen && playbackTnrdVersion === 'TNRD_V6'
+  // A driver-only recording (or an older player-only one) holds one driver's
+  // data, while its participants roster still names every car.
+  const singleDriverRecording = useTelemetryStore(s => s.playbackAnalysisDrivers.length === 1)
+  const driverSelectorDisabled = driverSelectorVisible && singleDriverRecording
   const originalPlayerIdx = recordedPlayerIdx ?? playbackDriverIndex ?? timingPlayerIdx
   // Every participants packet replaces the store's roster object, so this list
   // would otherwise get a new identity several times a second and re-render the
   // whole title bar through AppHeader's memo. Reuse the previous array whenever
   // the rendered options are unchanged.
-  const nextDriverOptions = useMemo(() => (participants?.drivers ?? []).map(driver => {
-    const restricted = driver.idx !== originalPlayerIdx && driver.your_telemetry !== 1
-    return {
-      value: driver.idx,
-      label: restricted ? `${driver.name} · Public data only` : driver.name,
-      isDisabled: false,
-    }
-  }), [participants, originalPlayerIdx])
+  const nextDriverOptions = useMemo(() => buildDriverOptions(participants?.drivers ?? [], {
+    playerIdx: originalPlayerIdx,
+    markRestricted: true,
+    disableOthers: driverSelectorDisabled,
+  }), [participants, originalPlayerIdx, driverSelectorDisabled])
   const [driverOptions, setDriverOptions] = useState(nextDriverOptions)
   if (nextDriverOptions !== driverOptions && !(driverOptions.length === nextDriverOptions.length &&
-      driverOptions.every((option, index) => option.value === nextDriverOptions[index].value &&
-        option.label === nextDriverOptions[index].label && option.isDisabled === nextDriverOptions[index].isDisabled))) {
+      driverOptions.every((option, index) => {
+        const next = nextDriverOptions[index]
+        return (Object.keys(option) as (keyof typeof option)[]).every(key => option[key] === next[key])
+      }))) {
     setDriverOptions(nextDriverOptions)
   }
   if (!driverSelectorVisible && playbackDriverIdx !== null) setPlaybackDriverIdx(null)
@@ -503,7 +508,7 @@ export default function AppShell() {
   const handlePlaybackDriverChange = useCallback((idx: number) => {
     if (!driverSelectorVisible || idx === playbackDriverIdx) return
     const option = driverOptions.find(candidate => candidate.value === idx)
-    if (!option) return
+    if (!option || option.isDisabled) return
     setPlaybackDriverIdx(idx)
     setSelectedIdx(idx)
     window.playerBridge.setDriver(idx, idx === originalPlayerIdx)
@@ -532,6 +537,7 @@ export default function AppShell() {
         chartWindow={chartWindow}
         driverOptions={driverOptions}
         driverSelectorVisible={driverSelectorVisible}
+        driverSelectorDisabled={driverSelectorDisabled}
         selectedDriverIdx={playbackDriverIdx}
         clAvailable={clAvailable}
         referenceLapNum={referenceLapNum}
@@ -722,6 +728,8 @@ export default function AppShell() {
         setConfirmOpenFilePath={playback.setConfirmOpenFilePath}
         setLoadError={playback.setLoadError}
       />
+
+      <RecordingChoiceDialog />
 
       <RecordingErrorDialog
         error={recordingError}
