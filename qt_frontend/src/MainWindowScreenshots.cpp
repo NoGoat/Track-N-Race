@@ -12,6 +12,7 @@
 #include "components/ChartView.h"
 #include "components/EditOverviewLayoutDialog.h"
 #include "components/OverviewPage.h"
+#include "components/SessionPage.h"
 #include "components/DriverLapsDialog.h"
 #include "components/StandingsPage.h"
 #include "components/Toast.h"
@@ -308,8 +309,10 @@ private:
         deleteLater();
     }
 
-    // The Electron screenshots' compact and page layouts (its config.json),
-    // applied live and saved, as the Settings dialog does.
+    // The Electron screenshots' layouts and compact levels: what the
+    // screenshots show where they show it, the Electron config.json for the
+    // rest (Trends, Damage). Applied live and saved, as the Settings dialog
+    // and layout editors do.
     void applyElectronLayout() {
         using CS = tnr::CompactSection;
         using D = tnr::DensityMode;
@@ -317,7 +320,20 @@ private:
         w_->setDensitySection(CS::OverviewStats, D::Compact);
         w_->setDensitySection(CS::OverviewDamage, D::Compact);
         w_->setTyresCompactLevel(3);
-        w_->overviewPage_->setTyreView(OverviewLayout::TyreCards);
+        // Overview: every stat card, the chart, tyre cards for all four
+        // corners, and the damage row as shown (wings, floor, diffuser,
+        // sidepod, gearbox, engine; no tyre or brake damage).
+        OverviewLayout overview = w_->overviewPage_->loadLayout();
+        overview.showChart = true;
+        overview.tyreView = OverviewLayout::TyreCards;
+        overview.statCards.fill(true);
+        overview.tyreCardVisible.fill(true);
+        for (int i = 0; i < OverviewLayout::DmgCardCount; ++i)
+            overview.dmgCards[i] = i >= OverviewLayout::WingFl;
+        w_->overviewPage_->applyAndSaveLayout(overview);
+        // Session and Standings: everything shown, sidebars at 28%.
+        w_->sessionPage_->applyAndSaveLayout(SessionLayout{});
+        w_->standingsPage_->setLayout(true, true, true, true, 28);
         w_->setDensitySection(CS::StandingsTable, D::Normal);
         w_->setDensitySection(CS::StandingsTiming, D::Normal);
         w_->setDensitySection(CS::StandingsErs, D::Normal);
@@ -335,7 +351,7 @@ private:
         w_->setVerticalChartLayout(P::Input, true);
         w_->setVerticalChartLayout(P::Power, true);
         w_->setVerticalChartLayout(P::Tyres, true);
-        w_->setInputPedalLayout(QStringLiteral("split"));
+        w_->setInputPedalLayout(QStringLiteral("combined"));   // one Accelerator / Brake chart
         w_->setMiscSplitLayout(true, true);    // G-force
         w_->setMiscSplitLayout(false, true);   // ride height
         w_->setTrendsChartLayout(QStringLiteral("combinedNoRecharge"));

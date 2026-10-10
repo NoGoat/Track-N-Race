@@ -48,6 +48,11 @@ public:
     bool noteSessionHistoryFastest(int carIdx, int bestMs);
     void resetForNewSession();
     void showLayoutEditor();
+    // What the layout editor sets, in one call (screenshot tour): timing tower,
+    // the three sidebar cards (Timing, Energy Recovery, Strategy) and the
+    // sidebar width (15–60%). Applied and saved.
+    void setLayout(bool showTimingTower, bool timing, bool energyRecovery, bool strategy,
+                   int sidebarPct);
     void setTableDensity(tnr::DensityMode mode);
     void setCardDensity(int card, tnr::DensityMode mode);
     // Playback driver changes select the same timing row the Electron header

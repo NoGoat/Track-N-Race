@@ -365,6 +365,22 @@ void StandingsPage::resizeEvent(QResizeEvent* event) {
     updateSidebarWidth();
 }
 
+void StandingsPage::setLayout(bool showTimingTower, bool timing, bool energyRecovery,
+                              bool strategy, int sidebarPct) {
+    showTimingTower_ = showTimingTower;
+    settings_.setValue("standingsLayout/showTimingTower", showTimingTower_);
+    const bool cards[] = {timing, energyRecovery, strategy};
+    const char* keys[] = {"timing", "energyRecovery", "strategy"};
+    for (int i = 0; i < 3; ++i) {
+        showCards_[i] = cards[i];
+        settings_.setValue(QStringLiteral("standingsLayout/cards/") + keys[i], cards[i]);
+    }
+    sidebarPct_ = std::clamp(sidebarPct, 15, 60);
+    settings_.setValue("standingsLayout/sidebarPct", sidebarPct_);
+    applyLayout();
+    updateSidebarWidth();
+}
+
 void StandingsPage::showLayoutEditor() {
     auto* dialog = new QDialog(this);
     dialog->setWindowTitle(QStringLiteral("Edit Standings Layout"));
