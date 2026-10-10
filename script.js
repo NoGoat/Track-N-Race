@@ -29,22 +29,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Set active navigation button based on current URL path
     const navButtons = document.querySelectorAll('.nav-btn');
-    const currentPath = window.location.pathname.toLowerCase();
-    const isHomePage = currentPath.endsWith('/') || currentPath.endsWith('index.html') || currentPath.endsWith('index') || currentPath === '';
+    // Normalise "/setup", "/setup/" and "/setup/index.html" to "/setup"
+    const normalisePath = path => path.toLowerCase()
+        .replace(/(index)?(\.html)?$/, '')
+        .replace(/\/+$/, '');
+    const currentPath = normalisePath(window.location.pathname);
 
     navButtons.forEach(btn => {
         const href = btn.getAttribute('href');
         if (!href) return;
 
-        btn.classList.remove('active');
-        const pageFileName = href.split('/').pop().toLowerCase();
-        const pageBase = pageFileName.replace(/\.html$/, '');
-
-        if ((pageBase === 'index' || pageBase === '') && isHomePage) {
-            btn.classList.add('active');
-        } else if (pageBase !== 'index' && pageBase !== '' && !isHomePage && currentPath.includes(pageBase)) {
-            btn.classList.add('active');
-        }
+        btn.classList.toggle('active', normalisePath(href) === currentPath);
     });
 
     // Carousel Logic
