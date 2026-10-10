@@ -30,6 +30,8 @@ public:
     AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* parent = nullptr);
 
     void setEditLayoutEnabled(bool on);
+    // Selects a page as if picked from the page dropdown (screenshot tour).
+    void selectPage(int index);
     void setAnalyzeControlsVisible(bool on);
     void setAnalyzeControlsEnabled(bool on);
     void setAnalyzeContextWidget(QWidget* widget);

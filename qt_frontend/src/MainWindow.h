@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QPixmap>
 #include <QPointer>
 #include <QSettings>
 #include <QByteArray>
@@ -76,6 +77,8 @@ struct PairServiceState {
     QVector<PairDeviceState> devices;
     QString error;
 };
+
+class ScreenshotTour;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -222,12 +225,21 @@ private slots:
     void onEngineBinary(const QByteArray& batch);
 
 private:
-    // ── Website screenshots ───────────────────────────────────────
-    // F7 saves the window's contents (no WM decorations) at 2x, GPU charts
-    // included, to Pictures/Track N Race Screenshots. Shift+F7 restores and
-    // sizes the window to 1200x700, the Electron screenshots' window size.
+    // ── Website screenshots (MainWindowScreenshots.cpp) ───────────
+    // F7 saves one capture to Pictures/Track N Race Screenshots. F8 runs the
+    // screenshot tour: opens test.tnrd from the AppImage's (or executable's)
+    // directory and captures every page at the Electron screenshots' session
+    // times into screenshots/ beside it; F8 again cancels. Shift+F7 restores
+    // the window and sizes its frame to 1200x700, the Electron window size.
+    // On X11 captures are read from the screen, title bar included, at the
+    // display's scale; elsewhere the window renders itself at 2x without one.
+    friend class ScreenshotTour;
     void captureScreenshot();
     void sizeForScreenshot();
+    void toggleScreenshotTour();
+    QPixmap grabForScreenshot();
+    void showScreenshotNotice(const QString& text, int msecs = 3000);
+    QPointer<ScreenshotTour> screenshotTour_;
     QString screenshotNotice_;        // title shown after a capture; empty when none
     QString titleBeforeScreenshot_;   // restored when the notice expires
 

@@ -314,6 +314,12 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     });
 }
 
+void AppToolbar::selectPage(int index) {
+    if (!pageBtn_ || index < 0 || index >= pageBtn_->count()) return;
+    pageBtn_->setCurrentIndex(index);
+    emit pageSelected(index);
+}
+
 void AppToolbar::setChartToolsEnabled(bool sectorBoundaries, bool cursorSync) {
     if (sectorBtn_) sectorBtn_->setEnabled(sectorBoundaries);
     if (syncBtn_) syncBtn_->setEnabled(cursorSync);

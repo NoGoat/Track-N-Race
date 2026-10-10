@@ -50,12 +50,12 @@ public:
     bool graphsShown() const { return graphsShown_; }
     bool cardTablesShown() const;
     float cardWindowSeconds() const;
+    void setGraphsShown(bool on);   // swap allocation ⇄ graphs views
 
 signals:
     void dataNeedsChanged();
 
 private:
-    void setGraphsShown(bool on);   // swap allocation ⇄ graphs views
 
     TyreCardsWidget*  tyreCards_    = nullptr;
     QTableWidget*     drySetsTable_ = nullptr;

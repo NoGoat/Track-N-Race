@@ -48,6 +48,10 @@ public:
     void setLapSelectable(bool selectable);
     int lap() const;
     void clearLap();
+    // Programmatic picks (screenshot tour); false when not offered. Selecting
+    // a driver does not emit driverActivated, so the owner refreshes laps.
+    bool selectDriver(const AnalysisDriverRef& ref);
+    bool selectLap(int lapNum);
     // Drops both driver and lap, e.g. when their recording is closed.
     void resetSelection();
     AnalysisLapRef selection() const { return {driver(), lap()}; }

@@ -60,6 +60,7 @@ set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    src/MainWindowScreenshots.cpp
     src/PairStateVault.cpp
     src/PairStateVault.h
     src/AppToolbar.cpp

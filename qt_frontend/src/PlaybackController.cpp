@@ -293,6 +293,8 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
 
     connect(player_, &TnrdPlayer::stateChanged, this,
             [this](bool playing, float cur, float total, float /*speed*/) {
+        displayTime_ = cur;
+        displayTotal_ = total;
         // Charts receive the full-rate imperative cursor. Transport cosmetics are
         // deliberately limited to 10 Hz unless playback state changed.
         emit timeChanged(player_->currentTime());
@@ -491,6 +493,17 @@ void PlaybackController::load(const QString& path) {
 
 float PlaybackController::currentTime() const {
     return player_->currentTime();
+}
+
+void PlaybackController::seekToDisplayTime(float seconds) {
+    if (!player_ || displayTotal_ <= 0.0f) return;
+    lastSeekMs_ = QDateTime::currentMSecsSinceEpoch();
+    // The scrubber's own mapping: slider position = displayed time / total.
+    player_->seek(qBound(0.0f, seconds / displayTotal_, 1.0f));
+}
+
+void PlaybackController::pause() {
+    if (player_) player_->pause();
 }
 
 bool PlaybackController::handleControlRow(const QByteArray& json) {

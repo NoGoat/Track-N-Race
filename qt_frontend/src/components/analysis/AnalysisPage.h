@@ -68,6 +68,16 @@ public:
     void resetPlaybackSelections();
     uint32_t playbackRowMask() const;
 
+    // Screenshot tour: Fixed Laps comparing two laps of the open recording in
+    // the Split view, charting exactly `metricIds` in that order. Returns an
+    // empty string on success, otherwise why it could not be set up. The laps
+    // load asynchronously; focusMapElapsed places the map/chart cursor once
+    // they have arrived.
+    QString stageComparison(const QString& driverA, int lapA,
+                            const QString& driverB, int lapB,
+                            const QStringList& metricIds);
+    void focusMapElapsed(double seconds);
+
 public slots:
     void zoomIn();
     void zoomOut();

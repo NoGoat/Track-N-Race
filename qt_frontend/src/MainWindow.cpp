@@ -84,9 +84,6 @@
 #include <QRegularExpression>
 #include <QShortcut>
 #include <QKeySequence>
-#include <QDebug>
-#include <QPixmap>
-#include <QStandardPaths>
 
 #include <algorithm>
 #include <exception>
@@ -498,6 +495,8 @@ MainWindow::MainWindow(QWidget* parent)
             this, &MainWindow::captureScreenshot);
     connect(new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F7), this), &QShortcut::activated,
             this, &MainWindow::sizeForScreenshot);
+    connect(new QShortcut(QKeySequence(Qt::Key_F8), this), &QShortcut::activated,
+            this, &MainWindow::toggleScreenshotTour);
 
     // Event toast notifications, rendered inside the central content widget.
     toasts_ = new ToastHost(container_);
@@ -3163,46 +3162,4 @@ void MainWindow::updatePlaybackDataRequirements() {
         const uint32_t missing = model_->missingPlaybackLapMask(lap, lapMask);
         if (missing) playback_->requestLapData(lap, missing);
     }
-}
-
-void MainWindow::captureScreenshot() {
-    // The Electron screenshots are macOS HiDPI window captures: 2 device pixels
-    // per logical pixel. Render at that scale whatever this screen's ratio is;
-    // the charts draw their GPU frames at it too, so traces stay sharp.
-    constexpr qreal scale = 2.0;
-    ChartView::setCaptureScale(scale);
-    QPixmap shot((QSizeF(size()) * scale).toSize());
-    shot.setDevicePixelRatio(scale);
-    shot.fill(Qt::transparent);
-    render(&shot);
-    ChartView::setCaptureScale(0);
-
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation)
-                        + "/Track N Race Screenshots";
-    QDir().mkpath(dir);
-    const QString name = "tnr-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".png";
-    const bool ok = shot.save(dir + "/" + name);
-    qInfo().noquote() << "[screenshot]" << (ok ? "saved" : "FAILED to save") << dir + "/" + name
-                      << QString("%1x%2").arg(shot.width()).arg(shot.height());
-
-    // Report in the title bar: a toast would land inside the next capture.
-    // Repeated captures keep the original title to restore, and a title the
-    // app set meanwhile (session/playback change) is left alone.
-    if (screenshotNotice_.isEmpty() || windowTitle() != screenshotNotice_)
-        titleBeforeScreenshot_ = windowTitle();
-    screenshotNotice_ = ok ? QString("Screenshot: saved %1 (%2x%3)").arg(name).arg(shot.width()).arg(shot.height())
-                           : QString("Screenshot: could not write to %1").arg(dir);
-    setWindowTitle(screenshotNotice_);
-    QTimer::singleShot(3000, this, [this, notice = screenshotNotice_] {
-        if (screenshotNotice_ != notice) return;   // a newer capture owns the title
-        if (windowTitle() == notice) setWindowTitle(titleBeforeScreenshot_);
-        screenshotNotice_.clear();
-    });
-}
-
-void MainWindow::sizeForScreenshot() {
-    // 1200x700 logical (2400x1400 at 2x) is the window size in every Electron
-    // screenshot; it is also this window's minimum size.
-    showNormal();
-    resize(1200, 700);
 }

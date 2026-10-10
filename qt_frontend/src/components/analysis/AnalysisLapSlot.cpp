@@ -168,6 +168,24 @@ void AnalysisLapSlot::clearLap() {
     lapBox_->setCurrentIndex(lapBox_->count() > 0 ? 0 : -1);
 }
 
+bool AnalysisLapSlot::selectDriver(const AnalysisDriverRef& ref) {
+    if (!driverBox_) return false;
+    const int index = driverBox_->findData(driverKey(ref));
+    if (index < 0) return false;
+    QSignalBlocker guard(driverBox_);
+    driverBox_->setCurrentIndex(index);
+    return true;
+}
+
+bool AnalysisLapSlot::selectLap(int lapNum) {
+    if (!lapBox_) return false;
+    const int index = lapBox_->findData(lapNum);
+    if (index < 0) return false;
+    QSignalBlocker guard(lapBox_);
+    lapBox_->setCurrentIndex(index);
+    return true;
+}
+
 void AnalysisLapSlot::resetSelection() {
     if (!driverBox_) return;
     {

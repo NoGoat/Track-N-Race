@@ -211,6 +211,49 @@ void AnalysisPage::showSlotPage(int index) {
     fitLapPanel();
 }
 
+QString AnalysisPage::stageComparison(const QString& driverA, int lapA,
+                                      const QString& driverB, int lapB,
+                                      const QStringList& metricIds) {
+    if (!playback_ || !primary_) return QStringLiteral("no recording is open");
+    auto refOf = [this](const QString& name) {
+        for (int index : primary_->driverOrder())
+            if (const auto* driver = primary_->driver(index);
+                driver && driver->name.compare(name, Qt::CaseInsensitive) == 0)
+                return AnalysisDriverRef{true, false, index};
+        return AnalysisDriverRef{};
+    };
+    const AnalysisDriverRef a = refOf(driverA);
+    const AnalysisDriverRef b = refOf(driverB);
+    if (!a.valid) return QStringLiteral("driver %1 not in the recording").arg(driverA);
+    if (!b.valid) return QStringLiteral("driver %1 not in the recording").arg(driverB);
+
+    {
+        QSignalBlocker guard(modeTabs_);
+        modeTabs_->setCurrentIndex(kFixedTab);
+    }
+    showSlotPage(kFixedTab);
+    refreshDriverChoices();
+    lapASlot_->selectDriver(a);
+    lapBSlot_->selectDriver(b);
+    refreshLapChoices();
+    if (!lapASlot_->selectLap(lapA)) return QStringLiteral("%1 has no lap %2").arg(driverA).arg(lapA);
+    if (!lapBSlot_->selectLap(lapB)) return QStringLiteral("%1 has no lap %2").arg(driverB).arg(lapB);
+
+    // Exactly these metrics, in this order: drop the rest (delta always stays
+    // first), then append the wanted ones.
+    seriesModel_->setMetricsSelected(seriesModel_->selectedIds().values(), false);
+    seriesModel_->setMetricsSelected(metricIds, true);
+
+    preferredView_ = View::Split;
+    saveSettings();
+    applyState();
+    return {};
+}
+
+void AnalysisPage::focusMapElapsed(double seconds) {
+    if (map_) map_->focusElapsed(seconds);
+}
+
 // The lap panel may not grow past its content, so it scrolls only when part of
 // it is actually cut off. Measured once layouts have settled after a change.
 void AnalysisPage::fitLapPanel() {

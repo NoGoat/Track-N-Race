@@ -41,6 +41,12 @@ public:
 
     void load(const QString& path);               // open a recording asynchronously
     float currentTime() const;                    // absolute session_time playhead
+    // The transport's own time base (what the time label shows, 0 at the start
+    // of the recording). seekToDisplayTime goes through the scrubber's seek path.
+    float displayTime() const { return displayTime_; }
+    float displayTotal() const { return displayTotal_; }
+    void seekToDisplayTime(float seconds);
+    void pause();
     bool handleControlRow(const QByteArray& json);
     void handleSeekFlush(const std::shared_ptr<EngineSeekFlush>& flush);
     // v6Types / v6HistoryTypes are Electron's TNRD V6 data-type lists: the
@@ -109,6 +115,8 @@ private:
     std::vector<tnrp::AnalysisDriverLapCatalog> playbackDriverCatalog_;
     tnrp::PlaybackLapBlocksRow playbackLapCatalog_;
 
+    float   displayTime_    = 0.0f;    // last transport time/total (time label base)
+    float   displayTotal_   = 0.0f;
     bool    seekerUpdating_ = false;
     qint64  lastSeekMs_     = 0;       // leading-edge throttle for scrub-bar seeks
     bool    lastPlaying_    = false;   // only swap the play/pause icon on change
