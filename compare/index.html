@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Primary Meta Tags -->
+    <title>Track N Race — Electron vs Qt</title>
+    <meta name="description"
+        content="Compare the Track N Race Electron and Qt frontends screen by screen.">
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+    <meta name="author" content="NoGoat">
+    <meta name="application-name" content="Track N Race">
+    <meta name="apple-mobile-web-app-title" content="Track N Race">
+    <meta name="theme-color" content="#09090b">
+
+    <!-- Favicon & App Icons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="48x48" href="/assets/icons/favicon-48x48.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/icons/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/assets/icons/favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/apple-touch-icon.png">
+    <link rel="manifest" href="/site.webmanifest">
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="/styles.css">
+
+    <!-- Canonical URL -->
+    <link rel="canonical" href="https://track-n-race.com/compare/">
+</head>
+
+<body>
+    <header class="navbar">
+        <div class="nav-container">
+            <a href="/" class="brand-link" aria-label="Track N Race Home">
+                <div class="brand">
+                    <img src="/assets/icons/icon_transparent-78.webp" alt="Track N Race Logo" class="brand-logo-img"
+                        width="78" height="64">
+                    <span class="brand-text"><span class="brand-accent">Track</span> N Race</span>
+                </div>
+            </a>
+            <nav class="nav-menu">
+                <a href="/" class="nav-btn">Home</a>
+                <a href="/compare/" class="nav-btn active">Compare</a>
+                <a href="/setup/" class="nav-btn">Setup</a>
+                <a href="/credits/" class="nav-btn">Credits</a>
+            </nav>
+            <div class="nav-actions">
+                <!-- Discord invite link: replace the href below -->
+                <a href="https://discord.gg/UMVRrN3RbR" target="_blank" rel="noopener" class="discord-link-btn"
+                    aria-label="Discord Server">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path
+                            d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.865-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.74 19.74 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.1 13.1 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .078-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.246.198.373.292a.077.077 0 0 1-.006.127 12.3 12.3 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.182 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
+                    </svg>
+                    <span>Discord</span>
+                </a>
+                <a href="https://github.com/NoGoat/Track-N-Race" target="_blank" rel="noopener" class="github-link-btn"
+                    aria-label="GitHub Repository">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <path
+                            d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+                    </svg>
+                    <span>GitHub</span>
+                </a>
+                <button class="mobile-toggle-btn" id="mobileToggleBtn" aria-label="Toggle Navigation Menu"
+                    aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="4" y1="6" x2="20" y2="6"></line>
+                        <line x1="4" y1="12" x2="20" y2="12"></line>
+                        <line x1="4" y1="18" x2="20" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Electron vs Qt: one before/after slider per screen -->
+        <section id="compare" class="section compare-section">
+            <div class="page-header">
+                <h1 class="main-title">Electron <span class="compare-vs">vs</span> Qt</h1>
+                <p class="subtitle">Compare both to decide which one you prefer.</p>
+            </div>
+
+            <div class="modules compare-modules">
+                <div class="module-list" role="tablist" aria-label="Screens" aria-orientation="vertical">
+                    <button class="module-tab active" role="tab" id="module-tab-0"
+                        aria-controls="module-pane-0" aria-selected="true" tabindex="0">
+                        <span class="module-num">01</span>
+                        <span class="module-name">Overview</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-1"
+                        aria-controls="module-pane-1" aria-selected="false" tabindex="-1">
+                        <span class="module-num">02</span>
+                        <span class="module-name">Analysis</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-2"
+                        aria-controls="module-pane-2" aria-selected="false" tabindex="-1">
+                        <span class="module-num">03</span>
+                        <span class="module-name">Session</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-3"
+                        aria-controls="module-pane-3" aria-selected="false" tabindex="-1">
+                        <span class="module-num">04</span>
+                        <span class="module-name">View Other Drivers</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-4"
+                        aria-controls="module-pane-4" aria-selected="false" tabindex="-1">
+                        <span class="module-num">05</span>
+                        <span class="module-name">Layout Editor</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-5"
+                        aria-controls="module-pane-5" aria-selected="false" tabindex="-1">
+                        <span class="module-num">06</span>
+                        <span class="module-name">Inputs</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-6"
+                        aria-controls="module-pane-6" aria-selected="false" tabindex="-1">
+                        <span class="module-num">07</span>
+                        <span class="module-name">Power</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-7"
+                        aria-controls="module-pane-7" aria-selected="false" tabindex="-1">
+                        <span class="module-num">08</span>
+                        <span class="module-name">Tyres</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-8"
+                        aria-controls="module-pane-8" aria-selected="false" tabindex="-1">
+                        <span class="module-num">09</span>
+                        <span class="module-name">Tyre Graphs</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-9"
+                        aria-controls="module-pane-9" aria-selected="false" tabindex="-1">
+                        <span class="module-num">10</span>
+                        <span class="module-name">Race Strategy</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-10"
+                        aria-controls="module-pane-10" aria-selected="false" tabindex="-1">
+                        <span class="module-num">11</span>
+                        <span class="module-name">Standings</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-11"
+                        aria-controls="module-pane-11" aria-selected="false" tabindex="-1">
+                        <span class="module-num">12</span>
+                        <span class="module-name">View Previous Times</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-12"
+                        aria-controls="module-pane-12" aria-selected="false" tabindex="-1">
+                        <span class="module-num">13</span>
+                        <span class="module-name">Data Tables</span>
+                    </button>
+                </div>
+                <div class="module-stage">
+                    <figure class="module-pane active" role="tabpanel" id="module-pane-0"
+                        aria-labelledby="module-tab-0">
+                        <div class="compare" style="aspect-ratio: 2492 / 1492">
+                            <img class="compare-img" src="/assets/screenshots/qt/overview.webp"
+                                alt="Qt frontend: Overview" width="2492" height="1492">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/overview.webp"
+                                    alt="Electron frontend: Overview" width="2492" height="1492">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Overview: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Overview</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-1"
+                        aria-labelledby="module-tab-1" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/analyze.webp"
+                                alt="Qt frontend: Analysis" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/analyze.webp"
+                                    alt="Electron frontend: Analysis" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Analysis: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Analysis</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-2"
+                        aria-labelledby="module-tab-2" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/session.webp"
+                                alt="Qt frontend: Session" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/session.webp"
+                                    alt="Electron frontend: Session" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Session: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Session</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-3"
+                        aria-labelledby="module-tab-3" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/other_drivers.webp"
+                                alt="Qt frontend: View Other Drivers" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/other_drivers.webp"
+                                    alt="Electron frontend: View Other Drivers" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="View Other Drivers: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">View Other Drivers</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-4"
+                        aria-labelledby="module-tab-4" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/editor.webp"
+                                alt="Qt frontend: Layout Editor" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/editor.webp"
+                                    alt="Electron frontend: Layout Editor" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Layout Editor: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Layout Editor</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-5"
+                        aria-labelledby="module-tab-5" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/inputs.webp"
+                                alt="Qt frontend: Inputs" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/inputs.webp"
+                                    alt="Electron frontend: Inputs" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Inputs: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Inputs</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-6"
+                        aria-labelledby="module-tab-6" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/power.webp"
+                                alt="Qt frontend: Power" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/power.webp"
+                                    alt="Electron frontend: Power" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Power: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Power</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-7"
+                        aria-labelledby="module-tab-7" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/tyres.webp"
+                                alt="Qt frontend: Tyres" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/tyres.webp"
+                                    alt="Electron frontend: Tyres" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Tyres: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Tyres</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-8"
+                        aria-labelledby="module-tab-8" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/tyres_charts.webp"
+                                alt="Qt frontend: Tyre Graphs" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/tyres_charts.webp"
+                                    alt="Electron frontend: Tyre Graphs" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Tyre Graphs: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Tyre Graphs</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-9"
+                        aria-labelledby="module-tab-9" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/strategy.webp"
+                                alt="Qt frontend: Race Strategy" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/strategy.webp"
+                                    alt="Electron frontend: Race Strategy" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Race Strategy: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Race Strategy</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-10"
+                        aria-labelledby="module-tab-10" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/standings.webp"
+                                alt="Qt frontend: Standings" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/standings.webp"
+                                    alt="Electron frontend: Standings" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Standings: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Standings</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-11"
+                        aria-labelledby="module-tab-11" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/previous_lap_times.webp"
+                                alt="Qt frontend: View Previous Times" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/previous_lap_times.webp"
+                                    alt="Electron frontend: View Previous Times" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="View Previous Times: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">View Previous Times</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-12"
+                        aria-labelledby="module-tab-12" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/overview_table.webp"
+                                alt="Qt frontend: Data Tables" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/overview_table.webp"
+                                    alt="Electron frontend: Data Tables" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Data Tables: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Data Tables</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="site-footer">
+        <div class="footer-container">
+            <div class="footer-left">
+                <span class="footer-brand"><span class="brand-accent">Track</span> N Race</span>
+                <p class="footer-desc">
+                    Copyright &copy; 2026 NoGoat. Track N Race is distributed under the <span
+                        class="footer-license" data-license="GPL-3.0.txt" role="button" tabindex="0">GNU
+                        General Public License v3.0</span>
+                </p>
+                <p class="footer-disclaimer">
+                    Track N Race is not affiliated with, endorsed by, or associated with EA, Codemasters, Formula One,
+                    the FIA, the drivers or the teams participating in Formula One.
+                </p>
+            </div>
+            <ul class="footer-links">
+                <li><a href="/">Home</a></li>
+                <li><a href="/compare/">Compare</a></li>
+                <li><a href="/setup/">Setup</a></li>
+                <li><a href="/credits/">Credits</a></li>
+                <li><a href="https://github.com/NoGoat/Track-N-Race" target="_blank" rel="noopener">GitHub</a></li>
+                <!-- Discord invite link: replace the href below -->
+                <li><a href="https://discord.gg/UMVRrN3RbR" target="_blank" rel="noopener">Discord</a></li>
+            </ul>
+        </div>
+    </footer>
+
+    <!-- Lightbox Modal -->
+    <div class="lightbox" id="lightbox">
+        <button class="lightbox-close" id="lightboxClose" aria-label="Close image">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+        </button>
+        <div class="lightbox-scroll" id="lightboxScroll">
+            <div class="lightbox-centerer" id="lightboxCenterer">
+                <img alt="Enlarged view" loading="lazy">
+            </div>
+        </div>
+    </div>
+
+    <!-- License Modal -->
+    <div class="license-modal" id="licenseModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="licenseModalTitle">License Details</h3>
+                <button class="modal-close" id="closeLicenseModal" aria-label="Close modal">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <pre id="licenseTextContent">Loading...</pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "4e3d769baeb5490c88955078b08ad8a6"}'></script><!-- End Cloudflare Web Analytics -->
+    <script src="/script.js" defer></script>
+</body>
+
+</html>

@@ -171,11 +171,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Module switcher ("Everything else"): one tab per module, one visible screenshot
-    const moduleTabs = Array.from(document.querySelectorAll('.module-tab'));
-    const modulePanes = Array.from(document.querySelectorAll('.module-pane'));
-
-    if (moduleTabs.length > 0 && moduleTabs.length === modulePanes.length) {
+    // Module switchers ("Everything else", "Qt frontend"): one tab per module, one visible
+    // screenshot. Each .modules block switches independently.
+    document.querySelectorAll('.modules').forEach(modules => {
+        const moduleTabs = Array.from(modules.querySelectorAll('.module-tab'));
+        const modulePanes = Array.from(modules.querySelectorAll('.module-pane'));
+        if (moduleTabs.length === 0 || moduleTabs.length !== modulePanes.length) return;
         const moduleList = moduleTabs[0].parentElement;
 
         const selectModule = (index, focus = false) => {
@@ -218,7 +219,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 selectModule(target, true);
             });
         });
-    }
+    });
+
+    // Electron vs Qt sliders: the range input's value drives the clip position
+    document.querySelectorAll('.compare').forEach(compare => {
+        const range = compare.querySelector('.compare-range');
+        if (!range) return;
+        const update = () => compare.style.setProperty('--pos', `${range.value}%`);
+        range.addEventListener('input', update);
+        update();
+    });
 
     // Lightbox Logic & Fluid GPU Zoom & Pan Algorithm
     const lightbox = document.getElementById('lightbox');
