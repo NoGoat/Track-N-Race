@@ -923,6 +923,13 @@ body.modal-open {
     padding-top: 48px;
 }
 
+/* Intro between the section header and the switcher; the header's own bottom
+   margin spaces it from the rule above */
+.qt-intro {
+    max-width: none;
+    margin: -0.5rem 0 2.5rem;
+}
+
 /* Section-header link, styled as the header's mono eyebrow */
 .section-link {
     text-decoration: none;
@@ -946,6 +953,12 @@ body.modal-open {
 .module-pane.qt-shot-hero .mockup-img {
     width: 103.747%;   /* 2492 / 2402 */
     margin: -0.416% 0 0 -1.915%;   /* 10 / 2402, 46 / 2402 */
+}
+
+/* The frame's corner follows the window's: KDE's 4px radius (at 1200px wide),
+   scaled to the ~840px pane, instead of the macOS-sized radius-lg */
+.qt-modules .app-window {
+    border-radius: 3px;
 }
 
 /* Sixteen screens: shorter rows keep the list about as tall as the screenshot */
