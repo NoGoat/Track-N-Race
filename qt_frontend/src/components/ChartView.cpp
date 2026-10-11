@@ -59,7 +59,9 @@ QColor mixColor(const QColor& from, const QColor& to, double amount) {
                             from.greenF() + (to.greenF() - from.greenF()) * amount,
                             from.blueF() + (to.blueF() - from.blueF()) * amount);
 }
-QColor chartGridColor() { return tnr::isDarkTheme() ? QColor(255, 255, 255, 10) : QColor(0, 0, 0, 18); }
+// Stronger than Electron's 4% / 7%: Breeze's lighter window colour and the
+// one-device-pixel hairlines made the same values all but invisible.
+QColor chartGridColor() { return tnr::isDarkTheme() ? QColor(255, 255, 255, 28) : QColor(0, 0, 0, 36); }
 QColor chartReferenceSolidColor() { return tnr::isDarkTheme() ? QColor(255, 255, 255, 51) : QColor(0, 0, 0, 46); }
 QColor chartBorderColor(const QPalette& palette) {
     return mixColor(palette.color(QPalette::Window), palette.color(QPalette::Text),
