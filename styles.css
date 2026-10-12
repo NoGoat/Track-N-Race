@@ -976,6 +976,11 @@ body.modal-open {
     }
 }
 
+/* The screen list runs taller than the slider: centre the slider against it */
+.compare-modules .module-stage {
+    align-self: center;
+}
+
 /* Screens have different shapes: only the visible pane sets the stage's height */
 .compare-modules .module-pane:not(.active) {
     height: 0;
@@ -1135,9 +1140,10 @@ body.modal-open {
 /* ==========================================================================
    Setup
    ========================================================================== */
+/* Same column as Credits and the home page */
 .setup-container {
     width: 100%;
-    max-width: calc(980px + var(--gutter) * 2);
+    max-width: calc(var(--content) + var(--gutter) * 2);
     margin: 0 auto;
     padding: calc(var(--nav-h) + 72px) var(--gutter) 96px;
 }
@@ -1352,35 +1358,31 @@ body.modal-open {
     color: var(--text-3);
 }
 
-/* Segmented control */
+/* Single PC / Dual System: two tabs that split the width between them, each with
+   its own underline (red when active), so together they read as one bar */
 .scenario-selector {
     display: flex;
-    flex-wrap: wrap;
-    gap: 2px;
-    padding: 3px;
-    margin-bottom: 1.25rem;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
+    margin: 0.25rem 0 1.5rem;
 }
 
 .scenario-btn {
-    flex: 1;
-    min-width: 200px;
+    flex: 1 1 0;
+    min-width: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
-    padding: 0.5rem 0.85rem;
+    padding: 0.6rem 0.75rem;
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 7px;
+    border: 0;
+    border-bottom: 1px solid var(--line-strong);
     color: var(--text-2);
     font-family: var(--font-sans);
-    font-size: 0.85rem;
+    font-size: 0.9rem;
+    text-align: center;
     font-weight: 500;
     cursor: pointer;
-    transition: color var(--fast), background var(--fast);
+    transition: color var(--fast), border-color var(--fast);
 }
 
 .scenario-btn:hover {
@@ -1389,8 +1391,7 @@ body.modal-open {
 
 .scenario-btn.active {
     color: var(--text);
-    background: var(--surface-3);
-    border-color: var(--line);
+    border-bottom-color: var(--accent);
 }
 
 .scenario-btn svg {
@@ -1414,12 +1415,14 @@ body.modal-open {
     to { opacity: 1; transform: none; }
 }
 
-/* Underline tabs */
+/* Underline tabs: a faint rule as long as the three tabs (not the column), the
+   active tab's red underline sitting on it, like the Single PC / Dual System bar */
 .platform-tabs-nav {
-    display: flex;
-    gap: 1.25rem;
-    margin-bottom: 1rem;
-    border-bottom: 1px solid var(--line);
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0 1.25rem;
+    margin-bottom: 0.5rem;
+    border-bottom: 1px solid var(--line-strong);
 }
 
 .platform-tab-btn {
@@ -1452,6 +1455,14 @@ body.modal-open {
     width: 14px;
     height: 14px;
     flex-shrink: 0;
+}
+
+/* Tux is mostly outline, and the Apple mark is narrow and tall in its square:
+   both a touch larger so they weigh the same as the Windows squares */
+.platform-tab-btn svg.apple,
+.platform-tab-btn svg.tux {
+    width: 16px;
+    height: 16px;
 }
 
 .platform-pane.active {
@@ -2481,18 +2492,25 @@ body.page-fit main {
         border-left: 0;
     }
 
+
     .config-item {
         flex-direction: column;
         align-items: flex-start;
         gap: 0.65rem;
     }
 
-    .scenario-btn {
-        min-width: 100%;
-    }
-
     .command-box {
         flex-wrap: wrap;
+    }
+
+    /* Half a phone is narrow: drop the icons so the labels keep to two lines */
+    .scenario-btn {
+        padding: 0.6rem 0.4rem;
+        font-size: 0.82rem;
+    }
+
+    .scenario-btn svg {
+        display: none;
     }
 }
 

@@ -85,7 +85,7 @@
           "mainEntity": {
             "@type": "ItemList",
             "name": "Screens compared",
-            "numberOfItems": 13,
+            "numberOfItems": 15,
             "itemListElement": [
                 {
                   "@type": "ListItem",
@@ -151,6 +151,16 @@
                   "@type": "ListItem",
                   "position": 13,
                   "name": "Data Tables"
+                },
+                {
+                  "@type": "ListItem",
+                  "position": 14,
+                  "name": "Damage"
+                },
+                {
+                  "@type": "ListItem",
+                  "position": 15,
+                  "name": "Trends"
                 }
             ]
           }
@@ -299,6 +309,16 @@
                         aria-controls="module-pane-12" aria-selected="false" tabindex="-1">
                         <span class="module-num">13</span>
                         <span class="module-name">Data Tables</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-13"
+                        aria-controls="module-pane-13" aria-selected="false" tabindex="-1">
+                        <span class="module-num">14</span>
+                        <span class="module-name">Damage</span>
+                    </button>
+                    <button class="module-tab" role="tab" id="module-tab-14"
+                        aria-controls="module-pane-14" aria-selected="false" tabindex="-1">
+                        <span class="module-num">15</span>
+                        <span class="module-name">Trends</span>
                     </button>
                 </div>
                 <div class="module-stage">
@@ -546,6 +566,44 @@
                         <figcaption class="compare-caption">
                             <span class="compare-tag">Electron</span>
                             <h3 class="module-title">Data Tables</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-13"
+                        aria-labelledby="module-tab-13" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/damage.webp"
+                                alt="Qt frontend: Damage" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/damage.webp"
+                                    alt="Electron frontend: Damage" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Damage: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Damage</h3>
+                            <span class="compare-tag">Qt</span>
+                        </figcaption>
+                    </figure>
+                    <figure class="module-pane" role="tabpanel" id="module-pane-14"
+                        aria-labelledby="module-tab-14" aria-hidden="true">
+                        <div class="compare" style="aspect-ratio: 2624 / 1624">
+                            <img class="compare-img" src="/assets/screenshots/qt/trends.webp"
+                                alt="Qt frontend: Trends" width="2624" height="1624" loading="lazy">
+                            <div class="compare-top">
+                                <img class="compare-img" src="/assets/screenshots/trends.webp"
+                                    alt="Electron frontend: Trends" width="2624" height="1624" loading="lazy">
+                            </div>
+                            <div class="compare-handle" aria-hidden="true"><span class="compare-knob"></span></div>
+                            <input class="compare-range" type="range" min="0" max="100" step="0.1" value="50"
+                                aria-label="Trends: slide between Electron and Qt">
+                        </div>
+                        <figcaption class="compare-caption">
+                            <span class="compare-tag">Electron</span>
+                            <h3 class="module-title">Trends</h3>
                             <span class="compare-tag">Qt</span>
                         </figcaption>
                     </figure>
