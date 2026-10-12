@@ -55,6 +55,70 @@ document.addEventListener('DOMContentLoaded', () => {
         let currentSlideIndex = 0;
         const gap = 48; // Physical buffer gap between slides in px
 
+        // Slide 1's TNRD animation: Alonso's slice splits off the cube, then the whole block turns into his table.
+        // CSS times everything; SVG has no 3D transforms, so this projects the slice's 3D corners (data-p) with an
+        // orthographic camera, reading the time from .t-stage's CSS animation. Without that animation (reduced
+        // motion, inactive slide) it renders the final table, which is also the static markup.
+        const tnrd = document.querySelector('.tnrd-anim');
+        const tnrdStage = tnrd?.querySelector('.t-stage');
+        let tnrdKick = () => {};
+        if (tnrdStage) {
+            const shapes = Array.from(tnrd.querySelectorAll('[data-p]')).map(el => ({
+                el,
+                pts: el.dataset.p.split(' ').map(q => q.split(',').map(Number))
+            }));
+            const ISO_SCALE = 56 / Math.sqrt(2 / 3);         // isometric cube with 56px cells
+            const ISO = { yaw: Math.PI / 4, pitch: Math.asin(Math.sqrt(1 / 3)), sx: ISO_SCALE, sy: ISO_SCALE };
+            const FLAT = { yaw: Math.PI / 2, pitch: 0, sx: 88, sy: 88 };    // table cells are 88 x 88
+            const ISO_ORIGIN = [900, 418];                   // screen position of the cube's back corner
+            const PULL = 1.2;                                // how far the slice slides out, in cells
+            const ANCHOR = [8, 10, 5];                       // slice's front top-left corner = table's top-left (L1, Speed)
+            const TABLE = [170, 340];
+            const SPLIT = [3600, 4400], TURN = [4600, 6300]; // ms, matches styles.css
+            const ease = x => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+            const phase = (t, [a, b]) => ease(Math.min(1, Math.max(0, (t - a) / (b - a))));
+            const camera = ({ yaw, pitch, sx, sy }) => {
+                const cyaw = Math.cos(yaw), syaw = Math.sin(yaw), sp = Math.sin(pitch), cp = Math.cos(pitch);
+                return ([x, y, z]) => [sx * (x * cyaw - y * syaw), sy * ((x * syaw + y * cyaw) * sp - z * cp)];
+            };
+            const iso = camera(ISO);
+
+            const render = t => {
+                const pull = PULL * phase(t, SPLIT), turn = phase(t, TURN);
+                const mix = (a, b) => a + (b - a) * turn;
+                const project = camera({
+                    yaw: mix(ISO.yaw, FLAT.yaw), pitch: mix(ISO.pitch, FLAT.pitch), sx: mix(ISO.sx, FLAT.sx), sy: mix(ISO.sy, FLAT.sy)
+                });
+                // keep the anchor corner on a straight path from where the split left it to the table's corner
+                const anchor = [ANCHOR[0] + pull, ANCHOR[1], ANCHOR[2]];
+                const from = iso(anchor), now = project(anchor);
+                const dx = mix(from[0] + ISO_ORIGIN[0], TABLE[0]) - now[0];
+                const dy = mix(from[1] + ISO_ORIGIN[1], TABLE[1]) - now[1];
+                for (const { el, pts } of shapes) {
+                    const q = pts.map(([x, y, z]) => { const r = project([x + pull, y, z]); return [r[0] + dx, r[1] + dy]; });
+                    if (el.tagName === 'line') {
+                        el.setAttribute('x1', q[0][0].toFixed(1));
+                        el.setAttribute('y1', q[0][1].toFixed(1));
+                        el.setAttribute('x2', q[1][0].toFixed(1));
+                        el.setAttribute('y2', q[1][1].toFixed(1));
+                    } else {
+                        el.setAttribute('points', q.map(v => `${v[0].toFixed(1)},${v[1].toFixed(1)}`).join(' '));
+                    }
+                }
+            };
+
+            let tnrdRunning = false;
+            const tick = () => {
+                const anim = tnrdStage.getAnimations()[0];
+                const t = anim ? Number(anim.currentTime) : Infinity;
+                render(t);
+                tnrdRunning = !!anim && anim.playState === 'running' && t < TURN[1];
+                if (tnrdRunning) requestAnimationFrame(tick);
+            };
+            tnrdKick = () => { if (!tnrdRunning) requestAnimationFrame(tick); };
+            tnrdStage.addEventListener('animationstart', tnrdKick);
+        }
+
         const updateCarousel = (index, animate = true) => {
             currentSlideIndex = ((index % slides.length) + slides.length) % slides.length;
             const viewportWidth = viewport.getBoundingClientRect().width;
@@ -72,6 +136,8 @@ document.addEventListener('DOMContentLoaded', () => {
             dots.forEach((dot, i) => {
                 dot.classList.toggle('active', i === currentSlideIndex);
             });
+
+            tnrdKick();
         };
 
         updateCarousel(0, false);
@@ -88,13 +154,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         let carouselVisible = true;
+        const SLIDE_MS = 20000; // long enough for slide 1's TNRD animation to play and settle
 
         const resetAutoPlay = () => {
             clearInterval(autoPlayInterval);
             if (reduceMotion || !carouselVisible) return;
             autoPlayInterval = setInterval(() => {
                 updateCarousel(currentSlideIndex + 1);
-            }, 5000);
+            }, SLIDE_MS);
         };
 
         nextButton?.addEventListener('click', () => {
@@ -151,7 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Auto-play interval
         let autoPlayInterval = reduceMotion ? null : setInterval(() => {
             updateCarousel(currentSlideIndex + 1);
-        }, 5000);
+        }, SLIDE_MS);
 
         // Pause on hover
         const carouselContainer = document.querySelector('.carousel-container');
@@ -168,7 +235,45 @@ document.addEventListener('DOMContentLoaded', () => {
                     clearInterval(autoPlayInterval);
                 }
             }).observe(carouselContainer);
+
+            // Slide 1's TNRD animation waits at its first frame until the carousel is mostly on screen
+            carouselContainer.dataset.animGate = '';
+            new IntersectionObserver(([entry]) => {
+                carouselContainer.classList.toggle('in-view', entry.isIntersecting);
+                tnrdKick();
+            }, { threshold: 0.4 }).observe(carouselContainer);
         }
+    }
+
+    // TNRD page: the version rail goes edge to edge once it sticks under the header
+    const fmtRail = document.querySelector('.fmt-rail');
+    if (fmtRail) {
+        let railFrame = 0;
+        const syncRail = () => {
+            railFrame = 0;
+            const stickAt = parseFloat(getComputedStyle(fmtRail).top) || 0;
+            fmtRail.classList.toggle('is-stuck', fmtRail.getBoundingClientRect().top <= stickAt + 0.5);
+        };
+        const queueRail = () => { if (!railFrame) railFrame = requestAnimationFrame(syncRail); };
+        window.addEventListener('scroll', queueRail, { passive: true });
+        window.addEventListener('resize', queueRail);
+        syncRail();
+    }
+
+    // TNRD page: highlight the version rail entry for the section being read
+    const fmtLinks = Array.from(document.querySelectorAll('.fmt-rail-link'));
+    if (fmtLinks.length && window.IntersectionObserver) {
+        const byId = new Map(fmtLinks.map(link => [link.getAttribute('href').slice(1), link]));
+        const visible = new Set();
+        const sync = () => {
+            const first = fmtLinks.find(link => visible.has(link.getAttribute('href').slice(1)));
+            fmtLinks.forEach(link => link.classList.toggle('active', link === first));
+        };
+        const observer = new IntersectionObserver(entries => {
+            entries.forEach(entry => entry.isIntersecting ? visible.add(entry.target.id) : visible.delete(entry.target.id));
+            sync();
+        }, { rootMargin: '-40% 0px -55% 0px' });
+        byId.forEach((_, id) => { const section = document.getElementById(id); if (section) observer.observe(section); });
     }
 
     // Module switchers ("Everything else", "Qt frontend"): one tab per module, one visible

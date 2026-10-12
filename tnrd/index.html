@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Primary Meta Tags -->
+    <title>The .tnrd Format — How Track N Race Stores Telemetry</title>
+    <meta name="description"
+        content="How the Track N Race recording format evolved from a single gzipped JSON stream (TNRD V1) to an indexed, per-driver, per-lap, per-data-type container (TNRD V6), and what each version changed.">
+    <meta name="keywords"
+        content="Track N Race TNRD, tnrd file format, F1 telemetry file format, F1 telemetry recording, Zstandard telemetry, F1 25 telemetry, F1 2026 telemetry, sim racing telemetry">
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+    <meta name="author" content="NoGoat">
+    <meta name="application-name" content="Track N Race">
+    <meta name="apple-mobile-web-app-title" content="Track N Race">
+    <meta name="theme-color" content="#09090b">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Track N Race">
+    <meta property="og:locale" content="en_US">
+    <meta property="og:url" content="https://track-n-race.com/tnrd/">
+    <meta property="og:title" content="The .tnrd Format — How Track N Race Stores Telemetry">
+    <meta property="og:description"
+        content="How the Track N Race recording format evolved from a single gzipped JSON stream (TNRD V1) to an indexed, per-driver, per-lap, per-data-type container (TNRD V6), and what each version changed.">
+    <meta property="og:image" content="https://track-n-race.com/assets/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Track N Race overview dashboard showing live speed, RPM and ERS traces with tyre temperatures">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://track-n-race.com/tnrd/">
+    <meta name="twitter:title" content="The .tnrd Format — How Track N Race Stores Telemetry">
+    <meta name="twitter:description"
+        content="How the Track N Race recording format evolved from a single gzipped JSON stream (TNRD V1) to an indexed, per-driver, per-lap, per-data-type container (TNRD V6), and what each version changed.">
+    <meta name="twitter:image" content="https://track-n-race.com/assets/og-image.png">
+    <meta name="twitter:image:alt" content="Track N Race overview dashboard showing live speed, RPM and ERS traces with tyre temperatures">
+
+    <!-- Canonical URL -->
+    <link rel="canonical" href="https://track-n-race.com/tnrd/">
+
+    <!-- JSON-LD Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "BreadcrumbList",
+          "@id": "https://track-n-race.com/tnrd/#breadcrumb",
+          "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://track-n-race.com/" },
+            { "@type": "ListItem", "position": 2, "name": "TNRD", "item": "https://track-n-race.com/tnrd/" }
+          ]
+        },
+        {
+          "@type": "TechArticle",
+          "@id": "https://track-n-race.com/tnrd/#article",
+          "headline": "The .tnrd Format — How Track N Race Stores Telemetry",
+          "description": "How the Track N Race recording format evolved from a single gzipped JSON stream (TNRD V1) to an indexed, per-driver, per-lap, per-data-type container (TNRD V6), and what each version changed.",
+          "author": { "@type": "Person", "name": "NoGoat" },
+          "about": { "@type": "SoftwareApplication", "@id": "https://track-n-race.com/#software", "name": "Track N Race" },
+          "isPartOf": { "@type": "WebSite", "@id": "https://track-n-race.com/#website", "name": "Track N Race", "url": "https://track-n-race.com/" },
+          "breadcrumb": { "@id": "https://track-n-race.com/tnrd/#breadcrumb" }
+        }
+      ]
+    }
+    </script>
+
+    <!-- Favicon & App Icons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="48x48" href="/assets/icons/favicon-48x48.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/icons/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/assets/icons/favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/apple-touch-icon.png">
+    <link rel="manifest" href="/site.webmanifest">
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="/styles.css">
+</head>
+
+<body>
+    <header class="navbar">
+        <div class="nav-container">
+            <a href="/" class="brand-link" aria-label="Track N Race Home">
+                <div class="brand">
+                    <img src="/assets/icons/icon_transparent-78.webp" alt="Track N Race Logo" class="brand-logo-img"
+                        width="78" height="64">
+                    <span class="brand-text"><span class="brand-accent">Track</span> N Race</span>
+                </div>
+            </a>
+            <nav class="nav-menu">
+                <a href="/" class="nav-btn">Home</a>
+                <a href="/compare/" class="nav-btn">Compare</a>
+                <a href="/setup/" class="nav-btn">Setup</a>
+                <a href="/tnrd/" class="nav-btn active">TNRD</a>
+                <a href="/credits/" class="nav-btn">Credits</a>
+            </nav>
+            <div class="nav-actions">
+                <!-- Discord invite link: replace the href below -->
+                <a href="https://discord.gg/UMVRrN3RbR" target="_blank" rel="noopener" class="discord-link-btn"
+                    aria-label="Discord Server">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path
+                            d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.865-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.74 19.74 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.1 13.1 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .078-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.246.198.373.292a.077.077 0 0 1-.006.127 12.3 12.3 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.182 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
+                    </svg>
+                    <span>Discord</span>
+                </a>
+                <a href="https://github.com/NoGoat/Track-N-Race" target="_blank" rel="noopener" class="github-link-btn"
+                    aria-label="GitHub Repository">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <path
+                            d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+                    </svg>
+                    <span>GitHub</span>
+                </a>
+                <button class="mobile-toggle-btn" id="mobileToggleBtn" aria-label="Toggle Navigation Menu"
+                    aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="4" y1="6" x2="20" y2="6"></line>
+                        <line x1="4" y1="12" x2="20" y2="12"></line>
+                        <line x1="4" y1="18" x2="20" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="fmt">
+        <!-- Hero -->
+        <header class="fmt-hero">
+            <h1 class="fmt-title">.tnrd</h1>
+            <p class="fmt-lede">
+                Every session Track N Race records is saved as a <code>.tnrd</code> file. It started as a gzipped
+                text log and is now an indexed container split by driver, lap and data type. This is the full history:
+                how each version lays out the file, what it fixed, and what it still got wrong.
+            </p>
+            <div class="fmt-legend" aria-label="Diagram legend">
+                <span class="fmt-legend-item"><span class="fmt-swatch is-ctrl"></span>Uncompressed, readable on open</span>
+                <span class="fmt-legend-item"><span class="fmt-swatch is-data"></span>Compressed data</span>
+                <span class="fmt-legend-item fmt-legend-note">Diagrams are not to scale</span>
+            </div>
+        </header>
+
+        <!-- Version rail -->
+        <nav class="fmt-rail" aria-label="Versions">
+            <ol class="fmt-rail-list">
+                <li><a href="#v1" class="fmt-rail-link"><span class="fmt-rail-v">V1</span><span class="fmt-rail-d">May</span></a></li>
+                <li><a href="#v2" class="fmt-rail-link"><span class="fmt-rail-v">V2</span><span class="fmt-rail-d">Jul</span></a></li>
+                <li><a href="#v3" class="fmt-rail-link"><span class="fmt-rail-v">V3</span><span class="fmt-rail-d">Aug</span></a></li>
+                <li><a href="#v4" class="fmt-rail-link"><span class="fmt-rail-v">V4</span><span class="fmt-rail-d">Aug</span></a></li>
+                <li><a href="#v5" class="fmt-rail-link"><span class="fmt-rail-v">V5</span><span class="fmt-rail-d">Aug</span></a></li>
+                <li><a href="#v6" class="fmt-rail-link"><span class="fmt-rail-v">V6</span><span class="fmt-rail-d">Sep</span></a></li>
+                <li><a href="#compare" class="fmt-rail-link"><span class="fmt-rail-v">All</span><span class="fmt-rail-d">Compare</span></a></li>
+            </ol>
+        </nav>
+
+        <!-- ============================== V1 ============================== -->
+        <section class="fmt-version" id="v1" aria-labelledby="v1-title">
+            <div class="fmt-version-head">
+                <span class="fmt-mark" aria-hidden="true">V1</span>
+                <div>
+                    <p class="fmt-date">24 May 2026 · the day after the first commit</p>
+                    <h2 class="fmt-version-title" id="v1-title">A gzipped log</h2>
+                </div>
+                <span class="fmt-release">Shipped in 1.2.0</span>
+            </div>
+
+            <div class="fmt-body">
+                <div class="fmt-prose">
+                    <p>
+                        The first format did the obvious thing. The first line of the file is a JSON header: the format
+                        name <code>TNRD_V1</code>, the game protocol, the track, the session type and when recording
+                        started. After that, every packet the parser understood is written as one more line of JSON,
+                        in the order it arrived: telemetry, lap data, car status, damage, motion and so on.
+                    </p>
+                    <p>
+                        The whole thing goes through a single <strong>gzip</strong> stream. Every few seconds the
+                        recorder flushes it, so if the app crashes mid-session the file is still readable up to the last
+                        flush.
+                    </p>
+                    <p>
+                        Playback is where it hurts. gzip can only be read from the start, so opening a recording means
+                        decompressing the entire file into a temporary file on disk, then scanning that to build an
+                        index before anything appears on screen.
+                    </p>
+                </div>
+
+                <dl class="fmt-spec">
+                    <div><dt>Header</dt><dd>One JSON line</dd></div>
+                    <div><dt>Rows</dt><dd>JSON, one per line</dd></div>
+                    <div><dt>Compression</dt><dd>gzip, one stream</dd></div>
+                    <div><dt>Index</dt><dd>None</dd></div>
+                    <div><dt>To open</dt><dd>Decompress everything</dd></div>
+                </dl>
+            </div>
+
+            <figure class="fmt-anatomy">
+                <figcaption class="fmt-anatomy-cap">File layout</figcaption>
+                <div class="fmt-strip">
+                    <div class="fmt-wrap"><span class="fmt-wrap-label">gzip stream</span>
+                        <div class="fmt-seg is-data" style="--g: 1.4"><b>Header</b><i>JSON line</i></div>
+                        <div class="fmt-seg is-data" style="--g: 9"><b>Rows</b><i>telemetry · lap · status · damage · motion · … in arrival order</i></div>
+                    </div>
+                </div>
+            </figure>
+        
+            <aside class="fmt-trivia">
+                <span class="fmt-trivia-label">Trivia</span>
+                <p>Track N Race 1.0.0 and 1.1.0 couldn't save anything: they only showed live data. Saving to <code>.tnrd</code> was added the next day and shipped in 1.2.0.</p>
+            </aside>
+        </section>
+
+        <!-- ============================== V2 ============================== -->
+        <section class="fmt-version" id="v2" aria-labelledby="v2-title">
+            <div class="fmt-version-head">
+                <span class="fmt-mark" aria-hidden="true">V2</span>
+                <div>
+                    <p class="fmt-date">13 July 2026</p>
+                    <h2 class="fmt-version-title" id="v2-title">Zstandard instead of gzip</h2>
+                </div>
+                <span class="fmt-release">Shipped in 1.3.0 – 1.3.3</span>
+            </div>
+
+            <div class="fmt-body">
+                <div class="fmt-prose">
+                    <p>
+                        Same idea, better compressor. The rows are unchanged, but the stream is now
+                        <strong>Zstandard</strong> at level 3 with a checksum on the frame, which compresses smaller and
+                        decompresses much faster than gzip. The header gains a <code>compression: "zstd"</code> field.
+                    </p>
+                    <p>
+                        It's still one continuous stream, so it still has to be decompressed from the beginning, in
+                        full, into a temporary file before playback.
+                    </p>
+                </div>
+
+                <dl class="fmt-spec">
+                    <div><dt>Header</dt><dd>One JSON line</dd></div>
+                    <div><dt>Rows</dt><dd>JSON, one per line</dd></div>
+                    <div><dt>Compression</dt><dd>Zstandard level 3, checksummed</dd></div>
+                    <div><dt>Index</dt><dd>None</dd></div>
+                    <div><dt>To open</dt><dd>Decompress everything</dd></div>
+                </dl>
+            </div>
+
+            <figure class="fmt-anatomy">
+                <figcaption class="fmt-anatomy-cap">File layout</figcaption>
+                <div class="fmt-strip">
+                    <div class="fmt-wrap"><span class="fmt-wrap-label">Zstandard stream</span>
+                        <div class="fmt-seg is-data" style="--g: 1.4"><b>Header</b><i>+ compression</i></div>
+                        <div class="fmt-seg is-data" style="--g: 9"><b>Rows</b><i>unchanged from V1</i></div>
+                    </div>
+                </div>
+            </figure>
+        </section>
+
+        <!-- ============================== V3 ============================== -->
+        <section class="fmt-version" id="v3" aria-labelledby="v3-title">
+            <div class="fmt-version-head">
+                <span class="fmt-mark" aria-hidden="true">V3</span>
+                <div>
+                    <p class="fmt-date">5 August 2026</p>
+                    <h2 class="fmt-version-title" id="v3-title">Track length, for lap delta</h2>
+                </div>
+                <span class="fmt-release is-unreleased">Never released</span>
+            </div>
+
+            <div class="fmt-body">
+                <div class="fmt-prose">
+                    <p>
+                        The Analysis page was getting a lap delta chart: how far ahead or behind one lap is against
+                        another at every point on track. Working that out needs the length of the circuit, so V3 adds
+                        <code>track_length_m</code> to the header. The delta chart only switches on for V3 files and
+                        newer.
+                    </p>
+                    <p>
+                        That's the only change to the format. It's still the same single Zstandard stream as V2, so it
+                        still has to be decompressed in full before playback, and a flashback that goes further back
+                        than the recorder's in-memory buffer can still force the whole compressed file to be rewritten.
+                    </p>
+                    <p>
+                        Those costs are what kept V3 from ever shipping. The story is below.
+                    </p>
+                </div>
+
+                <dl class="fmt-spec">
+                    <div><dt>Header</dt><dd>One JSON line, + track length</dd></div>
+                    <div><dt>Rows</dt><dd>JSON, one per line</dd></div>
+                    <div><dt>Compression</dt><dd>Zstandard level 3</dd></div>
+                    <div><dt>Unlocks</dt><dd>Lap delta in Analysis</dd></div>
+                    <div><dt>To open</dt><dd>Decompress everything</dd></div>
+                </dl>
+            </div>
+
+            <aside class="fmt-trivia is-stamp">
+                <span class="fmt-trivia-label">Why V3 never shipped</span>
+                <div class="fmt-trivia-body">
+                    <p>
+                        V3 never got released. I was preparing to release 1.4.0 and I did a test race with a 100%
+                        Azerbaijan Grand Prix run (my favorite track on the calendar is Baku, BTW). Whenever I opened the
+                        file, it was holding a 5 GB uncompressed file in the temp folder. Which is ... horrifying. So I
+                        pushed back the 1.4.0 release date and started work on the V4 file.
+                    </p>
+                    <p>
+                        The app can still read V3 files and I am fairly certain I have a few V3 recordings sitting
+                        somewhere. If y'all want to see it (for some reason), join the <a href="https://discord.gg/UMVRrN3RbR" target="_blank" rel="noopener">Discord</a> and let me know.
+                    </p>
+                </div>
+            </aside>
+
+            <figure class="fmt-anatomy">
+                <figcaption class="fmt-anatomy-cap">File layout</figcaption>
+                <div class="fmt-strip">
+                    <div class="fmt-wrap"><span class="fmt-wrap-label">Zstandard stream</span>
+                        <div class="fmt-seg is-data" style="--g: 1.4"><b>Header</b><i>+ track_length_m</i></div>
+                        <div class="fmt-seg is-data" style="--g: 9"><b>Rows</b><i>unchanged from V2</i></div>
+                    </div>
+                </div>
+                <p class="fmt-anatomy-note">Identical to V2 apart from one new field in the header.</p>
+            </figure>
+
+            <div class="fmt-verdict">
+                <div class="fmt-verdict-col">
+                    <h3 class="fmt-verdict-h">What V1 to V3 got right</h3>
+                    <ul>
+                        <li>Simple to write and easy to inspect</li>
+                        <li>Readable after a crash, up to the last flush</li>
+                    </ul>
+                </div>
+                <div class="fmt-verdict-col is-bad">
+                    <h3 class="fmt-verdict-h">What V1 to V3 got wrong</h3>
+                    <ul>
+                        <li>Every open decompresses the whole session</li>
+                        <li>Multi-gigabyte temporary files for a long race</li>
+                        <li>No way to read one lap without reading all of them</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================== V4 ============================== -->
+        <section class="fmt-version" id="v4" aria-labelledby="v4-title">
+            <div class="fmt-version-head">
+                <span class="fmt-mark" aria-hidden="true">V4</span>
+                <div>
+                    <p class="fmt-date">11 August 2026</p>
+                    <h2 class="fmt-version-title" id="v4-title">A container, split by lap</h2>
+                </div>
+                <span class="fmt-release">Shipped in 1.4.0 – 1.4.1</span>
+            </div>
+
+            <div class="fmt-body">
+                <div class="fmt-prose">
+                    <p>
+                        V4 throws away the single stream. The rule is simple: <strong>everything needed to find data
+                        stays uncompressed, and everything large is compressed in small independent pieces.</strong>
+                    </p>
+                    <p>
+                        The data is cut into chunks. Each chunk holds one family of rows for one lap, for example lap
+                        17's telemetry or lap 17's damage, and is its own Zstandard frame, so it can be decompressed
+                        without touching anything else. There are 14 families, including telemetry, car status, damage,
+                        lap data, motion, positions, participants, race events and tyre sets.
+                    </p>
+                    <p>
+                        Two uncompressed tables at the end of the file describe it all. The <strong>lap table</strong>
+                        lists every lap with its start time, end time and lap time. The <strong>chunk directory</strong>
+                        gives every chunk's lap, family, position in the file, sizes, row count and checksum. Opening a
+                        file is now a handful of small reads and no decompression. Each page then loads only the laps and
+                        families it actually draws.
+                    </p>
+                    <p>
+                        Chunks are written as you drive, tables last, and the fixed header is patched with their
+                        positions when recording stops. A lap stays in memory for 30 seconds after it ends in case of a
+                        flashback. Every so often a checkpoint footer is appended, and after a crash the reader scans
+                        backwards for the last good one. A flashback into data already on disk writes replacement
+                        chunks and points the directory at them, instead of rewriting the file.
+                    </p>
+                </div>
+
+                <dl class="fmt-spec">
+                    <div><dt>Fixed header</dt><dd>96 bytes</dd></div>
+                    <div><dt>Session info</dt><dd>JSON, uncompressed</dd></div>
+                    <div><dt>Chunk key</dt><dd>Lap × row family</dd></div>
+                    <div><dt>Row families</dt><dd>14</dd></div>
+                    <div><dt>Lap table</dt><dd>24 bytes per lap</dd></div>
+                    <div><dt>Directory</dt><dd>48 bytes per chunk</dd></div>
+                    <div><dt>Compression</dt><dd>Zstandard level 3, per chunk</dd></div>
+                    <div><dt>To open</dt><dd>Read the tables, decompress nothing</dd></div>
+                </dl>
+            </div>
+
+            <figure class="fmt-anatomy">
+                <figcaption class="fmt-anatomy-cap">File layout</figcaption>
+                <div class="fmt-strip">
+                    <div class="fmt-seg is-ctrl" style="--g: 1"><b>Header</b><i>96 B</i></div>
+                    <div class="fmt-seg is-ctrl" style="--g: 1.2"><b>Session</b><i>JSON</i></div>
+                    <div class="fmt-seg is-data is-chunks" style="--g: 6"><b>Chunks</b><i>L1 telemetry · L1 status · L1 damage · L2 telemetry · …</i></div>
+                    <div class="fmt-seg is-ctrl" style="--g: 1.2"><b>Lap table</b><i>24 B / lap</i></div>
+                    <div class="fmt-seg is-ctrl" style="--g: 1.4"><b>Directory</b><i>48 B / chunk</i></div>
+                    <div class="fmt-seg is-ctrl" style="--g: 0.9"><b>Footer</b><i>32 B</i></div>
+                </div>
+            </figure>
+        </section>
+
+        <!-- ============================== V5 ============================== -->
+        <section class="fmt-version" id="v5" aria-labelledby="v5-title">
+            <div class="fmt-version-head">
+                <span class="fmt-mark" aria-hidden="true">V5</span>
+                <div>
+                    <p class="fmt-date">23 August 2026</p>
+                    <h2 class="fmt-version-title" id="v5-title">Write down what you already know</h2>
+                </div>
+                <span class="fmt-release">Shipped in 1.5.0</span>
+            </div>
+
+            <div class="fmt-body">
+                <div class="fmt-prose">
+                    <p>
+                        V4's directory said where each chunk was, but not <em>when</em> it was. To find which chunk
+                        covered a moment in the session, the reader had to decompress chunks and read the timestamp of
+                        every row. The recorder knew all of this while writing, and simply threw it away.
+                    </p>
+                    <p>
+                        V5 keeps it. Each directory entry doubles to 96 bytes and now carries the chunk's first and last
+                        session time, its lap distance range, and a pointer into a <strong>row index</strong>. The row
+                        index lists where each row sits inside the decompressed chunk: every row for rarely-changing
+                        state such as damage or tyre sets, and one entry per 64 rows for high-rate data such as
+                        telemetry. It's written once, when recording finishes.
+                    </p>
+                    <p>
+                        Flashbacks changed too. Instead of replacement chunks, a flashback now appends a small
+                        <strong>branch</strong> entry: the wall-clock time it happened and the session time it rewound
+                        to. Newer branches hide older data from their rewind point onward, so nothing already written is
+                        ever decompressed, filtered or recompressed.
+                    </p>
+                    <p>
+                        The result: opening a file decompresses zero chunks, seeking jumps straight to the right one,
+                        and finding the latest state at a moment decompresses exactly one.
+                    </p>
+                </div>
+
+                <dl class="fmt-spec">
+                    <div><dt>Fixed header</dt><dd>128 bytes</dd></div>
+                    <div><dt>Directory</dt><dd>96 bytes per chunk, with time and distance bounds</dd></div>
+                    <div><dt>Row index</dt><dd>24 bytes per entry</dd></div>
+                    <div><dt>Branches</dt><dd>16 bytes per flashback</dd></div>
+                    <div><dt>Payload</dt><dd>Unchanged JSON chunks</dd></div>
+                    <div><dt>Compression</dt><dd>Zstandard level 3, per chunk</dd></div>
+                    <div><dt>Chunks read on open</dt><dd>0</dd></div>
+                </dl>
+            </div>
+
+            <figure class="fmt-anatomy">
+                <figcaption class="fmt-anatomy-cap">File layout</figcaption>
+                <div class="fmt-strip">
+                    <div class="fmt-seg is-ctrl" style="--g: 1"><b>Header</b><i>128 B</i></div>
+                    <div class="fmt-seg is-ctrl" style="--g: 1"><b>Session</b><i>JSON</i></div>
+                    <div class="fmt-seg is-data is-chunks" style="--g: 4.6"><b>Chunks</b><i>same JSON chunks as V4</i></div>
+                    <div class="fmt-seg is-ctrl" style="--g: 1.1"><b>Branches</b><i>16 B each</i></div>
+                    <div class="fmt-seg is-ctrl" style="--g: 1"><b>Laps</b><i>24 B</i></div>
+                    <div class="fmt-seg is-ctrl is-new" style="--g: 1.5"><b>Directory</b><i>96 B + time bounds</i></div>
+                    <div class="fmt-seg is-ctrl is-new" style="--g: 1.3"><b>Row index</b><i>at close</i></div>
+                    <div class="fmt-seg is-ctrl" style="--g: 0.9"><b>Footer</b><i>48 B</i></div>
+                </div>
+            </figure>
+
+            <aside class="fmt-trivia">
+                <span class="fmt-trivia-label">Trivia</span>
+                <p>V5 shipped in exactly one release, 1.5.0 on 16 September, and work on V6 started the next day. V5 also never got markers of its own: every chunk in a V5 file is stamped <code>CHK4</code> and every footer <code>END4</code>, inherited straight from V4.</p>
+            </aside>
+
+            <div class="fmt-verdict">
+                <div class="fmt-verdict-col">
+                    <h3 class="fmt-verdict-h">What V4 and V5 got right</h3>
+                    <ul>
+                        <li>No temporary files, no full decompression</li>
+                        <li>Pages read only the laps and data they show</li>
+                        <li>Crash recovery from checkpoint footers</li>
+                    </ul>
+                </div>
+                <div class="fmt-verdict-col is-bad">
+                    <h3 class="fmt-verdict-h">What V4 and V5 got wrong</h3>
+                    <ul>
+                        <li>Built around your own car: other drivers got only a little data, mostly usable on the Session and Standings pages</li>
+                        <li>Chunks were still JSON text, repeating every field name on every row</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================== V6 ============================== -->
+        <section class="fmt-version" id="v6" aria-labelledby="v6-title">
+            <div class="fmt-version-head">
+                <span class="fmt-mark is-current" aria-hidden="true">V6</span>
+                <div>
+                    <p class="fmt-date">17 to 19 September 2026 · current</p>
+                    <h2 class="fmt-version-title" id="v6-title">Driver × lap × data type</h2>
+                </div>
+                <span class="fmt-release is-current">Shipped in 1.6.0</span>
+            </div>
+
+            <div class="fmt-body">
+                <div class="fmt-prose">
+                    <p>
+                        V5 had been public for about a day when it became clear it couldn't handle comparing your laps
+                        against other drivers. So V6 starts over with a different question: what does each chart
+                        actually need?
+                    </p>
+                    <p>
+                        Earlier versions kept only a little data for the other cars, enough for the Session and Standings pages. <strong>V6 records full telemetry for every car on the grid</strong>, and the file is split three ways: by driver,
+                        then by lap, then by data type. There are 24 data types, each matching something a chart or card
+                        shows: speed, RPM, gear, throttle, brake, steering, aero, tyre surface and inner temperature,
+                        brake temperature, engine temperature, tyre wear, tyre state, damage, fuel, ERS store, harvest and
+                        deployment, engine power, brake bias, G-force, ride height, position, and lap timing. Alonso's
+                        speed on lap 5 is exactly one chunk.
+                    </p>
+                    <p>
+                        Each driver has a small header with their name, team, number and whether they've set their
+                        telemetry to restricted, plus a lap table. Listing drivers, showing restrictions and drawing lap
+                        times needs no decompression. Things that belong to the whole session, such as weather, race
+                        events and participant changes, are stored once rather than 24 times.
+                    </p>
+                </div>
+
+                <dl class="fmt-spec">
+                    <div><dt>Fixed header</dt><dd>128 bytes</dd></div>
+                    <div><dt>Chunk key</dt><dd>Driver × lap × data type</dd></div>
+                    <div><dt>Data types</dt><dd>24</dd></div>
+                    <div><dt>Chunk prefix</dt><dd>32 bytes</dd></div>
+                    <div><dt>Directory</dt><dd>56 bytes per chunk, compressed</dd></div>
+                    <div><dt>Footer</dt><dd>48 bytes</dd></div>
+                    <div><dt>Payload</dt><dd>Binary column tables</dd></div>
+                    <div><dt>Compression</dt><dd>Zstandard level 9</dd></div>
+                </dl>
+            </div>
+
+            <figure class="fmt-anatomy">
+                <figcaption class="fmt-anatomy-cap">File layout</figcaption>
+                <div class="fmt-strip">
+                    <div class="fmt-seg is-ctrl" style="--g: 1"><b>Header</b><i>128 B</i></div>
+                    <div class="fmt-seg is-data is-chunks" style="--g: 6.4"><b>Chunks</b><i>VER L1 speed · VER L1 RPM · … · ALO L5 speed · shared session records</i></div>
+                    <div class="fmt-seg is-data" style="--g: 1.6"><b>Drivers + laps</b><i>metadata</i></div>
+                    <div class="fmt-seg is-data" style="--g: 1.4"><b>Directory</b><i>56 B / chunk</i></div>
+                    <div class="fmt-seg is-ctrl" style="--g: 0.9"><b>Footer</b><i>48 B</i></div>
+                </div>
+                <p class="fmt-anatomy-note">The driver metadata and directory are compressed too, but they're small and
+                    read in one go when the file opens.</p>
+            </figure>
+
+            <!-- Inside a chunk -->
+            <div class="fmt-sub">
+                <h3 class="fmt-sub-title">Inside one chunk</h3>
+                <div class="fmt-body">
+                    <div class="fmt-prose">
+                        <p>
+                            Chunks stopped being JSON. Each one is a <strong>column table</strong>: all the timestamps
+                            together, then all of one field's values together, and so on. Field names are written once
+                            per chunk instead of once per sample.
+                        </p>
+                        <p>
+                            Every numeric column is stored as the difference from the previous value, or the difference
+                            of those differences, whichever is smaller, packed into the narrowest width that fits: 1, 2,
+                            4 or 8 bytes. A speed trace that only changes by a few km/h between samples can often be
+                            stored in a single byte per sample. Values the game rounds to a few decimal places, such as G-force, steering and fuel,
+                            are stored as whole numbers. The bytes are then regrouped so similar high bytes sit together,
+                            which Zstandard compresses very well.
+                        </p>
+                        <p>
+                            None of this is lossy. Floats are differenced as their raw bits, so every value comes back
+                            exactly as it was recorded.
+                        </p>
+                        <p>
+                            Car telemetry, status, lap data and motion all arrive with the same timestamp, so a lap's
+                            timestamps are stored once in a shared <strong>lap clock</strong>, and the other chunks
+                            refer to it.
+                        </p>
+                    </div>
+                    <figure class="fmt-anatomy fmt-anatomy-tall">
+                        <figcaption class="fmt-anatomy-cap">One chunk, top to bottom</figcaption>
+                        <ol class="fmt-stack">
+                            <li class="fmt-row is-ctrl"><b>Prefix</b><i>32 B · driver, lap, type, sizes, checksum</i></li>
+                            <li class="fmt-row is-data"><b>Column header</b><i>row count, column count</i></li>
+                            <li class="fmt-row is-data"><b>Time</b><i>own column, or a bitmap over the lap clock</i></li>
+                            <li class="fmt-row is-data"><b>Field descriptors</b><i>name, kind, width, encoding</i></li>
+                            <li class="fmt-row is-data is-tall"><b>Field arrays</b><i>delta-encoded · narrowest width · byte-planed</i></li>
+                        </ol>
+                        <p class="fmt-anatomy-note">Everything below the prefix is one Zstandard frame.</p>
+                    </figure>
+                </div>
+            </div>
+
+            <!-- Recording -->
+            <div class="fmt-sub">
+                <h3 class="fmt-sub-title">Recording and flashbacks</h3>
+                <div class="fmt-body">
+                    <div class="fmt-prose">
+                        <p>
+                            Each driver's current lap is kept in memory. When a lap ends it waits another
+                            <strong>30 seconds of session time</strong>, then it's compressed and written in one go.
+                            Pausing the game doesn't count down that timer.
+                        </p>
+                        <p>
+                            A flashback simply throws away anything buffered after the point you rewound to, for every
+                            driver at once. Nothing on disk is touched, and V5's branch table is gone. The 30 seconds
+                            isn't a guess: in a 92-minute São Paulo race capture there were 50 flashbacks, and the
+                            longest went back exactly 15 seconds.
+                        </p>
+                        <p>
+                            The same capture also showed the session clock resetting from 128 seconds to zero at the end
+                            of the formation lap. V6 recognises that from the safety car and race-start events, and files
+                            the formation lap separately instead of treating it as a flashback.
+                        </p>
+                        <p>
+                            When a session ends you choose what to keep: <strong>Driver Only</strong>, just your own
+                            car; <strong>All Drivers</strong>; or both.
+                        </p>
+                    </div>
+                    <dl class="fmt-spec">
+                        <div><dt>Write delay</dt><dd>30 s of session time after a lap ends</dd></div>
+                        <div><dt>Flashbacks in test race</dt><dd>50</dd></div>
+                        <div><dt>Longest rewind</dt><dd>15 s</dd></div>
+                        <div><dt>On disk after a flashback</dt><dd>Nothing changes</dd></div>
+                        <div><dt>Save options</dt><dd>Driver Only · All Drivers · Both</dd></div>
+                    </dl>
+                </div>
+            </div>
+
+            <!-- Sizes -->
+            <div class="fmt-sub">
+                <h3 class="fmt-sub-title">One race, four file sizes</h3>
+                <p class="fmt-sub-lede">
+                    The same 92-minute São Paulo race with 22 cars: the raw UDP capture from the game, the first V6
+                    build (21 September 2026), and V6 today. Linear scale.
+                </p>
+                <figure class="fmt-sizes" aria-label="File sizes for the same race">
+                    <div class="fmt-size" title="Raw UDP capture: 2,518 MB">
+                        <span class="fmt-size-name">Raw UDP capture</span>
+                        <span class="fmt-size-bar"><span style="--w: 100%"></span></span>
+                        <span class="fmt-size-num">2.52 GB</span>
+                    </div>
+                    <div class="fmt-size" title="First V6 build, all drivers: 903 MB">
+                        <span class="fmt-size-name">First V6 build</span>
+                        <span class="fmt-size-bar"><span style="--w: 35.87%"></span></span>
+                        <span class="fmt-size-num">903 MB</span>
+                    </div>
+                    <div class="fmt-size" title="V6 today, all drivers: 76.4 MB">
+                        <span class="fmt-size-name">V6 today · All Drivers</span>
+                        <span class="fmt-size-bar"><span style="--w: 3.04%"></span></span>
+                        <span class="fmt-size-num">76.4 MB</span>
+                    </div>
+                    <div class="fmt-size" title="V6 today, driver only: 4.9 MB">
+                        <span class="fmt-size-name">V6 today · Driver Only</span>
+                        <span class="fmt-size-bar"><span style="--w: 0.2%"></span></span>
+                        <span class="fmt-size-num">4.9 MB</span>
+                    </div>
+                </figure>
+                <p class="fmt-anatomy-note">The Driver Only file is about 1/500th the size of the raw capture.</p>
+            </div>
+
+            <aside class="fmt-trivia">
+                <span class="fmt-trivia-label">Trivia</span>
+                <p>The code that reads and writes V1 is 144 lines long. V6 is 4,041. A V6 file starts with the bytes <code>TNRD_V6</code>, and inside, every piece announces itself with four letters: <code>CHK6</code> for a chunk, <code>SHR6</code> for a shared session record, <code>SES6</code> for the session and <code>END6</code> for the footer.</p>
+            </aside>
+        </section>
+
+        <!-- ============================== Compare ============================== -->
+        <section class="fmt-version fmt-compare" id="compare" aria-labelledby="compare-title">
+            <div class="fmt-version-head">
+                <span class="fmt-mark" aria-hidden="true">≡</span>
+                <div>
+                    <p class="fmt-date">Side by side</p>
+                    <h2 class="fmt-version-title" id="compare-title">Six versions compared</h2>
+                </div>
+            </div>
+
+            <div class="fmt-matrix-scroll">
+                <table class="fmt-matrix">
+                    <thead>
+                        <tr>
+                            <th scope="col"><span class="visually-hidden">Capability</span></th>
+                            <th scope="col">V1</th><th scope="col">V2</th><th scope="col">V3</th>
+                            <th scope="col">V4</th><th scope="col">V5</th><th scope="col" class="is-current">V6</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">Shipped in</th>
+                            <td>1.2.0</td><td>1.3.x</td><td class="no">Never</td><td>1.4.x</td><td>1.5.0</td><td class="is-current">1.6.0</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Compression</th>
+                            <td>gzip</td><td>zstd 3</td><td>zstd 3</td><td>zstd 3</td><td>zstd 3</td><td class="is-current">zstd 9</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Rows stored as</th>
+                            <td>JSON</td><td>JSON</td><td>JSON</td><td>JSON</td><td>JSON</td><td class="is-current">Columns</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Lap delta in Analysis</th>
+                            <td class="no">No</td><td class="no">No</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes is-current">Yes</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Opens without a temporary file</th>
+                            <td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes is-current">Yes</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Reads one lap on its own</th>
+                            <td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes is-current">Yes</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Knows chunk times without decompressing</th>
+                            <td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="yes">Yes</td><td class="yes is-current">Yes</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Flashbacks never rewrite saved data</th>
+                            <td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="part">Copies chunks</td><td class="yes">Yes</td><td class="yes is-current">Yes</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Records every driver</th>
+                            <td class="part" title="Some data for other drivers, mostly only usable on the Session and Standings pages">Partial</td><td class="part" title="Some data for other drivers, mostly only usable on the Session and Standings pages">Partial</td><td class="part" title="Some data for other drivers, mostly only usable on the Session and Standings pages">Partial</td><td class="part" title="Some data for other drivers, mostly only usable on the Session and Standings pages">Partial</td><td class="part" title="Some data for other drivers, mostly only usable on the Session and Standings pages">Partial</td><td class="yes is-current">Yes</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Reads one data type for one driver</th>
+                            <td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="yes is-current">Yes</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="site-footer">
+        <div class="footer-container">
+            <div class="footer-left">
+                <span class="footer-brand"><span class="brand-accent">Track</span> N Race</span>
+                <p class="footer-desc">
+                    Copyright &copy; 2026 NoGoat. Track N Race is distributed under the <span
+                        class="footer-license" data-license="GPL-3.0.txt" role="button" tabindex="0">GNU
+                        General Public License v3.0</span>
+                </p>
+                <p class="footer-disclaimer">
+                    Track N Race is not affiliated with, endorsed by, or associated with EA, Codemasters, Formula One,
+                    the FIA, the drivers or the teams participating in Formula One.
+                </p>
+            </div>
+            <ul class="footer-links">
+                <li><a href="/">Home</a></li>
+                <li><a href="/compare/">Compare</a></li>
+                <li><a href="/setup/">Setup</a></li>
+                <li><a href="/tnrd/">TNRD</a></li>
+                <li><a href="/credits/">Credits</a></li>
+                <li><a href="https://github.com/NoGoat/Track-N-Race" target="_blank" rel="noopener">GitHub</a></li>
+                <!-- Discord invite link: replace the href below -->
+                <li><a href="https://discord.gg/UMVRrN3RbR" target="_blank" rel="noopener">Discord</a></li>
+            </ul>
+        </div>
+    </footer>
+
+    <!-- Lightbox Modal -->
+    <div class="lightbox" id="lightbox">
+        <button class="lightbox-close" id="lightboxClose" aria-label="Close image">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+        </button>
+        <div class="lightbox-scroll" id="lightboxScroll">
+            <div class="lightbox-centerer" id="lightboxCenterer">
+                <img alt="Enlarged view" loading="lazy">
+            </div>
+        </div>
+    </div>
+
+    <!-- License Modal -->
+    <div class="license-modal" id="licenseModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="licenseModalTitle">License Details</h3>
+                <button class="modal-close" id="closeLicenseModal" aria-label="Close modal">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <pre id="licenseTextContent">Loading...</pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "4e3d769baeb5490c88955078b08ad8a6"}'></script><!-- End Cloudflare Web Analytics -->
+    <script src="/script.js" defer></script>
+</body>
+
+</html>

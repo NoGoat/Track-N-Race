@@ -347,7 +347,8 @@ body.modal-open {
 .highlight-blue,
 .highlight-green,
 .highlight-red,
-.highlight-yellow {
+.highlight-yellow,
+.highlight-purple {
     color: var(--trace);
     font-weight: inherit;
 }
@@ -356,6 +357,7 @@ body.modal-open {
 .highlight-yellow { --trace: #f9d923; }  /* ERS trace */
 .highlight-green { --trace: #4cbb4c; }   /* speed trace */
 .highlight-red { --trace: var(--accent); }  /* recording red */
+.highlight-purple { --trace: #c065f5; }  /* fastest-sector purple (app --color-fastest) */
 
 .subtitle {
     font-size: 1.0625rem;
@@ -692,6 +694,7 @@ body.modal-open {
 .feature-text:has(.highlight-yellow) { --bullet: #f9d923; }
 .feature-text:has(.highlight-green) { --bullet: #4cbb4c; }
 .feature-text:has(.highlight-red) { --bullet: var(--accent); }
+.feature-text:has(.highlight-purple) { --bullet: #c065f5; }
 
 .post-script {
     margin-top: 0.85rem;
@@ -703,6 +706,154 @@ body.modal-open {
 
 .post-script + .post-script {
     margin-top: 0.35rem;
+}
+
+/* ==========================================================================
+   TNRD diagram (carousel slide 1): an inline SVG animated with CSS
+   Resting styles are the final frame; the keyframes play from the cube onwards
+   whenever the slide becomes active. Reduced motion shows the final frame only.
+   script.js moves Alonso's slice: it slides out of the cube (3.6-4.4s), then the
+   whole block turns into the table (4.6-6.3s), timed by .t-stage's animation.
+   ========================================================================== */
+.tnrd-frame {
+    width: 100%;
+    aspect-ratio: 16 / 10;
+}
+
+.tnrd-anim {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+}
+
+.tnrd-anim text { font-family: var(--font-sans); }
+.tnrd-anim .m { font-family: var(--font-mono); }
+
+.tnrd-anim .t-block {
+    transform-box: fill-box;
+    transform-origin: 0 0;
+}
+
+.tnrd-anim .t-cube,
+.tnrd-anim .t-slabsides,
+.tnrd-anim .t-cubelabels,
+.tnrd-anim .t-facetint {
+    opacity: 0;
+}
+
+.tnrd-anim .t-trace { stroke-dasharray: 1; }
+
+/* 1. Cube, held (0-3.6s); Alonso's slice tinted (2.4-3s) */
+.carousel-slide.active .tnrd-anim .t-stage { animation: tnrd-stage 11.4s linear both; }
+.carousel-slide.active .tnrd-anim .t-cube { animation: tnrd-cube 11.4s linear both; }
+.carousel-slide.active .tnrd-anim .t-slabsides { animation: tnrd-sides 11.4s linear both; }
+.carousel-slide.active .tnrd-anim .t-splitedge { animation: tnrd-splitedge 11.4s linear both; }
+.carousel-slide.active .tnrd-anim .t-cubelabels { animation: tnrd-cubelabels 11.4s linear both; }
+.carousel-slide.active .tnrd-anim .t-alo { animation: tnrd-alo 11.4s linear both; }
+.carousel-slide.active .tnrd-anim .t-facetint { animation: tnrd-facetint 11.4s linear both; }
+/* 2. The slice splits off (3.6-4.4s) and the whole block turns into the table (4.6-6.3s), projected by script.js */
+.carousel-slide.active .tnrd-anim .t-grid { animation: tnrd-fade 0.6s ease 6s both; }
+/* 3. Lap 5's Speed, RPM and ERS blocks are picked (6.8-7.9s) */
+.carousel-slide.active .tnrd-anim .t-lap { animation: tnrd-fade 0.3s ease 6.8s both; }
+.carousel-slide.active .tnrd-anim .t-pick0 { animation: tnrd-fade 0.25s ease 7.1s both; }
+.carousel-slide.active .tnrd-anim .t-pick1 { animation: tnrd-fade 0.25s ease 7.4s both; }
+.carousel-slide.active .tnrd-anim .t-pick2 { animation: tnrd-fade 0.25s ease 7.7s both; }
+/* 4. ...read out on their own and drawn (8.2-11.4s) */
+.carousel-slide.active .tnrd-anim .t-block0 { animation: tnrd-block0 1.1s ease-in-out 8.2s both; }
+.carousel-slide.active .tnrd-anim .t-block1 { animation: tnrd-block1 1.1s ease-in-out 8.35s both; }
+.carousel-slide.active .tnrd-anim .t-block2 { animation: tnrd-block2 1.1s ease-in-out 8.5s both; }
+.carousel-slide.active .tnrd-anim .t-row0 { animation: tnrd-fade 0.5s ease 8.8s both; }
+.carousel-slide.active .tnrd-anim .t-row1 { animation: tnrd-fade 0.5s ease 9s both; }
+.carousel-slide.active .tnrd-anim .t-row2 { animation: tnrd-fade 0.5s ease 9.2s both; }
+.carousel-slide.active .tnrd-anim .t-trace0 { animation: tnrd-draw 1.6s ease-out 9.3s both; }
+.carousel-slide.active .tnrd-anim .t-trace1 { animation: tnrd-draw 1.6s ease-out 9.55s both; }
+.carousel-slide.active .tnrd-anim .t-trace2 { animation: tnrd-draw 1.6s ease-out 9.8s both; }
+
+/* Hold at the first frame until the carousel is scrolled into view (script.js sets the gate) */
+.carousel-container[data-anim-gate]:not(.in-view) .tnrd-anim * {
+    animation-play-state: paused !important;
+}
+
+@keyframes tnrd-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* Cube and slice fade in together as one layer, so the split can't show through (0-0.8s) */
+@keyframes tnrd-stage {
+    0% { opacity: 0; }
+    7.02%, 100% { opacity: 1; }
+}
+
+/* The rest of the grid stays put and fades once the slice is out (4-5.2s) */
+@keyframes tnrd-cube {
+    0%, 35.09% { opacity: 1; }
+    45.61%, 100% { opacity: 0; }
+}
+
+/* Where the slice meets the rest: a plain grid line until the split opens (3.6-3.9s) */
+@keyframes tnrd-splitedge {
+    0%, 31.58% { opacity: 0; }
+    34.21%, 100% { opacity: 1; }
+}
+
+/* The slice's top and side flatten to nothing during the turn; fade them as they go (5.4-6.2s) */
+@keyframes tnrd-sides {
+    0%, 47.37% { opacity: 1; }
+    54.39%, 100% { opacity: 0; }
+}
+
+/* Axis labels: in with the cube, out just before the split (3.3-3.7s) */
+@keyframes tnrd-cubelabels {
+    0% { opacity: 0; }
+    7.02%, 28.95% { opacity: 1; }
+    32.46%, 100% { opacity: 0; }
+}
+
+/* Alonso's tint: in at 2.4-3s */
+@keyframes tnrd-alo {
+    0%, 21.05% { opacity: 0; }
+    26.32%, 100% { opacity: 1; }
+}
+
+/* ...and off the table once it has landed (6-6.6s) */
+@keyframes tnrd-facetint {
+    0%, 21.05% { opacity: 0; }
+    26.32%, 52.63% { opacity: 1; }
+    57.89%, 100% { opacity: 0; }
+}
+
+/* Each block starts on its table cell (lap 5 column), flies to its row and takes the trace colour */
+@keyframes tnrd-block0 {
+    0% { opacity: 0; transform: translate(-574px, -8px) scale(2.2222); fill: #f2223b; }
+    1% { opacity: 1; transform: translate(-574px, -8px) scale(2.2222); fill: #f2223b; }
+    75% { transform: none; fill: #f2223b; }
+    100% { opacity: 1; transform: none; }
+}
+
+@keyframes tnrd-block1 {
+    0% { opacity: 0; transform: translate(-574px, -66.7px) scale(2.2222); }
+    1% { opacity: 1; transform: translate(-574px, -66.7px) scale(2.2222); }
+    100% { opacity: 1; transform: none; }
+}
+
+@keyframes tnrd-block2 {
+    0% { opacity: 0; transform: translate(-574px, -125.3px) scale(2.2222); fill: #f2223b; }
+    1% { opacity: 1; transform: translate(-574px, -125.3px) scale(2.2222); fill: #f2223b; }
+    75% { transform: none; fill: #f2223b; }
+    100% { opacity: 1; transform: none; }
+}
+
+@keyframes tnrd-draw {
+    from { stroke-dashoffset: 1; }
+    to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tnrd-anim * {
+        animation: none !important;
+    }
 }
 
 .carousel-controls {
@@ -1356,6 +1507,765 @@ body.modal-open {
     height: 16px;
     margin-top: 2px;
     color: var(--text-3);
+}
+
+/* ==========================================================================
+   TNRD page (/tnrd/): format history. Own components, prefixed .fmt-
+   Outlined segments = uncompressed control data, filled = compressed data.
+   ========================================================================== */
+.fmt {
+    width: 100%;
+    padding: calc(var(--nav-h) + 64px) 0 96px;
+}
+
+/* Everything sits in the content column except the rail, which can go edge to edge */
+.fmt > :not(.fmt-rail),
+.fmt-rail-list {
+    width: min(var(--content), 100% - var(--gutter) * 2);
+    margin-inline: auto;
+}
+
+.fmt code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    color: var(--text);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0.05em 0.35em;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+/* Hero */
+.fmt-hero {
+    padding-bottom: 2.5rem;
+}
+
+.fmt-date,
+.fmt-anatomy-cap {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
+.fmt-title {
+    margin: 0 0 1.25rem;
+    font-family: var(--font-mono);
+    font-size: clamp(4rem, 12vw, 9rem);
+    font-weight: 500;
+    line-height: 0.9;
+    letter-spacing: -0.06em;
+    color: var(--text);
+}
+
+.fmt-lede {
+    max-width: 46rem;
+    font-size: 1.0625rem;
+    line-height: 1.7;
+    color: var(--text-2);
+}
+
+.fmt-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    margin-top: 2rem;
+    font-size: 0.8rem;
+    color: var(--text-2);
+}
+
+.fmt-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.fmt-legend-note {
+    color: var(--text-3);
+}
+
+.fmt-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+}
+
+.fmt-swatch.is-ctrl {
+    border: 1.5px solid var(--text-2);
+}
+
+.fmt-swatch.is-data {
+    background: var(--accent);
+}
+
+/* Version rail: sticky timeline that doubles as in-page navigation. At rest its lines
+   match the content column; once it sticks under the header (script.js adds .is-stuck)
+   it runs edge to edge with the header's own see-through background, border and shadow. */
+.fmt-rail {
+    position: sticky;
+    top: var(--nav-h);
+    z-index: 5;
+    border-bottom: 1px solid transparent;
+    transition: background var(--fast), box-shadow var(--fast), border-color var(--fast);
+}
+
+.fmt-rail.is-stuck {
+    background: var(--header-bg);
+    border-bottom-color: var(--line);
+    box-shadow: var(--header-shadow);
+}
+
+.fmt-rail-list {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    list-style: none;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+}
+
+.fmt-rail.is-stuck .fmt-rail-list {
+    border-color: transparent;
+}
+
+/* The timeline line is drawn as segments either side of each label, so it needs no
+   masking and stays visible on the see-through stuck bar */
+.fmt-rail-list > li {
+    display: flex;
+    align-items: center;
+}
+
+.fmt-rail-list > li::before,
+.fmt-rail-list > li::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+}
+
+.fmt-rail-link {
+    position: relative;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.85rem 0.5rem;
+    color: var(--text-3);
+    text-decoration: none;
+    transition: color var(--fast);
+}
+
+.fmt-rail-link::after {
+    content: "";
+    position: absolute;
+    left: -0.5rem;
+    right: -0.5rem;
+    bottom: -1px;
+    height: 2px;
+    background: var(--accent);
+    transform: scaleX(0);
+    transition: transform 0.25s var(--ease);
+}
+
+.fmt-rail-link:hover,
+.fmt-rail-link.active {
+    color: var(--text);
+}
+
+.fmt-rail-link.active::after {
+    transform: scaleX(1);
+}
+
+.fmt-rail-v {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.fmt-rail-link.active .fmt-rail-v {
+    color: var(--accent);
+}
+
+.fmt-rail-d {
+    font-size: 0.75rem;
+}
+
+/* A version */
+.fmt-version {
+    padding: 4.5rem 0 3.5rem;
+    border-bottom: 1px solid var(--line);
+    scroll-margin-top: calc(var(--nav-h) + 52px);
+}
+
+.fmt-version-head {
+    display: flex;
+    align-items: flex-end;
+    gap: 1.75rem;
+    margin-bottom: 2.5rem;
+}
+
+.fmt-mark {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: clamp(3.5rem, 8vw, 6rem);
+    font-weight: 500;
+    line-height: 0.8;
+    letter-spacing: -0.06em;
+    color: transparent;
+    -webkit-text-stroke: 1.5px var(--line-hover);
+}
+
+.fmt-mark.is-current {
+    -webkit-text-stroke-color: var(--accent);
+}
+
+.fmt-version-title {
+    margin-top: 0.5rem;
+    font-size: clamp(1.6rem, 3vw, 2.25rem);
+    font-weight: 600;
+    line-height: 1.1;
+    letter-spacing: -0.035em;
+}
+
+.fmt-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+    gap: 3.5rem;
+    align-items: start;
+}
+
+.fmt-prose p {
+    font-size: 0.98rem;
+    line-height: 1.75;
+    color: var(--text-2);
+}
+
+.fmt-prose p + p {
+    margin-top: 1rem;
+}
+
+.fmt-prose strong,
+.fmt-prose em {
+    color: var(--text);
+    font-weight: 500;
+}
+
+/* Spec sheet */
+.fmt-spec {
+    position: sticky;
+    top: calc(var(--nav-h) + 76px);
+    border-left: 2px solid var(--accent);
+    padding-left: 1.25rem;
+}
+
+.fmt-spec > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.6rem 0;
+}
+
+.fmt-spec > div + div {
+    border-top: 1px dashed var(--line-strong);
+}
+
+.fmt-spec dt {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
+.fmt-spec dd {
+    font-size: 0.92rem;
+    color: var(--text);
+}
+
+/* File anatomy strip */
+.fmt-anatomy {
+    margin-top: 2.5rem;
+}
+
+.fmt-anatomy-cap {
+    display: block;
+    margin-bottom: 0.75rem;
+}
+
+.fmt-strip {
+    display: flex;
+    gap: 4px;
+    min-height: 92px;
+}
+
+.fmt-wrap {
+    position: relative;
+    display: flex;
+    flex: 1;
+    gap: 4px;
+    padding: 26px 4px 4px;
+    border: 1px dashed var(--line-hover);
+    border-radius: 8px;
+}
+
+.fmt-wrap-label {
+    position: absolute;
+    top: 6px;
+    left: 10px;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
+.fmt-seg {
+    flex: var(--g, 1) 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 0.2rem;
+    padding: 0.6rem 0.65rem;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.fmt-seg b,
+.fmt-row b {
+    font-size: 0.82rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fmt-seg i,
+.fmt-row i {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    font-style: normal;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fmt-seg.is-ctrl,
+.fmt-row.is-ctrl {
+    border: 1.5px solid var(--line-hover);
+    color: var(--text);
+}
+
+.fmt-seg.is-ctrl i,
+.fmt-row.is-ctrl i {
+    color: var(--text-3);
+}
+
+.fmt-seg.is-ctrl.is-new {
+    border-color: var(--accent);
+}
+
+.fmt-seg.is-data,
+.fmt-row.is-data {
+    background: color-mix(in srgb, var(--accent) 78%, transparent);
+    color: #fff;
+}
+
+.fmt-seg.is-data i,
+.fmt-row.is-data i {
+    color: rgba(255, 255, 255, 0.78);
+}
+
+/* Separate compressed chunks inside one segment */
+.fmt-seg.is-chunks {
+    background:
+        repeating-linear-gradient(90deg, transparent 0 46px, var(--bg) 46px 49px) top / 100% 42% no-repeat,
+        color-mix(in srgb, var(--accent) 78%, transparent);
+}
+
+.fmt-anatomy-note {
+    margin-top: 0.75rem;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    color: var(--text-3);
+}
+
+/* Inside one chunk: vertical stack */
+.fmt-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    list-style: none;
+}
+
+.fmt-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.65rem 0.8rem;
+    border-radius: 5px;
+}
+
+.fmt-row.is-tall {
+    min-height: 96px;
+    justify-content: flex-end;
+}
+
+.fmt-anatomy-tall {
+    margin-top: 0;
+}
+
+/* Sub-sections inside a version */
+.fmt-sub {
+    margin-top: 3.5rem;
+    padding-top: 2.5rem;
+    border-top: 1px dashed var(--line-strong);
+}
+
+.fmt-sub-title {
+    margin-bottom: 1.5rem;
+    font-size: 1.25rem;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+}
+
+.fmt-sub-lede {
+    max-width: 46rem;
+    margin: -0.75rem 0 1.5rem;
+    font-size: 0.95rem;
+    line-height: 1.7;
+    color: var(--text-2);
+}
+
+/* Which release shipped a version */
+.fmt-release {
+    margin-left: auto;
+    align-self: flex-end;
+    flex-shrink: 0;
+    padding: 0.35rem 0.65rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    color: var(--text-2);
+    white-space: nowrap;
+}
+
+.fmt-release.is-current {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* V3 never shipped: a dashed stamp, tilted like a rubber stamp */
+.fmt-release.is-unreleased {
+    border: 1.5px dashed var(--accent);
+    border-radius: 4px;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    transform: rotate(-4deg);
+}
+
+/* Trivia notes */
+.fmt-trivia {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 1.25rem;
+    align-items: baseline;
+    margin-top: 2.5rem;
+    padding: 1.1rem 1.4rem;
+    border: 1px dashed var(--line-hover);
+    border-radius: var(--radius);
+}
+
+.fmt-trivia-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #f9d923;
+    white-space: nowrap;
+}
+
+.fmt-trivia-label::before {
+    content: "\2726\00a0\00a0";
+}
+
+.fmt-trivia a {
+    color: var(--text);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-color: var(--line-hover);
+}
+
+.fmt-trivia a:hover {
+    text-decoration-color: currentColor;
+}
+
+.fmt-trivia-body p + p {
+    margin-top: 0.75rem;
+}
+
+.fmt-trivia p {
+    font-size: 0.92rem;
+    line-height: 1.7;
+    color: var(--text-2);
+}
+
+.fmt-trivia.is-stamp {
+    border: 1.5px dashed var(--accent);
+    background: rgba(242, 34, 59, 0.05);
+}
+
+.fmt-trivia.is-stamp .fmt-trivia-label {
+    color: var(--accent);
+}
+
+.fmt-trivia.is-stamp p {
+    color: var(--text);
+}
+
+/* Got right / got wrong */
+.fmt-verdict {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    margin-top: 2.5rem;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.fmt-verdict-col {
+    padding: 1.25rem 1.5rem;
+    background: var(--bg);
+}
+
+.fmt-verdict-h {
+    margin-bottom: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ok);
+}
+
+.fmt-verdict-col.is-bad .fmt-verdict-h {
+    color: var(--accent);
+}
+
+.fmt-verdict ul {
+    list-style: none;
+}
+
+.fmt-verdict li {
+    position: relative;
+    padding: 0.3rem 0 0.3rem 1.25rem;
+    font-size: 0.9rem;
+    color: var(--text);
+}
+
+.fmt-verdict li::before {
+    content: "+";
+    position: absolute;
+    left: 0;
+    font-family: var(--font-mono);
+    color: var(--ok);
+}
+
+.fmt-verdict-col.is-bad li::before {
+    content: "\2212";
+    color: var(--accent);
+}
+
+/* Comparison matrix */
+.fmt-matrix-scroll {
+    overflow-x: auto;
+}
+
+.fmt-matrix {
+    width: 100%;
+    min-width: 640px;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+}
+
+.fmt-matrix th,
+.fmt-matrix td {
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--line);
+    text-align: center;
+}
+
+.fmt-matrix thead th {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-3);
+}
+
+.fmt-matrix tbody th {
+    padding-left: 0;
+    text-align: left;
+    font-weight: 500;
+    color: var(--text);
+}
+
+/* Capability names stay put while the version columns scroll on narrow screens */
+.fmt-matrix tbody th,
+.fmt-matrix thead th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    min-width: 11rem;
+    background: var(--bg);
+}
+
+.fmt-matrix td {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-2);
+}
+
+.fmt-matrix td.yes {
+    color: var(--ok);
+}
+
+.fmt-matrix td.no {
+    color: var(--text-3);
+}
+
+.fmt-matrix td.part {
+    color: #f9d923;
+}
+
+.fmt-matrix .is-current {
+    background: rgba(242, 34, 59, 0.06);
+}
+
+.fmt-matrix thead .is-current {
+    color: var(--accent);
+}
+
+/* File sizes: one series, linear scale, every bar labelled */
+.fmt-sizes {
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+}
+
+.fmt-size {
+    display: grid;
+    grid-template-columns: 13rem minmax(0, 1fr) 5rem;
+    align-items: center;
+    gap: 1.25rem;
+}
+
+.fmt-size-name {
+    font-size: 0.9rem;
+    color: var(--text);
+}
+
+.fmt-size-bar {
+    display: block;
+    height: 22px;
+    background: var(--surface-2);
+    border-radius: 0 4px 4px 0;
+}
+
+.fmt-size-bar > span {
+    display: block;
+    width: var(--w);
+    min-width: 2px;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 0 4px 4px 0;
+}
+
+.fmt-size-num {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text-2);
+    text-align: right;
+}
+
+@media (max-width: 860px) {
+    .fmt-body {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 2rem;
+    }
+
+    .fmt-spec {
+        position: static;
+    }
+
+    .fmt-verdict {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .fmt-rail-d {
+        display: none;
+    }
+}
+
+@media (max-width: 600px) {
+    .fmt-version {
+        padding: 3rem 0 2.5rem;
+    }
+
+    .fmt-version-head {
+        flex-wrap: wrap;
+        gap: 1rem;
+    }
+
+    .fmt-release {
+        margin-left: 0;
+    }
+
+    .fmt-trivia {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0.5rem;
+    }
+
+    /* Strips stack vertically on phones so every label stays readable */
+    .fmt-strip,
+    .fmt-wrap {
+        flex-direction: column;
+    }
+
+    .fmt-seg {
+        flex: none;
+        min-height: 52px;
+    }
+
+    .fmt-seg.is-chunks {
+        min-height: 88px;
+    }
+
+    .fmt-size {
+        grid-template-columns: minmax(0, 1fr) auto;
+        row-gap: 0.5rem;
+    }
+
+    .fmt-size-bar {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
 }
 
 /* Single PC / Dual System: two tabs that split the width between them, each with
