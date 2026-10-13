@@ -6,6 +6,34 @@ const DEFAULT_PORT = 20779
 // Prefix of an engine state document encrypted with safeStorage.
 const ENCRYPTED_PREFIX = 'safe:v1:'
 
+// macOS builds are ad-hoc signed, so the keychain cannot tell a new build
+// from a stranger and asks for the login password before safeStorage can read
+// "track-n-race Safe Storage". Pairing is its only user, so on macOS it stays
+// off and never touches the keychain unless the user opts in.
+const KEYCHAIN_OPT_IN_KEY = 'pairing.macKeychainOptIn'
+const keychainGated = process.platform === 'darwin'
+// Fixed for the session: the engine is built once, with or without the saved
+// identity, so a changed opt-in applies after a relaunch.
+const keychainOptedIn = !keychainGated || store.get(KEYCHAIN_OPT_IN_KEY, false) === true
+// Set when the user denies the keychain password prompt. Pairing then stays
+// off for the session so the prompt is not raised again.
+let keychainDenied = false
+
+function pairingAvailable(): boolean {
+  return keychainOptedIn && !keychainDenied
+}
+
+export interface PairAvailability {
+  // The platform needs the keychain opt-in before pairing can run.
+  keychainGated: boolean
+  // The stored opt-in, which may differ from `available` until a relaunch.
+  keychainOptIn: boolean
+  // Pairing can run in this session.
+  available: boolean
+  // The user denied the macOS keychain prompt this session.
+  keychainDenied: boolean
+}
+
 export interface PairDevice {
   id: string
   name: string
@@ -105,9 +133,26 @@ function stateFromEngine(): PairServiceState {
 // The engine document holds the desktop's signing seed. It is stored
 // encrypted with the OS key store; plain text only where none exists (Linux
 // without a keyring), which matches what Electron itself would offer.
-function encryptState(json: string): string {
-  if (!safeStorage.isEncryptionAvailable()) return json
-  return ENCRYPTED_PREFIX + safeStorage.encryptString(json).toString('base64')
+// macOS never falls back to plain text: there the key store exists and a
+// failure means access was refused. Returns null when nothing may be written.
+function encryptState(json: string): string | null {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return keychainGated ? null : json
+    return ENCRYPTED_PREFIX + safeStorage.encryptString(json).toString('base64')
+  } catch {
+    return null
+  }
+}
+
+// Raises the macOS keychain password prompt at most once per session, before
+// the engine is built, and reports whether the user allowed access.
+function keychainAccessible(): boolean {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return false
+    return safeStorage.decryptString(safeStorage.encryptString('track-n-race')) === 'track-n-race'
+  } catch {
+    return false
+  }
 }
 
 function decryptState(stored: string): string | null {
@@ -120,6 +165,20 @@ function decryptState(stored: string): string | null {
   }
 }
 
+export function getPairAvailability(): PairAvailability {
+  return {
+    keychainGated,
+    keychainOptIn: store.get(KEYCHAIN_OPT_IN_KEY, false) === true,
+    available: pairingAvailable(),
+    keychainDenied,
+  }
+}
+
+export function setKeychainOptIn(optIn: boolean): PairAvailability {
+  if (keychainGated) store.set(KEYCHAIN_OPT_IN_KEY, optIn)
+  return getPairAvailability()
+}
+
 /** Construction settings for tnrp::Engine. */
 export function pairEngineConfig(): {
   pairEnabled: boolean
@@ -127,6 +186,16 @@ export function pairEngineConfig(): {
   pairName: string
   pairStateJson: string
 } {
+  if (keychainOptedIn && keychainGated && !keychainDenied && !keychainAccessible()) {
+    keychainDenied = true
+    console.warn('[pairing] macOS keychain access was denied; paired mode is off this session')
+  }
+  if (!pairingAvailable()) {
+    // Leave the saved identity, pairings and enabled preference untouched for
+    // a later opt-in; the engine runs this session with pairing off.
+    keepStoredState = true
+    return { pairEnabled: false, pairPort: DEFAULT_PORT, pairName: hostname() || 'Track N Race', pairStateJson: '' }
+  }
   const stored = store.get('pairing.engineState', '') as string
   let persisted = ''
   if (stored) {
@@ -154,7 +223,12 @@ export function configurePairService(nativeEngine: NativePairEngine): void {
 /** Called only by the N-API state callback. */
 export function receivePairServiceState(publicJson: string,
                                         persistedJson: string): void {
-  if (!keepStoredState) store.set('pairing.engineState', encryptState(persistedJson))
+  if (!pairingAvailable()) {
+    publish(parseState(publicJson))
+    return
+  }
+  const encrypted = keepStoredState ? null : encryptState(persistedJson)
+  if (encrypted !== null) store.set('pairing.engineState', encrypted)
   const next = parseState(publicJson)
   // Persist the engine's desired-enabled flag, which intentionally remains
   // true during ordinary app shutdown even though the public running flag has
@@ -169,6 +243,11 @@ export function receivePairServiceState(publicJson: string,
 }
 
 export function startPairService(): PairServiceState {
+  if (!pairingAvailable()) {
+    return publish({ ...state, error: keychainDenied
+      ? 'macOS keychain access denied.'
+      : 'Paired mode is disabled on macOS until you allow keychain access.' })
+  }
   if (!engine) return publish(emptyState('The telemetry engine is not available.'))
   const error = engine.pairStart()
   const next = parseState(engine.pairGetState())

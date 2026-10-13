@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, memo } from 're
 import { flushSync } from 'react-dom'
 import { Bug, Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, Globe, Folder, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone, Palette, RotateCcw } from 'lucide-react'
 import QRCode from 'qrcode'
-import type { PairServiceState } from '../types'
+import type { PairAvailability, PairServiceState } from '../types'
 import {
   GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, DENSITY_OPTIONS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS, HEADER_LEVEL_OPTIONS,
   TYRE_Y_AXIS_SECTIONS, POWER_Y_AXIS_SECTIONS, ANALYSIS_Y_AXIS_SECTIONS,
@@ -388,6 +388,7 @@ const Settings = memo(function Settings({
     () => (window.electronStore.get('udp.protocol', 'auto') as 'auto' | 'f1_24' | 'f1_25' | 'f1_26')
   )
   const [pairing, setPairing] = useState<PairServiceState | null>(null)
+  const [pairAvailability, setPairAvailability] = useState<PairAvailability | null>(null)
   const [pairQr, setPairQr] = useState<string | null>(null)
   const [teamColorFormat, setTeamColorFormat] = useState<TeamColorFormat>('2026')
   const [teamColorCatalog, setTeamColorCatalog] = useState<TeamColorCatalog>({})
@@ -395,6 +396,7 @@ const Settings = memo(function Settings({
 
   useEffect(() => {
     void window.pairingBridge.getState().then(setPairing)
+    void window.pairingBridge.getAvailability().then(setPairAvailability)
     return window.pairingBridge.onState(setPairing)
   }, [])
 
@@ -1299,15 +1301,66 @@ const Settings = memo(function Settings({
     </div>
   )
 
+  // On macOS pairing stays off until the user accepts the keychain password
+  // prompts that come with an unsigned app.
+  const pairingLocked = pairAvailability?.keychainGated === true && !pairAvailability.available
   const renderPairing = () => (
     <div className="flex flex-col gap-1">
+      {pairAvailability?.keychainGated && (
+        <>
+          <div className="mx-4 mb-2 flex gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
+            <AlertTriangle size={16} color="#f59e0b" className="mt-0.5 shrink-0" />
+            <div className="min-w-0 text-xs leading-relaxed text-[var(--text-secondary)]">
+              <p className="font-semibold text-amber-500">Paired mode is disabled on macOS</p>
+              <p className="mt-1.5">
+                Paired mode stores its encryption key in your macOS keychain. Track N Race is not signed with an Apple
+                Developer certificate, so macOS cannot recognise the app and will ask for your login keychain password
+                when paired mode starts, and may ask again after every update.
+              </p>
+              <p className="mt-1.5">
+                A certificate is unlikely to be bought, because its yearly cost isn't justified for this project. If you
+                enable paired mode below, expect to enter your password in a prompt like
+                “Track N Race wants to use your confidential information stored in ‘track-n-race Safe Storage’ in your keychain.”
+              </p>
+            </div>
+          </div>
+          <Row
+            label="Allow keychain access"
+            description="Enable paired mode on macOS. Track N Race restarts to apply this change."
+            warning={!pairAvailability.keychainDenied && pairAvailability.keychainOptIn !== pairAvailability.available
+              ? 'Restart Track N Race to apply.' : undefined}
+          >
+            <Toggle value={pairAvailability.keychainOptIn} onChange={optIn => {
+              void window.pairingBridge.setKeychainOptIn(optIn).then(setPairAvailability)
+            }} />
+          </Row>
+          {pairAvailability.keychainDenied && pairAvailability.keychainOptIn && (
+            <div className="mx-4 my-2 flex items-center gap-3 rounded-xl border border-red-500/40 bg-red-500/10 p-4">
+              <AlertTriangle size={16} className="shrink-0 text-red-400" />
+              <div className="min-w-0 flex-1 text-xs leading-relaxed text-[var(--text-secondary)]">
+                <p className="font-semibold text-red-400">macOS keychain access denied</p>
+                <p className="mt-1">
+                  The keychain password prompt was denied, so paired mode is off for this session. Saved pairings are
+                  kept. Restart and choose Allow or Always Allow to use paired mode, or turn off keychain access above.
+                </p>
+              </div>
+              <button className={`${BUTTON_CLASS} shrink-0`} onClick={() => void window.pairingBridge.relaunch()}>
+                Restart and retry
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      <div className={pairingLocked ? 'pointer-events-none select-none opacity-40' : undefined} aria-disabled={pairingLocked}>
       <Row label="Enable paired mode" description="Let Android displays discover this computer and receive decoded telemetry over the local network.">
-        <Toggle value={pairing?.enabled ?? false} onChange={enabled => {
+        <Toggle value={!pairingLocked && (pairing?.enabled ?? false)} onChange={enabled => {
+          if (pairingLocked) return
           void window.pairingBridge.setEnabled(enabled).then(setPairing)
         }} />
       </Row>
 
-      {pairing?.enabled && (
+      {!pairingLocked && pairing?.enabled && (
         <>
           <div className="mx-4 my-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-input)]/30 p-4">
             {pairing.pendingDevice ? (
@@ -1370,6 +1423,7 @@ const Settings = memo(function Settings({
           {pairing.error && <p className="mx-4 mt-3 text-xs text-red-400">{pairing.error}</p>}
         </>
       )}
+      </div>
     </div>
   )
 

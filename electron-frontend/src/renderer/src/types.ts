@@ -690,6 +690,15 @@ export interface AvailableUpdate {
   publishedAt: string | null
 }
 
+export interface PairAvailability {
+  // macOS: pairing needs the keychain opt-in because the app is unsigned.
+  keychainGated: boolean
+  keychainOptIn: boolean
+  available: boolean
+  // The user denied the macOS keychain password prompt this session.
+  keychainDenied: boolean
+}
+
 export interface PairServiceState {
   enabled: boolean
   serverId: string
@@ -782,6 +791,9 @@ declare global {
       closeWindow: () => Promise<PairServiceState>
       respond: (approve: boolean) => Promise<PairServiceState>
       removeDevice: (id: string) => Promise<PairServiceState>
+      getAvailability: () => Promise<PairAvailability>
+      setKeychainOptIn: (optIn: boolean) => Promise<PairAvailability>
+      relaunch: () => Promise<void>
       onState: (callback: (state: PairServiceState) => void) => () => void
     }
     playerBridge: {

@@ -6,11 +6,13 @@ import { execFile } from 'child_process'
 import { configStore as store } from './configStore'
 import {
   closePairingWindow,
+  getPairAvailability,
   getPairServiceState,
   onPairServiceState,
   openPairingWindow,
   removePairDevice,
   respondToPairing,
+  setKeychainOptIn,
   startPairService,
   stopPairService,
 } from './pairHostAdapter'
@@ -247,6 +249,31 @@ ipcMain.handle('pairing:open-window', () => openPairingWindow())
 ipcMain.handle('pairing:close-window', () => closePairingWindow())
 ipcMain.handle('pairing:respond', (_event, approve: boolean) => respondToPairing(approve === true))
 ipcMain.handle('pairing:remove-device', (_event, id: string) => removePairDevice(id))
+ipcMain.handle('pairing:get-availability', () => getPairAvailability())
+ipcMain.handle('pairing:relaunch', () => {
+  app.relaunch()
+  app.quit()
+})
+// The engine reads the opt-in only at construction, so a change needs a relaunch.
+ipcMain.handle('pairing:set-keychain-opt-in', async (event, optIn: boolean) => {
+  const owner = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+  const options: Electron.MessageBoxOptions = {
+    type: optIn ? 'warning' : 'info',
+    buttons: ['Restart Now', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    message: optIn ? 'Allow keychain access for paired mode?' : 'Turn off paired mode on macOS?',
+    detail: optIn
+      ? 'Track N Race will restart. Because the app is not signed, macOS will ask for your login keychain password to unlock "track-n-race Safe Storage", and may ask again after every update.'
+      : 'Track N Race will restart with paired mode off. Saved pairings are kept for later.',
+  }
+  const { response } = owner ? await dialog.showMessageBox(owner, options) : await dialog.showMessageBox(options)
+  if (response !== 0) return getPairAvailability()
+  const availability = setKeychainOptIn(optIn === true)
+  app.relaunch()
+  app.quit()
+  return availability
+})
 onPairServiceState(state => {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('pairing:state', state)

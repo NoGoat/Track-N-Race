@@ -268,6 +268,9 @@ const pairingBridge = {
   closeWindow: (): Promise<unknown> => ipcRenderer.invoke('pairing:close-window'),
   respond: (approve: boolean): Promise<unknown> => ipcRenderer.invoke('pairing:respond', approve),
   removeDevice: (id: string): Promise<unknown> => ipcRenderer.invoke('pairing:remove-device', id),
+  getAvailability: (): Promise<unknown> => ipcRenderer.invoke('pairing:get-availability'),
+  setKeychainOptIn: (optIn: boolean): Promise<unknown> => ipcRenderer.invoke('pairing:set-keychain-opt-in', optIn),
+  relaunch: (): Promise<void> => ipcRenderer.invoke('pairing:relaunch'),
   onState: (callback: (state: unknown) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
     ipcRenderer.on('pairing:state', listener)
