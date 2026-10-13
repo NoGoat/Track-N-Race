@@ -15,6 +15,9 @@
 // thread that owns them; any append to those vectors invalidates it.
 template <typename T>
 class SampleRange {
+    // Declared ahead of const_iterator, whose member types name it.
+    struct Part { const T* data; qsizetype start; };
+
 public:
     SampleRange() = default;
     // One vector: the whole range. Implicit, so a lap's own vector can stand
@@ -77,14 +80,14 @@ public:
                 part_ = &range_->partAt(index_);
             return part_->data[index_ - part_->start];
         }
-        qsizetype partSize(const typename SampleRange::Part* part) const {
+        qsizetype partSize(const Part* part) const {
             const auto next = part + 1;
             return (next != range_->parts_.data() + range_->parts_.size() ? next->start : range_->size_) - part->start;
         }
 
         const SampleRange* range_ = nullptr;
         qsizetype index_ = 0;
-        mutable const typename SampleRange::Part* part_ = nullptr;
+        mutable const Part* part_ = nullptr;
     };
 
     const_iterator begin() const { return {this, 0}; }
@@ -93,8 +96,6 @@ public:
     const_iterator cend() const { return end(); }
 
 private:
-    struct Part { const T* data; qsizetype start; };
-
     const Part& partAt(qsizetype i) const {
         // The last part holding an index <= i.
         auto it = std::upper_bound(parts_.begin(), parts_.end(), i,
