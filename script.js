@@ -154,14 +154,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         let carouselVisible = true;
-        const SLIDE_MS = 20000; // long enough for slide 1's TNRD animation to play and settle
+        // The TNRD animation slide stays long enough to play and settle; the others move on quickly
+        const slideMs = () => (slides[currentSlideIndex]?.querySelector('.tnrd-anim') ? 20000 : 5000);
 
         const resetAutoPlay = () => {
-            clearInterval(autoPlayInterval);
+            clearTimeout(autoPlayInterval);
             if (reduceMotion || !carouselVisible) return;
-            autoPlayInterval = setInterval(() => {
+            autoPlayInterval = setTimeout(() => {
                 updateCarousel(currentSlideIndex + 1);
-            }, SLIDE_MS);
+                resetAutoPlay();
+            }, slideMs());
         };
 
         nextButton?.addEventListener('click', () => {
@@ -193,7 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
         track.addEventListener('touchstart', (e) => {
             touchStartX = e.changedTouches[0].clientX;
             touchStartY = e.changedTouches[0].clientY;
-            clearInterval(autoPlayInterval);
+            clearTimeout(autoPlayInterval);
         }, { passive: true });
 
         track.addEventListener('touchend', (e) => {
@@ -215,14 +217,13 @@ document.addEventListener('DOMContentLoaded', () => {
             resetAutoPlay();
         }, { passive: true });
 
-        // Auto-play interval
-        let autoPlayInterval = reduceMotion ? null : setInterval(() => {
-            updateCarousel(currentSlideIndex + 1);
-        }, SLIDE_MS);
+        // Auto-play: one timeout per slide, rescheduled after each move
+        let autoPlayInterval = null;
+        resetAutoPlay();
 
         // Pause on hover
         const carouselContainer = document.querySelector('.carousel-container');
-        carouselContainer?.addEventListener('mouseenter', () => clearInterval(autoPlayInterval));
+        carouselContainer?.addEventListener('mouseenter', () => clearTimeout(autoPlayInterval));
         carouselContainer?.addEventListener('mouseleave', () => resetAutoPlay());
 
         // Pause while scrolled out of view, so it doesn't keep animating unseen
@@ -232,7 +233,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (carouselVisible) {
                     resetAutoPlay();
                 } else {
-                    clearInterval(autoPlayInterval);
+                    clearTimeout(autoPlayInterval);
                 }
             }).observe(carouselContainer);
 

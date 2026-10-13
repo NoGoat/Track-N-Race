@@ -100,7 +100,7 @@
             </a>
             <nav class="nav-menu">
                 <a href="/" class="nav-btn">Home</a>
-                <a href="/compare/" class="nav-btn">Compare</a>
+                <a href="/electron-vs-qt/" class="nav-btn">Electron vs Qt</a>
                 <a href="/setup/" class="nav-btn">Setup</a>
                 <a href="/tnrd/" class="nav-btn active">TNRD</a>
                 <a href="/credits/" class="nav-btn">Credits</a>
@@ -141,9 +141,9 @@
         <header class="fmt-hero">
             <h1 class="fmt-title">.tnrd</h1>
             <p class="fmt-lede">
-                Every session Track N Race records is saved as a <code>.tnrd</code> file. It started as a gzipped
-                text log and is now an indexed container split by driver, lap and data type. This is the full history:
-                how each version lays out the file, what it fixed, and what it still got wrong.
+                Every session Track N Race records is saved as a <code>.tnrd</code> file. TNRD stands for <code>Track N Race Data</code>. 
+                It started as a gzipped text log and is now an indexed container split by driver, lap and data type. This is 
+                the full history: how each version lays out the file, what it fixed, and what it still got wrong.
             </p>
             <div class="fmt-legend" aria-label="Diagram legend">
                 <span class="fmt-legend-item"><span class="fmt-swatch is-ctrl"></span>Uncompressed, readable on open</span>
@@ -307,14 +307,15 @@
                 <span class="fmt-trivia-label">Why V3 never shipped</span>
                 <div class="fmt-trivia-body">
                     <p>
-                        V3 never got released. I was preparing to release 1.4.0 and I did a test race with a 100%
+                        V3 was this close to being released. I was preparing to release 1.4.0 and I did a test race with a 100%
                         Azerbaijan Grand Prix run (my favorite track on the calendar is Baku, BTW). Whenever I opened the
                         file, it was holding a 5 GB uncompressed file in the temp folder. Which is ... horrifying. So I
-                        pushed back the 1.4.0 release date and started work on the V4 file.
+                        pushed back the 1.4.0 release date and started work on the V4 file format.
                     </p>
                     <p>
                         The app can still read V3 files and I am fairly certain I have a few V3 recordings sitting
-                        somewhere. If y'all want to see it (for some reason), join the <a href="https://discord.gg/UMVRrN3RbR" target="_blank" rel="noopener">Discord</a> and let me know.
+                        somewhere. If y'all want to see the V3 files ... for some reason, join the 
+                        <a href="https://discord.gg/UMVRrN3RbR" target="_blank" rel="noopener">Discord</a> and let me know.
                     </p>
                 </div>
             </aside>
@@ -445,6 +446,16 @@
                         ever decompressed, filtered or recompressed.
                     </p>
                     <p>
+                        Or ... that's what's supposed to happen. Except, I set the threshold too high. And what that caused is,
+                        data never got to rewind because the maximum flashback threshold of the game was lower than what was needed
+                        to trigger a branched flashback. If it was below the threshold, it did a in memory replacement and didn't need
+                        a branch.
+                    </p>
+                    <p>
+                        Which means ... I wrote and designed the entire system for nothing. The code is there but it has never been
+                        tested or triggered. 
+                    </p>
+                    <p>
                         The result: opening a file decompresses zero chunks, seeking jumps straight to the right one,
                         and finding the latest state at a moment decompresses exactly one.
                     </p>
@@ -505,7 +516,7 @@
                 <span class="fmt-mark is-current" aria-hidden="true">V6</span>
                 <div>
                     <p class="fmt-date">17 to 19 September 2026 · current</p>
-                    <h2 class="fmt-version-title" id="v6-title">Driver × lap × data type</h2>
+                    <h2 class="fmt-version-title" id="v6-title">Chunks. Chunks Everywhere.</h2>
                 </div>
                 <span class="fmt-release is-current">Shipped in 1.6.0</span>
             </div>
@@ -638,10 +649,11 @@
 
             <!-- Sizes -->
             <div class="fmt-sub">
-                <h3 class="fmt-sub-title">One race, four file sizes</h3>
+                <h3 class="fmt-sub-title">File Size Evolution</h3>
                 <p class="fmt-sub-lede">
-                    The same 92-minute São Paulo race with 22 cars: the raw UDP capture from the game, the first V6
-                    build (21 September 2026), and V6 today. Linear scale.
+                    The same 92-minute São Paulo race with 22 cars, from the raw UDP capture to V6 today. 
+                    If you need evidence, reach out to me and I can send the raw datagram binary and the 
+                    two files Track N Race spat out.
                 </p>
                 <figure class="fmt-sizes" aria-label="File sizes for the same race">
                     <div class="fmt-size" title="Raw UDP capture: 2,518 MB">
@@ -649,18 +661,13 @@
                         <span class="fmt-size-bar"><span style="--w: 100%"></span></span>
                         <span class="fmt-size-num">2.52 GB</span>
                     </div>
-                    <div class="fmt-size" title="First V6 build, all drivers: 903 MB">
-                        <span class="fmt-size-name">First V6 build</span>
-                        <span class="fmt-size-bar"><span style="--w: 35.87%"></span></span>
-                        <span class="fmt-size-num">903 MB</span>
-                    </div>
-                    <div class="fmt-size" title="V6 today, all drivers: 76.4 MB">
-                        <span class="fmt-size-name">V6 today · All Drivers</span>
+                    <div class="fmt-size" title="V6 - all drivers: 76.4 MB">
+                        <span class="fmt-size-name">V6 - All Drivers</span>
                         <span class="fmt-size-bar"><span style="--w: 3.04%"></span></span>
                         <span class="fmt-size-num">76.4 MB</span>
                     </div>
-                    <div class="fmt-size" title="V6 today, driver only: 4.9 MB">
-                        <span class="fmt-size-name">V6 today · Driver Only</span>
+                    <div class="fmt-size" title="V6 - driver only: 4.9 MB">
+                        <span class="fmt-size-name">V6 - Driver Only</span>
                         <span class="fmt-size-bar"><span style="--w: 0.2%"></span></span>
                         <span class="fmt-size-num">4.9 MB</span>
                     </div>
@@ -680,7 +687,7 @@
                 <span class="fmt-mark" aria-hidden="true">≡</span>
                 <div>
                     <p class="fmt-date">Side by side</p>
-                    <h2 class="fmt-version-title" id="compare-title">Six versions compared</h2>
+                    <h2 class="fmt-version-title" id="compare-title">V1 to V6, compared</h2>
                 </div>
             </div>
 
@@ -757,7 +764,7 @@
             </div>
             <ul class="footer-links">
                 <li><a href="/">Home</a></li>
-                <li><a href="/compare/">Compare</a></li>
+                <li><a href="/electron-vs-qt/">Electron vs Qt</a></li>
                 <li><a href="/setup/">Setup</a></li>
                 <li><a href="/tnrd/">TNRD</a></li>
                 <li><a href="/credits/">Credits</a></li>

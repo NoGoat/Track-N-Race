@@ -730,6 +730,17 @@ body.modal-open {
 .tnrd-anim text { font-family: var(--font-sans); }
 .tnrd-anim .m { font-family: var(--font-mono); }
 
+/* Final frame: the table is gone and the charts fill the frame */
+.tnrd-anim .t-table,
+.tnrd-anim .t-panel {
+    opacity: 0;
+}
+
+.tnrd-anim .t-unfold {
+    transform-box: view-box;
+    transform-origin: 0 0;
+}
+
 .tnrd-anim .t-block {
     transform-box: fill-box;
     transform-origin: 0 0;
@@ -769,6 +780,14 @@ body.modal-open {
 .carousel-slide.active .tnrd-anim .t-trace0 { animation: tnrd-draw 1.6s ease-out 9.3s both; }
 .carousel-slide.active .tnrd-anim .t-trace1 { animation: tnrd-draw 1.6s ease-out 9.55s both; }
 .carousel-slide.active .tnrd-anim .t-trace2 { animation: tnrd-draw 1.6s ease-out 9.8s both; }
+/* 5. The table fades out while the readout unfolds into full-width charts (12.2-13.3s).
+   At 12.2s t-panel is swapped for t-bigpanel in the same frame; each .t-unfold starts at --from,
+   exactly over its counterpart, so the swap can't be seen. */
+.carousel-slide.active .tnrd-anim .t-table { animation: tnrd-out 0.6s ease 12.2s both; }
+.carousel-slide.active .tnrd-anim .t-panel { animation: tnrd-out 0s linear 12.2s both; }
+.carousel-slide.active .tnrd-anim .t-bigpanel { animation: tnrd-fade 0s linear 12.2s both; }
+.carousel-slide.active .tnrd-anim .t-unfold { animation: tnrd-unfold 1.1s cubic-bezier(0.65, 0, 0.35, 1) 12.2s both; }
+.carousel-slide.active .tnrd-anim .t-unfold-trace { animation-name: tnrd-unfold-trace; }
 
 /* Hold at the first frame until the carousel is scrolled into view (script.js sets the gate) */
 .carousel-container[data-anim-gate]:not(.in-view) .tnrd-anim * {
@@ -833,8 +852,9 @@ body.modal-open {
 }
 
 @keyframes tnrd-block1 {
-    0% { opacity: 0; transform: translate(-574px, -66.7px) scale(2.2222); }
-    1% { opacity: 1; transform: translate(-574px, -66.7px) scale(2.2222); }
+    0% { opacity: 0; transform: translate(-574px, -66.7px) scale(2.2222); fill: #f2223b; }
+    1% { opacity: 1; transform: translate(-574px, -66.7px) scale(2.2222); fill: #f2223b; }
+    75% { transform: none; fill: #f2223b; }
     100% { opacity: 1; transform: none; }
 }
 
@@ -843,6 +863,23 @@ body.modal-open {
     1% { opacity: 1; transform: translate(-574px, -125.3px) scale(2.2222); fill: #f2223b; }
     75% { transform: none; fill: #f2223b; }
     100% { opacity: 1; transform: none; }
+}
+
+@keyframes tnrd-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+/* Each full-width element starts on top of its readout counterpart (--from, set inline) */
+@keyframes tnrd-unfold {
+    from { transform: var(--from); }
+    to { transform: none; }
+}
+
+/* Traces also start with a thicker stroke (--sw0) so the scaled-down line matches the readout */
+@keyframes tnrd-unfold-trace {
+    from { transform: var(--from); stroke-width: var(--sw0); }
+    to { transform: none; stroke-width: 2px; }
 }
 
 @keyframes tnrd-draw {
@@ -1570,7 +1607,6 @@ body.modal-open {
 }
 
 .fmt-lede {
-    max-width: 46rem;
     font-size: 1.0625rem;
     line-height: 1.7;
     color: var(--text-2);
@@ -1941,7 +1977,6 @@ body.modal-open {
 }
 
 .fmt-sub-lede {
-    max-width: 46rem;
     margin: -0.75rem 0 1.5rem;
     font-size: 0.95rem;
     line-height: 1.7;
@@ -1981,9 +2016,7 @@ body.modal-open {
 /* Trivia notes */
 .fmt-trivia {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 1.25rem;
-    align-items: baseline;
+    gap: 0.6rem;
     margin-top: 2.5rem;
     padding: 1.1rem 1.4rem;
     border: 1px dashed var(--line-hover);
@@ -2237,10 +2270,6 @@ body.modal-open {
         margin-left: 0;
     }
 
-    .fmt-trivia {
-        grid-template-columns: minmax(0, 1fr);
-        gap: 0.5rem;
-    }
 
     /* Strips stack vertically on phones so every label stays readable */
     .fmt-strip,
