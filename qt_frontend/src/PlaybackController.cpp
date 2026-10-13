@@ -263,7 +263,8 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
             lapCombo_->addItem(QString::fromUtf8("—"), -1.0f);
             if (model_)
                 for (const LapBlock& lap : model_->data().laps)
-                    lapCombo_->addItem(QString::number(lap.lapNum), lap.startSessionTime);
+                    if (lap.lapNum > 0)   // lap 0 is the formation lap
+                        lapCombo_->addItem(QString::number(lap.lapNum), lap.startSessionTime);
             lapCombo_->setCurrentIndex(0);
             lapCombo_->blockSignals(false);
         }

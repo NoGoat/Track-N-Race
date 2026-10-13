@@ -54,7 +54,7 @@ const LapSelect = memo(function LapSelect({ className, currentLapNum, onChange, 
   onChange: (option: SingleValue<LapOption>) => void
   options: LapOption[]
 }) {
-  const value = currentLapNum !== null ? { value: currentLapNum, label: String(currentLapNum) } : null
+  const value = currentLapNum !== null && currentLapNum > 0 ? { value: currentLapNum, label: String(currentLapNum) } : null
   return (
     <div className={className}>
       <Select value={value} options={options} onChange={onChange} isSearchable={false} maxMenuHeight={150} menuPlacement="top" styles={selectStyles} components={selectComponents} placeholder="—" />
@@ -131,7 +131,8 @@ const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, on
 export default memo(function PlaybackBar({ compact, currentLapNum = null, exportError = null, exportState = 'idle', onExport, onSeekProgress, onSeekBackward, onSeekForward, onSpeedChange, onTogglePlay, sessionFileStart = 0, showExport = true, showLapSelect = true, speedRpmBlocks = null, state }: PlaybackBarProps) {
   const isCompact = compact === true || compact === 'compact'
   const isSpacious = compact === 'spacious'
-  const lapOptions = useMemo(() => speedRpmBlocks?.map(block => ({ value: block.lapNum, label: String(block.lapNum) })) ?? [], [speedRpmBlocks])
+  // Lap 0 is the formation lap — not a seek target.
+  const lapOptions = useMemo(() => speedRpmBlocks?.filter(block => block.lapNum > 0).map(block => ({ value: block.lapNum, label: String(block.lapNum) })) ?? [], [speedRpmBlocks])
   const handleSpeed = useCallback((option: SingleValue<(typeof PLAYBACK_SPEED_OPTIONS)[number]>) => { if (option) onSpeedChange(option.value) }, [onSpeedChange])
   // Seeking needs the live clock, but depending on it here would rebuild the
   // handler every frame and defeat the lap select's memo.
