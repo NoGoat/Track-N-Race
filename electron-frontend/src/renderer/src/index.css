@@ -279,9 +279,12 @@ body {
   flex: 0 0 16px;
 }
 
+/* 99.99%, not 100%: Chromium's composited clip-path animations paint an
+   inset(... round) that starts or ends at exactly 100% unclipped
+   (crbug.com/538488442), so the menus would appear fully open at once. */
 @keyframes selectMenuEnterBottom {
   from {
-    clip-path: inset(0 0 100% 0 round 6px);
+    clip-path: inset(0 0 99.99% 0 round 6px);
   }
   to {
     clip-path: inset(0 0 0 0 round 6px);
@@ -290,7 +293,7 @@ body {
 
 @keyframes selectMenuEnterTop {
   from {
-    clip-path: inset(100% 0 0 0 round 6px);
+    clip-path: inset(99.99% 0 0 0 round 6px);
   }
   to {
     clip-path: inset(0 0 0 0 round 6px);
@@ -302,7 +305,7 @@ body {
     clip-path: inset(0 0 0 0 round 6px);
   }
   to {
-    clip-path: inset(0 0 100% 0 round 6px);
+    clip-path: inset(0 0 99.99% 0 round 6px);
   }
 }
 
@@ -311,7 +314,7 @@ body {
     clip-path: inset(0 0 0 0 round 6px);
   }
   to {
-    clip-path: inset(100% 0 0 0 round 6px);
+    clip-path: inset(99.99% 0 0 0 round 6px);
   }
 }
 

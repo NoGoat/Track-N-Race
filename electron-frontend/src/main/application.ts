@@ -663,8 +663,9 @@ app.whenReady().then(() => {
       bridgeStartupError
     ].join('\n')
 
-    setImmediate(() => {
-      clipboard.writeText(bridgeErrorReport)
+    setImmediate(async () => {
+      // Electron 44+: writeText is async; finish the copy before the modal blocks.
+      await clipboard.writeText(bridgeErrorReport).catch(() => {})
       dialog.showErrorBox(
         'Telemetry Bridge Failed to Load',
         'Track N Race will continue without the native telemetry bridge. However, pretty much nothing will work.\n\n' +

@@ -382,9 +382,9 @@ private:
         using P = MainWindow::Page;
         const float common = t(31, 45.225);   // most Electron shots
 
-        shots_ << Shot{"overview.png", P::Overview, t(31, 44.009)};
+        shots_ << Shot{"overview.png", P::Overview, t(31, 44.037)};
 
-        shots_ << Shot{"other_drivers.png", P::Overview, t(31, 45.225),
+        shots_ << Shot{"other_drivers.png", P::Overview, t(31, 45.285),
                        [this] { return selectDriver("ALBON"); }, {},
                        [this] { restoreDriver(); }, 3000};
 
@@ -431,18 +431,18 @@ private:
         shots_ << Shot{"inputs.png", P::Input, common};
         shots_ << Shot{"power.png", P::Power, common};
         shots_ << Shot{"misc.png", P::Misc, common};
-        shots_ << Shot{"damage.png", P::Damage, common};
-        shots_ << Shot{"trends.png", P::Trends, common};
+        shots_ << Shot{"damage.png", P::Damage, t(68, 33.843)};
+        shots_ << Shot{"trends.png", P::Trends, t(91, 49.116)};
 
-        // Electron: Antonelli lap 4 vs Leclerc lap 3, Delta/Throttle/Speed/ERS/
-        // Brake, split view, the map cursor at 0:54.500 into the lap.
+        // Electron: Antonelli lap 7 vs Leclerc lap 9, Delta/Throttle/Speed/ERS/
+        // Brake, split view, the map cursor at 0:54.520 into the lap.
         shots_ << Shot{"analyze.png", P::Analyze, -1,
                        [this] {
                            return w_->analyzePage_->stageComparison(
-                               "ANTONELLI", 4, "Antonelli", "LECLERC", 3, "Leclerc",
+                               "ANTONELLI", 7, "Antonelli", "LECLERC", 9, "Leclerc",
                                {"delta", "throttle", "speed", "ers", "brake"});
                        },
-                       [this] { w_->analyzePage_->focusMapElapsed(54.5); },
+                       [this] { w_->analyzePage_->focusMapElapsed(54.52); },
                        {}, 5000};
 
         // Leave the window on the Overview page.

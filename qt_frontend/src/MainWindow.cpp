@@ -495,8 +495,11 @@ MainWindow::MainWindow(QWidget* parent)
             this, &MainWindow::captureScreenshot);
     connect(new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F7), this), &QShortcut::activated,
             this, &MainWindow::sizeForScreenshot);
-    connect(new QShortcut(QKeySequence(Qt::Key_F8), this), &QShortcut::activated,
-            this, &MainWindow::toggleScreenshotTour);
+    // The screenshot tour stays wired up but its shortcut is off; setEnabled(true)
+    // brings F8 back for the next round of website screenshots.
+    auto* tourShortcut = new QShortcut(QKeySequence(Qt::Key_F8), this);
+    tourShortcut->setEnabled(false);
+    connect(tourShortcut, &QShortcut::activated, this, &MainWindow::toggleScreenshotTour);
 
     // Event toast notifications, rendered inside the central content widget.
     toasts_ = new ToastHost(container_);

@@ -229,7 +229,8 @@ private:
     // F7 saves one capture to Pictures/Track N Race Screenshots. F8 runs the
     // screenshot tour: opens test.tnrd from the AppImage's (or executable's)
     // directory and captures every page at the Electron screenshots' session
-    // times into screenshots/ beside it; F8 again cancels. Shift+F7 restores
+    // times into screenshots/ beside it; F8 again cancels. (F8 is currently
+    // disabled in the constructor; the tour code is kept.) Shift+F7 restores
     // the window and sizes its frame to 1200x700, the Electron window size.
     // On X11 captures are read from the screen, title bar included, at the
     // display's scale; elsewhere the window renders itself at 2x without one.
