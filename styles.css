@@ -680,6 +680,11 @@ body.modal-open {
     color: var(--text);
 }
 
+/* A slide's call to action, below its list */
+.feature-cta {
+    margin-top: 1.5rem;
+}
+
 .feature-list li::before {
     content: "";
     flex-shrink: 0;
@@ -712,8 +717,9 @@ body.modal-open {
    TNRD diagram (carousel slide 1): an inline SVG animated with CSS
    Resting styles are the final frame; the keyframes play from the cube onwards
    whenever the slide becomes active. Reduced motion shows the final frame only.
-   script.js moves Alonso's slice: it slides out of the cube (3.6-4.4s), then the
-   whole block turns into the table (4.6-6.3s), timed by .t-stage's animation.
+   script.js pans the camera from straight down to isometric (1.8-3.4s), then moves
+   Alonso's slice: it slides out of the cube (6.2-7s) and the whole block turns into
+   the table (7.2-8.9s), timed by .t-stage's animation.
    ========================================================================== */
 .tnrd-frame {
     width: 100%;
@@ -753,40 +759,48 @@ body.modal-open {
     opacity: 0;
 }
 
+.tnrd-anim .t-file {
+    opacity: 0;
+}
+
 .tnrd-anim .t-trace { stroke-dasharray: 1; }
 
-/* 1. Cube, held (0-3.6s); Alonso's slice tinted (2.4-3s) */
-.carousel-slide.active .tnrd-anim .t-stage { animation: tnrd-stage 11.4s linear both; }
-.carousel-slide.active .tnrd-anim .t-cube { animation: tnrd-cube 11.4s linear both; }
-.carousel-slide.active .tnrd-anim .t-slabsides { animation: tnrd-sides 11.4s linear both; }
-.carousel-slide.active .tnrd-anim .t-splitedge { animation: tnrd-splitedge 11.4s linear both; }
-.carousel-slide.active .tnrd-anim .t-cubelabels { animation: tnrd-cubelabels 11.4s linear both; }
-.carousel-slide.active .tnrd-anim .t-alo { animation: tnrd-alo 11.4s linear both; }
-.carousel-slide.active .tnrd-anim .t-facetint { animation: tnrd-facetint 11.4s linear both; }
-/* 2. The slice splits off (3.6-4.4s) and the whole block turns into the table (4.6-6.3s), projected by script.js */
-.carousel-slide.active .tnrd-anim .t-grid { animation: tnrd-fade 0.6s ease 6s both; }
-/* 3. Lap 5's Speed, RPM and ERS blocks are picked (6.8-7.9s) */
-.carousel-slide.active .tnrd-anim .t-lap { animation: tnrd-fade 0.3s ease 6.8s both; }
-.carousel-slide.active .tnrd-anim .t-pick0 { animation: tnrd-fade 0.25s ease 7.1s both; }
-.carousel-slide.active .tnrd-anim .t-pick1 { animation: tnrd-fade 0.25s ease 7.4s both; }
-.carousel-slide.active .tnrd-anim .t-pick2 { animation: tnrd-fade 0.25s ease 7.7s both; }
-/* 4. ...read out on their own and drawn (8.2-11.4s) */
-.carousel-slide.active .tnrd-anim .t-block0 { animation: tnrd-block0 1.1s ease-in-out 8.2s both; }
-.carousel-slide.active .tnrd-anim .t-block1 { animation: tnrd-block1 1.1s ease-in-out 8.35s both; }
-.carousel-slide.active .tnrd-anim .t-block2 { animation: tnrd-block2 1.1s ease-in-out 8.5s both; }
-.carousel-slide.active .tnrd-anim .t-row0 { animation: tnrd-fade 0.5s ease 8.8s both; }
-.carousel-slide.active .tnrd-anim .t-row1 { animation: tnrd-fade 0.5s ease 9s both; }
-.carousel-slide.active .tnrd-anim .t-row2 { animation: tnrd-fade 0.5s ease 9.2s both; }
-.carousel-slide.active .tnrd-anim .t-trace0 { animation: tnrd-draw 1.6s ease-out 9.3s both; }
-.carousel-slide.active .tnrd-anim .t-trace1 { animation: tnrd-draw 1.6s ease-out 9.55s both; }
-.carousel-slide.active .tnrd-anim .t-trace2 { animation: tnrd-draw 1.6s ease-out 9.8s both; }
-/* 5. The table fades out while the readout unfolds into full-width charts (12.2-13.3s).
-   At 12.2s t-panel is swapped for t-bigpanel in the same frame; each .t-unfold starts at --from,
+/* 0. A file icon fades in (0-0.5s), morphs into the grid's top face seen from above (0.8-1.5s, redrawn by
+   script.js), then the grid fades in over it (1.5-1.8s) and the icon goes once it's covered; the camera then pans round to the isometric view (1.8-3.4s, projected by script.js) */
+.carousel-slide.active .tnrd-anim .t-file { animation: tnrd-file 1.8s linear both; }
+.carousel-slide.active .tnrd-anim .t-file-label { animation: tnrd-out 0.3s ease 0.8s both; }
+/* 1. Cube labels in (3.4-3.8s), cube held; Alonso's slice tinted (5-5.6s) */
+.carousel-slide.active .tnrd-anim .t-stage { animation: tnrd-stage 14.0s linear both; }
+.carousel-slide.active .tnrd-anim .t-cube { animation: tnrd-cube 14.0s linear both; }
+.carousel-slide.active .tnrd-anim .t-slabsides { animation: tnrd-sides 14.0s linear both; }
+.carousel-slide.active .tnrd-anim .t-splitedge { animation: tnrd-splitedge 14.0s linear both; }
+.carousel-slide.active .tnrd-anim .t-cubelabels { animation: tnrd-cubelabels 14.0s linear both; }
+.carousel-slide.active .tnrd-anim .t-alo { animation: tnrd-alo 14.0s linear both; }
+.carousel-slide.active .tnrd-anim .t-facetint { animation: tnrd-facetint 14.0s linear both; }
+/* 2. The slice splits off (6.2-7s) and the whole block turns into the table (7.2-8.9s), projected by script.js */
+.carousel-slide.active .tnrd-anim .t-grid { animation: tnrd-fade 0.6s ease 8.6s both; }
+/* 3. Lap 5's Speed, RPM and ERS blocks are picked (9.4-10.5s) */
+.carousel-slide.active .tnrd-anim .t-lap { animation: tnrd-fade 0.3s ease 9.4s both; }
+.carousel-slide.active .tnrd-anim .t-pick0 { animation: tnrd-fade 0.25s ease 9.7s both; }
+.carousel-slide.active .tnrd-anim .t-pick1 { animation: tnrd-fade 0.25s ease 10s both; }
+.carousel-slide.active .tnrd-anim .t-pick2 { animation: tnrd-fade 0.25s ease 10.3s both; }
+/* 4. ...read out on their own and drawn (10.8-14s) */
+.carousel-slide.active .tnrd-anim .t-block0 { animation: tnrd-block0 1.1s ease-in-out 10.8s both; }
+.carousel-slide.active .tnrd-anim .t-block1 { animation: tnrd-block1 1.1s ease-in-out 10.95s both; }
+.carousel-slide.active .tnrd-anim .t-block2 { animation: tnrd-block2 1.1s ease-in-out 11.1s both; }
+.carousel-slide.active .tnrd-anim .t-row0 { animation: tnrd-fade 0.5s ease 11.4s both; }
+.carousel-slide.active .tnrd-anim .t-row1 { animation: tnrd-fade 0.5s ease 11.6s both; }
+.carousel-slide.active .tnrd-anim .t-row2 { animation: tnrd-fade 0.5s ease 11.8s both; }
+.carousel-slide.active .tnrd-anim .t-trace0 { animation: tnrd-draw 1.6s ease-out 11.9s both; }
+.carousel-slide.active .tnrd-anim .t-trace1 { animation: tnrd-draw 1.6s ease-out 12.15s both; }
+.carousel-slide.active .tnrd-anim .t-trace2 { animation: tnrd-draw 1.6s ease-out 12.4s both; }
+/* 5. The table fades out while the readout unfolds into full-width charts (14.8-15.9s).
+   At 14.8s t-panel is swapped for t-bigpanel in the same frame; each .t-unfold starts at --from,
    exactly over its counterpart, so the swap can't be seen. */
-.carousel-slide.active .tnrd-anim .t-table { animation: tnrd-out 0.6s ease 12.2s both; }
-.carousel-slide.active .tnrd-anim .t-panel { animation: tnrd-out 0s linear 12.2s both; }
-.carousel-slide.active .tnrd-anim .t-bigpanel { animation: tnrd-fade 0s linear 12.2s both; }
-.carousel-slide.active .tnrd-anim .t-unfold { animation: tnrd-unfold 1.1s cubic-bezier(0.65, 0, 0.35, 1) 12.2s both; }
+.carousel-slide.active .tnrd-anim .t-table { animation: tnrd-out 0.6s ease 14.8s both; }
+.carousel-slide.active .tnrd-anim .t-panel { animation: tnrd-out 0s linear 14.8s both; }
+.carousel-slide.active .tnrd-anim .t-bigpanel { animation: tnrd-fade 0s linear 14.8s both; }
+.carousel-slide.active .tnrd-anim .t-unfold { animation: tnrd-unfold 1.1s cubic-bezier(0.65, 0, 0.35, 1) 14.8s both; }
 .carousel-slide.active .tnrd-anim .t-unfold-trace { animation-name: tnrd-unfold-trace; }
 
 /* Hold at the first frame until the carousel is scrolled into view (script.js sets the gate) */
@@ -799,48 +813,56 @@ body.modal-open {
     to { opacity: 1; }
 }
 
-/* Cube and slice fade in together as one layer, so the split can't show through (0-0.8s) */
+/* The file icon: fades in, then stays until the grid fully covers it (its shape is redrawn by script.js) */
+@keyframes tnrd-file {
+    0% { opacity: 0; }
+    27.78%, 99.9% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* Cube and slice fade in together as one layer, over the grown icon (1.5-1.8s), so the split can't show through.
+   This animation is also script.js's clock. */
 @keyframes tnrd-stage {
-    0% { opacity: 0; }
-    7.02%, 100% { opacity: 1; }
+    0%, 10.71% { opacity: 0; }
+    12.86%, 100% { opacity: 1; }
 }
 
-/* The rest of the grid stays put and fades once the slice is out (4-5.2s) */
+/* The rest of the grid stays put and fades once the slice is out (6.6-7.8s) */
 @keyframes tnrd-cube {
-    0%, 35.09% { opacity: 1; }
-    45.61%, 100% { opacity: 0; }
+    0%, 47.14% { opacity: 1; }
+    55.71%, 100% { opacity: 0; }
 }
 
-/* Where the slice meets the rest: a plain grid line until the split opens (3.6-3.9s) */
+/* Where the slice meets the rest: a plain grid line until the split opens (6.2-6.5s) */
 @keyframes tnrd-splitedge {
-    0%, 31.58% { opacity: 0; }
-    34.21%, 100% { opacity: 1; }
+    0%, 44.29% { opacity: 0; }
+    46.43%, 100% { opacity: 1; }
 }
 
-/* The slice's top and side flatten to nothing during the turn; fade them as they go (5.4-6.2s) */
+/* The slice's top and side flatten to nothing during the turn; fade them as they go (8-8.8s) */
 @keyframes tnrd-sides {
-    0%, 47.37% { opacity: 1; }
-    54.39%, 100% { opacity: 0; }
+    0%, 57.14% { opacity: 1; }
+    62.86%, 100% { opacity: 0; }
 }
 
-/* Axis labels: in with the cube, out just before the split (3.3-3.7s) */
+/* Axis labels: in once the camera has arrived (3.4-3.8s), out just before the split (5.9-6.3s) */
 @keyframes tnrd-cubelabels {
-    0% { opacity: 0; }
-    7.02%, 28.95% { opacity: 1; }
-    32.46%, 100% { opacity: 0; }
+    0%, 24.29% { opacity: 0; }
+    27.14%, 42.14% { opacity: 1; }
+    45%, 100% { opacity: 0; }
 }
 
-/* Alonso's tint: in at 2.4-3s */
+/* Alonso's tint: in at 5-5.6s */
 @keyframes tnrd-alo {
-    0%, 21.05% { opacity: 0; }
-    26.32%, 100% { opacity: 1; }
+    0%, 35.71% { opacity: 0; }
+    40%, 100% { opacity: 1; }
 }
 
-/* ...and off the table once it has landed (6-6.6s) */
+/* ...and off the table once it has landed (8.6-9.2s) */
 @keyframes tnrd-facetint {
-    0%, 21.05% { opacity: 0; }
-    26.32%, 52.63% { opacity: 1; }
-    57.89%, 100% { opacity: 0; }
+    0%, 35.71% { opacity: 0; }
+    40%, 61.43% { opacity: 1; }
+    65.71%, 100% { opacity: 0; }
 }
 
 /* Each block starts on its table cell (lap 5 column), flies to its row and takes the trace colour */

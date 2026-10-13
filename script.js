@@ -55,26 +55,46 @@ document.addEventListener('DOMContentLoaded', () => {
         let currentSlideIndex = 0;
         const gap = 48; // Physical buffer gap between slides in px
 
-        // Slide 1's TNRD animation: Alonso's slice splits off the cube, then the whole block turns into his table.
-        // CSS times everything; SVG has no 3D transforms, so this projects the slice's 3D corners (data-p) with an
-        // orthographic camera, reading the time from .t-stage's CSS animation. Without that animation (reduced
-        // motion, inactive slide) it renders the final table, which is also the static markup.
+        // Slide 1's TNRD animation: the camera looks straight down on the grid (a file icon grows into it), pans
+        // round to an isometric view of the cube, then Alonso's slice splits off and the whole block turns into his
+        // table. CSS times everything; SVG has no 3D transforms, so this projects each shape's 3D corners (data-p)
+        // with an orthographic camera, reading the time from .t-stage's CSS animation. Shapes marked data-f follow
+        // the camera only; the slice also slides and turns. Without that animation (reduced motion, inactive
+        // slide) it renders the final table, which is also the static markup.
         const tnrd = document.querySelector('.tnrd-anim');
         const tnrdStage = tnrd?.querySelector('.t-stage');
         let tnrdKick = () => {};
         if (tnrdStage) {
             const shapes = Array.from(tnrd.querySelectorAll('[data-p]')).map(el => ({
                 el,
+                fixed: el.hasAttribute('data-f'),
                 pts: el.dataset.p.split(' ').map(q => q.split(',').map(Number))
             }));
             const ISO_SCALE = 56 / Math.sqrt(2 / 3);         // isometric cube with 56px cells
             const ISO = { yaw: Math.PI / 4, pitch: Math.asin(Math.sqrt(1 / 3)), sx: ISO_SCALE, sy: ISO_SCALE };
             const FLAT = { yaw: Math.PI / 2, pitch: 0, sx: 88, sy: 88 };    // table cells are 88 x 88
+            const TOP = { yaw: 0, pitch: Math.PI / 2, sx: 56, sy: 56 };     // straight down: the grid as a flat 8 x 10
+            const TOP_CENTRE = [800, 500];                   // where the cube's centre sits when seen from above
+            const CENTRE = [4, 5, 2.5];
             const ISO_ORIGIN = [900, 418];                   // screen position of the cube's back corner
             const PULL = 1.2;                                // how far the slice slides out, in cells
             const ANCHOR = [8, 10, 5];                       // slice's front top-left corner = table's top-left (L1, Speed)
             const TABLE = [170, 340];
-            const SPLIT = [3600, 4400], TURN = [4600, 6300]; // ms, matches styles.css
+            const GROW = [800, 1500], PAN = [1800, 3400], SPLIT = [6200, 7000], TURN = [7200, 8900]; // ms, matches styles.css
+            // The file icon morphs into the grid's top face as seen from above: 224 x 280 with 12px corners and a
+            // 56px fold, growing to 448 x 560 with square corners and no fold, centred where the grid sits
+            const fileBody = tnrd.querySelector('.t-file-body'), fileFold = tnrd.querySelector('.t-file-fold');
+            const n = v => v.toFixed(1);
+            const drawFile = k => {
+                const w = 224 + 224 * k, h = 280 + 280 * k, r = 12 * (1 - k), fold = 56 * (1 - k);
+                const x0 = TOP_CENTRE[0] - w / 2, y0 = TOP_CENTRE[1] - h / 2, x1 = x0 + w, y1 = y0 + h;
+                fileBody?.setAttribute('d',
+                    `M${n(x0)},${n(y0 + r)} Q${n(x0)},${n(y0)} ${n(x0 + r)},${n(y0)} L${n(x1 - fold)},${n(y0)} ` +
+                    `L${n(x1)},${n(y0 + fold)} L${n(x1)},${n(y1 - r)} Q${n(x1)},${n(y1)} ${n(x1 - r)},${n(y1)} ` +
+                    `L${n(x0 + r)},${n(y1)} Q${n(x0)},${n(y1)} ${n(x0)},${n(y1 - r)} Z`);
+                fileFold?.setAttribute('d',
+                    `M${n(x1 - fold)},${n(y0)} L${n(x1 - fold)},${n(y0 + fold)} L${n(x1)},${n(y0 + fold)}`);
+            };
             const ease = x => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
             const phase = (t, [a, b]) => ease(Math.min(1, Math.max(0, (t - a) / (b - a))));
             const camera = ({ yaw, pitch, sx, sy }) => {
@@ -84,6 +104,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const iso = camera(ISO);
 
             const render = t => {
+                drawFile(phase(t, GROW));
+                // the camera pans from straight down to isometric; until the turn every shape uses it
+                const pan = phase(t, PAN);
+                const lerp = (a, b, k) => a + (b - a) * k;
+                const panCam = camera({
+                    yaw: lerp(TOP.yaw, ISO.yaw, pan), pitch: lerp(TOP.pitch, ISO.pitch, pan),
+                    sx: lerp(TOP.sx, ISO.sx, pan), sy: lerp(TOP.sy, ISO.sy, pan)
+                });
+                const centre = panCam(CENTRE), isoCentre = iso(CENTRE);
+                const pdx = lerp(TOP_CENTRE[0], isoCentre[0] + ISO_ORIGIN[0], pan) - centre[0];
+                const pdy = lerp(TOP_CENTRE[1], isoCentre[1] + ISO_ORIGIN[1], pan) - centre[1];
                 const pull = PULL * phase(t, SPLIT), turn = phase(t, TURN);
                 const mix = (a, b) => a + (b - a) * turn;
                 const project = camera({
@@ -94,8 +125,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const from = iso(anchor), now = project(anchor);
                 const dx = mix(from[0] + ISO_ORIGIN[0], TABLE[0]) - now[0];
                 const dy = mix(from[1] + ISO_ORIGIN[1], TABLE[1]) - now[1];
-                for (const { el, pts } of shapes) {
-                    const q = pts.map(([x, y, z]) => { const r = project([x + pull, y, z]); return [r[0] + dx, r[1] + dy]; });
+                for (const { el, fixed, pts } of shapes) {
+                    const q = fixed || t < TURN[0]
+                        ? pts.map(([x, y, z]) => { const r = panCam([x + (fixed ? 0 : pull), y, z]); return [r[0] + pdx, r[1] + pdy]; })
+                        : pts.map(([x, y, z]) => { const r = project([x + pull, y, z]); return [r[0] + dx, r[1] + dy]; });
                     if (el.tagName === 'line') {
                         el.setAttribute('x1', q[0][0].toFixed(1));
                         el.setAttribute('y1', q[0][1].toFixed(1));
