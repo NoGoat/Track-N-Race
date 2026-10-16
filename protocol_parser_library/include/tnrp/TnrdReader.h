@@ -42,6 +42,17 @@ public:
     TnrdReader();
     ~TnrdReader();
 
+    // What a file list shows of a recording: its header, its length and how
+    // many drivers it holds (0 when the format does not say). Read from the
+    // index of a V4–V6 file without loading it; false for V1–V3, which would
+    // have to be decompressed, and for anything unreadable.
+    struct Summary {
+        HeaderRow header;
+        float durationSeconds = 0.0f;
+        int drivers = 0;
+    };
+    static bool summarize(const std::string& path, Summary& out, std::string* errorOut = nullptr);
+
     bool load(const std::string& path, HeaderRow& outHeader);
     bool loadZstd(const std::string& path, HeaderRow& outHeader);
     bool loadGzip(const std::string& path, HeaderRow& outHeader);

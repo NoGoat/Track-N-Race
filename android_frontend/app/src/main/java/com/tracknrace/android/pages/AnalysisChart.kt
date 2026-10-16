@@ -110,6 +110,11 @@ private const val MIN_PANEL_DP = 88f
 private const val MIN_PANEL_SHORT_DP = 52f
 private const val SHORT_VIEWPORT_DP = 420f
 private val YTicks = floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f)
+// A stacked panel's Y axis: at least min, middle and max, and up to five
+// values when the panel is tall enough to space them this far apart.
+private const val MIN_Y_TICKS = 3
+private const val MAX_Y_TICKS = 5
+private const val Y_TICK_SPACING_DP = 26f
 
 /** Everything one chart frame draws; laps compare by identity. */
 @Immutable
@@ -182,8 +187,17 @@ internal class AnalysisChartState {
     }
 }
 
-/** One plot area. [headerTop] is where its title row starts, above [top]. */
-internal class ChartPanel(val item: AnalysisSeries?, val headerTop: Float, val top: Float, val bottom: Float)
+/**
+ * One plot area. [headerTop] is where its title row starts, above [top].
+ * [ticks] are its Y axis values and grid lines, as fractions of its height.
+ */
+internal class ChartPanel(
+    val item: AnalysisSeries?,
+    val headerTop: Float,
+    val top: Float,
+    val bottom: Float,
+    val ticks: FloatArray = YTicks,
+)
 
 internal class ChartGeometry(
     val left: Float,
@@ -532,15 +546,21 @@ private fun buildDecor(
             }
         }
     if (input.stacked) {
-        // Max and min inside each panel's top and bottom left corners.
+        // Each panel's values in the gutter left of the plot, as the desktop
+        // draws them, right-aligned against it and level with its grid lines.
         for (panel in geometry.panels) {
             val item = panel.item ?: continue
             if (!item.showYAxis) continue
             val format = axisValues(item)
-            val maxLabel = measure(format(1f), null)
-            val minLabel = measure(format(0f), null)
-            labels += LabelAt(maxLabel, Offset(left + 2f * dp, panel.top), backdrop = true)
-            labels += LabelAt(minLabel, Offset(left + 2f * dp, panel.bottom - minLabel.size.height), backdrop = true)
+            for (t in panel.ticks) {
+                val text = measure(format(t), null)
+                val y = panel.bottom - t * (panel.bottom - panel.top)
+                val x = (left - text.size.width - 4f * dp).coerceAtLeast(0f)
+                labels += LabelAt(
+                    text,
+                    Offset(x, (y - text.size.height / 2f).clampTo(panel.top - 2f * dp, panel.bottom - text.size.height + 2f * dp)),
+                )
+            }
         }
     } else {
         layout.axisItems.forEachIndexed { index, item ->
@@ -597,9 +617,8 @@ private fun DrawScope.drawGrid(
     axisColor: Color,
     dp: Float,
 ) {
-    val ticks = if (stacked) floatArrayOf(0f, 0.5f, 1f) else YTicks
     for (panel in geometry.panels) {
-        for (t in ticks) {
+        for (t in panel.ticks) {
             val y = panel.bottom - t * (panel.bottom - panel.top)
             drawLine(gridColor, Offset(geometry.left, y), Offset(geometry.right, y), 1f)
         }
@@ -870,14 +889,20 @@ private fun layoutChart(
     }
     val leftCount = if (input.stacked) 0 else (axisItems.size + 1) / 2
     val rightCount = if (input.stacked) 0 else axisItems.size / 2
-    val left = max(8f * dp, leftCount * axisSlot)
+    // Stacked panels share one Y axis gutter on the left when any shows an axis.
+    val stackedGutter = input.stacked && items.any { it.showYAxis }
+    val left = if (stackedGutter) axisSlot else max(8f * dp, leftCount * axisSlot)
     val right = width - max(8f * dp, rightCount * axisSlot)
     val gap = PANEL_GAP_DP * dp
     val panels = if (input.stacked && items.isNotEmpty()) {
         val slot = (bottom - gap * (items.size - 1)) / items.size
         items.mapIndexed { index, item ->
             val slotTop = index * (slot + gap)
-            ChartPanel(item, slotTop, slotTop + header, slotTop + slot)
+            val plotTop = slotTop + header
+            val plotBottom = slotTop + slot
+            val count = ((plotBottom - plotTop) / (Y_TICK_SPACING_DP * dp)).toInt() + 1
+            val ticks = count.coerceIn(MIN_Y_TICKS, MAX_Y_TICKS).let { n -> FloatArray(n) { it / (n - 1f) } }
+            ChartPanel(item, slotTop, plotTop, plotBottom, ticks)
         }
     } else {
         listOf(ChartPanel(null, 0f, header + 4f * dp, bottom))

@@ -213,6 +213,25 @@ internal class TelemetryStore {
 
     var cold by mutableStateOf(DashboardColdState())
         private set
+    /** The recording playing on the phone itself, or null; main thread only. */
+    var localRecording by mutableStateOf<String?>(null)
+        private set
+
+    // The player's position, as the engine states it about once a frame while
+    // playing. Read by the player bar on the frame clock, so it never
+    // recomposes anything.
+    private val transport = AtomicReference(PlaybackTransport())
+
+    /** Whether playback runs, and its speed and length; changes only on change. */
+    var transportPlaying by mutableStateOf(false)
+        private set
+    var transportSpeed by mutableStateOf(1f)
+        private set
+    var transportTotal by mutableStateOf(0.0)
+        private set
+
+    fun latestTransport(): PlaybackTransport = transport.get()
+
     /** The selected car's damage; main thread only. */
     var damage by mutableStateOf(CarDamageState())
         private set
@@ -450,6 +469,21 @@ internal class TelemetryStore {
                 val currentTime = row.optDouble("current_time", Double.NaN)
                 if (startTime.isFinite() && currentTime.isFinite()) {
                     post { updatePlaybackCursor(startTime + currentTime) }
+                }
+                val next = PlaybackTransport(
+                    playing = row.optBoolean("playing"),
+                    currentTime = currentTime.takeIf { it.isFinite() } ?: 0.0,
+                    totalTime = row.optDouble("total_time", 0.0),
+                    speed = row.optDouble("speed", 1.0).toFloat(),
+                    startTime = startTime.takeIf { it.isFinite() } ?: 0.0,
+                )
+                val previous = transport.getAndSet(next)
+                if (previous.playing != next.playing || previous.speed != next.speed || previous.totalTime != next.totalTime) {
+                    post {
+                        transportPlaying = next.playing
+                        transportSpeed = next.speed
+                        transportTotal = next.totalTime
+                    }
                 }
             }
 
@@ -784,7 +818,9 @@ internal class TelemetryStore {
                 }
             }
 
-            "timeline_reset" -> {
+            // A seek in a recording played on the phone: what follows is the
+            // state at the new cursor, as after a paired desktop's reset.
+            "timeline_reset", "playback_seek_flush" -> {
                 mapPositions.lazySet(MapPositions())
                 post {
                     resetPlaybackCursorComparison()
@@ -856,6 +892,34 @@ internal class TelemetryStore {
                 tyreWearAvailable = false,
                 tyreSets = emptyList(),
             )
+        }
+    }
+
+    /**
+     * A recording is about to play on the phone: forget the previous source's
+     * session, roster and laps, as a new protocol context does.
+     */
+    fun beginLocalPlayback(title: String) {
+        transport.set(PlaybackTransport())
+        acceptColdRow("{\"type\":\"protocol_context\"}")
+        acceptColdRow("{\"type\":\"participants_reset\"}")
+        post {
+            localRecording = title
+            transportPlaying = false
+            transportSpeed = 1f
+            transportTotal = 0.0
+        }
+    }
+
+    /** The phone's recording closed; the previous source comes back next. */
+    fun endLocalPlayback() {
+        transport.set(PlaybackTransport())
+        acceptColdRow("{\"type\":\"playback_close\"}")
+        acceptColdRow("{\"type\":\"protocol_context\"}")
+        acceptColdRow("{\"type\":\"participants_reset\"}")
+        post {
+            localRecording = null
+            transportPlaying = false
         }
     }
 

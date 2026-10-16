@@ -7,8 +7,11 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.DocumentsContract
+import android.system.ErrnoException
+import android.system.Os
 import com.journeyapps.barcodescanner.ScanOptions
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 /** Native owner for telemetry, recording, discovery, and desktop pairing. */
 internal class TelemetryController(
@@ -24,15 +27,31 @@ internal class TelemetryController(
     private val sourceExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "tnrp-native-source").apply { isDaemon = true }
     }
+    // Player commands for a recording on the phone, in order; a seek may run
+    // long and is overtaken by a newer one rather than queued behind it.
+    private val playbackExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "tnrp-playback").apply { isDaemon = true }
+    }
+    // Lap reads for Analysis: hundreds of KB each, kept off the player's queue.
+    private val lapExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "tnrp-playback-laps").apply { isDaemon = true }
+    }
+    private val seekIds = AtomicLong()
     private val directTelemetry = NativeTelemetry(this)
     private val pairedTelemetry = PairedTelemetryClient(context, this)
     private val discovery = PairDiscovery(context, this)
     internal val analysis = AnalysisController(
         context,
         store,
-        pairedTelemetry::requestLapData,
-        pairedTelemetry::requestLapDelta,
+        ::requestLapData,
+        ::requestLapDelta,
     )
+
+    /** A recording open on the phone; it replaces the game or desktop source. */
+    private class OpenRecording(val file: RecordingFile, val handle: RecordingLibrary.Handle)
+
+    @Volatile private var playback: OpenRecording? = null
+    @Volatile private var activePage = PairedTelemetryPage.DASHBOARD
 
     @Volatile private var sourceRequested = false
     @Volatile private var sourceGeneration = 0
@@ -44,7 +63,14 @@ internal class TelemetryController(
     private var lowLatencyLock: WifiManager.WifiLock? = null
 
     init {
-        store.setLapDeltaRequester(pairedTelemetry::requestLapDelta)
+        // Older recordings (V2–V5) are decompressed to a temporary file, and
+        // Android sets no temporary folder for native code.
+        try {
+            Os.setenv("TMPDIR", context.cacheDir.absolutePath, true)
+        } catch (_: ErrnoException) {
+            // V6 recordings, which the phone itself writes, need none.
+        }
+        store.setLapDeltaRequester(::requestLapDelta)
         store.setAnalysisDeltaSink(analysis::onDeltaReply)
         publishSettings()
     }
@@ -56,6 +82,8 @@ internal class TelemetryController(
         if (qrScannerActive) return
         holdLowLatencyWifi(true)
         sourceRequested = true
+        // A recording stays open, paused where it was left.
+        if (playback != null) return
         restartConfiguredSource()
         if (discoveryRequested) startDiscoveryInternal(clear = true)
     }
@@ -65,6 +93,10 @@ internal class TelemetryController(
         holdLowLatencyWifi(false)
         desktopSearch = false
         stopDiscoveryInternal()
+        if (playback != null) {
+            playbackPause()
+            return
+        }
         suspendSourcesAsync()
     }
 
@@ -81,7 +113,11 @@ internal class TelemetryController(
         holdLowLatencyWifi(false)
         directTelemetry.stop()
         pairedTelemetry.close()
+        playback?.handle?.close()
+        playback = null
         sourceExecutor.shutdownNow()
+        playbackExecutor.shutdownNow()
+        lapExecutor.shutdownNow()
     }
 
     fun reconnect() {
@@ -106,7 +142,100 @@ internal class TelemetryController(
     }
 
     fun setActivePage(page: PairedTelemetryPage) {
+        activePage = page
         pairedTelemetry.setPage(page)
+        playbackCommand { directTelemetry.setRequirements(page.streamMask, page.v6Types.toIntArray()) }
+    }
+
+    // ── A recording played on the phone ─────────────────────────────────────
+
+    /**
+     * Opens [file] in place of the current source: the game listener or the
+     * paired desktop stops until the recording is closed.
+     */
+    fun openRecording(file: RecordingFile) {
+        val dropped = playback
+        playback = null
+        val generation = ++sourceGeneration
+        store.updateSource("opening", file.title)
+        sourceExecutor.execute {
+            directTelemetry.stop()
+            pairedTelemetry.close()
+            dropped?.handle?.close()
+            if (generation != sourceGeneration) return@execute
+            store.resetLapComparison()
+            store.beginLocalPlayback(file.title)
+            val handle = try {
+                RecordingLibrary.open(context, file)
+            } catch (error: Exception) {
+                failRecording(file, error.message)
+                return@execute
+            }
+            val error = directTelemetry.openRecording(handle.path)
+            if (error != null) {
+                handle.close()
+                failRecording(file, error)
+                return@execute
+            }
+            playback = OpenRecording(file, handle)
+            val page = activePage
+            directTelemetry.setRequirements(page.streamMask, page.v6Types.toIntArray())
+            store.updateSource("playback", file.title)
+        }
+    }
+
+    private fun failRecording(file: RecordingFile, error: String?) {
+        store.endLocalPlayback()
+        store.showMessage("Could not open ${file.title}: ${error ?: "unknown error"}")
+        restartConfiguredSource()
+    }
+
+    /** Closes the recording; the game listener or paired desktop resumes. */
+    fun closeRecording() {
+        if (playback == null) return
+        restartConfiguredSource()
+    }
+
+    fun playbackPlay() = playbackCommand { directTelemetry.play() }
+
+    fun playbackPause() = playbackCommand { directTelemetry.pause() }
+
+    fun playbackSetSpeed(speed: Float) = playbackCommand { directTelemetry.setSpeed(speed) }
+
+    fun playbackSetDriver(index: Int) = playbackCommand { directTelemetry.setDriver(index) }
+
+    /** Moves to [fraction] of the recording; a newer seek overtakes this one. */
+    fun playbackSeek(fraction: Float) {
+        if (playback == null) return
+        val id = seekIds.incrementAndGet()
+        directTelemetry.requestSeek(id)
+        playbackExecutor.execute { if (playback != null) directTelemetry.seek(fraction.coerceIn(0f, 1f), id) }
+    }
+
+    private fun playbackCommand(block: () -> Unit) {
+        if (playback == null) return
+        playbackExecutor.execute { if (playback != null) block() }
+    }
+
+    /** Analysis lap columns: from the phone's recording when one is open, else the desktop. */
+    private fun requestLapData(requestId: Long, lapNumber: Int, channels: Collection<String>): Boolean {
+        if (playback == null) return pairedTelemetry.requestLapData(requestId, lapNumber, channels)
+        val names = channels.toTypedArray()
+        lapExecutor.execute {
+            val data = directTelemetry.lapData(lapNumber, names)
+            analysis.onLapData("{\"type\":\"lap_data\",\"requestId\":$requestId,\"lapNum\":$lapNumber,\"data\":${data ?: "null"}}")
+        }
+        return true
+    }
+
+    /** A lap delta: from the phone's recording when one is open, else the desktop. */
+    private fun requestLapDelta(request: PlaybackLapDeltaRequest): Boolean {
+        if (playback == null) return pairedTelemetry.requestLapDelta(request)
+        lapExecutor.execute {
+            val data = directTelemetry.lapDelta(request.currentLap, request.comparisonLap, request.sectorDelta)
+            store.acceptColdRow("{\"type\":\"lap_delta\",\"requestId\":${request.requestId},\"data\":${data ?: "null"}}")
+        }
+        return true
     }
 
     fun setSource(source: String) {
@@ -403,9 +532,15 @@ internal class TelemetryController(
 
     private fun restartConfiguredSource() {
         val generation = ++sourceGeneration
+        val dropped = playback
+        playback = null
         sourceExecutor.execute {
             directTelemetry.stop()
             pairedTelemetry.close()
+            if (dropped != null) {
+                dropped.handle.close()
+                store.endLocalPlayback()
+            }
             store.resetLapComparison()
             if (!sourceRequested || generation != sourceGeneration) return@execute
             if (!isDirectSource() && PairedTelemetryClient.hasSavedDesktop(context)) {
@@ -435,7 +570,15 @@ internal class TelemetryController(
         pairingPending = true
         store.updatePairingBusy(true)
         sourceGeneration++
-        sourceExecutor.execute(directTelemetry::stop)
+        val dropped = playback
+        playback = null
+        sourceExecutor.execute {
+            directTelemetry.stop()
+            if (dropped != null) {
+                dropped.handle.close()
+                store.endLocalPlayback()
+            }
+        }
         pairedTelemetry.close()
     }
 

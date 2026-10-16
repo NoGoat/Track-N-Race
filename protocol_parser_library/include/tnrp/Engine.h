@@ -194,6 +194,11 @@ public:
     // visible sections. Recording remains complete; these masks only control
     // consumer forwarding, playback chunk loading, and history backfill.
     void requestDataRequirements(uint64_t requestId);
+    // For a host that is itself a phone page (Android playing a recording):
+    // like setDataRequirements, and the latest value of every family it names
+    // is restated, as a paired phone's subscription is, so a page shows the
+    // current state at once rather than at the family's next change.
+    void setPhoneRequirements(uint32_t streamRowMask, const std::vector<uint8_t>& v6Types);
     void setDataRequirements(uint32_t streamRowMask, uint32_t historyRowMask,
                              float windowSeconds, uint64_t requestId = 0,
                              const std::vector<uint8_t>& v6Types = {},
@@ -251,6 +256,11 @@ public:
     void setLapHistoryCar(int carIdx);
     bool playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
                                       int driverIndex = -1) const;
+    // The loaded recording's answers to a phone's request_lap_delta and
+    // request_lap_data: the JSON a paired phone receives as their "data".
+    // Empty when nothing is playing or a lap is unknown.
+    std::string playerLapDeltaJson(int currentLap, int comparisonLap, bool sectorDelta);
+    std::string playerPhoneLapDataJson(int lapNum, const std::vector<std::string>& channels);
     void playerGetAllLapsData(uint64_t requestId = 0, uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerGetWindowData(float windowSeconds, uint64_t requestId = 0,
                              uint32_t rowTypeMask = 0xFFFFFFFFu);

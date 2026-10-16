@@ -534,18 +534,23 @@ internal fun AnalysisPlaybackBar(
     }
 }
 
-private fun speedLabel(speed: Float): String =
+internal fun speedLabel(speed: Float): String =
     "${if (speed < 1f) speed.toString() else speed.toInt().toString()}×"
 
 /** The speeds as a radio list in a dialog, as Android shows a select's options. */
 @Composable
-private fun SpeedDialog(speed: Float, onPick: (Float) -> Unit, onDismiss: () -> Unit) {
+internal fun SpeedDialog(
+    speed: Float,
+    onPick: (Float) -> Unit,
+    onDismiss: () -> Unit,
+    speeds: List<Float> = PlaybackSpeeds,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Playback speed") },
         text = {
             Column(Modifier.selectableGroup()) {
-                for (option in PlaybackSpeeds) {
+                for (option in speeds) {
                     Row(
                         Modifier
                             .fillMaxWidth()

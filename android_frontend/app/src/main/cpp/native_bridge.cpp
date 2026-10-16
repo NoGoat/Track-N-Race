@@ -1,7 +1,11 @@
 #include <jni.h>
 
+#include <cctype>
+#include <cstdio>
 #include <memory>
+#include <optional>
 #include <mutex>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -9,7 +13,10 @@
 #include "tnrp/BinaryRows.h"
 #include "tnrp/PairCrypto.h"
 #include "tnrp/Engine.h"
+#include "tnrp/PairServer.h"
+#include "tnrp/Parser.h"
 #include "tnrp/Sink.h"
+#include "tnrp/TnrdReader.h"
 
 namespace {
 
@@ -18,8 +25,8 @@ std::mutex gMutex;
 
 class AndroidSink final : public tnrp::Sink {
 public:
-    AndroidSink(JNIEnv* env, jobject receiver)
-        : receiver_(env->NewGlobalRef(receiver)) {
+    AndroidSink(JNIEnv* env, jobject receiver, bool playback = false)
+        : receiver_(env->NewGlobalRef(receiver)), playback_(playback) {
         jclass cls = env->GetObjectClass(receiver);
         onRow_ = env->GetMethodID(cls, "onNativeRow", "(Ljava/lang/String;)V");
         onBinary_ = env->GetMethodID(cls, "onNativeBinary", "([B)V");
@@ -34,6 +41,30 @@ public:
     }
 
     void onRow(const std::string& json) override {
+        // A recording's lap catalogue carries every block's status history;
+        // the phone needs only each lap's times and compound, as a paired
+        // phone receives it.
+        if (std::string_view(json).starts_with("{\"type\":\"playback_lap_blocks\"")) {
+            deliver(tnrp::pairPhoneLapBlocks(json));
+            return;
+        }
+        deliver(json);
+        // A JSON-only engine does not restate the protocol when a recording
+        // loads. Label the recording with its own format's catalogue, as the
+        // desktop does, so track names and aero labels follow the file.
+        if (playback_ && std::string_view(json).starts_with("{\"type\":\"playback_loaded\",\"ok\":true")) {
+            const auto protocol = intAfter(json, "\"protocol\":");
+            if (protocol && *protocol >= 2024) {
+                std::optional<bool> regulations;
+                if (json.find("\"regulations_2026\":true") != std::string::npos) regulations = true;
+                else if (json.find("\"regulations_2026\":false") != std::string::npos) regulations = false;
+                deliver(tnrp::Parser::statusRowForFormat(
+                    static_cast<uint16_t>(*protocol), intAfter(json, "\"formula\":"), regulations));
+            }
+        }
+    }
+
+    void deliver(const std::string& json) {
         bool attached = false;
         JNIEnv* env = environment(attached);
         if (!env || !receiver_ || !onRow_) return;
@@ -73,6 +104,19 @@ public:
     }
 
 private:
+    static std::optional<int> intAfter(const std::string& json, std::string_view key) {
+        const size_t at = json.find(key);
+        if (at == std::string::npos) return std::nullopt;
+        size_t index = at + key.size();
+        const bool negative = index < json.size() && json[index] == '-';
+        if (negative) ++index;
+        if (index >= json.size() || !std::isdigit(static_cast<unsigned char>(json[index]))) return std::nullopt;
+        int value = 0;
+        while (index < json.size() && std::isdigit(static_cast<unsigned char>(json[index])))
+            value = value * 10 + (json[index++] - '0');
+        return negative ? -value : value;
+    }
+
     JNIEnv* environment(bool& attached) const {
         JNIEnv* env = nullptr;
         const jint state = gVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
@@ -84,6 +128,7 @@ private:
     }
 
     jobject receiver_{};
+    bool playback_{};
     jmethodID onRow_{};
     jmethodID onBinary_{};
 };
@@ -100,13 +145,37 @@ constexpr uint32_t kAndroidRowMask =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
     (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13);
 
-std::unique_ptr<AndroidSink> gSink;
-std::unique_ptr<tnrp::Engine> gEngine;
+// One engine at a time: listening for the game, or playing a recording. A
+// call takes its own reference, so a slow seek or lap read finishing after
+// stop() still has an engine, and the engine always goes before its sink.
+struct Session {
+    std::unique_ptr<AndroidSink> sink;
+    std::unique_ptr<tnrp::Engine> engine;
+
+    ~Session() { engine.reset(); }
+};
+
+std::shared_ptr<Session> gSession;
 
 void stopLocked() {
-    gEngine.reset();
-    gSink.reset();
+    gSession.reset();
 }
+
+std::shared_ptr<Session> session() {
+    std::lock_guard lock(gMutex);
+    return gSession;
+}
+
+tnrp::Config androidConfig() {
+    tnrp::Config config;
+    config.bindAddress = "0.0.0.0";
+    config.protocol = tnrp::Override::Auto;
+    config.hotRowsAsJson = false;
+    config.binaryPlayback = false;
+    return config;
+}
+
+std::string utf8(JNIEnv* env, jstring value);
 
 } // namespace
 
@@ -121,21 +190,18 @@ Java_com_tracknrace_android_NativeTelemetry_nativeStart(
     std::lock_guard lock(gMutex);
     stopLocked();
 
-    tnrp::Config config;
+    tnrp::Config config = androidConfig();
     config.port = static_cast<uint16_t>(port);
-    config.bindAddress = "0.0.0.0";
-    config.protocol = tnrp::Override::Auto;
-    config.hotRowsAsJson = false;
-    config.binaryPlayback = false;
 
-    gSink = std::make_unique<AndroidSink>(env, receiver);
-    gEngine = std::make_unique<tnrp::Engine>(config, gSink.get());
-    if (!gEngine->startUdp()) {
-        const std::string error = gEngine->udpLastError();
-        stopLocked();
+    auto next = std::make_shared<Session>();
+    next->sink = std::make_unique<AndroidSink>(env, receiver);
+    next->engine = std::make_unique<tnrp::Engine>(config, next->sink.get());
+    if (!next->engine->startUdp()) {
+        const std::string error = next->engine->udpLastError();
         return env->NewStringUTF(error.empty() ? "Unable to bind UDP listener" : error.c_str());
     }
-    gEngine->setDataRequirements(kAndroidRowMask, 0, 0.0f);
+    next->engine->setDataRequirements(kAndroidRowMask, 0, 0.0f);
+    gSession = std::move(next);
     return nullptr;
 }
 
@@ -149,7 +215,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_tracknrace_android_NativeTelemetry_nativeSetRecording(
     JNIEnv* env, jobject, jboolean enabled, jstring outputDirectory) {
     std::lock_guard lock(gMutex);
-    if (!gEngine) return;
+    if (!gSession) return;
 
     std::string directory;
     if (outputDirectory) {
@@ -159,9 +225,143 @@ Java_com_tracknrace_android_NativeTelemetry_nativeSetRecording(
             env->ReleaseStringUTFChars(outputDirectory, utf);
         }
     }
-    gEngine->setLogging(enabled == JNI_TRUE, directory);
+    gSession->engine->setLogging(enabled == JNI_TRUE, directory);
 }
 
+
+// ── Recording playback ───────────────────────────────────────────────────
+// A recording on the phone plays through the same engine the desktop uses,
+// with no UDP listener. Its rows reach the store exactly as live rows do.
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeOpenRecording(
+    JNIEnv* env, jobject receiver, jstring path) {
+    const std::string file = utf8(env, path);
+    auto next = std::make_shared<Session>();
+    next->sink = std::make_unique<AndroidSink>(env, receiver, true);
+    next->engine = std::make_unique<tnrp::Engine>(androidConfig(), next->sink.get());
+    {
+        std::lock_guard lock(gMutex);
+        stopLocked();
+        gSession = next;
+    }
+    std::string error;
+    if (next->engine->playerLoad(file, &error)) return nullptr;
+    {
+        std::lock_guard lock(gMutex);
+        if (gSession == next) stopLocked();
+    }
+    return env->NewStringUTF(error.empty() ? "Could not open the recording" : error.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativePlay(JNIEnv*, jobject) {
+    if (auto current = session()) current->engine->playerPlay();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativePause(JNIEnv*, jobject) {
+    if (auto current = session()) current->engine->playerPause();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeRequestSeek(JNIEnv*, jobject, jlong requestId) {
+    if (auto current = session()) current->engine->playerRequestSeek(static_cast<uint64_t>(requestId));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeSeek(
+    JNIEnv*, jobject, jfloat fraction, jlong requestId) {
+    if (auto current = session())
+        current->engine->playerSeek(fraction, false, static_cast<uint64_t>(requestId));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeSetSpeed(JNIEnv*, jobject, jfloat speed) {
+    if (auto current = session()) current->engine->playerSetSpeed(speed);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeSetDriver(JNIEnv*, jobject, jint driver) {
+    if (auto current = session()) current->engine->playerSetDriver(driver);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeSetRequirements(
+    JNIEnv* env, jobject, jint streamMask, jintArray v6Types) {
+    auto current = session();
+    if (!current) return;
+    std::vector<uint8_t> types;
+    if (v6Types) {
+        const jsize count = env->GetArrayLength(v6Types);
+        std::vector<jint> values(static_cast<size_t>(count));
+        if (count > 0) env->GetIntArrayRegion(v6Types, 0, count, values.data());
+        for (jint value : values)
+            if (value > 0 && value < 256) types.push_back(static_cast<uint8_t>(value));
+    }
+    current->engine->setPhoneRequirements(static_cast<uint32_t>(streamMask), types);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeLapDelta(
+    JNIEnv* env, jobject, jint currentLap, jint comparisonLap, jboolean sectorDelta) {
+    auto current = session();
+    if (!current) return nullptr;
+    const std::string data = current->engine->playerLapDeltaJson(
+        currentLap, comparisonLap, sectorDelta == JNI_TRUE);
+    return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeLapData(
+    JNIEnv* env, jobject, jint lapNum, jobjectArray channels) {
+    auto current = session();
+    if (!current) return nullptr;
+    std::vector<std::string> names;
+    if (channels) {
+        const jsize count = env->GetArrayLength(channels);
+        names.reserve(static_cast<size_t>(count));
+        for (jsize index = 0; index < count; ++index) {
+            auto* name = static_cast<jstring>(env->GetObjectArrayElement(channels, index));
+            names.push_back(utf8(env, name));
+            env->DeleteLocalRef(name);
+        }
+    }
+    const std::string data = current->engine->playerPhoneLapDataJson(lapNum, names);
+    return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
+}
+
+namespace {
+
+std::string jsonString(const std::string& value) {
+    std::string out = "\"";
+    for (unsigned char c : value) {
+        if (c == '"' || c == '\\') { out += '\\'; out += static_cast<char>(c); }
+        else if (c < 0x20) { char escaped[8]; std::snprintf(escaped, sizeof(escaped), "\\u%04x", c); out += escaped; }
+        else out += static_cast<char>(c);
+    }
+    return out + "\"";
+}
+
+} // namespace
+
+// A recording's details for the file list, read from its index without
+// loading it: {"protocol","trackName","sessionName","sessionType",
+// "startTime" (ms since the epoch),"duration" (s),"drivers"}, or null.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeSummarize(JNIEnv* env, jclass, jstring path) {
+    tnrp::TnrdReader::Summary summary;
+    if (!tnrp::TnrdReader::summarize(utf8(env, path), summary)) return nullptr;
+    const auto& header = summary.header;
+    const std::string json = "{\"protocol\":" + std::to_string(header.protocol) +
+        ",\"trackName\":" + jsonString(header.track_name) +
+        ",\"sessionName\":" + jsonString(header.session_name) +
+        ",\"sessionType\":" + std::to_string(header.session_type) +
+        ",\"startTime\":" + std::to_string(header.start_time) +
+        ",\"duration\":" + std::to_string(summary.durationSeconds) +
+        ",\"drivers\":" + std::to_string(summary.drivers) + "}";
+    return env->NewStringUTF(json.c_str());
+}
 
 // ── Paired desktop channel ───────────────────────────────────────────────
 // The handshake and frame encryption are libtnrp's PairCrypto, the same code

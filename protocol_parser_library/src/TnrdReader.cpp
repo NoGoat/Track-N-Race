@@ -807,6 +807,44 @@ bool TnrdReader::loadV6ArchiveForStrategy(std::unique_ptr<detail::TnrdV6Archive>
     return true;
 }
 
+bool TnrdReader::summarize(const std::string& path, Summary& out, std::string* errorOut) {
+    std::string error;
+    const TnrdFormat format = detail::detectTnrdFormat(path, &error);
+    std::unique_ptr<detail::TnrdIndexedArchive> archive;
+    bool ok = false;
+    if (format == TnrdFormat::ChunkedV6) {
+        detail::V6LoadResult loaded;
+        ok = detail::TNRD_V6::load(path, loaded, error);
+        if (ok) {
+            out.header = std::move(loaded.header);
+            out.drivers = static_cast<int>(loaded.archive->driverHeaders().size());
+            archive = std::move(loaded.archive);
+        }
+    } else if (format == TnrdFormat::ChunkedV5) {
+        detail::V5LoadResult loaded;
+        ok = detail::TNRD_V5::load(path, loaded, error);
+        if (ok) {
+            out.header = std::move(loaded.header);
+            archive = std::move(loaded.archive);
+        }
+    } else if (format == TnrdFormat::ChunkedV4) {
+        detail::V4LoadResult loaded;
+        ok = detail::TNRD_V4::load(path, loaded, error);
+        if (ok) {
+            out.header = std::move(loaded.header);
+            archive = std::move(loaded.archive);
+        }
+    } else if (error.empty()) {
+        error = "This recording format has no index to read.";
+    }
+    if (!ok) {
+        if (errorOut) *errorOut = error;
+        return false;
+    }
+    out.durationSeconds = std::max(0.0f, archive->totalTime() - archive->startTime());
+    return true;
+}
+
 bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
                                 TnrdFormat format) {
     close();

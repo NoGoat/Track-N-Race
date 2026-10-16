@@ -236,6 +236,16 @@ internal data class CarDamageState(
     }
 }
 
+/** A recording's player: running, where, of how long (seconds from its start), how fast. */
+internal data class PlaybackTransport(
+    val playing: Boolean = false,
+    val currentTime: Double = 0.0,
+    val totalTime: Double = 0.0,
+    val speed: Float = 1f,
+    /** The recording's first session time; currentTime is counted from it. */
+    val startTime: Double = 0.0,
+)
+
 internal data class DashboardLapComparisonState(
     val fastestLapMs: Int = 0,
     val lapDeltaSeconds: Double? = null,

@@ -701,6 +701,10 @@ std::string writePublicState(const PairPublicState& value) {
 
 } // namespace
 
+std::string pairPhoneLapBlocks(const std::string& json) {
+    return phoneLapBlocks(json);
+}
+
 struct PairServer::Impl {
     // Latest-state rows and binary records waiting to be sent together. While
     // it is the newest unit in the outbox, a row with the same state key

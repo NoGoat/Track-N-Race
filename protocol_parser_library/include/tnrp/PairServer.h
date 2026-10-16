@@ -9,6 +9,11 @@
 
 namespace tnrp {
 
+// A playback_lap_blocks row as a paired phone receives it: each block's lap,
+// times and fitted compound, without the per-block status history. Also used
+// by the Android app for recordings it plays itself.
+std::string pairPhoneLapBlocks(const std::string& json);
+
 struct PairServerConfig {
     uint16_t port = 20779;
     std::string name{"Track N Race"};

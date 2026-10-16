@@ -177,7 +177,7 @@ internal fun DashboardScreen(
         derivedStateOf(structuralEqualityPolicy()) { store.cold.sessionType in RaceSessionTypes }
     }
     val gaps = rememberRaceGaps(store)
-    KeepScreenOn(active && store.sourceStatus.state in setOf("paired", "listening"))
+    KeepScreenOn(active && store.sourceStatus.state in setOf("paired", "listening", "playback"))
 
     // The app shell paints the background, so there is no full-screen surface here.
     MaterialTheme(colorScheme = darkAppColorScheme()) {

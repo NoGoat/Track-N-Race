@@ -62,7 +62,13 @@ class MainActivity : ComponentActivity() {
         if (hasFocus) updateSystemBars()
     }
 
-    /** Landscape is an immersive steering-wheel display; portrait uses normal system chrome. */
+    /**
+     * Landscape is an immersive steering-wheel display; portrait shows the
+     * system bars. The window stays edge-to-edge in both, as enableEdgeToEdge()
+     * set it: Compose applies the insets itself. Handing them to the decor in
+     * portrait instead left Compose holding the last landscape insets after a
+     * rotation, padding the layout twice.
+     */
     @Suppress("DEPRECATION")
     private fun updateSystemBars() {
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -76,7 +82,6 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(!landscape)
             window.insetsController?.let { controller ->
                 val bars = WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars()
                 if (landscape) {
@@ -96,8 +101,12 @@ class MainActivity : ComponentActivity() {
                     View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
                     View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
             } else {
-                View.SYSTEM_UI_FLAG_VISIBLE
+                // Bars shown, but still laid out edge-to-edge.
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
             }
         }
+        window.decorView.requestApplyInsets()
     }
 }

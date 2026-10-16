@@ -1,7 +1,11 @@
 package com.tracknrace.android
 
 import com.tracknrace.android.pages.staticLayer
+import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.res.Configuration
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -10,17 +14,30 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
@@ -43,11 +60,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,6 +78,8 @@ import com.tracknrace.android.pages.DashboardScreen
 import com.tracknrace.android.pages.LicensesScreen
 import com.tracknrace.android.pages.PARTICIPANTS_RETRY_DELAY_MS
 import com.tracknrace.android.pages.PairingScreen
+import com.tracknrace.android.pages.PlayerBar
+import com.tracknrace.android.pages.RecordingsSheet
 import com.tracknrace.android.pages.SettingsScreen
 import com.tracknrace.android.pages.TimingScreen
 import com.tracknrace.android.pages.TyresScreen
@@ -90,6 +112,37 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     val dashboardBackground = darkAppColorScheme().surface
     var landscapeChromeVisible by remember { mutableStateOf(false) }
     var landscapeChromeInteraction by remember { mutableIntStateOf(0) }
+
+    // Recordings on the phone: the sheet that lists them, and what it needs.
+    var recordingsOpen by rememberSaveable { mutableStateOf(false) }
+    var foldersVersion by remember { mutableIntStateOf(0) }
+    var driverPickerOpen by remember { mutableStateOf(false) }
+    val localRecording = store.localRecording
+    val appContext = LocalContext.current.applicationContext
+    val folderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        result.data?.data?.let { uri ->
+            if (RecordingLibrary.addFolder(appContext, uri)) foldersVersion++
+            else store.showMessage("Could not keep access to that folder")
+        }
+    }
+    val readPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { foldersVersion++ }
+    val allowAllFiles = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                appContext.startActivity(
+                    RecordingLibrary.allFilesAccessIntent(appContext).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (_: ActivityNotFoundException) {
+                store.showMessage("This phone has no All files access page; add folders instead")
+            }
+        } else {
+            readPermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
 
     val directoryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -188,17 +241,24 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
             if (!landscape) {
                 AppTopBar(
                     screen = screen,
-                    driverName = selectedDriverName.takeIf { paired },
+                    driverName = selectedDriverName.takeIf { paired || localRecording != null },
                     driverRestricted = driverRestricted,
                     onSettings = openSettings,
                     onBack = ::navigateBack,
                     onAnalysisSettings = { telemetry.analysis.settingsOpen = true },
+                    recordingOpen = localRecording != null,
+                    onOpenRecordings = { recordingsOpen = true },
+                    onCloseRecording = telemetry::closeRecording,
+                    onPickDriver = { driverPickerOpen = true }.takeIf { localRecording != null },
                 )
             }
         },
         bottomBar = {
             if (!landscape && isPrimary) {
-                AppNavigationBar(selected = screen, onSelected = { screen = it })
+                Column {
+                    if (localRecording != null) RecordingPlayer(telemetry)
+                    AppNavigationBar(selected = screen, onSelected = { screen = it })
+                }
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -351,11 +411,15 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                 ) {
                     AppTopBar(
                         screen = screen,
-                        driverName = selectedDriverName.takeIf { paired },
+                        driverName = selectedDriverName.takeIf { paired || localRecording != null },
                         driverRestricted = driverRestricted,
                         onSettings = openSettings,
                         onBack = ::navigateBack,
                         onAnalysisSettings = { telemetry.analysis.settingsOpen = true },
+                        recordingOpen = localRecording != null,
+                        onOpenRecordings = { recordingsOpen = true },
+                        onCloseRecording = telemetry::closeRecording,
+                        onPickDriver = { driverPickerOpen = true }.takeIf { localRecording != null },
                     )
                 }
                 AnimatedVisibility(
@@ -364,11 +428,101 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                     enter = fadeIn(),
                     exit = fadeOut(),
                 ) {
-                    AppNavigationBar(selected = screen, onSelected = { screen = it })
+                    Column {
+                        if (localRecording != null) RecordingPlayer(telemetry)
+                        AppNavigationBar(selected = screen, onSelected = { screen = it })
+                    }
                 }
             }
         }
     }
+
+    if (recordingsOpen) {
+        RecordingsSheet(
+            openTitle = localRecording,
+            foldersVersion = foldersVersion,
+            onOpen = { file ->
+                recordingsOpen = false
+                telemetry.openRecording(file)
+            },
+            onAllowAccess = allowAllFiles,
+            onAddFolder = { folderLauncher.launch(RecordingLibrary.folderPickerIntent()) },
+            onRemoveFolder = { folder ->
+                RecordingLibrary.removeFolder(appContext, folder)
+                foldersVersion++
+            },
+            onDismiss = { recordingsOpen = false },
+        )
+    }
+    if (driverPickerOpen && localRecording != null) {
+        DriverPicker(
+            store = store,
+            onPick = { index ->
+                driverPickerOpen = false
+                telemetry.playbackSetDriver(index)
+            },
+            onDismiss = { driverPickerOpen = false },
+        )
+    }
+}
+
+@Composable
+private fun RecordingPlayer(telemetry: TelemetryController) {
+    PlayerBar(
+        store = telemetry.store,
+        onPlay = telemetry::playbackPlay,
+        onPause = telemetry::playbackPause,
+        onSeek = telemetry::playbackSeek,
+        onSpeed = telemetry::playbackSetSpeed,
+        onClose = telemetry::closeRecording,
+    )
+}
+
+/**
+ * The recording's drivers in running order, as the desktop's driver selector:
+ * the chosen driver's own data is what every page shows.
+ */
+@Composable
+private fun DriverPicker(store: TelemetryStore, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+    val timing = store.timing
+    val selected = store.selectedDriverIndex
+    val positions = timing.cars.associate { it.index to it.position }
+    val drivers = timing.drivers.values.sortedWith(
+        compareBy({ positions[it.index]?.takeIf { position -> position > 0 } ?: Int.MAX_VALUE }, { it.index }),
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Driver") },
+        text = {
+            if (drivers.isEmpty()) {
+                Text("The recording has not named its drivers yet.")
+            } else {
+                LazyColumn(Modifier.selectableGroup()) {
+                    items(drivers, key = { it.index }) { driver ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .clip(MaterialTheme.shapes.small)
+                                .selectable(selected = driver.index == selected, role = Role.RadioButton) { onPick(driver.index) },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = driver.index == selected, onClick = null)
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                positions[driver.index]?.takeIf { it > 0 }?.let { "P$it" } ?: "",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.width(36.dp),
+                            )
+                            Text(driver.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** Avoids recomposing an outgoing AnimatedContent destination with live data. */
@@ -385,6 +539,11 @@ private fun AppTopBar(
     onSettings: () -> Unit,
     onBack: () -> Unit,
     onAnalysisSettings: () -> Unit,
+    recordingOpen: Boolean,
+    onOpenRecordings: () -> Unit,
+    onCloseRecording: () -> Unit,
+    /** Set while a recording plays: the driver name opens the driver picker. */
+    onPickDriver: (() -> Unit)?,
 ) {
     val primary = screen.isPrimary
     var overflowOpen by remember { mutableStateOf(false) }
@@ -431,14 +590,21 @@ private fun AppTopBar(
                         null -> "$driverName · Telemetry access unknown"
                         false -> driverName
                     }
-                    Text(
-                        label,
-                        modifier = Modifier.widthIn(max = 220.dp),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    if (onPickDriver != null) {
+                        TextButton(onClick = onPickDriver, modifier = Modifier.widthIn(max = 220.dp)) {
+                            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Icon(painterResource(R.drawable.ic_expand_more), contentDescription = null, Modifier.size(18.dp))
+                        }
+                    } else {
+                        Text(
+                            label,
+                            modifier = Modifier.widthIn(max = 220.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
                 if (screen == AppScreen.ANALYSIS) {
                     IconButton(onClick = onAnalysisSettings) {
@@ -449,10 +615,34 @@ private fun AppTopBar(
                     IconButton(onClick = { overflowOpen = true }) {
                         Icon(painterResource(R.drawable.ic_more), contentDescription = "More options")
                     }
+                    // M3 menu: actions first, a divider between groups, then Settings.
                     DropdownMenu(
                         expanded = overflowOpen,
                         onDismissRequest = { overflowOpen = false },
                     ) {
+                        DropdownMenuItem(
+                            text = { Text("Open recording") },
+                            leadingIcon = {
+                                Icon(painterResource(R.drawable.ic_folder_open), contentDescription = null)
+                            },
+                            onClick = {
+                                overflowOpen = false
+                                onOpenRecordings()
+                            },
+                        )
+                        if (recordingOpen) {
+                            DropdownMenuItem(
+                                text = { Text("Close recording") },
+                                leadingIcon = {
+                                    Icon(painterResource(R.drawable.ic_close), contentDescription = null)
+                                },
+                                onClick = {
+                                    overflowOpen = false
+                                    onCloseRecording()
+                                },
+                            )
+                        }
+                        HorizontalDivider(Modifier.padding(vertical = 8.dp))
                         DropdownMenuItem(
                             text = { Text("Settings") },
                             leadingIcon = {

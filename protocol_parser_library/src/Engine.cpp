@@ -215,37 +215,10 @@ Engine::Engine(const Config& config, Sink* sink)
             setPairDataRequirements(streamMask, v6Types, refreshSnapshot);
         },
         [this](int currentLap, int comparisonLap, bool sectorDelta) {
-            AnalysisLapProgress current;
-            AnalysisLapProgress comparison;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (!inPlayback_.load() ||
-                    !reader_.getAnalysisLapProgress(currentLap, current) ||
-                    !reader_.getAnalysisLapProgress(comparisonLap, comparison)) {
-                    return std::string{};
-                }
-            }
-            std::string response = writeJson(
-                calculateLapDelta(current, comparison, sectorDelta));
-            if (response.empty() || response.back() != '}') return std::string{};
-            response.pop_back();
-            response += ",\"currentStartSessionTime\":" +
-                std::to_string(current.startSessionTime) +
-                ",\"currentEndSessionTime\":" +
-                std::to_string(current.endSessionTime) +
-                ",\"currentProgress\":" + writeJson(current.points) + "}";
-            return response;
+            return playerLapDeltaJson(currentLap, comparisonLap, sectorDelta);
         },
         [this](int lapNum, const std::vector<std::string>& channels) {
-            // The selected driver's indexed lap, read without moving the
-            // shared playback cursor; the phone only chooses which columns.
-            std::string lapData;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (!inPlayback_.load()) return std::string{};
-                lapData = reader_.getLapDataMessage(lapNum, pairLapDataRowMask(channels));
-            }
-            return pairLapDataJson(lapData, channels);
+            return playerPhoneLapDataJson(lapNum, channels);
         },
         [this](const std::string& message) {
             if (sink_) sink_->onPairDiagnostic(message);
@@ -1249,6 +1222,45 @@ void Engine::requestDataRequirements(uint64_t requestId) {
            !latestRequirementsRequestId_.compare_exchange_weak(
                current, requestId, std::memory_order_release,
                std::memory_order_relaxed)) {}
+}
+
+std::string Engine::playerLapDeltaJson(int currentLap, int comparisonLap, bool sectorDelta) {
+    AnalysisLapProgress current;
+    AnalysisLapProgress comparison;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!inPlayback_.load() ||
+            !reader_.getAnalysisLapProgress(currentLap, current) ||
+            !reader_.getAnalysisLapProgress(comparisonLap, comparison)) {
+            return std::string{};
+        }
+    }
+    std::string response = writeJson(
+        calculateLapDelta(current, comparison, sectorDelta));
+    if (response.empty() || response.back() != '}') return std::string{};
+    response.pop_back();
+    response += ",\"currentStartSessionTime\":" +
+        std::to_string(current.startSessionTime) +
+        ",\"currentEndSessionTime\":" +
+        std::to_string(current.endSessionTime) +
+        ",\"currentProgress\":" + writeJson(current.points) + "}";
+    return response;
+}
+
+std::string Engine::playerPhoneLapDataJson(int lapNum, const std::vector<std::string>& channels) {
+    // The selected driver's indexed lap, read without moving the shared
+    // playback cursor; the phone only chooses which columns.
+    std::string lapData;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!inPlayback_.load()) return std::string{};
+        lapData = reader_.getLapDataMessage(lapNum, pairLapDataRowMask(channels));
+    }
+    return pairLapDataJson(lapData, channels);
+}
+
+void Engine::setPhoneRequirements(uint32_t streamRowMask, const std::vector<uint8_t>& v6Types) {
+    applyDataRequirements(streamRowMask, 0, 0.0f, 0, v6Types, {}, streamRowMask, false);
 }
 
 void Engine::setDataRequirements(uint32_t streamRowMask,
