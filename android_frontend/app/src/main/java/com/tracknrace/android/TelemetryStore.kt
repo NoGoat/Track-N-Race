@@ -127,6 +127,8 @@ private data class PlaybackLapMeta(
     val lapTimeMs: Int,
     val startSessionTime: Double,
     val endSessionTime: Double,
+    val tyreCompound: Int,
+    val visualCompound: Int,
 )
 
 private data class DeltaSample(
@@ -210,6 +212,9 @@ internal class TelemetryStore {
     @Volatile private var playbackCursorPublished = Double.NaN
 
     var cold by mutableStateOf(DashboardColdState())
+        private set
+    /** The selected car's damage; main thread only. */
+    var damage by mutableStateOf(CarDamageState())
         private set
     private val lapComparison = AtomicReference(DashboardLapComparisonState())
     var timing by mutableStateOf(TimingTowerState())
@@ -400,6 +405,8 @@ internal class TelemetryStore {
                                     "endSessionTime",
                                     Double.NaN,
                                 ),
+                                tyreCompound = block.optInt("tyreCompound"),
+                                visualCompound = block.optInt("visualCompound"),
                             ),
                         )
                     }
@@ -483,10 +490,11 @@ internal class TelemetryStore {
                 val fuelLaps = row.optionalDouble("fuel_laps")
                 val brakeBias = row.optionalInt("front_brake_bias")
                 val tyreCompound = row.optionalInt("visual_compound")
+                val tyreActualCompound = row.optionalInt("tyre_compound")
                 val tyreAgeLaps = row.optionalInt("tyre_age_laps")
                 val carriesFields = ersPercent != null || ersMode != null || fuelKg != null ||
                     fuelLaps != null || brakeBias != null || tyreCompound != null ||
-                    tyreAgeLaps != null
+                    tyreActualCompound != null || tyreAgeLaps != null
                 post {
                     cold = when {
                         unavailable -> cold.copy(statusAvailable = false)
@@ -499,6 +507,7 @@ internal class TelemetryStore {
                             fuelLaps = fuelLaps ?: cold.fuelLaps,
                             brakeBias = brakeBias ?: cold.brakeBias,
                             tyreCompound = tyreCompound ?: cold.tyreCompound,
+                            tyreActualCompound = tyreActualCompound ?: cold.tyreActualCompound,
                             tyreAgeLaps = tyreAgeLaps ?: cold.tyreAgeLaps,
                         )
                     }
@@ -513,7 +522,10 @@ internal class TelemetryStore {
                 val wearRr = row.optionalDouble("tyre_wear_rr")?.toFloat()
                 val carriesWear = wearFl != null || wearFr != null || wearRl != null ||
                     wearRr != null
+                val carriesDamage = CarDamageState.carriesDamage(row)
                 post {
+                    if (unavailable) damage = CarDamageState()
+                    else if (carriesDamage) damage = damage.withPatch(row)
                     cold = when {
                         unavailable -> cold.copy(tyreWearAvailable = false)
                         !carriesWear -> cold
@@ -532,23 +544,23 @@ internal class TelemetryStore {
             // placing it in the packed telemetry lanes. Live direct/paired
             // positions still arrive through acceptBinary().
             "positions" -> {
-                val cars = row.optJSONArray("cars")
-                val carCount = cars?.length() ?: 0
-                val xByCar = DoubleArray(carCount)
-                val zByCar = DoubleArray(carCount)
-                if (cars != null) {
-                    repeat(carCount) { arrayIndex ->
-                        val car = cars.optJSONObject(arrayIndex) ?: return@repeat
-                        val carIndex = car.optInt("idx", arrayIndex)
-                        if (carIndex in 0 until carCount) {
-                            xByCar[carIndex] = car.optDouble("x")
-                            zByCar[carIndex] = car.optDouble("z")
-                        }
+                // A V6 recording sends one car per row; a live session all of
+                // them. Either way, merge into the cars already known.
+                val cars = row.optJSONArray("cars") ?: return
+                val previous = mapPositions.get()
+                val xByCar = DoubleArray(MAX_CARS) { if (previous.hasPosition(it)) previous.xAt(it) else Double.NaN }
+                val zByCar = DoubleArray(MAX_CARS) { if (previous.hasPosition(it)) previous.zAt(it) else Double.NaN }
+                repeat(cars.length()) { arrayIndex ->
+                    val car = cars.optJSONObject(arrayIndex) ?: return@repeat
+                    val carIndex = car.optInt("idx", arrayIndex)
+                    if (carIndex in 0 until MAX_CARS) {
+                        xByCar[carIndex] = car.optDouble("x", Double.NaN)
+                        zByCar[carIndex] = car.optDouble("z", Double.NaN)
                     }
                 }
                 mapPositions.lazySet(
                     MapPositions(
-                        playerIndex = row.optInt("player_idx", -1),
+                        playerIndex = row.optInt("player_idx", previous.playerIndex),
                         xByCar = xByCar,
                         zByCar = zByCar,
                     ),
@@ -749,6 +761,7 @@ internal class TelemetryStore {
                 val regulations2026 = row.optionalBoolean("regulations_2026")
                 post {
                     resetAllLapComparison()
+                    damage = CarDamageState()
                     cold = cold.copy(
                         protocolYear = year,
                         formula = formula,
@@ -837,6 +850,7 @@ internal class TelemetryStore {
         post {
             selectedDriverIndex = index
             liveLapState = BLANK_LIVE_LAP
+            damage = CarDamageState()
             cold = cold.copy(
                 statusAvailable = false,
                 tyreWearAvailable = false,
@@ -1041,7 +1055,14 @@ internal class TelemetryStore {
             active = true,
             driverIndex = playbackDriver,
             laps = laps.map {
-                PlaybackLapInfo(it.lapNumber, it.lapTimeMs, it.startSessionTime, it.endSessionTime)
+                PlaybackLapInfo(
+                    it.lapNumber,
+                    it.lapTimeMs,
+                    it.startSessionTime,
+                    it.endSessionTime,
+                    it.tyreCompound,
+                    it.visualCompound,
+                )
             },
             fastestLap = fastestLap,
             deltaAvailable = deltaAvailable,

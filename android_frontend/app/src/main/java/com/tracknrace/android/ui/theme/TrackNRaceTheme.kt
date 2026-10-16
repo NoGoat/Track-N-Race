@@ -3,6 +3,7 @@ package com.tracknrace.android.ui.theme
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
@@ -68,6 +69,14 @@ internal fun TrackNRaceTheme(content: @Composable () -> Unit) {
         shapes = AppShapes,
         content = content,
     )
+}
+
+/** The app's dark scheme whatever the system setting, for screens that are always dark. */
+@Composable
+internal fun darkAppColorScheme(): ColorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    dynamicDarkColorScheme(LocalContext.current)
+} else {
+    FallbackDark
 }
 
 private fun TextStyle.tabular() = copy(

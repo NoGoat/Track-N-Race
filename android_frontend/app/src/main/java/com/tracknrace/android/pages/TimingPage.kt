@@ -1,7 +1,7 @@
 package com.tracknrace.android.pages
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -23,13 +23,19 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.structuralEqualityPolicy
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.State
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -53,7 +59,7 @@ private val BottomCardShape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd 
 
 @Composable
 internal fun TimingScreen(
-    state: TimingTowerState,
+    state: () -> TimingTowerState,
     labels: Map<String, String>,
     oneLine: Boolean,
     onRequestParticipants: () -> Unit,
@@ -62,9 +68,11 @@ internal fun TimingScreen(
     // Timing rows arrive several times a second and nearly every row's gap
     // changes each time. Show the newest state at most every
     // TIMING_REFRESH_MS: on a low-end phone a full tower update is 20-30 ms.
+    // An outgoing page stops collecting, which freezes it during the switch.
     val latest by rememberUpdatedState(state)
-    val shown by produceState(state) {
-        snapshotFlow { latest }.conflate().collect {
+    val shown = produceState(Snapshot.withoutReadObservation { state() }, active) {
+        if (!active) return@produceState
+        snapshotFlow { latest() }.conflate().collect {
             value = it
             delay(TIMING_REFRESH_MS)
         }
@@ -74,16 +82,28 @@ internal fun TimingScreen(
 
 @Composable
 private fun TimingTower(
-    state: TimingTowerState,
+    state: State<TimingTowerState>,
     labels: Map<String, String>,
     oneLine: Boolean,
     onRequestParticipants: () -> Unit,
     active: Boolean,
 ) {
-    val cars = state.cars
-        .filter { it.position > 0 && it.resultStatus >= 1 }
-        .sortedBy(TimingCarEntry::position)
-    val participantRosterMissing = state.needsParticipantsRefresh()
+    // Gaps change on nearly every update and the current lap time on every
+    // one. The tower is composed from the rest, compared by value, so an
+    // update that only moves gaps recomposes nothing: the gap readouts read
+    // the newest state while drawing and repaint on their own.
+    val cars by remember(state) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            state.value.cars
+                .filter { it.position > 0 && it.resultStatus >= 1 }
+                .sortedBy(TimingCarEntry::position)
+                .map { it.copy(currentLapMs = 0, gapMs = 0) }
+        }
+    }
+    val drivers by remember(state) { derivedStateOf(structuralEqualityPolicy()) { state.value.drivers } }
+    val tyres by remember(state) { derivedStateOf(structuralEqualityPolicy()) { state.value.tyreStatuses } }
+    val playerIndex by remember(state) { derivedStateOf(structuralEqualityPolicy()) { state.value.playerIndex } }
+    val participantRosterMissing by remember(state) { derivedStateOf(structuralEqualityPolicy()) { state.value.needsParticipantsRefresh() } }
 
     LaunchedEffect(participantRosterMissing, active) {
         if (!active || !participantRosterMissing) return@LaunchedEffect
@@ -93,8 +113,10 @@ private fun TimingTower(
         }
     }
 
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val wide = maxWidth >= 600.dp
+    // A plain width check: BoxWithConstraints would re-run the whole list as a
+    // subcomposition on every timing update.
+    val wide = LocalConfiguration.current.screenWidthDp >= 600
+    Box(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
@@ -124,6 +146,8 @@ private fun TimingTower(
                 }
             }
             itemsIndexed(cars, key = { _, car -> car.index }) { index, car ->
+                val carIndex = car.index
+                val gap = { gapText(state.value, carIndex) }
                 val shape = if (index == cars.lastIndex) BottomCardShape else RectangleShape
                 Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, shape)) {
                     if (index > 0 || (wide && !oneLine)) {
@@ -132,17 +156,19 @@ private fun TimingTower(
                     if (oneLine) {
                         TimingOneLineRow(
                             car = car,
-                            driver = state.drivers[car.index],
-                            tyre = state.tyreStatuses[car.index],
+                            gap = gap,
+                            driver = drivers[car.index],
+                            tyre = tyres[car.index],
                             labels = labels,
                         )
                     } else {
                         TimingRow(
                             car = car,
-                            driver = state.drivers[car.index],
-                            tyre = state.tyreStatuses[car.index],
+                            gap = gap,
+                            driver = drivers[car.index],
+                            tyre = tyres[car.index],
                             labels = labels,
-                            isPlayer = car.index == state.playerIndex,
+                            isPlayer = car.index == playerIndex,
                             wide = wide,
                         )
                     }
@@ -155,11 +181,11 @@ private fun TimingTower(
 @Composable
 private fun TimingOneLineRow(
     car: TimingCarEntry,
+    gap: () -> String,
     driver: TimingDriver?,
     tyre: TimingTyreStatus?,
     labels: Map<String, String>,
 ) {
-    val gap = resultLabel(car.resultStatus) ?: formatGap(car.gapMs, car.position)
     val tyreText = tyre?.let {
         val compound = labels["tyre.actual.${it.actualCompound}"] ?: compoundLabel(it.actualCompound)
         "$compound ${it.ageLaps}L"
@@ -170,6 +196,7 @@ private fun TimingOneLineRow(
         fontFamily = FontFamily.Monospace,
         fontFeatureSettings = "tnum",
     )
+    val onSurface = MaterialTheme.colorScheme.onSurface
 
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
@@ -209,13 +236,11 @@ private fun TimingOneLineRow(
             textAlign = TextAlign.Center,
             maxLines = 1,
         )
-        Text(
-            gap,
+        Readout(
+            runs = { listOf(ReadoutRun(gap(), onSurface)) },
+            style = numberStyle.copy(fontWeight = FontWeight.SemiBold),
             modifier = Modifier.width(74.dp),
-            style = numberStyle,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = TextAlign.End,
-            maxLines = 1,
+            alignEnd = true,
         )
     }
 }
@@ -289,6 +314,7 @@ private fun TimingHeaderText(
 @Composable
 private fun TimingRow(
     car: TimingCarEntry,
+    gap: () -> String,
     driver: TimingDriver?,
     tyre: TimingTyreStatus?,
     labels: Map<String, String>,
@@ -296,7 +322,6 @@ private fun TimingRow(
     wide: Boolean,
 ) {
     val driverCode = driverCode(driver?.name, car.index)
-    val gap = resultLabel(car.resultStatus) ?: formatGap(car.gapMs, car.position)
     val tyreText = tyre?.let {
         val compound = labels["tyre.actual.${it.actualCompound}"] ?: compoundLabel(it.actualCompound)
         "$compound ${it.ageLaps}L"
@@ -304,6 +329,8 @@ private fun TimingRow(
     val tyreColor = tyre?.let { compoundColor(it.visualCompound) }
         ?: MaterialTheme.colorScheme.onSurfaceVariant
     val status = statusLabel(car)
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
     if (wide) {
         Row(
@@ -314,7 +341,14 @@ private fun TimingRow(
             DriverIdentity(driverCode, driver, isPlayer, Modifier.weight(1f), showFullName = true)
             TimingValue(car.lapNumber.toString(), Modifier.width(54.dp))
             TimingValue(formatLapTime(car.lastLapMs), Modifier.width(112.dp), strong = true)
-            TimingValue(gap, Modifier.width(96.dp), strong = car.position == 1)
+            Readout(
+                runs = {
+                    val leader = car.position == 1
+                    listOf(ReadoutRun(gap(), if (leader) onSurface else onSurfaceVariant, bold = leader))
+                },
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                modifier = Modifier.width(96.dp),
+            )
             Text(
                 tyreText,
                 modifier = Modifier.width(76.dp),
@@ -335,19 +369,19 @@ private fun TimingRow(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     DriverIdentity(driverCode, driver, isPlayer, Modifier.weight(1f), showFullName = false)
                     Spacer(Modifier.width(8.dp))
-                    Text(
-                        gap,
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontFeatureSettings = "tnum",
-                        ),
-                        color = if (resultLabel(car.resultStatus) != null) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
+                    // Nearly every gap changes on each update. Drawn at a fixed
+                    // width, a new gap repaints one line instead of re-shaping
+                    // text and re-measuring the row.
+                    val gapColor = if (resultLabel(car.resultStatus) != null) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    }
+                    Readout(
+                        runs = { listOf(ReadoutRun(gap(), gapColor)) },
+                        style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold),
+                        modifier = Modifier.width(GapWidth),
+                        alignEnd = true,
                     )
                 }
                 Spacer(Modifier.height(5.dp))
@@ -499,6 +533,12 @@ private fun formatLapTime(milliseconds: Int): String {
     return "%d:%02d.%03d".format(Locale.ROOT, minutes, seconds, millis)
 }
 
+/** The gap shown for car [index] in [state]: a result such as DNF, else its gap. */
+private fun gapText(state: TimingTowerState, index: Int): String {
+    val car = state.cars.firstOrNull { it.index == index } ?: return "—"
+    return resultLabel(car.resultStatus) ?: formatGap(car.gapMs, car.position)
+}
+
 private fun formatGap(milliseconds: Int, position: Int): String {
     if (position == 1) return "Leader"
     if (milliseconds <= 0) return "—"
@@ -525,6 +565,9 @@ private fun statusLabel(car: TimingCarEntry): String = buildList {
     if (car.driveThroughPenalties > 0) add("DT")
     if (car.stopGoPenalties > 0) add("SG")
 }.joinToString(" · ")
+
+// Fits "+1:23.456" and "+12 LAPS" in the monospace title style.
+private val GapWidth = 92.dp
 
 private fun compoundLabel(compound: Int) = when (compound) {
     7 -> "INT"; 8 -> "WET"; 16 -> "C5"; 17 -> "C4"; 18 -> "C3"

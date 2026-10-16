@@ -4,62 +4,78 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuAnchorType
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.zIndex
 import com.tracknrace.android.AnalysisCatalog
 import com.tracknrace.android.AnalysisConfig
 import com.tracknrace.android.AnalysisController
@@ -75,9 +91,7 @@ import com.tracknrace.android.DEFAULT_MAP_COMPARISON_COLOR
 import com.tracknrace.android.DEFAULT_MAP_CURRENT_COLOR
 import com.tracknrace.android.PlaybackCatalog
 import com.tracknrace.android.R
-import com.tracknrace.android.TelemetryStore
-
-private val FastestLapColor = Color(0xffb36bff)
+import kotlin.math.roundToInt
 
 // Swatches offered by the colour picker: the desktop's default series colours
 // plus a few neutrals.
@@ -94,100 +108,92 @@ private class ColorTarget(
     val apply: (Int) -> Unit,
 )
 
+/** Chart settings: the charted metrics, and how the graph is drawn. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun AnalysisConfigSheet(
-    store: TelemetryStore,
     analysis: AnalysisController,
+    catalog: PlaybackCatalog,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val config = analysis.config
-    val catalog = store.playbackCatalog
+    var tab by rememberSaveable { mutableIntStateOf(0) }
     var pickerOpen by remember { mutableStateOf(false) }
+    var lapsOpen by remember { mutableStateOf(false) }
     var colorTarget by remember { mutableStateOf<ColorTarget?>(null) }
     val update: ((AnalysisConfig) -> AnalysisConfig) -> Unit = analysis::updateConfig
     fun updateSeries(transform: (List<AnalysisSeries>) -> List<AnalysisSeries>) =
         update { it.copy(series = transform(it.series)) }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
-        LazyColumn(contentPadding = PaddingValues(bottom = 32.dp)) {
-            item { SectionTitle("Laps") }
-            item {
-                LapsSection(store, analysis, catalog, config, onColor = { colorTarget = it })
-            }
-            item { SectionTitle("Chart") }
-            item {
-                SwitchRow("Individual graphs", "One panel per metric instead of one shared graph", config.individualGraphs) { value ->
-                    update { it.copy(individualGraphs = value) }
-                }
-                SwitchRow("Synced tooltip", "Inspecting shows every panel's values", config.syncedTooltip, enabled = config.individualGraphs) { value ->
-                    update { it.copy(syncedTooltip = value) }
-                }
-                SwitchRow("Sector boundaries", "Sectors instead of distance on the x axis", config.sectorBoundaries) { value ->
-                    update { it.copy(sectorBoundaries = value) }
-                }
-                SwitchRow("Sector delta", "Delta restarts from zero in each sector", config.sectorDelta, enabled = config.sectorBoundaries) { value ->
-                    update { it.copy(sectorDelta = value) }
-                }
-                val allAxes = config.series.all { it.showYAxis }
-                OutlinedButton(
-                    onClick = { updateSeries { series -> series.map { it.copy(showYAxis = !allAxes) } } },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                ) { Text(if (allAxes) "Hide all y axes" else "Show all y axes") }
-            }
-            item {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+        Text(
+            "Chart",
+            modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp),
+            style = MaterialTheme.typography.titleLarge,
+        )
+        PrimaryTabRow(selectedTabIndex = tab, containerColor = Color.Transparent) {
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Metrics") })
+            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Display") })
+        }
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+            if (tab == 0) {
+                FilledTonalButton(
+                    onClick = { pickerOpen = true },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 ) {
-                    Text(
-                        "Metrics",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    TextButton(onClick = { pickerOpen = !pickerOpen }) {
-                        Icon(
-                            painterResource(if (pickerOpen) R.drawable.ic_close else R.drawable.ic_add),
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (pickerOpen) "Done" else "Add metrics")
-                    }
+                    Icon(painterResource(R.drawable.ic_add), contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Add metric")
                 }
-            }
-            if (pickerOpen) {
-                item { MetricPicker(config.series, ::updateSeries) }
-            }
-            if (config.series.isEmpty()) {
-                item {
+                if (config.series.isEmpty()) {
                     Text(
                         "No metrics selected",
                         modifier = Modifier.fillMaxWidth().padding(24.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
                     )
                 }
-            }
-            itemsIndexed(config.series, key = { _, item -> item.metricId }) { index, item ->
-                SeriesRow(
-                    item = item,
-                    index = index,
-                    count = config.series.size,
+                ReorderableSeries(
+                    series = config.series,
                     deltaSupported = catalog.deltaAvailable || !catalog.active,
-                    onMove = { delta -> updateSeries { it.moved(item.metricId, delta) } },
-                    onChange = { next -> updateSeries { series -> series.map { if (it.metricId == item.metricId) next else it } } },
-                    onRemove = { updateSeries { series -> series.filter { it.metricId != item.metricId } } },
+                    onMove = { id, delta -> updateSeries { it.moved(id, delta) } },
+                    onChange = { next -> updateSeries { series -> series.map { if (it.metricId == next.metricId) next else it } } },
+                    onRemove = { id -> updateSeries { series -> series.filter { it.metricId != id } } },
                     onColor = { colorTarget = it },
-                    modifier = Modifier.animateItem(),
+                )
+            } else {
+                SwitchRow("Individual graphs", "One panel per metric", config.individualGraphs) { value ->
+                    update { it.copy(individualGraphs = value) }
+                }
+                SwitchRow("Sector boundaries", "Sectors on the x axis", config.sectorBoundaries) { value ->
+                    update { it.copy(sectorBoundaries = value) }
+                }
+                SwitchRow("Sector delta", "Resets each sector", config.sectorDelta, enabled = config.sectorBoundaries) { value ->
+                    update { it.copy(sectorDelta = value) }
+                }
+                val allAxes = config.series.isNotEmpty() && config.series.all { it.showYAxis }
+                SwitchRow("Y axes", null, allAxes) { value ->
+                    updateSeries { series -> series.map { it.copy(showYAxis = value) } }
+                }
+                HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                ListItem(
+                    headlineContent = { Text("Lap colours and names") },
+                    trailingContent = { Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier.clickable { lapsOpen = true },
                 )
             }
         }
     }
 
+    if (pickerOpen) {
+        MetricSearch(config.series, ::updateSeries, onClose = { pickerOpen = false })
+    }
+    if (lapsOpen) {
+        LapAppearanceDialog(config, update, onColor = { colorTarget = it }, onDismiss = { lapsOpen = false })
+    }
     colorTarget?.let { target ->
         ColorDialog(
             target = target,
@@ -201,20 +207,9 @@ internal fun AnalysisConfigSheet(
 }
 
 @Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text,
-        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        fontWeight = FontWeight.SemiBold,
-    )
-}
-
-@Composable
 private fun SwitchRow(
     title: String,
-    detail: String,
+    detail: String?,
     checked: Boolean,
     enabled: Boolean = true,
     onChange: (Boolean) -> Unit,
@@ -222,7 +217,7 @@ private fun SwitchRow(
     // A Material list item whose whole row toggles its trailing switch.
     ListItem(
         headlineContent = { Text(title) },
-        supportingContent = { Text(detail) },
+        supportingContent = detail?.let { { Text(it) } },
         trailingContent = { Switch(checked = checked, onCheckedChange = null, enabled = enabled) },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier
@@ -231,169 +226,143 @@ private fun SwitchRow(
     )
 }
 
+/**
+ * The charted metrics, reordered by dragging their handles. The dragged row
+ * follows the finger and swaps with a neighbour once it passes the
+ * neighbour's middle.
+ */
 @Composable
-private fun LapsSection(
-    store: TelemetryStore,
-    analysis: AnalysisController,
-    catalog: PlaybackCatalog,
-    config: AnalysisConfig,
+private fun ReorderableSeries(
+    series: List<AnalysisSeries>,
+    deltaSupported: Boolean,
+    onMove: (String, Int) -> Unit,
+    onChange: (AnalysisSeries) -> Unit,
+    onRemove: (String) -> Unit,
     onColor: (ColorTarget) -> Unit,
 ) {
-    val update: ((AnalysisConfig) -> AnalysisConfig) -> Unit = analysis::updateConfig
-    SwitchRow(
-        "Compare two fixed laps",
-        "Choose Lap A and Lap B instead of following the desktop",
-        analysis.fixedMode,
-        enabled = catalog.active,
-        onChange = analysis::useFixedLaps,
-    )
-    val currentColor = ColorTarget("Current lap colour", config.mapCurrentColor, DEFAULT_MAP_CURRENT_COLOR) { color ->
-        update { it.copy(mapCurrentColor = color) }
-    }
-    val comparisonColor = ColorTarget("Comparison lap colour", config.mapComparisonColor, DEFAULT_MAP_COMPARISON_COLOR) { color ->
-        update { it.copy(mapComparisonColor = color) }
-    }
-    if (analysis.fixedMode) {
-        LapGroup("Lap A", currentColor, onColor) {
-            LapPicker(analysis.lapA, catalog, allowNone = false, onSelect = analysis::selectLapA)
-            LabelField(config.lapALabel, DEFAULT_LAP_A_LABEL) { value -> update { it.copy(lapALabel = value) } }
-        }
-        LapGroup("Lap B", comparisonColor, onColor) {
-            LapPicker(analysis.lapB, catalog, allowNone = false, onSelect = analysis::selectLapB)
-            LabelField(config.lapBLabel, DEFAULT_LAP_B_LABEL) { value -> update { it.copy(lapBLabel = value) } }
-        }
-    } else {
-        LapGroup("Current", currentColor, onColor) {
-            val lap = store.playbackSelectedLap
-            val info = catalog.laps.firstOrNull { it.lapNumber == lap }
-            OutlinedTextField(
-                value = info?.let { lapOptionLabel(it.lapNumber, it.lapTimeMs, it.lapNumber == catalog.fastestLap) } ?: "—",
-                onValueChange = {},
-                readOnly = true,
-                singleLine = true,
-                label = { Text("Lap") },
-                supportingText = { Text("Follows the desktop's playback") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            LabelField(config.currentLabel, DEFAULT_CURRENT_LABEL) { value -> update { it.copy(currentLabel = value) } }
-        }
-        LapGroup("Compare", comparisonColor, onColor) {
-            LapPicker(analysis.compareLap, catalog, allowNone = true, onSelect = analysis::selectCompareLap)
-            LabelField(config.compareLabel, DEFAULT_COMPARE_LABEL) { value -> update { it.copy(compareLabel = value) } }
-        }
-    }
-}
+    val heights = remember { mutableStateMapOf<String, Int>() }
+    var dragged by remember { mutableStateOf<String?>(null) }
+    var offset by remember { mutableFloatStateOf(0f) }
+    val latestSeries by rememberUpdatedState(series)
+    val latestMove by rememberUpdatedState(onMove)
 
-@Composable
-private fun LapGroup(
-    title: String,
-    color: ColorTarget,
-    onColor: (ColorTarget) -> Unit,
-    content: @Composable () -> Unit,
-) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.Top) {
-        Column(Modifier.width(76.dp).padding(top = 10.dp)) {
-            Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(6.dp))
-            Swatch(color.color, contentDescription = color.title) { onColor(color) }
-        }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) { content() }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LapPicker(
-    value: Int,
-    catalog: PlaybackCatalog,
-    allowNone: Boolean,
-    onSelect: (Int) -> Unit,
-) {
-    // The Material exposed dropdown menu: a read-only field that opens the laps.
-    var open by remember { mutableStateOf(false) }
-    val selected = catalog.laps.firstOrNull { it.lapNumber == value }
-    val enabled = catalog.laps.isNotEmpty()
-    ExposedDropdownMenuBox(expanded = open, onExpandedChange = { if (enabled) open = it }) {
-        OutlinedTextField(
-            value = selected?.let { lapOptionLabel(it.lapNumber, it.lapTimeMs, it.lapNumber == catalog.fastestLap) }
-                ?: if (allowNone) "None" else "",
-            onValueChange = {},
-            readOnly = true,
-            enabled = enabled,
-            singleLine = true,
-            label = { Text("Lap") },
-            placeholder = { Text("Select lap") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = open) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled),
-        )
-        ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            if (allowNone) {
-                DropdownMenuItem(
-                    text = { Text("None") },
-                    onClick = {
-                        onSelect(0)
-                        open = false
-                    },
-                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
-                )
+    fun dragBy(amount: Float) {
+        val id = dragged ?: return
+        offset += amount
+        val list = latestSeries
+        val index = list.indexOfFirst { it.metricId == id }
+        if (index < 0) return
+        val next = list.getOrNull(index + 1)
+        val previous = list.getOrNull(index - 1)
+        if (offset > 0 && next != null) {
+            val height = heights[next.metricId] ?: return
+            if (offset > height / 2f) {
+                latestMove(id, 1)
+                offset -= height
             }
-            for (lap in catalog.laps) {
-                val fastest = lap.lapNumber == catalog.fastestLap
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            lapOptionLabel(lap.lapNumber, lap.lapTimeMs, fastest),
-                            fontWeight = if (lap.lapNumber == value) FontWeight.SemiBold else FontWeight.Normal,
+        } else if (offset < 0 && previous != null) {
+            val height = heights[previous.metricId] ?: return
+            if (-offset > height / 2f) {
+                latestMove(id, -1)
+                offset += height
+            }
+        }
+    }
+
+    Column {
+        series.forEachIndexed { index, item ->
+            key(item.metricId) {
+                val isDragged = dragged == item.metricId
+                SeriesRow(
+                    item = item,
+                    index = index,
+                    count = series.size,
+                    deltaSupported = deltaSupported,
+                    dragged = isDragged,
+                    handle = Modifier.pointerInput(item.metricId) {
+                        detectDragGestures(
+                            onDragStart = {
+                                dragged = item.metricId
+                                offset = 0f
+                            },
+                            onDragEnd = { dragged = null; offset = 0f },
+                            onDragCancel = { dragged = null; offset = 0f },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                dragBy(amount.y)
+                            },
                         )
                     },
-                    // The fastest lap wears the timing screens' purple.
-                    leadingIcon = if (fastest) {
-                        { Box(Modifier.size(10.dp).background(FastestLapColor, CircleShape)) }
-                    } else {
-                        null
-                    },
-                    onClick = {
-                        onSelect(lap.lapNumber)
-                        open = false
-                    },
-                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                    onMove = { delta -> onMove(item.metricId, delta) },
+                    onChange = onChange,
+                    onRemove = { onRemove(item.metricId) },
+                    onColor = onColor,
+                    modifier = Modifier
+                        .onSizeChanged { heights[item.metricId] = it.height }
+                        .zIndex(if (isDragged) 1f else 0f)
+                        .graphicsLayer {
+                            translationY = if (isDragged) offset else 0f
+                            shadowElevation = if (isDragged) 6.dp.toPx() else 0f
+                        },
                 )
             }
         }
     }
-}
-
-@Composable
-private fun LabelField(value: String, placeholder: String, onChange: (String) -> Unit) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = { onChange(it.take(40)) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        label = { Text("Name") },
-        placeholder = { Text(placeholder) },
-    )
 }
 
 @Composable
 private fun Swatch(
     color: Int,
-    contentDescription: String,
-    size: Int = 28,
+    contentDescription: String?,
+    size: Int = 24,
     enabled: Boolean = true,
-    onClick: () -> Unit,
+    onClick: (() -> Unit)? = null,
 ) {
+    // A 48 dp touch target around the swatch when it can be tapped.
     Box(
         Modifier
-            .size(size.dp)
-            .alpha(if (enabled) 1f else 0.3f)
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(color))
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(6.dp))
-            .clickable(enabled = enabled, onClickLabel = contentDescription, onClick = onClick),
-    )
+            .size(if (onClick != null) 48.dp else size.dp)
+            .then(if (onClick != null) Modifier.clip(RoundedCornerShape(12.dp)).clickable(enabled = enabled, onClickLabel = contentDescription, onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(size.dp)
+                .alpha(if (enabled) 1f else 0.3f)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(color))
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(6.dp)),
+        )
+    }
+}
+
+/** A swatch split into the given colours: the delta's two, or a tyre card's corners. */
+@Composable
+private fun MultiSwatch(colors: List<Int>, enabled: List<Boolean> = colors.map { true }) {
+    Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .size(24.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(6.dp)),
+        ) {
+            if (colors.size == 2) {
+                Row(Modifier.fillMaxSize()) {
+                    colors.forEach { Box(Modifier.weight(1f).fillMaxSize().background(Color(it))) }
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    for (row in colors.indices.chunked(2)) {
+                        Row(Modifier.weight(1f).fillMaxWidth()) {
+                            for (index in row) {
+                                Box(Modifier.weight(1f).fillMaxSize().alpha(if (enabled[index]) 1f else 0.2f).background(Color(colors[index])))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -402,6 +371,8 @@ private fun SeriesRow(
     index: Int,
     count: Int,
     deltaSupported: Boolean,
+    dragged: Boolean,
+    handle: Modifier,
     onMove: (Int) -> Unit,
     onChange: (AnalysisSeries) -> Unit,
     onRemove: () -> Unit,
@@ -412,109 +383,156 @@ private fun SeriesRow(
     val combined = AnalysisCatalog.combinedById[item.metricId]
     val metric = AnalysisCatalog.metricById[item.metricId]
     val label = AnalysisCatalog.labelOf(item)
-    val defaultColor = when {
-        isDelta -> DEFAULT_DELTA_POSITIVE_COLOR
-        combined != null -> combined.defaultColor
-        else -> metric?.defaultColor ?: item.color
-    }
-    ListItem(
+    val defaultColor = combined?.defaultColor ?: metric?.defaultColor ?: item.color
+    val negative = item.negativeColor ?: DEFAULT_DELTA_NEGATIVE_COLOR
+    var menuOpen by remember { mutableStateOf(false) }
+    Surface(
         modifier = modifier,
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        leadingContent = { when {
-            isDelta -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Swatch(item.color, "Positive delta colour", size = 22, enabled = deltaSupported) {
-                    onColor(ColorTarget("Positive delta colour", item.color, DEFAULT_DELTA_POSITIVE_COLOR) { onChange(item.copy(color = it)) })
-                }
-                val negative = item.negativeColor ?: DEFAULT_DELTA_NEGATIVE_COLOR
-                Swatch(negative, "Negative delta colour", size = 22, enabled = deltaSupported) {
-                    onColor(ColorTarget("Negative delta colour", negative, DEFAULT_DELTA_NEGATIVE_COLOR) { onChange(item.copy(negativeColor = it)) })
+        color = if (dragged) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().height(64.dp).padding(end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(handle.size(48.dp), contentAlignment = Alignment.Center) {
+                Icon(
+                    painterResource(R.drawable.ic_drag_handle),
+                    contentDescription = "Reorder $label",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            when {
+                isDelta -> MultiSwatch(listOf(item.color, negative))
+                combined != null -> MultiSwatch(
+                    AnalysisCatalog.corners.map { AnalysisCatalog.lineColor(item, "${combined.idPrefix}-${it.key}") },
+                    AnalysisCatalog.corners.map { item.corners?.contains(it.key) ?: true },
+                )
+                else -> Swatch(item.color, "$label colour") {
+                    onColor(ColorTarget("$label colour", item.color, defaultColor) { onChange(item.copy(color = it)) })
                 }
             }
-            else -> Swatch(item.color, "$label colour") {
-                onColor(ColorTarget("$label colour", item.color, defaultColor) { onChange(item.copy(color = it)) })
-            }
-        } },
-        headlineContent = {
-            Text(
-                label,
-                color = if (item.visible) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        },
-        supportingContent = {
-            if (combined != null) {
-                // One swatch per corner; corners not on the card stay greyed out.
-                Row(Modifier.padding(top = 3.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                    for (corner in AnalysisCatalog.corners) {
-                        val memberId = "${combined.idPrefix}-${corner.key}"
-                        val picked = item.corners?.contains(corner.key) ?: true
-                        val color = AnalysisCatalog.lineColor(item, memberId)
-                        Swatch(color, "${corner.label} colour", size = 16, enabled = picked) {
-                            onColor(ColorTarget("$label ${corner.label} colour", color, corner.color) { next ->
-                                onChange(item.copy(cornerColors = item.cornerColors + (corner.key to next)))
-                            })
-                        }
-                    }
-                }
-            } else {
+            Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (item.visible) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Text(
                     when {
-                        isDelta && !deltaSupported -> "Not supported in this recording"
-                        isDelta -> "Time · + / −"
-                        metric != null -> listOf(metric.group, metric.unit).filter { it.isNotEmpty() }.joinToString(" · ")
-                        else -> ""
+                        isDelta && !deltaSupported -> "Not in this recording"
+                        isDelta -> "s · slower / faster"
+                        combined != null -> listOf(combined.unit) .plus(
+                            AnalysisCatalog.corners.filter { item.corners?.contains(it.key) ?: true }.map { it.label },
+                        ).joinToString(" · ")
+                        else -> metric?.unit.orEmpty()
                     },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
             }
-        },
-        trailingContent = {
-            Row {
-                SmallIconButton(R.drawable.ic_arrow_up, "Move $label up", enabled = index > 0) { onMove(-1) }
-                SmallIconButton(R.drawable.ic_arrow_down, "Move $label down", enabled = index < count - 1) { onMove(1) }
-                SmallToggleButton(R.drawable.ic_axis, "$label y axis", item.showYAxis) {
-                    onChange(item.copy(showYAxis = it))
+            Switch(
+                checked = item.visible,
+                onCheckedChange = { onChange(item.copy(visible = it)) },
+                enabled = !isDelta || deltaSupported,
+            )
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(painterResource(R.drawable.ic_more_vert), contentDescription = "$label options")
                 }
-                SmallToggleButton(if (item.visible) R.drawable.ic_eye else R.drawable.ic_eye_off, "Show $label", item.visible) {
-                    onChange(item.copy(visible = it))
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    fun close(action: () -> Unit): () -> Unit = {
+                        menuOpen = false
+                        action()
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Y axis") },
+                        leadingIcon = { Icon(painterResource(R.drawable.ic_axis), contentDescription = null) },
+                        trailingIcon = if (item.showYAxis) {
+                            { Icon(painterResource(R.drawable.ic_check), contentDescription = "Shown") }
+                        } else {
+                            null
+                        },
+                        onClick = close { onChange(item.copy(showYAxis = !item.showYAxis)) },
+                    )
+                    if (isDelta) {
+                        DropdownMenuItem(
+                            text = { Text("Slower colour") },
+                            leadingIcon = { MenuSwatch(item.color) },
+                            onClick = close {
+                                onColor(ColorTarget("Slower colour", item.color, DEFAULT_DELTA_POSITIVE_COLOR) { onChange(item.copy(color = it)) })
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Faster colour") },
+                            leadingIcon = { MenuSwatch(negative) },
+                            onClick = close {
+                                onColor(ColorTarget("Faster colour", negative, DEFAULT_DELTA_NEGATIVE_COLOR) { onChange(item.copy(negativeColor = it)) })
+                            },
+                        )
+                    } else if (combined != null) {
+                        for (corner in AnalysisCatalog.corners) {
+                            val memberId = "${combined.idPrefix}-${corner.key}"
+                            val color = AnalysisCatalog.lineColor(item, memberId)
+                            DropdownMenuItem(
+                                text = { Text("${corner.label} colour") },
+                                leadingIcon = { MenuSwatch(color) },
+                                onClick = close {
+                                    onColor(ColorTarget("$label ${corner.label} colour", color, corner.color) { next ->
+                                        onChange(item.copy(cornerColors = item.cornerColors + (corner.key to next)))
+                                    })
+                                },
+                            )
+                        }
+                    }
+                    // Dragging is not available to every input method.
+                    if (index > 0) {
+                        DropdownMenuItem(
+                            text = { Text("Move up") },
+                            leadingIcon = { Icon(painterResource(R.drawable.ic_arrow_up), contentDescription = null) },
+                            onClick = close { onMove(-1) },
+                        )
+                    }
+                    if (index < count - 1) {
+                        DropdownMenuItem(
+                            text = { Text("Move down") },
+                            leadingIcon = { Icon(painterResource(R.drawable.ic_arrow_down), contentDescription = null) },
+                            onClick = close { onMove(1) },
+                        )
+                    }
+                    if (!isDelta) {
+                        DropdownMenuItem(
+                            text = { Text("Remove") },
+                            leadingIcon = { Icon(painterResource(R.drawable.ic_delete), contentDescription = null) },
+                            onClick = close(onRemove),
+                        )
+                    }
                 }
-                SmallIconButton(R.drawable.ic_delete, "Remove $label", enabled = !isDelta, onClick = onRemove)
             }
-        },
+        }
+    }
+}
+
+@Composable
+private fun MenuSwatch(color: Int) {
+    Box(
+        Modifier
+            .size(20.dp)
+            .clip(RoundedCornerShape(5.dp))
+            .background(Color(color))
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(5.dp)),
     )
 }
 
-/** An on/off action, as a Material icon toggle button. */
+/** Full-screen metric search: a filter field over the catalogue's chips and tyre grid. */
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun SmallToggleButton(icon: Int, description: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    IconToggleButton(checked = checked, onCheckedChange = onChange, modifier = Modifier.size(36.dp)) {
-        Icon(painterResource(icon), contentDescription = description, modifier = Modifier.size(18.dp))
-    }
-}
-
-@Composable
-private fun SmallIconButton(
-    icon: Int,
-    description: String,
-    enabled: Boolean = true,
-    dimmed: Boolean = false,
-    onClick: () -> Unit,
-) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(36.dp)) {
-        Icon(
-            painterResource(icon),
-            contentDescription = description,
-            modifier = Modifier.size(18.dp).alpha(if (dimmed) 0.4f else 1f),
-        )
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun MetricPicker(
+private fun MetricSearch(
     series: List<AnalysisSeries>,
     updateSeries: ((List<AnalysisSeries>) -> List<AnalysisSeries>) -> Unit,
+    onClose: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
     val selected = series.map { it.metricId }.toSet()
@@ -522,55 +540,79 @@ private fun MetricPicker(
     fun matches(haystack: String) = tokens.all { haystack.lowercase().contains(it) }
     val cornerTerms = AnalysisCatalog.corners.joinToString(" ") { it.label }
 
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-    ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = { Text("Filter metrics") },
-            )
-            var anything = false
-            for (category in AnalysisCatalog.categories) {
-                val metrics = AnalysisCatalog.metrics.filter {
-                    it.group == category && it.id !in AnalysisCatalog.cornerMetricIds &&
-                        matches("$category ${it.label} ${it.unit}")
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+            Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
+                Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onClose) {
+                        Icon(painterResource(R.drawable.ic_arrow_back), contentDescription = "Done")
+                    }
+                    TextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = { Text("Search metrics") },
+                        leadingIcon = { Icon(painterResource(R.drawable.ic_search), contentDescription = null) },
+                        trailingIcon = if (query.isNotEmpty()) {
+                            { IconButton(onClick = { query = "" }) { Icon(painterResource(R.drawable.ic_close), contentDescription = "Clear") } }
+                        } else {
+                            null
+                        },
+                        shape = RoundedCornerShape(28.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                        ),
+                    )
                 }
-                val tyreRows = if (category == "Tyres") {
-                    AnalysisCatalog.tyreRows.filter { matches("tyres tires ${it.label} all com combined $cornerTerms") }
-                } else {
-                    emptyList()
-                }
-                if (tyreRows.isNotEmpty()) {
-                    anything = true
-                    PickerHeading("Tyres by corner")
-                    TyreMatrix(tyreRows, series, updateSeries)
-                }
-                if (metrics.isEmpty()) continue
-                anything = true
-                PickerHeading(if (category == "Tyres") "Tyre averages" else category)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for (metric in metrics) {
-                        val on = metric.id in selected
-                        FilterChip(
-                            selected = on,
-                            onClick = { updateSeries { it.withMetrics(listOf(metric.id), !on) } },
-                            label = { Text(metric.label) },
+                Column(
+                    Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    var anything = false
+                    for (category in AnalysisCatalog.categories) {
+                        val metrics = AnalysisCatalog.metrics.filter {
+                            it.group == category && it.id !in AnalysisCatalog.cornerMetricIds &&
+                                matches("$category ${it.label} ${it.unit}")
+                        }
+                        val tyreRows = if (category == "Tyres") {
+                            AnalysisCatalog.tyreRows.filter { matches("tyres tires ${it.label} all com combined $cornerTerms") }
+                        } else {
+                            emptyList()
+                        }
+                        if (tyreRows.isNotEmpty()) {
+                            anything = true
+                            PickerHeading("Tyres by corner")
+                            TyreMatrix(tyreRows, series, updateSeries)
+                        }
+                        if (metrics.isEmpty()) continue
+                        anything = true
+                        PickerHeading(if (category == "Tyres") "Tyre averages" else category)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            for (metric in metrics) {
+                                val on = metric.id in selected
+                                FilterChip(
+                                    selected = on,
+                                    onClick = { updateSeries { it.withMetrics(listOf(metric.id), !on) } },
+                                    label = { Text(metric.label) },
+                                    leadingIcon = if (on) {
+                                        { Icon(painterResource(R.drawable.ic_check), contentDescription = null, modifier = Modifier.size(18.dp)) }
+                                    } else {
+                                        null
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    if (!anything) {
+                        Text(
+                            "No metrics match “${query.trim()}”",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
-            }
-            if (!anything) {
-                Text(
-                    "No metrics match “${query.trim()}”",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }
@@ -580,8 +622,9 @@ private fun MetricPicker(
 private fun PickerHeading(text: String) {
     Text(
         text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 6.dp),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
     )
 }
 
@@ -596,13 +639,13 @@ private fun TyreMatrix(
     updateSeries: ((List<AnalysisSeries>) -> List<AnalysisSeries>) -> Unit,
 ) {
     val columns = listOf("COM") + AnalysisCatalog.corners.map { it.label } + "ALL"
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.width(96.dp))
+            Spacer(Modifier.weight(1f))
             for (column in columns) {
                 Text(
                     column,
-                    modifier = Modifier.width(36.dp),
+                    modifier = Modifier.width(42.dp),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -618,10 +661,11 @@ private fun TyreMatrix(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     row.label,
-                    modifier = Modifier.width(96.dp),
-                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
                     color = if (picked.any { it }) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 MatrixCell(combined != null, "${row.label} combined") {
                     updateSeries { it.withTyreCombinedToggled(row.idPrefix) }
@@ -642,15 +686,90 @@ private fun TyreMatrix(
 @Composable
 private fun MatrixCell(on: Boolean, description: String, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    Box(Modifier.width(36.dp).height(32.dp), contentAlignment = Alignment.Center) {
+    // A 42 × 48 dp target around a 28 dp box.
+    Box(
+        Modifier
+            .width(42.dp)
+            .height(48.dp)
+            .clickable(onClickLabel = description, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
         Box(
             Modifier
-                .size(width = 26.dp, height = 22.dp)
-                .clip(RoundedCornerShape(5.dp))
+                .size(28.dp)
+                .clip(RoundedCornerShape(6.dp))
                 .background(if (on) colors.primary else Color.Transparent)
-                .border(BorderStroke(1.dp, if (on) colors.primary else colors.outline), RoundedCornerShape(5.dp))
-                .clickable(onClickLabel = description, onClick = onClick),
-        )
+                .border(BorderStroke(1.5.dp, if (on) colors.primary else colors.outline), RoundedCornerShape(6.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (on) Icon(painterResource(R.drawable.ic_check), contentDescription = null, tint = colors.onPrimary, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+/** The two lap colours, and the names the map and headers give each lap. */
+@Composable
+private fun LapAppearanceDialog(
+    config: AnalysisConfig,
+    update: ((AnalysisConfig) -> AnalysisConfig) -> Unit,
+    onColor: (ColorTarget) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Lap colours and names") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                LapAppearanceRow(
+                    color = config.mapCurrentColor,
+                    onColor = {
+                        onColor(ColorTarget("First lap colour", config.mapCurrentColor, DEFAULT_MAP_CURRENT_COLOR) { color ->
+                            update { it.copy(mapCurrentColor = color) }
+                        })
+                    },
+                    names = listOf(
+                        Triple(config.currentLabel, DEFAULT_CURRENT_LABEL) { value: String -> update { it.copy(currentLabel = value) } },
+                        Triple(config.lapALabel, DEFAULT_LAP_A_LABEL) { value: String -> update { it.copy(lapALabel = value) } },
+                    ),
+                )
+                LapAppearanceRow(
+                    color = config.mapComparisonColor,
+                    onColor = {
+                        onColor(ColorTarget("Second lap colour", config.mapComparisonColor, DEFAULT_MAP_COMPARISON_COLOR) { color ->
+                            update { it.copy(mapComparisonColor = color) }
+                        })
+                    },
+                    names = listOf(
+                        Triple(config.compareLabel, DEFAULT_COMPARE_LABEL) { value: String -> update { it.copy(compareLabel = value) } },
+                        Triple(config.lapBLabel, DEFAULT_LAP_B_LABEL) { value: String -> update { it.copy(lapBLabel = value) } },
+                    ),
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
+@Composable
+private fun LapAppearanceRow(
+    color: Int,
+    onColor: () -> Unit,
+    names: List<Triple<String, String, (String) -> Unit>>,
+) {
+    Row(verticalAlignment = Alignment.Top) {
+        Swatch(color, "Colour", size = 28, onClick = onColor)
+        Column(Modifier.weight(1f).padding(start = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            for ((value, default, onChange) in names) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { onChange(it.take(40)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(default) },
+                    placeholder = { Text(default) },
+                )
+            }
+        }
     }
 }
 
@@ -661,17 +780,17 @@ private fun ColorDialog(target: ColorTarget, onPick: (Int) -> Unit, onDismiss: (
         onDismissRequest = onDismiss,
         title = { Text(target.title) },
         text = {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 for (color in Palette) {
                     Box(
                         Modifier
-                            .size(36.dp)
-                            .clip(RoundedCornerShape(8.dp))
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(10.dp))
                             .background(Color(color))
                             .border(
                                 if (color == target.color) 3.dp else 1.dp,
                                 if (color == target.color) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
-                                RoundedCornerShape(8.dp),
+                                RoundedCornerShape(10.dp),
                             )
                             .clickable { onPick(color) },
                     )

@@ -76,6 +76,9 @@ internal class AnalysisController(
     var deltaCurve by mutableStateOf<AnalysisDeltaCurve?>(null)
         private set
 
+    /** The chart settings sheet, opened from the app bar. */
+    var settingsOpen by mutableStateOf(false)
+
     /** True once the desktop has refused a lap request (an older desktop build). */
     var lapDataUnavailable by mutableStateOf(false)
         private set

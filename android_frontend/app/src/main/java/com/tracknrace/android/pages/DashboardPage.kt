@@ -2,10 +2,15 @@ package com.tracknrace.android.pages
 
 import android.content.res.Configuration
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,11 +19,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -26,199 +37,1188 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.asComposePath
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tracknrace.android.CarDamageState
 import com.tracknrace.android.DashboardColdState
 import com.tracknrace.android.DashboardLapComparisonState
 import com.tracknrace.android.HotTelemetry
+import com.tracknrace.android.PairedTelemetryClient
+import com.tracknrace.android.PairedTelemetryPage
 import com.tracknrace.android.TelemetryStore
+import com.tracknrace.android.TimingCarEntry
 import com.tracknrace.android.TimingTowerState
+import com.tracknrace.android.ui.theme.darkAppColorScheme
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // ── Design ──────────────────────────────────────────────────────────────────
-// A steering-wheel display, not an app page. It deliberately ignores the
-// Material theme: black glass, white numerals, and colour only where it means
-// something (gaining, losing, too hot, running short). No cards, no labels on
-// anything whose meaning is obvious from where it sits.
+// Material Design 3, always dark. Three swipeable tabs:
 //
-// Only what a driver acts on during a lap is on screen:
+//   DRIVE  the glance screen: shift lights, status, delta / gear / speed,
+//          sector splits, ERS and fuel, gaps (races), tyres, lap times
+//   MAP    the live map of every car, full page
+//   DAMAGE the desktop Damage page: the car with each part's damage, faults,
+//          power-unit and gearbox wear
 //
-//   shift lights
-//   position · lap · fitted tyre          (an alert replaces this line)
-//   delta to the fastest lap, gear, speed
-//   ERS charge
-//   interval to the cars ahead and behind (races only)
-//   tyre surface temperatures, fuel margin, last lap
-//
-// Everything else — sectors, pedals, wear, ERS mode — is on the
-// Timing and Tyres pages or left out. A completed lap, a new best, an invalid
-// lap, a brake-bias change and a fuel shortfall show as a 3 s alert instead.
-//
-// Each hot field is read inside the smallest composable that shows it, so a
-// 60 Hz telemetry tick recomposes that leaf and never the layout.
+// Landscape keeps all three tabs, with Drive and Damage laid out wide. Every changing number is painted by Readout and
+// read while drawing, so a telemetry tick repaints one small layer and never
+// re-lays out text; cards around them are cached as textures.
 
 /** Race, Race 2 and Race 3 in F1 24, F1 25 and the 2026 Season Pack. */
 private val RaceSessionTypes = setOf(15, 16, 17)
 
-/** Interval under which a neighbour is within attack range. */
+/** Interval under which a neighbour is within attack range, and DRS range. */
 private const val CloseIntervalMs = 1_000
+
+/** A gap that changed less than this over a lap is holding, not a trend. */
+private const val TrendMinMs = 50
 
 private const val AlertDurationMs = 3_000L
 
 private const val StatusSettleMs = 2_000L
 
-private val Background = Color(0xff000000)
-private val Primary = Color(0xffffffff)
-private val Secondary = Color(0xff7d8590)
-private val Faint = Color(0xff1b1f24)
-private val Gain = Color(0xff2ee67a)
-private val Loss = Color(0xffff3b4e)
-private val Best = Color(0xffb36bff)
-private val Warn = Color(0xffffb020)
-private val Info = Color(0xff3d9bff)
+// ── Material 3 theme ────────────────────────────────────────────────────────
+// The app's dark scheme (dynamic where the phone has it), whatever the system
+// setting: the semantic colours below are tuned for a dark ground.
 
-// The app's own face (TrackNRaceTheme): system sans-serif, tabular figures so
-// changing digits do not shift the numbers around them.
-private val NumeralStyle = TextStyle(
-    fontFamily = FontFamily.SansSerif,
-    fontWeight = FontWeight.Bold,
-    fontFeatureSettings = "tnum",
-    lineHeight = TextUnit.Unspecified,
-)
+private val Gain = Color(0xff69f0ae)
+private val Loss = Color(0xffff5252)
+private val Best = Color(0xffb388ff)
+private val Caution = Color(0xffffd740)
+private val Cold = Color(0xff82b1ff)
+
+// Text tones for painted readouts, which are coloured outside composition:
+// the dark scheme's onSurface, onSurfaceVariant and outline.
+private val Hi = Color(0xffe3e2e6)
+private val Med = Color(0xffc4c6d0)
+private val Dis = Color(0xff8e9099)
+
+private val Numerals = FontFamily.SansSerif
+
+/** The M3 type scale roles used here, in the system face. */
+private val Headline = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Normal, fontSize = 24.sp)
+private val Title = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Medium, fontSize = 20.sp)
+private val Body = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Normal, fontSize = 14.sp)
+private val BodySmall = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Normal, fontSize = 12.sp)
+private val Label = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Medium, fontSize = 12.sp, letterSpacing = 0.4.sp)
+
+private val CardShape = RoundedCornerShape(12.dp)
+private val CellShape = RoundedCornerShape(8.dp)
+
+/** Which tab, and what it asks the desktop for. */
+private enum class DashboardTab(val title: String, val page: PairedTelemetryPage) {
+    DRIVE("Drive", PairedTelemetryPage.DASHBOARD),
+    MAP("Map", PairedTelemetryPage.DASHBOARD_MAP),
+    DAMAGE("Damage", PairedTelemetryPage.DASHBOARD_DAMAGE),
+}
 
 @Composable
 internal fun DashboardScreen(
     store: TelemetryStore,
     active: Boolean = true,
+    /** Called with the stream the visible tab needs. */
+    onPage: (PairedTelemetryPage) -> Unit = {},
 ) {
     val frame = rememberDashboardFrameState(store, active)
     val alert = rememberDashboardAlert(frame)
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val race by remember(store) {
-        derivedStateOf { store.cold.sessionType in RaceSessionTypes }
+        derivedStateOf(structuralEqualityPolicy()) { store.cold.sessionType in RaceSessionTypes }
     }
-    // The Scaffold behind this page paints it black (TrackNRaceApp).
-    Box(Modifier.fillMaxSize()) {
-        if (landscape) {
-            LandscapeDashboard(store, frame, alert, race)
-        } else {
-            PortraitDashboard(store, frame, alert, race)
+    val gaps = rememberRaceGaps(store)
+    KeepScreenOn(active && store.sourceStatus.state in setOf("paired", "listening"))
+
+    // The app shell paints the background, so there is no full-screen surface here.
+    MaterialTheme(colorScheme = darkAppColorScheme()) {
+        var saved by rememberSaveable { mutableIntStateOf(0) }
+        val pager = rememberPagerState(initialPage = saved) { DashboardTab.entries.size }
+        val scope = rememberCoroutineScope()
+        val current = pager.currentPage
+        LaunchedEffect(current, active) {
+            saved = current
+            if (active) onPage(DashboardTab.entries[current].page)
+        }
+        Column(Modifier.fillMaxSize()) {
+            // Primary tabs continuing the app bar, as on Analysis.
+            PrimaryTabRow(
+                selectedTabIndex = current,
+                modifier = Modifier.staticLayer(),
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                divider = {},
+            ) {
+                DashboardTab.entries.forEachIndexed { index, tab ->
+                    Tab(
+                        selected = current == index,
+                        onClick = { scope.launch { pager.animateScrollToPage(index) } },
+                        text = { Text(tab.title, maxLines = 1) },
+                        selectedContentColor = MaterialTheme.colorScheme.primary,
+                        unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            HorizontalPager(pager, Modifier.fillMaxWidth().weight(1f), beyondViewportPageCount = 0) { page ->
+                when (DashboardTab.entries[page]) {
+                    DashboardTab.DRIVE ->
+                        if (landscape) LandscapeDrive(frame, alert, gaps, race) else DriveTab(frame, alert, gaps, race)
+                    DashboardTab.MAP -> MapTab(store, active && current == page)
+                    DashboardTab.DAMAGE -> DamageTab(store, landscape)
+                }
+            }
         }
     }
 }
 
+/** Keeps the display on while a glance screen is showing live data. */
 @Composable
-private fun PortraitDashboard(
-    store: TelemetryStore,
+private fun KeepScreenOn(enabled: Boolean) {
+    val view = LocalView.current
+    DisposableEffect(view, enabled) {
+        view.keepScreenOn = enabled
+        onDispose { view.keepScreenOn = false }
+    }
+}
+
+// ── Drive ───────────────────────────────────────────────────────────────────
+
+@Composable
+private fun DriveTab(
     frame: DashboardFrameState,
     alert: State<DashboardAlert?>,
+    gaps: State<RaceGaps>,
     race: Boolean,
 ) {
     Column(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        Modifier.fillMaxSize().padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        ShiftLights(frame, Modifier.fillMaxWidth().height(12.dp).graphicsLayer())
-        Spacer(Modifier.height(10.dp))
-        StatusLine(frame, alert, Modifier.fillMaxWidth().height(34.dp).graphicsLayer())
-        GearCluster(frame, Modifier.fillMaxWidth().weight(2.6f))
-        Ers(frame, Modifier.fillMaxWidth().weight(1.1f).graphicsLayer())
-        if (race) Gaps(store, Modifier.fillMaxWidth().weight(0.9f).graphicsLayer())
-        Spacer(Modifier.height(12.dp))
-        Row(
-            Modifier.fillMaxWidth().weight(1.35f),
-            horizontalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            Tyres(frame, Modifier.weight(1f).fillMaxHeight())
-            FuelAndLastLap(frame, Modifier.weight(1f).fillMaxHeight().graphicsLayer())
+        ShiftLights(frame, Modifier.fillMaxWidth().height(8.dp).graphicsLayer())
+        StatusRow(frame, alert, Modifier.fillMaxWidth().height(32.dp))
+        HeroCard(frame, Modifier.fillMaxWidth().weight(1f))
+        SectorStrip(frame, Modifier.fillMaxWidth().height(22.dp))
+        Row(Modifier.fillMaxWidth().height(66.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            ErsCard(frame, Modifier.weight(1f).fillMaxHeight())
+            FuelCard(frame, Modifier.weight(1f).fillMaxHeight())
+        }
+        if (race) GapsCard(gaps, frame, Modifier.fillMaxWidth().height(58.dp))
+        Row(Modifier.fillMaxWidth().height(132.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            TyreCard(frame, "Tyres", Modifier.weight(1.3f).fillMaxHeight())
+            LapTimesCard(frame, Modifier.weight(1f).fillMaxHeight())
         }
     }
 }
 
 @Composable
-private fun LandscapeDashboard(
-    store: TelemetryStore,
+private fun LandscapeDrive(
     frame: DashboardFrameState,
     alert: State<DashboardAlert?>,
+    gaps: State<RaceGaps>,
     race: Boolean,
 ) {
-    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 12.dp)) {
-        ShiftLights(frame, Modifier.fillMaxWidth().height(12.dp).graphicsLayer())
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-            Column(Modifier.weight(1f).fillMaxHeight()) {
-                Ers(frame, Modifier.fillMaxWidth().weight(1.4f).graphicsLayer())
-                if (race) Gaps(store, Modifier.fillMaxWidth().weight(1f).graphicsLayer())
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        ShiftLights(frame, Modifier.fillMaxWidth().height(8.dp).graphicsLayer())
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                StatusRow(frame, alert, Modifier.fillMaxWidth().height(32.dp))
+                ErsCard(frame, Modifier.fillMaxWidth().weight(1f))
+                if (race) GapsCard(gaps, frame, Modifier.fillMaxWidth().height(58.dp))
+                FuelCard(frame, Modifier.fillMaxWidth().weight(1f))
             }
+            Column(Modifier.weight(1.15f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                HeroCard(frame, Modifier.fillMaxWidth().weight(1f))
+                SectorStrip(frame, Modifier.fillMaxWidth().height(22.dp))
+            }
+            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                TyreCard(frame, "Tyres", Modifier.fillMaxWidth().weight(1.4f))
+                LapTimesCard(frame, Modifier.fillMaxWidth().weight(1f))
+            }
+        }
+    }
+}
+
+// ── Building blocks ─────────────────────────────────────────────────────────
+
+/** An M3 filled card: a tonal container with no shadow, so no elevation pass. */
+@Composable
+private fun DashCard(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier.clip(CardShape).background(MaterialTheme.colorScheme.surfaceContainer).padding(horizontal = 12.dp, vertical = 8.dp),
+        content = content,
+    )
+}
+
+@Composable
+private fun CardLabel(text: String, modifier: Modifier = Modifier, color: Color = Med) {
+    Text(text, modifier, style = Label, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+}
+
+/** A painted readout in one of the M3 type roles. */
+@Composable
+private fun Live(
+    style: TextStyle,
+    modifier: Modifier = Modifier,
+    alignEnd: Boolean = false,
+    center: Boolean = false,
+    runs: () -> List<ReadoutRun>,
+) = Readout(runs, style, modifier, alignEnd, center)
+
+// ── Shift lights ────────────────────────────────────────────────────────────
+
+@Composable
+private fun ShiftLights(frame: DashboardFrameState, modifier: Modifier) {
+    val off = MaterialTheme.colorScheme.surfaceContainerHighest
+    // Drawn, not composed: the bit pattern changes many times a second.
+    Spacer(
+        modifier.semantics { contentDescription = "Shift lights" }.drawBehind {
+            val bitValue = frame.revLightsBitValue
+            val gap = 2.dp.toPx()
+            val width = (size.width - gap * 14) / 15f
+            val corner = CornerRadius(2.dp.toPx())
+            repeat(15) { index ->
+                val lit = bitValue != null && bitValue and (1 shl index) != 0
+                val tone = when {
+                    index < 5 -> Gain
+                    index < 10 -> Loss
+                    else -> Cold
+                }
+                drawRoundRect(if (lit) tone else off, Offset(index * (width + gap), 0f), Size(width, size.height), corner)
+            }
+        },
+    )
+}
+
+// ── Status row ──────────────────────────────────────────────────────────────
+
+/** Position and places gained, lap, fitted tyre, penalty and DRS chips; an alert takes the row. */
+@Composable
+private fun StatusRow(frame: DashboardFrameState, alert: State<DashboardAlert?>, modifier: Modifier) {
+    val shown = alert.value
+    if (shown != null) {
+        Box(
+            modifier
+                .clip(CellShape)
+                .background(shown.color.copy(alpha = 0.18f))
+                .semantics { liveRegion = LiveRegionMode.Polite },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(shown.text, Modifier.padding(horizontal = 12.dp), style = Title.copy(fontSize = 16.sp), color = shown.color, maxLines = 1)
+        }
+        return
+    }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        val position = frame.position
+        val gained = frame.placesGained
+        Text(if (position > 0) "P$position" else "P–", style = Headline.copy(fontWeight = FontWeight.Bold, fontSize = 22.sp), color = Hi, maxLines = 1)
+        if (gained != 0) {
+            Text(
+                if (gained > 0) "▲$gained" else "▼${-gained}",
+                style = BodySmall.copy(fontWeight = FontWeight.Medium),
+                color = if (gained > 0) Gain else Loss,
+                modifier = Modifier.padding(start = 0.dp),
+            )
+        }
+        Text(frame.lapText, style = Body, color = Med, maxLines = 1, modifier = Modifier.weight(1f))
+        frame.penaltyText?.let { Chip(it, Loss.copy(alpha = 0.18f), Loss) }
+        val compound = compoundColor(frame.tyreCompound)
+        if (frame.statusAvailable && compound != null) {
+            Chip(frame.tyreChipText, Color.Transparent, Hi, dot = compound, outline = MaterialTheme.colorScheme.outline)
+        }
+        if (frame.aeroOpen) Chip(if (frame.slmCar) "SLM" else "DRS", Gain.copy(alpha = 0.18f), Gain)
+    }
+}
+
+/** An M3 chip: 8 dp corners, outlined or tonal. */
+@Composable
+private fun Chip(text: String, background: Color, content: Color, dot: Color? = null, outline: Color? = null) {
+    Row(
+        Modifier
+            .height(28.dp)
+            .clip(CellShape)
+            .background(background)
+            .then(if (outline != null) Modifier.border(1.dp, outline, CellShape) else Modifier)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (dot != null) {
+            Box(Modifier.size(9.dp).background(dot, CircleShape))
+            Spacer(Modifier.width(5.dp))
+        }
+        Text(text, style = Label, color = content, maxLines = 1)
+    }
+}
+
+// ── Hero ────────────────────────────────────────────────────────────────────
+
+/** Delta, gear, speed and RPM on the centre line; throttle and brake at the edges. */
+@Composable
+private fun HeroCard(frame: DashboardFrameState, modifier: Modifier) {
+    Box(modifier.clip(CardShape).background(MaterialTheme.colorScheme.surfaceContainer)) {
+        Box(Modifier.fillMaxSize()) {
+            PedalBar({ frame.throttle }, Gain, Modifier.align(Alignment.CenterStart).padding(start = 10.dp, top = 12.dp, bottom = 12.dp))
+            PedalBar({ frame.brake }, Loss, Modifier.align(Alignment.CenterEnd).padding(end = 10.dp, top = 12.dp, bottom = 12.dp))
             Column(
-                Modifier.weight(1.1f).fillMaxHeight(),
+                Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                StatusLine(frame, alert, Modifier.fillMaxWidth().height(34.dp).graphicsLayer())
-                GearCluster(frame, Modifier.fillMaxWidth().weight(1f))
+                Live(Headline.copy(fontSize = 22.sp, fontWeight = FontWeight.Medium), Modifier.fillMaxWidth(), center = true) {
+                    val delta = frame.lapDeltaSeconds
+                    listOf(ReadoutRun(formatDelta(delta), if (delta == null) Dis else deltaColor(delta)))
+                }
+                Gear(frame, Modifier.fillMaxWidth().weight(1f))
+                Live(Headline, Modifier.fillMaxWidth(), center = true) {
+                    listOf(ReadoutRun(frame.speedKph.toString(), Hi), ReadoutRun(" km/h", Med, bold = false, scale = 0.5f))
+                }
+                Live(BodySmall, Modifier.fillMaxWidth(), center = true) {
+                    val rpm = frame.rpm
+                    if (rpm <= 0) emptyList() else listOf(ReadoutRun("%,d".format(rpm), Med, bold = false), ReadoutRun(" rpm", Dis, bold = false))
+                }
             }
-            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Tyres(frame, Modifier.fillMaxWidth().weight(1.3f))
-                FuelAndLastLap(frame, Modifier.fillMaxWidth().weight(1f).graphicsLayer())
+        }
+    }
+}
+
+/** A pedal's travel, filled from the bottom. */
+@Composable
+private fun PedalBar(value: () -> Float, color: Color, modifier: Modifier) {
+    val track = MaterialTheme.colorScheme.surfaceContainerHighest
+    Spacer(
+        modifier.width(8.dp).fillMaxHeight().graphicsLayer().drawBehind {
+            val corner = CornerRadius(size.width / 2f)
+            drawRoundRect(track, cornerRadius = corner)
+            val fill = value().coerceIn(0f, 1f) * size.height
+            if (fill > 0f) drawRoundRect(color, Offset(0f, size.height - fill), Size(size.width, fill), corner)
+        },
+    )
+}
+
+/** The largest glyph, sized once to the space it has and cached as a texture. */
+@Composable
+private fun Gear(frame: DashboardFrameState, modifier: Modifier) {
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        val density = LocalDensity.current
+        val fontSize = with(density) { (maxHeight.toPx() * 0.92f).coerceAtMost(144.dp.toPx()).toSp() }
+        Text(
+            gearLabel(frame.gear),
+            modifier = Modifier.graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen),
+            style = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Black, fontSize = fontSize, lineHeight = fontSize),
+            color = Hi,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+        )
+    }
+}
+
+// ── Sectors ─────────────────────────────────────────────────────────────────
+
+/** This lap's sector deltas to the best lap: green faster, amber slower, grey not reached. */
+@Composable
+private fun SectorStrip(frame: DashboardFrameState, modifier: Modifier) {
+    val density = LocalDensity.current
+    val paint = remember(density) { textPaint(with(density) { 11.sp.toPx() }, FontWeight.Medium.weight) }
+    val neutral = MaterialTheme.colorScheme.surfaceContainerHigh
+    Spacer(
+        modifier.graphicsLayer().semantics { contentDescription = "Sector deltas" }.drawBehind {
+            val deltas = frame.sectorDeltas
+            val gap = 4.dp.toPx()
+            val width = (size.width - gap * 2) / 3f
+            val pad = 6.dp.toPx()
+            val canvas = drawContext.canvas.nativeCanvas
+            val metrics = paint.fontMetrics
+            val baseline = size.height / 2f - (metrics.ascent + metrics.descent) / 2f
+            for (sector in 0..2) {
+                val value = deltas.getOrNull(sector)
+                val x = sector * (width + gap)
+                val (fill, text) = when {
+                    value == null -> neutral to Dis
+                    // A split of exactly zero is the line just crossed, not a gain.
+                    abs(value) < 0.0005 -> neutral to Hi
+                    value < 0 -> Gain to Color.Black
+                    else -> Caution to Color.Black
+                }
+                drawRoundRect(fill, Offset(x, 0f), Size(width, size.height), CornerRadius(8.dp.toPx()))
+                paint.color = text.toArgb()
+                canvas.drawText("S${sector + 1}", x + pad, baseline, paint)
+                val delta = if (value == null) "—" else formatDelta(value)
+                canvas.drawText(delta, x + width - pad - paint.measureText(delta), baseline, paint)
+            }
+        },
+    )
+}
+
+// ── ERS and fuel ────────────────────────────────────────────────────────────
+
+@Composable
+private fun ErsCard(frame: DashboardFrameState, modifier: Modifier) {
+    DashCard(modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CardLabel("ERS", Modifier.weight(1f))
+            Text(
+                ersModeLabel(frame.ersMode),
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.tertiaryContainer)
+                    .padding(horizontal = 8.dp, vertical = 1.dp),
+                style = Label.copy(fontSize = 11.sp),
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                maxLines = 1,
+            )
+        }
+        Live(Title, Modifier.fillMaxWidth()) {
+            if (!frame.statusAvailable) listOf(ReadoutRun("–", Dis)) else listOf(ReadoutRun("${frame.ersPercent}%", ersColor(frame.ersPercent)))
+        }
+        val track = MaterialTheme.colorScheme.surfaceContainerHighest
+        Spacer(
+            Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).graphicsLayer().drawBehind {
+                drawRect(track)
+                if (frame.statusAvailable) {
+                    drawRect(ersColor(frame.ersPercent), size = Size(size.width * (frame.ersPercent / 100f).coerceIn(0f, 1f), size.height))
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun FuelCard(frame: DashboardFrameState, modifier: Modifier) {
+    DashCard(modifier) {
+        CardLabel("Fuel")
+        Live(Title, Modifier.fillMaxWidth()) {
+            if (!frame.statusAvailable) {
+                listOf(ReadoutRun("–", Dis))
+            } else {
+                listOf(ReadoutRun("%+.1f".format(frame.fuelLaps), fuelMarginColor(frame.fuelLaps)), ReadoutRun(" laps", Med, bold = false, scale = 0.55f))
+            }
+        }
+        Live(BodySmall, Modifier.fillMaxWidth()) {
+            val target = frame.fuelTargetText
+            if (target.isEmpty()) emptyList() else listOf(ReadoutRun(target, Med, bold = false))
+        }
+    }
+}
+
+// ── Gaps ────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun GapsCard(gaps: State<RaceGaps>, frame: DashboardFrameState, modifier: Modifier) {
+    DashCard(modifier) {
+        val current = gaps.value
+        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                CardLabel(if (current.leading) "Leading" else "Ahead · ${current.aheadName ?: "–"}")
+                Live(Title, Modifier.fillMaxWidth()) {
+                    val now = gaps.value
+                    if (now.leading) emptyList() else gapRuns(now.aheadMs, "−", Gain, frame.aheadTrendMs, closingIsGood = true)
+                }
+            }
+            Box(Modifier.width(1.dp).fillMaxHeight(0.8f).background(MaterialTheme.colorScheme.outlineVariant))
+            Column(Modifier.weight(1f).padding(start = 10.dp), horizontalAlignment = Alignment.End) {
+                CardLabel(if (current.last) "Last" else "Behind · ${current.behindName ?: "–"}")
+                Live(Title, Modifier.fillMaxWidth(), alignEnd = true) {
+                    val now = gaps.value
+                    if (now.last) emptyList() else gapRuns(now.behindMs, "+", Loss, frame.behindTrendMs, closingIsGood = false)
+                }
+            }
+        }
+    }
+}
+
+/** An interval with its trend per lap: ▼ closing, ▲ opening. */
+private fun gapRuns(interval: Int?, sign: String, closeColor: Color, trendMs: Int?, closingIsGood: Boolean): List<ReadoutRun> {
+    val close = interval != null && interval in 1 until CloseIntervalMs
+    val runs = mutableListOf(
+        ReadoutRun(formatInterval(interval, sign), when {
+            interval == null -> Dis
+            close -> closeColor
+            else -> Hi
+        }),
+    )
+    if (trendMs != null && abs(trendMs) >= TrendMinMs && interval != null) {
+        val closing = trendMs < 0
+        val good = closing == closingIsGood
+        runs += ReadoutRun(
+            "  ${if (closing) "▼" else "▲"} %.1f/lap".format(abs(trendMs) / 1000.0),
+            if (good) Gain else Med,
+            bold = false,
+            scale = 0.55f,
+        )
+    }
+    return runs
+}
+
+// ── Tyres ───────────────────────────────────────────────────────────────────
+
+/**
+ * Wear leads each corner, then surface temperature, then inner temperature;
+ * the legend is said once in the title.
+ */
+@Composable
+private fun TyreCard(frame: DashboardFrameState, title: String, modifier: Modifier) {
+    DashCard(modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CardLabel(title, Modifier.weight(1f))
+            Text("wear · surface · inner", style = BodySmall.copy(fontSize = 10.sp), color = Dis, maxLines = 1)
+        }
+        Spacer(Modifier.height(4.dp))
+        Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                TyreCell(frame, 0, "FL", Modifier.weight(1f).fillMaxHeight())
+                TyreCell(frame, 1, "FR", Modifier.weight(1f).fillMaxHeight())
+            }
+            Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                TyreCell(frame, 2, "RL", Modifier.weight(1f).fillMaxHeight())
+                TyreCell(frame, 3, "RR", Modifier.weight(1f).fillMaxHeight())
+            }
+        }
+    }
+}
+
+@Composable
+private fun TyreCell(frame: DashboardFrameState, corner: Int, label: String, modifier: Modifier) {
+    Box(modifier.clip(CellShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).padding(horizontal = 8.dp, vertical = 4.dp)) {
+        Text(label, Modifier.align(Alignment.TopStart), style = Label.copy(fontSize = 10.sp), color = Med, maxLines = 1)
+        Row(Modifier.align(Alignment.BottomStart).fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+            Live(Headline.copy(fontSize = 22.sp, fontWeight = FontWeight.Medium), Modifier.weight(1f)) {
+                val wear = frame.wear(corner)
+                if (wear == null) listOf(ReadoutRun("–", Dis)) else listOf(ReadoutRun(wear.toString(), tyreBandColor(wear)), ReadoutRun("%", Med, bold = false, scale = 0.5f))
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Live(Body.copy(fontSize = 13.sp, fontWeight = FontWeight.Medium), Modifier.width(40.dp), alignEnd = true) {
+                    val surface = frame.surface(corner)
+                    if (surface <= 0) listOf(ReadoutRun("–", Dis)) else listOf(ReadoutRun("$surface°", tyreTemperatureColor(surface)))
+                }
+                Live(BodySmall.copy(fontSize = 10.sp), Modifier.width(40.dp), alignEnd = true) {
+                    val inner = frame.inner(corner)
+                    if (inner <= 0) emptyList() else listOf(ReadoutRun("$inner°", Dis, bold = false))
+                }
+            }
+        }
+    }
+}
+
+// ── Lap times ───────────────────────────────────────────────────────────────
+
+@Composable
+private fun LapTimesCard(frame: DashboardFrameState, modifier: Modifier) {
+    DashCard(modifier) {
+        CardLabel("Lap times")
+        Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.SpaceEvenly) {
+            TimeRow("Lap") { listOf(ReadoutRun(formatRunning(frame.currentLapMs), Hi)) }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            TimeRow("Last") {
+                val last = frame.lastLapMs
+                val best = frame.fastestLapMs
+                listOf(ReadoutRun(formatTime(last), if (last > 0 && best > 0 && last == best) Best else if (last > 0) Hi else Dis))
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            TimeRow("Best") { listOf(ReadoutRun(formatTime(frame.fastestLapMs), if (frame.fastestLapMs > 0) Best else Dis)) }
+        }
+    }
+}
+
+@Composable
+private fun TimeRow(label: String, value: () -> List<ReadoutRun>) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = BodySmall, color = Med, modifier = Modifier.width(36.dp))
+        Live(Body.copy(fontWeight = FontWeight.Medium), Modifier.weight(1f), alignEnd = true, runs = value)
+    }
+}
+
+// ── Map tab ─────────────────────────────────────────────────────────────────
+
+@Composable
+private fun MapTab(store: TelemetryStore, active: Boolean) {
+    LiveMap(store, active, Modifier.fillMaxSize().padding(8.dp))
+}
+
+/**
+ * Every car on the circuit, as the desktop map draws it: a dot in the car's
+ * livery colour with its three-letter code above. Your car is drawn last.
+ */
+@Composable
+private fun LiveMap(store: TelemetryStore, active: Boolean, modifier: Modifier) {
+    // Every display frame while shown: the map eases each dot toward its car.
+    val tick = remember { mutableLongStateOf(0L) }
+    LaunchedEffect(active) {
+        if (!active) return@LaunchedEffect
+        while (true) withFrameNanos { tick.longValue = it }
+    }
+    val trackId by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.cold.trackId } }
+    val aeroMode by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.cold.aeroMode } }
+    val roster by remember(store) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            store.timing.drivers.values.sortedBy { it.index }.map { driver ->
+                Triple(driver.index, liveryColor(driver.teamColor), mapLabel(driver.name, driver.raceNumber))
+            }
+        }
+    }
+    val you = store.selectedDriverIndex
+    val cars = remember(roster, you) {
+        val (mine, others) = roster.partition { it.first == you }
+        (others + mine).map { (index, color, label) -> LiveMapCar(index, color, label) }
+    }
+    LiveTrackMap(
+        trackId = trackId,
+        aeroMode = aeroMode,
+        positions = store::latestMapPositions,
+        frameTick = tick,
+        cars = cars,
+        trackColor = Color.White,
+        modifier = modifier,
+    )
+}
+
+/** The desktop map label: the surname's first three letters, else the race number. */
+private fun mapLabel(name: String, raceNumber: Int): String {
+    val surname = name.trim().split(Regex("\\s+")).lastOrNull().orEmpty()
+    return if (surname.isNotEmpty()) surname.take(3).uppercase() else raceNumber.toString()
+}
+
+private fun liveryColor(value: String?): Color = try {
+    Color(android.graphics.Color.parseColor(value ?: "#8e8e8e"))
+} catch (_: IllegalArgumentException) {
+    Color(0xff8e8e8e)
+}
+
+// ── Damage tab ──────────────────────────────────────────────────────────────
+// The desktop Damage page on a phone: the car drawn nose-up with each part's
+// damage beside it, the fault flags, and power-unit and gearbox wear. Colours
+// follow the desktop: body damage and wear on a three-step scale; tyre, brake
+// and blister damage on its five 20% bands.
+
+private val DamageOk = Color(0xff37872d)
+private val DamageWarn = Color(0xffe0a800)
+private val DamageCrit = Color(0xffc4162a)
+private val WireColor = Color(0xff8a93c4)
+private val TubeColor = Color(0xff4a5175)
+
+/** The desktop's wheel colours, used for each wheel's name. */
+private val WheelFl = Color(0xffe10600)
+private val WheelFr = Color(0xff4488ff)
+private val WheelRl = Color(0xff37872d)
+private val WheelRr = Color(0xffffd700)
+
+/** Body damage: any is worth seeing; above 20% it costs real performance. */
+private fun damageColor(value: Int?): Color? = when {
+    value == null -> null
+    value == 0 -> DamageOk
+    value <= 20 -> DamageWarn
+    else -> DamageCrit
+}
+
+/** Power-unit and gearbox wear accumulate normally, so only high wear warns. */
+private fun puWearColor(value: Int?): Color = when {
+    value == null -> Dis
+    value < 50 -> DamageOk
+    value < 75 -> DamageWarn
+    else -> DamageCrit
+}
+
+private fun percentText(value: Int?) = value?.let { "$it%" } ?: "—"
+
+@Composable
+private fun DamageTab(store: TelemetryStore, landscape: Boolean) {
+    val damage by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.damage } }
+    // DRS, or Rear Wing for F1 26, from the desktop's label catalogue.
+    val wingFault by remember(store) {
+        derivedStateOf(structuralEqualityPolicy()) { store.cold.labels["ui.damage.wing_fault"] ?: "DRS" }
+    }
+    val context = LocalContext.current.applicationContext
+    val wireframe by produceState<CarWireframe?>(null, context) {
+        value = withContext(Dispatchers.IO) { loadCarWireframe(context) }
+    }
+    val drawn = { store.damage }
+    // Never scrolls: the car card takes the height the other cards leave, and
+    // the car and its callouts are fitted into it.
+    if (landscape) {
+        // As the desktop lays it out: the car nose-right across the page, its
+        // parts around it, and the faults and wear in one strip below.
+        Column(
+            Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            WideCarDamageCard(damage, drawn, wireframe, Modifier.fillMaxWidth().weight(1f))
+            DamageStrip(damage, wingFault, Modifier.fillMaxWidth())
+        }
+    } else {
+        Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            FaultsCard(damage, wingFault, Modifier.fillMaxWidth())
+            CarDamageCard(damage, drawn, wireframe, Modifier.fillMaxWidth().weight(1f))
+            WearCard(damage, Modifier.fillMaxWidth())
+        }
+    }
+}
+
+/**
+ * The game sets blown or seized for some failures only (not an MGU-H failure,
+ * say), so overall engine wear at 100% without either reads as failed.
+ */
+private fun engineStatus(damage: CarDamageState): String? = when {
+    damage.engineSeized == 1 -> "Seized"
+    damage.engineBlown == 1 -> "Blown"
+    damage.engine != null && damage.engine >= 100 -> "Failed"
+    damage.engineSeized == null && damage.engineBlown == null -> null
+    else -> "OK"
+}
+
+private fun faultFlag(value: Int?): String? = when (value) {
+    null -> null
+    0 -> "OK"
+    else -> "Fault"
+}
+
+private fun faultColor(value: String?): Color = when (value) {
+    null -> Dis
+    "OK" -> DamageOk
+    else -> DamageCrit
+}
+
+/** Engine status, the wing (DRS) fault and the ERS fault. */
+@Composable
+private fun FaultsCard(damage: CarDamageState, wingFault: String, modifier: Modifier) {
+    DashCard(modifier) {
+        Row(Modifier.fillMaxWidth()) {
+            FaultCell("Engine", engineStatus(damage), Modifier.weight(1f))
+            FaultCell(wingFault, faultFlag(damage.drsFault), Modifier.weight(1f))
+            FaultCell("ERS", faultFlag(damage.ersFault), Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun FaultCell(label: String, value: String?, modifier: Modifier) {
+    Column(modifier) {
+        CardLabel(label)
+        Text(
+            value ?: "—",
+            style = Title.copy(fontSize = 18.sp),
+            color = faultColor(value),
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * The car with its damage around it: front wings, wheels, sidepods and rear
+ * wing on the left; the right wing, wheels, floor and diffuser on the right,
+ * each level with its part. Fills the height it is given.
+ */
+@Composable
+private fun CarDamageCard(
+    damage: CarDamageState,
+    drawn: () -> CarDamageState,
+    wireframe: CarWireframe?,
+    modifier: Modifier,
+) {
+    DashCard(modifier) {
+        CardLabel("Car")
+        Spacer(Modifier.height(4.dp))
+        BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+            val bounds = wireframe?.bounds
+            // Height over width of the drawing; the car's nose-up proportions.
+            val aspect = if (bounds == null || bounds.width() <= 0f) 2.66f else bounds.height() / bounds.width()
+            val carWidth = minOf(maxWidth * 0.34f, maxHeight / aspect)
+            val carHeight = carWidth * aspect
+            val carTop = (maxHeight - carHeight) / 2
+            // Where along the car each part sits, in the drawing's units.
+            fun at(y: Float): Float = if (bounds == null) 0f else ((y - bounds.top) / bounds.height()).coerceIn(0f, 1f)
+            Row(Modifier.fillMaxSize()) {
+                CalloutColumn(
+                    listOf(at(50f), at(190f), at(540f), at(757f), at(860f)),
+                    carTop,
+                    carHeight,
+                    alignEnd = true,
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                ) {
+                    PartCallout("Wing L", damage.wingFl)
+                    WheelCallout("FL", WheelFl, damage.tyreFl, damage.brakeFl, damage.blistersFl, alignEnd = true)
+                    PartCallout("Sidepods", damage.sidepods)
+                    WheelCallout("RL", WheelRl, damage.tyreRl, damage.brakeRl, damage.blistersRl, alignEnd = true)
+                    PartCallout("Rear wing", damage.wingRear)
+                }
+                CarDrawing(
+                    wireframe,
+                    drawn,
+                    Modifier.align(Alignment.CenterVertically).padding(horizontal = 8.dp).width(carWidth).height(carHeight),
+                )
+                CalloutColumn(
+                    listOf(at(50f), at(190f), at(450f), at(757f), at(800f)),
+                    carTop,
+                    carHeight,
+                    alignEnd = false,
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                ) {
+                    PartCallout("Wing R", damage.wingFr)
+                    WheelCallout("FR", WheelFr, damage.tyreFr, damage.brakeFr, damage.blistersFr, alignEnd = false)
+                    PartCallout("Floor", damage.floor)
+                    WheelCallout("RR", WheelRr, damage.tyreRr, damage.brakeRr, damage.blistersRr, alignEnd = false)
+                    PartCallout("Diffuser", damage.diffuser)
+                }
             }
         }
     }
 }
 
 /**
- * The gear digit is too large for the glyph atlas, so without a texture of its
- * own it is filled as a path on every frame. It changes rarely, so render it
- * into a cached texture. Not worth it for blocks that change several times a
- * second: each change re-renders the texture in an extra render pass, and an
- * A/B run on a Galaxy M12 showed no gain from caching the other blocks.
+ * Landscape: the car nose-right with the driver's left side on top, as on the
+ * desktop. The rear wheels, rear wing and diffuser sit left of it, the front
+ * wheels and wings right of it, the floor above and the sidepods below.
  */
-private fun Modifier.cachedLayer(): Modifier = graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+@Composable
+private fun WideCarDamageCard(
+    damage: CarDamageState,
+    drawn: () -> CarDamageState,
+    wireframe: CarWireframe?,
+    modifier: Modifier,
+) {
+    DashCard(modifier) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val bounds = wireframe?.bounds
+            // Turned nose-right, the drawing's length becomes its width.
+            val aspect = if (bounds == null || bounds.width() <= 0f) 2.66f else bounds.height() / bounds.width()
+            val band = 24.dp
+            val side = 150.dp
+            val carHeight = minOf(maxHeight - band * 2, (maxWidth - side * 2 - 16.dp) / aspect).coerceAtLeast(0.dp)
+            val carWidth = carHeight * aspect
+            val carTop = (maxHeight - carHeight) / 2
+            // Across the car, top to bottom, in the drawing's units.
+            fun across(x: Float): Float = if (bounds == null) 0f else ((x - bounds.left) / bounds.width()).coerceIn(0f, 1f)
+            Row(Modifier.fillMaxSize()) {
+                CalloutColumn(
+                    listOf(across(45f), across(140f), across(210f), across(305f)),
+                    carTop,
+                    carHeight,
+                    alignEnd = true,
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                ) {
+                    WheelCallout("RL", WheelRl, damage.tyreRl, damage.brakeRl, damage.blistersRl, alignEnd = true)
+                    PartCallout("Rear wing", damage.wingRear)
+                    PartCallout("Diffuser", damage.diffuser)
+                    WheelCallout("RR", WheelRr, damage.tyreRr, damage.brakeRr, damage.blistersRr, alignEnd = true)
+                }
+                Column(
+                    Modifier.padding(horizontal = 8.dp).width(carWidth).fillMaxHeight(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Box(Modifier.height(band), contentAlignment = Alignment.Center) { PartCallout("Floor", damage.floor) }
+                    CarDrawing(wireframe, drawn, Modifier.width(carWidth).height(carHeight), noseRight = true)
+                    Box(Modifier.height(band), contentAlignment = Alignment.Center) { PartCallout("Sidepods", damage.sidepods) }
+                }
+                CalloutColumn(
+                    listOf(across(53f), across(95f), across(255f), across(297f)),
+                    carTop,
+                    carHeight,
+                    alignEnd = false,
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                ) {
+                    WheelCallout("FL", WheelFl, damage.tyreFl, damage.brakeFl, damage.blistersFl, alignEnd = false)
+                    PartCallout("Wing L", damage.wingFl)
+                    PartCallout("Wing R", damage.wingFr)
+                    WheelCallout("FR", WheelFr, damage.tyreFr, damage.brakeFr, damage.blistersFr, alignEnd = false)
+                }
+            }
+        }
+    }
+}
+
+/** Landscape: the three faults, then every wear tile, in one row. */
+@Composable
+private fun DamageStrip(damage: CarDamageState, wingFault: String, modifier: Modifier) {
+    DashCard(modifier) {
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            val engine = engineStatus(damage)
+            val wing = faultFlag(damage.drsFault)
+            val ers = faultFlag(damage.ersFault)
+            StatusTile("Engine", engine, faultColor(engine), Modifier.weight(1f).fillMaxHeight())
+            StatusTile(wingFault, wing, faultColor(wing), Modifier.weight(1f).fillMaxHeight())
+            StatusTile("ERS", ers, faultColor(ers), Modifier.weight(1f).fillMaxHeight())
+            for ((name, value) in wearTiles(damage)) WearTile(name, value, Modifier.weight(1f).fillMaxHeight())
+        }
+    }
+}
+
+@Composable
+private fun StatusTile(name: String, value: String?, tone: Color, modifier: Modifier) {
+    Column(modifier.clip(CellShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).padding(horizontal = 8.dp, vertical = 5.dp)) {
+        Text(name, style = Label.copy(fontSize = 11.sp), color = Med, maxLines = 1)
+        Text(value ?: "—", style = Title.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold), color = tone, maxLines = 1)
+    }
+}
+
+/**
+ * Callouts level with their parts, always inside the column: each is centred
+ * on its share of the car, pushed below the one above and kept above the
+ * bottom edge. When they cannot all fit at full size they shrink together.
+ */
+@Composable
+private fun CalloutColumn(
+    fractions: List<Float>,
+    carTop: Dp,
+    carHeight: Dp,
+    alignEnd: Boolean,
+    modifier: Modifier,
+    content: @Composable () -> Unit,
+) {
+    Layout(content, modifier) { measurables, constraints ->
+        val placeables = measurables.map { it.measure(constraints.copy(minWidth = 0, minHeight = 0)) }
+        val height = constraints.maxHeight
+        val natural = placeables.sumOf { it.height } + 4.dp.roundToPx() * (placeables.size - 1)
+        val scale = if (natural > height && natural > 0) height.toFloat() / natural else 1f
+        val gap = 4.dp.toPx() * scale
+        val sizes = placeables.map { it.height * scale }
+        val top = carTop.toPx()
+        val span = carHeight.toPx()
+        val tops = FloatArray(placeables.size)
+        var bottom = -gap
+        for (index in placeables.indices) {
+            val wanted = top + fractions.getOrElse(index) { 1f } * span - sizes[index] / 2f
+            tops[index] = max(max(wanted, 0f), bottom + gap)
+            bottom = tops[index] + sizes[index]
+        }
+        var limit = height.toFloat()
+        for (index in placeables.indices.reversed()) {
+            tops[index] = min(tops[index], limit - sizes[index])
+            limit = tops[index] - gap
+        }
+        layout(constraints.maxWidth, height) {
+            placeables.forEachIndexed { index, placeable ->
+                val x = if (alignEnd) constraints.maxWidth - placeable.width else 0
+                val y = tops[index].roundToInt()
+                if (scale < 1f) {
+                    placeable.placeWithLayer(x, y) {
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin(if (alignEnd) 1f else 0f, 0f)
+                    }
+                } else {
+                    placeable.place(x, y)
+                }
+            }
+        }
+    }
+}
+
+/** A body part on one line: its name and damage. */
+@Composable
+private fun PartCallout(name: String, value: Int?) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(name, style = Label, color = Med, maxLines = 1)
+        Spacer(Modifier.width(6.dp))
+        Text(percentText(value), style = Body.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold), color = damageColor(value) ?: Dis, maxLines = 1)
+    }
+}
+
+@Composable
+private fun WheelCallout(name: String, tone: Color, tyre: Int?, brake: Int?, blisters: Int?, alignEnd: Boolean) {
+    Column(horizontalAlignment = if (alignEnd) Alignment.End else Alignment.Start) {
+        Text(name, style = Label.copy(fontWeight = FontWeight.Bold), color = tone, maxLines = 1)
+        for ((label, value) in listOf("Tyre" to tyre, "Brake" to brake, "Blisters" to blisters)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(label, style = BodySmall, color = Med, maxLines = 1, modifier = Modifier.width(50.dp))
+                Text(
+                    percentText(value),
+                    style = Body.copy(fontWeight = FontWeight.Bold),
+                    color = value?.let(::tyreBandColor) ?: Dis,
+                    maxLines = 1,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.width(40.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The wireframe with damaged parts outlined and tinted as on the desktop: a
+ * body part once it has any damage, a tyre always, in the band of its worst
+ * tyre, brake or blister value. [damage] is read while drawing.
+ */
+@Composable
+private fun CarDrawing(wireframe: CarWireframe?, damage: () -> CarDamageState, modifier: Modifier, noseRight: Boolean = false) {
+    val card = MaterialTheme.colorScheme.surfaceContainer
+    Spacer(
+        modifier.semantics { contentDescription = "Car damage by part" }.drawWithCache {
+            val car = wireframe ?: return@drawWithCache onDrawBehind {}
+            // Nose-right is a quarter turn clockwise: the driver's left goes on top.
+            val matrix = android.graphics.Matrix()
+            if (noseRight) matrix.postRotate(90f)
+            val turned = android.graphics.RectF(car.bounds).also { matrix.mapRect(it) }
+            val scale = min(size.width / turned.width(), size.height / turned.height())
+            matrix.postTranslate(-turned.left, -turned.top)
+            matrix.postScale(scale, scale)
+            matrix.postTranslate((size.width - turned.width() * scale) / 2f, (size.height - turned.height() * scale) / 2f)
+            val paths = car.parts.map { part -> android.graphics.Path(part.path).apply { transform(matrix) }.asComposePath() }
+            val wire = Stroke(1.2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+            val marked = Stroke(2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+            val detail = Stroke(0.7.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            val tube = Stroke(0.9.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            onDrawBehind {
+                val zones = zoneColors(damage())
+                car.parts.forEachIndexed { index, part ->
+                    val tone = part.zone?.let(zones::get)
+                    val path = paths[index]
+                    when (part.kind) {
+                        CarWireframe.Kind.SOLID -> {
+                            drawPath(path, if (tone != null) lerp(card, tone, 0.12f) else card)
+                            drawPath(path, tone ?: WireColor, style = if (tone != null) marked else wire)
+                        }
+                        CarWireframe.Kind.DETAIL -> drawPath(path, (tone ?: WireColor).copy(alpha = 0.6f), style = detail)
+                        CarWireframe.Kind.TUBE -> drawPath(path, TubeColor, style = tube)
+                    }
+                }
+            }
+        },
+    )
+}
+
+/** Each damage zone's colour, or none for a part drawn plain. */
+private fun zoneColors(damage: CarDamageState): Map<String, Color> = buildMap {
+    // Body parts are marked from the first percent of damage, as on the desktop.
+    fun body(zone: String, value: Int?) {
+        if (value != null && value > 0) damageColor(value)?.let { put(zone, it) }
+    }
+    body("z-fw-l", damage.wingFl)
+    body("z-fw-r", damage.wingFr)
+    body("z-rw", damage.wingRear)
+    body("z-floor", damage.floor)
+    body("z-sp-l", damage.sidepods)
+    body("z-sp-r", damage.sidepods)
+    body("z-diff", damage.diffuser)
+    fun tyre(zone: String, vararg values: Int?) {
+        values.filterNotNull().maxOrNull()?.let { put(zone, tyreBandColor(it)) }
+    }
+    tyre("t-fl", damage.tyreFl, damage.brakeFl, damage.blistersFl)
+    tyre("t-fr", damage.tyreFr, damage.brakeFr, damage.blistersFr)
+    tyre("t-rl", damage.tyreRl, damage.brakeRl, damage.blistersRl)
+    tyre("t-rr", damage.tyreRr, damage.brakeRr, damage.blistersRr)
+}
+
+/** Power-unit components, engine and gearbox wear, as the desktop's wear tiles. */
+@Composable
+private fun WearCard(damage: CarDamageState, modifier: Modifier) {
+    val tiles = wearTiles(damage)
+    DashCard(modifier) {
+        CardLabel("Wear")
+        Spacer(Modifier.height(6.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (row in tiles.chunked(4)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for ((name, value) in row) WearTile(name, value, Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+private fun wearTiles(damage: CarDamageState): List<Pair<String, Int?>> = listOf(
+    "Engine" to damage.engine,
+    "Gearbox" to damage.gearbox,
+    "ICE" to damage.iceWear,
+    "MGU-H" to damage.mguhWear,
+    "MGU-K" to damage.mgukWear,
+    "ES" to damage.esWear,
+    "CE" to damage.ceWear,
+    "TC" to damage.tcWear,
+)
+
+@Composable
+private fun WearTile(name: String, value: Int?, modifier: Modifier) {
+    val tone = puWearColor(value)
+    val track = MaterialTheme.colorScheme.surfaceContainerHighest
+    Column(modifier.clip(CellShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).padding(horizontal = 8.dp, vertical = 5.dp)) {
+        Text(name, style = Label.copy(fontSize = 11.sp), color = Med, maxLines = 1)
+        Text(percentText(value), style = Title.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold), color = tone, maxLines = 1)
+        Spacer(
+            Modifier.padding(top = 4.dp).fillMaxWidth().height(3.dp).clip(CircleShape).drawBehind {
+                drawRect(track)
+                if (value != null) drawRect(tone, size = Size(size.width * (value / 100f).coerceIn(0f, 1f), size.height))
+            },
+        )
+    }
+}
 
 // ── Frame sampling ──────────────────────────────────────────────────────────
 
 /**
  * Stable holder whose fields are independent Compose states. The dashboard
  * passes this holder without reading it, so a telemetry tick invalidates only
- * the leaf composables that actually consume a changed field.
+ * what reads a changed field, and the painted readouts only redraw.
  */
 @Stable
 private class DashboardFrameState(initialHot: HotTelemetry) {
     var speedKph by mutableIntStateOf(initialHot.speedKph)
         private set
+    var rpm by mutableIntStateOf(initialHot.rpm)
+        private set
     var gear by mutableIntStateOf(initialHot.gear)
+        private set
+    var throttle by mutableFloatStateOf(initialHot.throttle)
+        private set
+    var brake by mutableFloatStateOf(initialHot.brake)
+        private set
+    var aeroOpen by mutableStateOf(false)
+        private set
+    var slmCar by mutableStateOf(false)
         private set
     var revLightsBitValue by mutableStateOf(initialHot.revLightsBitValue)
         private set
-    var tyreFl by mutableIntStateOf(initialHot.tyreSurfaceFl)
-        private set
-    var tyreFr by mutableIntStateOf(initialHot.tyreSurfaceFr)
-        private set
-    var tyreRl by mutableIntStateOf(initialHot.tyreSurfaceRl)
-        private set
-    var tyreRr by mutableIntStateOf(initialHot.tyreSurfaceRr)
-        private set
+    private val surfaces = Array(4) { mutableIntStateOf(0) }
+    private val inners = Array(4) { mutableIntStateOf(0) }
+    private val wears = Array(4) { mutableStateOf<Int?>(null) }
+
+    fun surface(corner: Int): Int = surfaces[corner].intValue
+    fun inner(corner: Int): Int = inners[corner].intValue
+    fun wear(corner: Int): Int? = wears[corner].value
 
     var cold by mutableStateOf(DashboardColdState())
         private set
@@ -226,13 +1226,12 @@ private class DashboardFrameState(initialHot: HotTelemetry) {
         private set
 
     // Cold rows arrive several times a second, mostly carrying the running lap
-    // time. Each readout reads only its own fields, which change far less often,
-    // so an unrelated cold update recomposes nothing on screen.
+    // time. Each readout reads only its own fields.
     var position by mutableIntStateOf(0)
         private set
-    var lapText by mutableStateOf("L–")
+    var lapText by mutableStateOf("Lap –")
         private set
-    var tyreAgeText by mutableStateOf("–")
+    var tyreChipText by mutableStateOf("–")
         private set
     var tyreCompound by mutableIntStateOf(0)
         private set
@@ -240,55 +1239,175 @@ private class DashboardFrameState(initialHot: HotTelemetry) {
         private set
     var ersPercent by mutableIntStateOf(0)
         private set
+    var ersMode by mutableIntStateOf(0)
+        private set
     var fuelLaps by mutableDoubleStateOf(0.0)
         private set
     var lastLapMs by mutableIntStateOf(0)
         private set
+    var currentLapMs by mutableIntStateOf(0)
+        private set
     var fastestLapMs by mutableIntStateOf(0)
+        private set
+    var sectorDeltas by mutableStateOf<List<Double?>>(listOf(null, null, null))
         private set
 
     /** Delta to the fastest lap, rounded to the displayed millisecond. */
     var lapDeltaSeconds by mutableStateOf<Double?>(null)
         private set
 
+    // Derived on the phone.
+    var startPosition by mutableIntStateOf(0)
+        private set
+    var burnPerLapKg by mutableStateOf<Double?>(null)
+        private set
+    var fuelTargetText by mutableStateOf("")
+        private set
+    var aheadTrendMs by mutableStateOf<Int?>(null)
+        private set
+    var behindTrendMs by mutableStateOf<Int?>(null)
+        private set
+    var penaltyText by mutableStateOf<String?>(null)
+        private set
+    var pitText by mutableStateOf("")
+        private set
+
+    val placesGained: Int get() = if (startPosition > 0 && position > 0) startPosition - position else 0
+
+
     private var lastHot = initialHot
     private var lastCold = cold
     private var lastLapComparison = lapComparison
+    private var lastTiming: TimingTowerState? = null
+    private var lapNumber = 0
+    private var fuelAtLapStart = Double.NaN
+    private var aheadAtLapStart: Int? = null
+    private var behindAtLapStart: Int? = null
 
     fun update(
         hot: HotTelemetry,
         latestCold: DashboardColdState,
         latestLapComparison: DashboardLapComparisonState,
+        timing: TimingTowerState,
+        driverIndex: Int,
     ) {
         if (hot !== lastHot) {
             speedKph = hot.speedKph
+            rpm = hot.rpm
             gear = hot.gear
+            throttle = hot.throttle
+            brake = hot.brake
+            aeroOpen = hot.drs != 0 || hot.slm != 0
             revLightsBitValue = hot.revLightsBitValue
-            tyreFl = hot.tyreSurfaceFl
-            tyreFr = hot.tyreSurfaceFr
-            tyreRl = hot.tyreSurfaceRl
-            tyreRr = hot.tyreSurfaceRr
+            surfaces[0].intValue = hot.tyreSurfaceFl
+            surfaces[1].intValue = hot.tyreSurfaceFr
+            surfaces[2].intValue = hot.tyreSurfaceRl
+            surfaces[3].intValue = hot.tyreSurfaceRr
+            inners[0].intValue = hot.tyreInnerFl
+            inners[1].intValue = hot.tyreInnerFr
+            inners[2].intValue = hot.tyreInnerRl
+            inners[3].intValue = hot.tyreInnerRr
             lastHot = hot
         }
         if (latestCold !== lastCold) {
             cold = latestCold
             lastCold = latestCold
-            position = latestCold.position
-            lapText = lapLabel(latestCold)
-            tyreAgeText = tyreAgeLabel(latestCold)
-            tyreCompound = latestCold.tyreCompound
-            statusAvailable = latestCold.statusAvailable
-            ersPercent = latestCold.ersPercent
-            fuelLaps = latestCold.fuelLaps
-            lastLapMs = latestCold.lastLapMs
+            updateCold(latestCold, timing, driverIndex)
         }
         if (latestLapComparison !== lastLapComparison) {
             lapComparison = latestLapComparison
             lastLapComparison = latestLapComparison
             fastestLapMs = latestLapComparison.fastestLapMs
-            lapDeltaSeconds = latestLapComparison.lapDeltaSeconds
-                ?.takeIf { it.isFinite() }
-                ?.let { kotlin.math.round(it * 1000) / 1000 }
+            sectorDeltas = listOf(
+                latestLapComparison.sector1DeltaSeconds,
+                latestLapComparison.sector2DeltaSeconds,
+                latestLapComparison.sector3DeltaSeconds,
+            ).map { it?.takeIf { value -> value.isFinite() } }
+            val delta = latestLapComparison.lapDeltaSeconds?.takeIf { it.isFinite() }?.let { kotlin.math.round(it * 1000) / 1000 }
+            lapDeltaSeconds = delta
+        }
+        if (timing !== lastTiming) {
+            lastTiming = timing
+            updatePenalties(timing, driverIndex)
+        }
+    }
+
+    private fun updateCold(latest: DashboardColdState, timing: TimingTowerState, driverIndex: Int) {
+        position = latest.position
+        lapText = lapLabel(latest)
+        tyreChipText = tyreChipLabel(latest)
+        tyreCompound = latest.tyreCompound
+        statusAvailable = latest.statusAvailable
+        ersPercent = latest.ersPercent
+        ersMode = latest.ersMode
+        fuelLaps = latest.fuelLaps
+        lastLapMs = latest.lastLapMs
+        currentLapMs = latest.currentLapMs
+        slmCar = latest.aeroMode == "slm"
+        val wearKnown = latest.tyreWearAvailable
+        wears[0].value = if (wearKnown) latest.tyreWearFl.toInt() else null
+        wears[1].value = if (wearKnown) latest.tyreWearFr.toInt() else null
+        wears[2].value = if (wearKnown) latest.tyreWearRl.toInt() else null
+        wears[3].value = if (wearKnown) latest.tyreWearRr.toInt() else null
+
+        // Places gained: the position the race started from.
+        val raceSession = latest.sessionType in RaceSessionTypes
+        if (!raceSession || latest.lapNumber < lapNumber) startPosition = 0
+        if (raceSession && startPosition == 0 && latest.lapNumber == 1 && latest.position > 0) startPosition = latest.position
+
+        if (latest.lapNumber != lapNumber) {
+            val completed = latest.lapNumber == lapNumber + 1 && lapNumber > 0
+            // Fuel burnt over the lap just completed.
+            if (completed && fuelAtLapStart.isFinite() && latest.fuelKg > 0) {
+                burnPerLapKg = (fuelAtLapStart - latest.fuelKg).takeIf { it > 0.05 }
+            }
+            fuelAtLapStart = latest.fuelKg
+            // Gap trends: the change in each interval over the lap just completed.
+            val gaps = raceGaps(timing, driverIndex)
+            if (completed) {
+                aheadTrendMs = trend(aheadAtLapStart, gaps.aheadMs)
+                behindTrendMs = trend(behindAtLapStart, gaps.behindMs)
+            } else {
+                aheadTrendMs = null
+                behindTrendMs = null
+            }
+            aheadAtLapStart = gaps.aheadMs
+            behindAtLapStart = gaps.behindMs
+            lapNumber = latest.lapNumber
+        }
+        fuelTargetText = fuelTarget(latest, burnPerLapKg)
+    }
+
+    private fun updatePenalties(timing: TimingTowerState, driverIndex: Int) {
+        val me: TimingCarEntry? = timing.cars.firstOrNull { it.index == driverIndex }
+        penaltyText = me?.let {
+            buildList {
+                if (it.penaltiesSeconds > 0) add("+${it.penaltiesSeconds} s")
+                if (it.driveThroughPenalties > 0) add("Drive-through")
+                if (it.stopGoPenalties > 0) add("Stop-go")
+            }.joinToString(" · ").ifEmpty { null }
+        }
+        pitText = when (me?.pitStatus) {
+            1 -> "Pitting"
+            2 -> "In the pit lane"
+            else -> ""
+        }
+    }
+
+    private fun trend(start: Int?, now: Int?): Int? =
+        if (start == null || now == null) null else now - start
+}
+
+private fun fuelTarget(cold: DashboardColdState, burnPerLapKg: Double?): String {
+    if (!cold.statusAvailable) return ""
+    val margin = cold.fuelLaps
+    return when {
+        margin > 1.0 -> "Can push"
+        margin >= 0.0 -> "On target"
+        burnPerLapKg == null || cold.totalLaps <= 0 -> "Fuel short"
+        else -> {
+            val lapsLeft = (cold.totalLaps - cold.lapNumber + 1).coerceAtLeast(1)
+            "Save %.2f kg/lap".format(-margin * burnPerLapKg / lapsLeft)
         }
     }
 }
@@ -306,6 +1425,8 @@ private fun rememberDashboardFrameState(store: TelemetryStore, active: Boolean):
                 store.latestHot(),
                 store.cold,
                 store.latestLapComparison(),
+                store.timing,
+                store.selectedDriverIndex,
             )
         }
     }
@@ -364,212 +1485,16 @@ private fun alertFor(
     val statusSteady = statusSettled && previous.statusAvailable
     return when {
         cold.lapNumber > 0 && previous.lapNumber == cold.lapNumber &&
-            !previous.lapInvalid && cold.lapInvalid -> "LAP INVALID" to Loss
+            !previous.lapInvalid && cold.lapInvalid -> "Lap invalid" to Loss
         previousBestMs > 0 && bestMs in 1 until previousBestMs ->
-            "BEST LAP  ${formatTime(bestMs)}" to Best
+            "Best lap · ${formatTime(bestMs)}" to Best
         cold.lapNumber > previous.lapNumber && previous.lapNumber > 0 && cold.lastLapMs > 0 ->
-            "LAP  ${formatTime(cold.lastLapMs)}" to Primary
+            "Lap · ${formatTime(cold.lastLapMs)}" to Hi
         statusSteady && previous.brakeBias != cold.brakeBias ->
-            "BRAKE BIAS  ${cold.brakeBias}%" to Info
+            "Brake bias · ${cold.brakeBias}%" to Cold
         statusSteady && previous.fuelLaps >= 0.0 && cold.fuelLaps < 0.0 ->
-            "FUEL SHORT" to Loss
+            "Fuel short" to Loss
         else -> null
-    }
-}
-
-// ── Shift lights ────────────────────────────────────────────────────────────
-
-@Composable
-private fun ShiftLights(frame: DashboardFrameState, modifier: Modifier) {
-    val bitValue = frame.revLightsBitValue
-    Row(
-        modifier.semantics { contentDescription = "Shift lights" },
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        repeat(15) { index ->
-            val lit = bitValue != null && bitValue and (1 shl index) != 0
-            val tone = when {
-                index < 5 -> Gain
-                index < 10 -> Loss
-                else -> Info
-            }
-            Box(
-                Modifier.weight(1f).fillMaxHeight()
-                    .background(if (lit) tone else Faint, RoundedCornerShape(2.dp)),
-            )
-        }
-    }
-}
-
-// ── Status line ─────────────────────────────────────────────────────────────
-
-/** Position, lap and fitted tyre; an alert takes the whole line while shown. */
-@Composable
-private fun StatusLine(
-    frame: DashboardFrameState,
-    alert: State<DashboardAlert?>,
-    modifier: Modifier,
-) {
-    val shown = alert.value
-    if (shown != null) {
-        Box(
-            modifier.clip(RoundedCornerShape(6.dp)).background(shown.color.copy(alpha = 0.18f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                shown.text,
-                style = NumeralStyle,
-                fontSize = 20.sp,
-                letterSpacing = 1.5.sp,
-                color = shown.color,
-                maxLines = 1,
-            )
-        }
-        return
-    }
-    val position = frame.position
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            if (position > 0) "P$position" else "P–",
-            style = NumeralStyle,
-            fontSize = 26.sp,
-            color = if (position > 0) Primary else Secondary,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-        )
-        Text(
-            frame.lapText,
-            style = NumeralStyle,
-            fontSize = 20.sp,
-            color = Secondary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-        )
-        Row(
-            Modifier.weight(1f),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val compound = compoundColor(frame.tyreCompound)
-            if (frame.statusAvailable && compound != null) {
-                Box(Modifier.size(12.dp).background(compound, CircleShape))
-                Spacer(Modifier.width(8.dp))
-            }
-            Text(
-                frame.tyreAgeText,
-                style = NumeralStyle,
-                fontSize = 20.sp,
-                color = Secondary,
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-// ── Gear cluster ────────────────────────────────────────────────────────────
-
-/**
- * Delta, gear and speed stacked on the centre line: the gear fills whatever
- * height is left, and the smaller numbers either side of it need no labels.
- */
-@Composable
-private fun GearCluster(frame: DashboardFrameState, modifier: Modifier) {
-    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Spacer(Modifier.height(16.dp))
-        Delta(frame, Modifier.graphicsLayer())
-        Gear(frame, Modifier.fillMaxWidth().weight(1f).cachedLayer())
-        Speed(frame, Modifier.graphicsLayer())
-    }
-}
-
-/** The largest glyph, sized to whatever height the layout leaves it. */
-@Composable
-private fun Gear(frame: DashboardFrameState, modifier: Modifier) {
-    Box(modifier, contentAlignment = Alignment.Center) {
-        Text(
-            gearLabel(frame.gear),
-            style = NumeralStyle,
-            fontWeight = FontWeight.Black,
-            color = Primary,
-            autoSize = TextAutoSize.StepBased(48.sp, 200.sp, 4.sp),
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-        )
-    }
-}
-
-@Composable
-private fun Speed(frame: DashboardFrameState, modifier: Modifier = Modifier) {
-    Row(modifier, verticalAlignment = Alignment.Bottom) {
-        Text(
-            frame.speedKph.toString(),
-            style = NumeralStyle,
-            fontSize = 34.sp,
-            color = Primary,
-            maxLines = 1,
-        )
-        Text(
-            " km/h",
-            style = NumeralStyle,
-            fontSize = 14.sp,
-            color = Secondary,
-            modifier = Modifier.padding(bottom = 5.dp),
-            maxLines = 1,
-        )
-    }
-}
-
-/** Time against the fastest lap at this point of the track. */
-@Composable
-private fun Delta(frame: DashboardFrameState, modifier: Modifier = Modifier) {
-    val delta = frame.lapDeltaSeconds
-    val known = delta != null
-    Text(
-        if (known) formatDelta(delta) else "–",
-        modifier = modifier,
-        style = NumeralStyle,
-        fontSize = 26.sp,
-        color = if (known) deltaColor(delta) else Secondary,
-        maxLines = 1,
-    )
-}
-
-// ── ERS ─────────────────────────────────────────────────────────────────────
-
-/**
- * Battery charge: the one resource a driver manages every straight. The bar
- * turns amber under 20%, when a deployment will soon run dry.
- */
-@Composable
-private fun Ers(frame: DashboardFrameState, modifier: Modifier) {
-    val available = frame.statusAvailable
-    val ersPercent = frame.ersPercent
-    val tone = if (ersPercent < 20) Warn else Info
-    Column(
-        modifier,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            SmallLabel("ERS", Modifier.weight(1f).padding(bottom = 8.dp))
-            Text(
-                if (available) "$ersPercent%" else "–",
-                style = NumeralStyle,
-                fontSize = 48.sp,
-                color = if (available) tone else Secondary,
-                maxLines = 1,
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        Box(Modifier.fillMaxWidth().height(10.dp).clip(CircleShape).background(Faint)) {
-            if (available) {
-                Box(
-                    Modifier.fillMaxHeight()
-                        .fillMaxWidth((ersPercent / 100f).coerceIn(0f, 1f))
-                        .background(tone),
-                )
-            }
-        }
     }
 }
 
@@ -577,87 +1502,31 @@ private fun Ers(frame: DashboardFrameState, modifier: Modifier) {
 
 @Immutable
 private data class RaceGaps(
+    val aheadIndex: Int?,
     val aheadName: String?,
+    val aheadCode: String?,
     val aheadMs: Int?,
+    val behindIndex: Int?,
     val behindName: String?,
+    val behindCode: String?,
     val behindMs: Int?,
     val leading: Boolean,
     val last: Boolean,
 )
 
-/**
- * Intervals to the cars directly ahead and behind, each under the neighbour's
- * name. Within attack range the interval turns green (ahead) or red (behind).
- */
 @Composable
-private fun Gaps(store: TelemetryStore, modifier: Modifier) {
-    val gaps by remember(store) {
-        derivedStateOf { raceGaps(store.timing, store.selectedDriverIndex) }
-    }
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        GapReadout(
-            name = if (gaps.leading) "LEADING" else gaps.aheadName,
-            interval = if (gaps.leading) null else gaps.aheadMs,
-            blank = gaps.leading,
-            sign = "−",
-            closeColor = Gain,
-            alignment = Alignment.Start,
-            modifier = Modifier.weight(1f),
-        )
-        GapReadout(
-            name = if (gaps.last) "LAST" else gaps.behindName,
-            interval = if (gaps.last) null else gaps.behindMs,
-            blank = gaps.last,
-            sign = "+",
-            closeColor = Loss,
-            alignment = Alignment.End,
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-@Composable
-private fun GapReadout(
-    name: String?,
-    interval: Int?,
-    sign: String,
-    closeColor: Color,
-    alignment: Alignment.Horizontal,
-    modifier: Modifier,
-    blank: Boolean = false,
-) {
-    val close = interval != null && interval in 1 until CloseIntervalMs
-    Column(modifier, horizontalAlignment = alignment) {
-        Text(
-            name?.uppercase() ?: "–",
-            style = NumeralStyle,
-            fontSize = 14.sp,
-            letterSpacing = 1.sp,
-            color = Secondary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            if (blank) "" else formatInterval(interval, sign),
-            style = NumeralStyle,
-            fontSize = 30.sp,
-            color = when {
-                interval == null -> Faint
-                close -> closeColor
-                else -> Primary
-            },
-            maxLines = 1,
-        )
-    }
+private fun rememberRaceGaps(store: TelemetryStore): State<RaceGaps> = remember(store) {
+    derivedStateOf(structuralEqualityPolicy()) { raceGaps(store.timing, store.selectedDriverIndex) }
 }
 
 private fun raceGaps(timing: TimingTowerState, driverIndex: Int): RaceGaps {
     val cars = timing.cars
     val me = cars.firstOrNull { it.index == driverIndex && it.position > 0 }
-        ?: return RaceGaps(null, null, null, null, leading = false, last = false)
+        ?: return RaceGaps(null, null, null, null, null, null, null, null, leading = false, last = false)
     val ahead = cars.firstOrNull { it.position == me.position - 1 }
     val behind = cars.firstOrNull { it.position == me.position + 1 }
     fun name(index: Int?) = index?.let { timing.drivers[it]?.name }
+    fun code(index: Int?) = name(index)?.let { driverCode(it, index ?: 0) }
     // The timing row carries each car's gap to the leader, which is zero for
     // the leader and for anyone whose gap is not known yet.
     fun gapKnown(position: Int, gapMs: Int) = position == 1 || gapMs > 0
@@ -673,171 +1542,100 @@ private fun raceGaps(timing: TimingTowerState, driverIndex: Int): RaceGaps {
         null
     }
     return RaceGaps(
+        aheadIndex = ahead?.index,
         aheadName = name(ahead?.index),
+        aheadCode = code(ahead?.index),
         aheadMs = aheadMs,
+        behindIndex = behind?.index,
         behindName = name(behind?.index),
+        behindCode = code(behind?.index),
         behindMs = behindMs,
         leading = me.position == 1,
         last = behind == null,
     )
 }
 
-// ── Tyres ───────────────────────────────────────────────────────────────────
-
-/**
- * Surface temperature of each corner, laid out as the corners sit on the car.
- * The block's colour is the reading: blue cold, green in the window, amber
- * and red over it.
- */
-@Composable
-private fun Tyres(frame: DashboardFrameState, modifier: Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TyreFl(frame, Modifier.weight(1f).fillMaxHeight().graphicsLayer())
-            TyreFr(frame, Modifier.weight(1f).fillMaxHeight().graphicsLayer())
-        }
-        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TyreRl(frame, Modifier.weight(1f).fillMaxHeight().graphicsLayer())
-            TyreRr(frame, Modifier.weight(1f).fillMaxHeight().graphicsLayer())
-        }
-    }
-}
-
-@Composable
-private fun TyreFl(frame: DashboardFrameState, modifier: Modifier) = TyreBlock(frame.tyreFl, modifier)
-
-@Composable
-private fun TyreFr(frame: DashboardFrameState, modifier: Modifier) = TyreBlock(frame.tyreFr, modifier)
-
-@Composable
-private fun TyreRl(frame: DashboardFrameState, modifier: Modifier) = TyreBlock(frame.tyreRl, modifier)
-
-@Composable
-private fun TyreRr(frame: DashboardFrameState, modifier: Modifier) = TyreBlock(frame.tyreRr, modifier)
-
-@Composable
-private fun TyreBlock(temperature: Int, modifier: Modifier) {
-    val known = temperature > 0
-    val tone = tyreTemperatureColor(temperature)
-    Box(
-        modifier.clip(RoundedCornerShape(8.dp))
-            .background(if (known) tone.copy(alpha = 0.22f) else Faint),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            if (known) "$temperature°" else "–",
-            style = NumeralStyle,
-            fontSize = 24.sp,
-            color = if (known) tone else Secondary,
-            maxLines = 1,
-        )
-    }
-}
-
-// ── Fuel and last lap ───────────────────────────────────────────────────────
-
-@Composable
-private fun FuelAndLastLap(frame: DashboardFrameState, modifier: Modifier) {
-    val available = frame.statusAvailable
-    val fuelLaps = frame.fuelLaps
-    val lastLapMs = frame.lastLapMs
-    val best = frame.fastestLapMs
-    Column(modifier, verticalArrangement = Arrangement.SpaceEvenly) {
-        Column {
-            SmallLabel("FUEL")
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(
-                    if (available) "%+.1f".format(fuelLaps) else "–",
-                    style = NumeralStyle,
-                    fontSize = 30.sp,
-                    color = if (available) fuelMarginColor(fuelLaps) else Secondary,
-                    maxLines = 1,
-                )
-                if (available) {
-                    Text(
-                        " laps",
-                        style = NumeralStyle,
-                        fontSize = 14.sp,
-                        color = Secondary,
-                        modifier = Modifier.padding(bottom = 5.dp),
-                        maxLines = 1,
-                    )
-                }
-            }
-        }
-        Column {
-            SmallLabel("LAST LAP")
-            Text(
-                formatTime(lastLapMs),
-                style = NumeralStyle,
-                fontSize = 30.sp,
-                // Purple when the last lap is the fastest one, as on timing screens.
-                color = when {
-                    lastLapMs <= 0 -> Secondary
-                    best > 0 && lastLapMs == best -> Best
-                    else -> Primary
-                },
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-@Composable
-private fun SmallLabel(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text,
-        modifier = modifier,
-        style = NumeralStyle,
-        fontSize = 14.sp,
-        letterSpacing = 1.5.sp,
-        color = Secondary,
-        maxLines = 1,
-    )
+/** A driver's three-letter code from their name. */
+private fun driverCode(name: String, index: Int): String {
+    val surname = name.trim().split(' ').lastOrNull().orEmpty()
+    return surname.take(3).uppercase().ifEmpty { "#$index" }
 }
 
 // ── Colour ──────────────────────────────────────────────────────────────────
 
-private fun deltaColor(seconds: Double?): Color = when {
-    seconds == null || !seconds.isFinite() || abs(seconds) < 0.0005 -> Primary
+private fun deltaColor(seconds: Double): Color = when {
+    !seconds.isFinite() || abs(seconds) < 0.0005 -> Hi
     seconds > 0 -> Loss
     else -> Gain
 }
 
+private fun ersColor(percent: Int): Color = if (percent < 20) Caution else Cold
+
+/** The desktop Damage page's five tyre bands, 20% each, in its dark palette. */
+private fun tyreBandColor(percent: Int): Color = when {
+    percent < 20 -> Color(0xff37872d)
+    percent < 40 -> Color(0xff9bbf2e)
+    percent < 60 -> Color(0xffe0a800)
+    percent < 80 -> Color(0xfff2711c)
+    else -> Color(0xffc4162a)
+}
+
 private fun tyreTemperatureColor(value: Int): Color = when {
-    value <= 0 -> Secondary
-    value < 80 -> Info
+    value <= 0 -> Med
+    value < 80 -> Cold
     value <= 105 -> Gain
-    value <= 120 -> Warn
+    value <= 120 -> Caution
     else -> Loss
 }
 
 private fun fuelMarginColor(fuelLaps: Double): Color = when {
-    fuelLaps > 1.0 -> Primary
-    fuelLaps >= 0.0 -> Warn
+    fuelLaps > 1.0 -> Hi
+    fuelLaps >= 0.0 -> Caution
     else -> Loss
 }
 
 private fun compoundColor(compound: Int): Color? = when (compound) {
-    16 -> Loss
-    17 -> Color(0xffffd23f)
-    18 -> Primary
+    16 -> Color(0xffff5252)
+    17 -> Color(0xffffd740)
+    18 -> Color(0xffeeeeee)
     7 -> Gain
-    8 -> Info
+    8 -> Cold
     else -> null
+}
+
+/** The game's ERS deploy modes. */
+private fun ersModeLabel(mode: Int): String = when (mode) {
+    0 -> "None"
+    1 -> "Medium"
+    2 -> "Hotlap"
+    3 -> "Overtake"
+    else -> "–"
 }
 
 // ── Formatting ──────────────────────────────────────────────────────────────
 
 private fun lapLabel(cold: DashboardColdState): String = when {
-    cold.lapNumber <= 0 -> "L–"
-    cold.totalLaps > 0 -> "L${cold.lapNumber}/${cold.totalLaps}"
-    else -> "L${cold.lapNumber}"
+    cold.lapNumber <= 0 -> "Lap –"
+    cold.totalLaps > 0 -> "Lap ${cold.lapNumber} / ${cold.totalLaps}"
+    else -> "Lap ${cold.lapNumber}"
 }
 
-private fun tyreAgeLabel(cold: DashboardColdState): String = when {
+private fun compoundName(compound: Int): String = when (compound) {
+    7 -> "Inter"
+    8 -> "Wet"
+    16 -> "C5"
+    17 -> "C4"
+    18 -> "C3"
+    19 -> "C2"
+    20 -> "C1"
+    21 -> "C0"
+    22 -> "C6"
+    else -> "Tyre"
+}
+
+private fun tyreChipLabel(cold: DashboardColdState): String = when {
     !cold.statusAvailable || compoundColor(cold.tyreCompound) == null -> "–"
-    else -> "${cold.tyreAgeLaps}L"
+    else -> "${compoundName(cold.tyreActualCompound)} · ${cold.tyreAgeLaps} lap${if (cold.tyreAgeLaps == 1) "" else "s"}"
 }
 
 private fun formatTime(milliseconds: Int): String {
@@ -846,6 +1644,15 @@ private fun formatTime(milliseconds: Int): String {
     val seconds = milliseconds / 1_000 % 60
     val millis = milliseconds % 1_000
     return "%d:%02d.%03d".format(minutes, seconds, millis)
+}
+
+/** The running lap to the tenth. */
+private fun formatRunning(milliseconds: Int): String {
+    if (milliseconds <= 0) return "–"
+    val minutes = milliseconds / 60_000
+    val seconds = milliseconds / 1_000 % 60
+    val tenths = milliseconds % 1_000 / 100
+    return "%d:%02d.%d".format(minutes, seconds, tenths)
 }
 
 private fun formatDelta(seconds: Double?): String {

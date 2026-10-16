@@ -2,7 +2,6 @@ package com.tracknrace.android.pages
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -24,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
@@ -44,8 +44,10 @@ internal fun TyresScreen(cold: DashboardColdState) {
         .sortedWith(compareBy({ dryOrder(it.visualCompound) }, { it.index }))
     val wet = cold.tyreSets.filter { it.actualCompound in setOf(7, 8) }
         .sortedWith(compareBy({ wetOrder(it.actualCompound) }, { it.index }))
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val showTable = maxWidth >= 600.dp
+    // A plain width check: BoxWithConstraints would re-run the list as a
+    // subcomposition on every tyre update.
+    val showTable = LocalConfiguration.current.screenWidthDp >= 600
+    Box(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
@@ -126,7 +128,7 @@ private fun TyreTableSection(
                 TyreTableHeader()
                 sets.forEach { set ->
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    TyreTableRow(set, cold)
+                    TyreTableRow(set, cold.sessionType, compoundName(set, cold.labels))
                 }
             } else {
                 sets.forEachIndexed { index, set ->
@@ -135,7 +137,7 @@ private fun TyreTableSection(
                             color = MaterialTheme.colorScheme.outlineVariant,
                         )
                     }
-                    CompactTyreRow(set, cold)
+                    CompactTyreRow(set, cold.sessionType, compoundName(set, cold.labels))
                 }
             }
         }
@@ -160,9 +162,8 @@ private fun TyreTableHeader() {
 }
 
 @Composable
-private fun CompactTyreRow(set: TyreSetEntry, cold: DashboardColdState) {
-    val status = tyreStatus(set, cold.sessionType)
-    val compound = cold.labels["tyre.actual.${set.actualCompound}"] ?: compoundLabel(set.actualCompound)
+private fun CompactTyreRow(set: TyreSetEntry, sessionType: Int?, compound: String) {
+    val status = tyreStatus(set, sessionType)
     val wearColor = tyreWearColor(set.wear)
     val primaryText = MaterialTheme.colorScheme.onSurface
     val secondaryText = MaterialTheme.colorScheme.onSurfaceVariant
@@ -235,9 +236,8 @@ private fun CompactTyreRow(set: TyreSetEntry, cold: DashboardColdState) {
 }
 
 @Composable
-private fun TyreTableRow(set: TyreSetEntry, cold: DashboardColdState) {
-    val status = tyreStatus(set, cold.sessionType)
-    val compound = cold.labels["tyre.actual.${set.actualCompound}"] ?: compoundLabel(set.actualCompound)
+private fun TyreTableRow(set: TyreSetEntry, sessionType: Int?, compound: String) {
+    val status = tyreStatus(set, sessionType)
     val wearColor = tyreWearColor(set.wear)
     val rowTextColor = MaterialTheme.colorScheme.onSurface
     Surface(color = Color.Transparent, contentColor = rowTextColor) {
@@ -412,6 +412,9 @@ private fun TyreTableText(
 
 private fun dryOrder(compound: Int) = when (compound) { 16 -> 0; 17 -> 1; 18 -> 2; else -> 3 }
 private fun wetOrder(compound: Int) = when (compound) { 7 -> 0; 8 -> 1; else -> 2 }
+
+private fun compoundName(set: TyreSetEntry, labels: Map<String, String>): String =
+    labels["tyre.actual.${set.actualCompound}"] ?: compoundLabel(set.actualCompound)
 
 private fun compoundLabel(compound: Int) = when (compound) {
     7 -> "INT"; 8 -> "WET"; 16 -> "C5"; 17 -> "C4"; 18 -> "C3"

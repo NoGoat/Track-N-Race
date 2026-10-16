@@ -29,18 +29,39 @@ internal enum class PairedTelemetryPage(
 ) {
     // DRIVER_ROSTER is on every top-bar page: the app bar names the selected
     // driver, and the desktop only sends the roster to a subscription that asks.
+    // The dashboard's tabs: Drive is the default, Map asks for every
+    // car's position, Damage for the car's damage and wear.
     DASHBOARD(
         "dashboard",
         listOf(
             DataConsumer.DRIVER_ROSTER,
             DataConsumer.SESSION_INFO,
             DataConsumer.DRIVING_INPUTS,
+            DataConsumer.PEDALS_AND_AERO,
             DataConsumer.TYRE_TEMPERATURES,
+            DataConsumer.TYRE_WEAR,
             DataConsumer.POWER_UNIT,
             DataConsumer.FITTED_TYRE,
             DataConsumer.LAP_PROGRESS,
             // Race intervals to the cars ahead and behind.
             DataConsumer.TIMING_TOWER,
+        ),
+    ),
+    DASHBOARD_MAP(
+        "dashboard-map",
+        listOf(
+            // Labels and livery colours, the circuit, and every car's position.
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.SESSION_INFO,
+            DataConsumer.CAR_POSITIONS,
+        ),
+    ),
+    DASHBOARD_DAMAGE(
+        "dashboard-damage",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.SESSION_INFO,
+            DataConsumer.CAR_DAMAGE,
         ),
     ),
     TIMING(

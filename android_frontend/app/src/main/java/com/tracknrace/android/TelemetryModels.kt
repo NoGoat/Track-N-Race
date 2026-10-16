@@ -76,7 +76,9 @@ internal class MapPositions(
 
     fun zAt(index: Int): Double = zByCar[index]
 
-    fun hasPosition(index: Int): Boolean = index in xByCar.indices
+    /** True when car [index] has a known position; unknown cars hold NaN. */
+    fun hasPosition(index: Int): Boolean =
+        index in xByCar.indices && xByCar[index].isFinite() && zByCar[index].isFinite()
 
     private companion object {
         val EMPTY_COORDINATES = DoubleArray(0)
@@ -126,6 +128,8 @@ internal data class DashboardColdState(
     val fuelLaps: Double = 0.0,
     val brakeBias: Int = 0,
     val tyreCompound: Int = 0,
+    /** The actual compound (C1–C6, inter, wet) of [tyreCompound]'s visual one. */
+    val tyreActualCompound: Int = 0,
     val tyreAgeLaps: Int = 0,
     val tyreWearFl: Float = 0f,
     val tyreWearFr: Float = 0f,
@@ -140,6 +144,97 @@ internal data class DashboardColdState(
     val formula: Int? = null,
     val labels: Map<String, String> = emptyMap(),
 )
+
+/**
+ * The selected car's damage, as the desktop Damage page shows it: percentages,
+ * and 0/1 fault flags. Null means not received yet.
+ */
+internal data class CarDamageState(
+    val available: Boolean = false,
+    val tyreFl: Int? = null,
+    val tyreFr: Int? = null,
+    val tyreRl: Int? = null,
+    val tyreRr: Int? = null,
+    val brakeFl: Int? = null,
+    val brakeFr: Int? = null,
+    val brakeRl: Int? = null,
+    val brakeRr: Int? = null,
+    val blistersFl: Int? = null,
+    val blistersFr: Int? = null,
+    val blistersRl: Int? = null,
+    val blistersRr: Int? = null,
+    val wingFl: Int? = null,
+    val wingFr: Int? = null,
+    val wingRear: Int? = null,
+    val floor: Int? = null,
+    val sidepods: Int? = null,
+    val diffuser: Int? = null,
+    val gearbox: Int? = null,
+    val engine: Int? = null,
+    val drsFault: Int? = null,
+    val ersFault: Int? = null,
+    val iceWear: Int? = null,
+    val mguhWear: Int? = null,
+    val mgukWear: Int? = null,
+    val esWear: Int? = null,
+    val ceWear: Int? = null,
+    val tcWear: Int? = null,
+    val engineBlown: Int? = null,
+    val engineSeized: Int? = null,
+) {
+    /** A live row carries every field; a V6 patch only the ones it changed. */
+    fun withPatch(row: JSONObject): CarDamageState {
+        fun int(name: String, current: Int?) = row.optionalInt(name) ?: current
+        return copy(
+            available = true,
+            tyreFl = int("tyre_dmg_fl", tyreFl),
+            tyreFr = int("tyre_dmg_fr", tyreFr),
+            tyreRl = int("tyre_dmg_rl", tyreRl),
+            tyreRr = int("tyre_dmg_rr", tyreRr),
+            brakeFl = int("brake_dmg_fl", brakeFl),
+            brakeFr = int("brake_dmg_fr", brakeFr),
+            brakeRl = int("brake_dmg_rl", brakeRl),
+            brakeRr = int("brake_dmg_rr", brakeRr),
+            blistersFl = int("blisters_fl", blistersFl),
+            blistersFr = int("blisters_fr", blistersFr),
+            blistersRl = int("blisters_rl", blistersRl),
+            blistersRr = int("blisters_rr", blistersRr),
+            wingFl = int("wing_fl", wingFl),
+            wingFr = int("wing_fr", wingFr),
+            wingRear = int("wing_rear", wingRear),
+            floor = int("floor_damage", floor),
+            sidepods = int("sidepod_damage", sidepods),
+            diffuser = int("diffuser_damage", diffuser),
+            gearbox = int("gearbox_damage", gearbox),
+            engine = int("engine_damage", engine),
+            drsFault = int("drs_fault", drsFault),
+            ersFault = int("ers_fault", ersFault),
+            iceWear = int("engine_ice_wear", iceWear),
+            mguhWear = int("engine_mguh_wear", mguhWear),
+            mgukWear = int("engine_mguk_wear", mgukWear),
+            esWear = int("engine_es_wear", esWear),
+            ceWear = int("engine_ce_wear", ceWear),
+            tcWear = int("engine_tc_wear", tcWear),
+            engineBlown = int("engine_blown", engineBlown),
+            engineSeized = int("engine_seized", engineSeized),
+        )
+    }
+
+    companion object {
+        /** Whether a damage row carries any field this state keeps. */
+        fun carriesDamage(row: JSONObject): Boolean = DAMAGE_FIELDS.any(row::has)
+
+        private val DAMAGE_FIELDS = setOf(
+            "tyre_dmg_fl", "tyre_dmg_fr", "tyre_dmg_rl", "tyre_dmg_rr",
+            "brake_dmg_fl", "brake_dmg_fr", "brake_dmg_rl", "brake_dmg_rr",
+            "blisters_fl", "blisters_fr", "blisters_rl", "blisters_rr",
+            "wing_fl", "wing_fr", "wing_rear", "floor_damage", "sidepod_damage", "diffuser_damage",
+            "gearbox_damage", "engine_damage", "drs_fault", "ers_fault",
+            "engine_ice_wear", "engine_mguh_wear", "engine_mguk_wear", "engine_es_wear",
+            "engine_ce_wear", "engine_tc_wear", "engine_blown", "engine_seized",
+        )
+    }
+}
 
 internal data class DashboardLapComparisonState(
     val fastestLapMs: Int = 0,
@@ -162,6 +257,9 @@ internal data class PlaybackLapInfo(
     val lapTimeMs: Int,
     val startSessionTime: Double,
     val endSessionTime: Double,
+    /** Actual and visual compound the lap ended on, 0 when unknown. */
+    val tyreCompound: Int = 0,
+    val visualCompound: Int = 0,
 )
 
 /**

@@ -1,6 +1,28 @@
 package com.tracknrace.android.pages
 
 import android.content.Context
+import com.tracknrace.android.MapPositions
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,19 +31,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -36,6 +56,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -207,10 +228,10 @@ internal class AnalysisMapClock {
         startedAt = System.nanoTime()
     }
 
-    fun cycleSpeed() {
+    fun changeSpeed(next: Float) {
         base = read(System.nanoTime())
         startedAt = System.nanoTime()
-        speed = PlaybackSpeeds[(PlaybackSpeeds.indexOf(speed) + 1) % PlaybackSpeeds.size]
+        speed = next
     }
 
     fun reset(seconds: Double = 0.0) {
@@ -274,7 +295,7 @@ internal fun AnalysisMap(
         // Marker positions as whole pixels: the map clock moves every frame,
         // a marker moves a pixel only every few frames.
         val markers = remember(fit, laps, outline) {
-            derivedStateOf {
+            derivedStateOf(structuralEqualityPolicy()) {
                 val track = outline
                 val seconds = elapsed.value
                 if (fit == null || track == null) return@derivedStateOf emptyList()
@@ -289,6 +310,8 @@ internal fun AnalysisMap(
         Spacer(
             Modifier
                 .fillMaxSize()
+                // The cars move every frame; keep that redraw in its own layer.
+                .graphicsLayer()
                 .semantics { contentDescription = "Track map of the compared laps" }
                 .drawWithCache {
                     val track = outline
@@ -429,55 +452,411 @@ private fun fitTrack(track: TrackOutline, width: Float, height: Float, pad: Floa
     )
 }
 
-/** Play, scrub and speed for a fixed comparison's own map clock. */
+/**
+ * Play, scrub and speed for a fixed comparison's own map clock: one row with
+ * the elapsed time, a scrubber marked at the sector splits, and the lap length.
+ */
 @Composable
 internal fun AnalysisPlaybackBar(
     clock: AnalysisMapClock,
     elapsed: State<Double>,
     total: Double,
+    /** Seconds into the lap where each sector ends, ticked on the scrubber. */
+    sectorMarks: List<Double>,
     modifier: Modifier = Modifier,
 ) {
-    Surface(modifier = modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainer) {
-        Row(
-            Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    val colors = MaterialTheme.colorScheme
+    val timeStyle = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum")
+    // Tenths of a second, as the label shows them: the clock moves every
+    // frame, but the label needs to recompose only ten times a second.
+    val tenths by remember { derivedStateOf(structuralEqualityPolicy()) { (elapsed.value * 10).roundToInt() } }
+    // Wide enough for "0:00.0" at this size, so the scrubber never shifts.
+    val timeWidth = with(LocalDensity.current) { (timeStyle.fontSize.toPx() * 3.4f).toDp() }
+    var speedOpen by remember { mutableStateOf(false) }
+    Row(
+        modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FilledIconButton(onClick = clock::toggle) {
+            Icon(
+                painterResource(if (clock.playing) R.drawable.ic_pause else R.drawable.ic_play),
+                contentDescription = if (clock.playing) "Pause" else "Play",
+            )
+        }
+        // Drawn, not composed: it changes ten times a second while playing.
+        Readout(
+            runs = { listOf(ReadoutRun(formatElapsed(tenths / 10.0, 0.1), colors.onSurface, bold = false)) },
+            style = timeStyle,
+            modifier = Modifier.padding(start = 8.dp).width(timeWidth),
+        )
+        Scrubber(clock, elapsed, total, sectorMarks, Modifier.weight(1f).padding(horizontal = 4.dp))
+        Text(
+            formatElapsed(total, 0.1),
+            style = timeStyle,
+            color = colors.onSurfaceVariant,
+            maxLines = 1,
+        )
+        // A 48 dp target around a compact outlined label that opens the choices.
+        Box(
+            Modifier
+                .padding(start = 4.dp)
+                .height(48.dp)
+                .widthIn(min = 48.dp)
+                .clip(MaterialTheme.shapes.small)
+                .clickable(onClickLabel = "Change speed") { speedOpen = true },
+            contentAlignment = Alignment.Center,
         ) {
-            FilledTonalIconButton(onClick = clock::toggle) {
+            Row(
+                Modifier
+                    .border(1.dp, colors.outlineVariant, MaterialTheme.shapes.small)
+                    .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(speedLabel(clock.speed), style = timeStyle, color = colors.primary, maxLines = 1)
                 Icon(
-                    painterResource(if (clock.playing) R.drawable.ic_pause else R.drawable.ic_play),
-                    contentDescription = if (clock.playing) "Pause" else "Play",
+                    painterResource(R.drawable.ic_expand_more),
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = colors.primary,
                 )
-            }
-            IconButton(onClick = { clock.seek(elapsed.value - 5) }) {
-                Icon(painterResource(R.drawable.ic_replay), contentDescription = "Back 5 seconds")
-            }
-            ScrubSlider(clock, elapsed, total, Modifier.weight(1f))
-            IconButton(onClick = { clock.seek(elapsed.value + 5) }) {
-                Icon(painterResource(R.drawable.ic_forward), contentDescription = "Forward 5 seconds")
-            }
-            TextButton(onClick = clock::cycleSpeed, modifier = Modifier.widthIn(min = 56.dp)) {
-                Text("${if (clock.speed < 1f) clock.speed.toString() else clock.speed.toInt().toString()}×")
             }
         }
     }
+    if (speedOpen) {
+        SpeedDialog(
+            speed = clock.speed,
+            onPick = { next ->
+                clock.changeSpeed(next)
+                speedOpen = false
+            },
+            onDismiss = { speedOpen = false },
+        )
+    }
 }
 
+private fun speedLabel(speed: Float): String =
+    "${if (speed < 1f) speed.toString() else speed.toInt().toString()}×"
+
+/** The speeds as a radio list in a dialog, as Android shows a select's options. */
 @Composable
-private fun ScrubSlider(clock: AnalysisMapClock, elapsed: State<Double>, total: Double, modifier: Modifier) {
-    // Tenths of a second, as the label shows them: the clock moves every
-    // frame, but this bar needs to recompose only ten times a second.
-    val tenths by remember { derivedStateOf { (elapsed.value * 10).roundToInt() } }
-    val seconds = tenths / 10.0
-    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Slider(
-            value = if (total > 0) (seconds / total).toFloat().coerceIn(0f, 1f) else 0f,
-            onValueChange = { clock.seek(it * total) },
-            modifier = Modifier.fillMaxWidth().height(32.dp),
-        )
-        Text(
-            "${formatElapsed(seconds, 0.1)} / ${formatElapsed(total, 0.1)}",
-            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+private fun SpeedDialog(speed: Float, onPick: (Float) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Playback speed") },
+        text = {
+            Column(Modifier.selectableGroup()) {
+                for (option in PlaybackSpeeds) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .clip(MaterialTheme.shapes.small)
+                            .selectable(selected = option == speed, role = Role.RadioButton) { onPick(option) },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = option == speed, onClick = null)
+                        Text(
+                            speedLabel(option),
+                            modifier = Modifier.padding(start = 16.dp),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * A thin track filled up to the clock, with a round thumb that grows while
+ * dragged. Pressing anywhere on it seeks there. Drawn, not composed, so the
+ * moving clock only redraws it.
+ */
+@Composable
+private fun Scrubber(
+    clock: AnalysisMapClock,
+    elapsed: State<Double>,
+    total: Double,
+    marks: List<Double>,
+    modifier: Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    var dragging by remember { mutableStateOf(false) }
+    val inset = 10.dp
+    fun fraction(): Float = if (total > 0) (elapsed.value / total).toFloat().coerceIn(0f, 1f) else 0f
+    Spacer(
+        modifier
+            .height(48.dp)
+            .graphicsLayer()
+            .semantics {
+                contentDescription = "Lap position"
+                progressBarRangeInfo = ProgressBarRangeInfo(fraction(), 0f..1f)
+                setProgress { value ->
+                    clock.seek(value.toDouble() * total)
+                    true
+                }
+            }
+            .pointerInput(total) {
+                val edge = inset.toPx()
+                fun seekTo(x: Float) {
+                    if (total <= 0) return
+                    val span = (size.width - 2 * edge).coerceAtLeast(1f)
+                    clock.seek(((x - edge) / span).coerceIn(0f, 1f).toDouble() * total)
+                }
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    dragging = true
+                    seekTo(down.position.x)
+                    down.consume()
+                    drag(down.id) { change ->
+                        seekTo(change.position.x)
+                        change.consume()
+                    }
+                    dragging = false
+                }
+            }
+            .drawBehind {
+                val edge = inset.toPx()
+                val span = size.width - 2 * edge
+                val y = size.height / 2
+                val track = 4.dp.toPx()
+                val corner = CornerRadius(track / 2)
+                val at = edge + span * fraction()
+                drawRoundRect(colors.surfaceContainerHighest, Offset(edge, y - track / 2), Size(span, track), corner)
+                drawRoundRect(colors.primary, Offset(edge, y - track / 2), Size(at - edge, track), corner)
+                // Sector boundaries, so a sector can be found by eye.
+                if (total > 0) for (mark in marks) {
+                    if (mark <= 0 || mark >= total) continue
+                    val x = edge + span * (mark / total).toFloat()
+                    drawLine(colors.onSurfaceVariant, Offset(x, y - 6.dp.toPx()), Offset(x, y + 6.dp.toPx()), 1.5.dp.toPx())
+                }
+                drawCircle(colors.primary, (if (dragging) 10.dp else 7.dp).toPx(), Offset(at, y))
+            },
+    )
+}
+
+/** One car on [LiveTrackMap]: its index, livery colour and label, as on the desktop map. */
+internal class LiveMapCar(val index: Int, val color: Color, val label: String)
+
+// A car's positions can arrive anywhere from every frame to a few times a
+// second, often in bursts. Each car is drawn a little in the past, between the
+// two samples either side of that moment, so it always moves.
+private const val MinDelayNanos = 33_000_000L
+private const val MaxDelayNanos = 700_000_000L
+// The delay is this many typical update intervals, so the next sample has
+// usually arrived before the car reaches the newest one.
+private const val DelayIntervals = 1.6
+private const val Samples = 6
+// A dot that would move further than this share of the map teleported (pit
+// lane, reset) and snaps instead of sliding across.
+private const val SnapFraction = 0.2f
+
+/**
+ * A play-out buffer per car for [LiveTrackMap]: the last few positions (in
+ * pixels) with the frame they arrived on, and a smoothed update interval. A
+ * car is drawn at "now minus its delay", interpolated between the samples
+ * around that moment. Nothing is dropped from the stream; this only decides
+ * where between two received positions a dot is drawn.
+ */
+private class CarGlides {
+    private val times = LongArray(CARS * Samples)
+    private val xs = FloatArray(CARS * Samples)
+    private val ys = FloatArray(CARS * Samples)
+    private val counts = IntArray(CARS)
+    private val intervals = DoubleArray(CARS)
+
+    /** Layout changed: buffered pixels are stale, so start every car afresh. */
+    fun reset() {
+        counts.fill(0)
+    }
+
+    /** Where to draw car [index] at [frame], given its newest position in pixels. */
+    fun position(index: Int, targetX: Float, targetY: Float, frame: Long, snap: Float): Offset {
+        val base = index * Samples
+        val count = counts[index]
+        val newest = base + count - 1
+        if (count == 0 || targetX != xs[newest] || targetY != ys[newest]) {
+            val jump = count > 0 && (abs(targetX - xs[newest]) > snap || abs(targetY - ys[newest]) > snap)
+            if (count == 0 || jump) {
+                counts[index] = 0
+                intervals[index] = 0.0
+            } else {
+                val interval = (frame - times[newest]).toDouble()
+                // The dot is drawn at its delay behind now. If that has passed
+                // the newest sample, the dot has been waiting there: start the
+                // new segment from that moment, so it does not jump ahead.
+                val shownAt = frame - delayOf(index)
+                if (shownAt > times[newest]) times[newest] = shownAt
+                intervals[index] = if (intervals[index] == 0.0) interval else intervals[index] * 0.8 + interval * 0.2
+            }
+            push(index, frame, targetX, targetY)
+        }
+        return at(index, frame)
+    }
+
+    private fun delayOf(index: Int): Long =
+        (intervals[index] * DelayIntervals).toLong().coerceIn(MinDelayNanos, MaxDelayNanos)
+
+    private fun push(index: Int, frame: Long, x: Float, y: Float) {
+        val base = index * Samples
+        if (counts[index] == Samples) {
+            System.arraycopy(times, base + 1, times, base, Samples - 1)
+            System.arraycopy(xs, base + 1, xs, base, Samples - 1)
+            System.arraycopy(ys, base + 1, ys, base, Samples - 1)
+            counts[index] = Samples - 1
+        }
+        val slot = base + counts[index]
+        times[slot] = frame
+        xs[slot] = x
+        ys[slot] = y
+        counts[index]++
+    }
+
+    private fun at(index: Int, frame: Long): Offset {
+        val base = index * Samples
+        val count = counts[index]
+        val time = frame - delayOf(index)
+        if (count == 1 || time <= times[base]) return Offset(xs[base], ys[base])
+        for (slot in base + 1 until base + count) {
+            if (time <= times[slot]) {
+                val span = (times[slot] - times[slot - 1]).toFloat().coerceAtLeast(1f)
+                val t = ((time - times[slot - 1]) / span).coerceIn(0f, 1f)
+                return Offset(xs[slot - 1] + (xs[slot] - xs[slot - 1]) * t, ys[slot - 1] + (ys[slot] - ys[slot - 1]) * t)
+            }
+        }
+        val newest = base + count - 1
+        return Offset(xs[newest], ys[newest])
+    }
+
+    companion object {
+        const val CARS = 24
+    }
+}
+
+/**
+ * The circuit with every car where it is now, drawn like the desktop map: a
+ * dot in each car's livery colour with a label above it. The circuit and the
+ * labels are drawn once into textures. Each display frame draws every car a
+ * little in the past, between the positions received either side of that
+ * moment, so cars move smoothly whatever the update rate. The positions are
+ * read while drawing, so nothing recomposes.
+ */
+@Composable
+internal fun LiveTrackMap(
+    trackId: Int,
+    aeroMode: String,
+    /** The newest positions, read while drawing. */
+    positions: () -> MapPositions,
+    /** The display frame time in nanoseconds; changes every frame while shown. */
+    frameTick: State<Long>,
+    /** Cars to draw; later ones sit on top. */
+    cars: List<LiveMapCar>,
+    trackColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current.applicationContext
+    val outline by produceState<TrackOutline?>(null, context, trackId) {
+        value = null
+        if (trackId >= 0) value = withContext(Dispatchers.IO) { loadTrackOutline(context, trackId) }
+    }
+    val measurer = rememberTextMeasurer()
+    val labelStyle = androidx.compose.ui.text.TextStyle(
+        fontSize = 8.5.sp,
+        fontWeight = FontWeight.Bold,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+        color = Color.White,
+    )
+    val messageStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = trackColor.copy(alpha = 0.6f))
+    val slm = aeroMode == "slm"
+    val glides = remember { CarGlides() }
+    BoxWithConstraints(modifier.clipToBounds()) {
+        val density = LocalDensity.current
+        val width = constraints.maxWidth.toFloat()
+        val height = constraints.maxHeight.toFloat()
+        val fit = remember(outline, width, height, density) {
+            outline?.let { track ->
+                val pad = with(density) { (ZoneOffset + ZoneWidth + 8.dp).toPx() }
+                fitTrack(track, width, height, pad)
+            }
+        }
+        Spacer(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer()
+                .semantics { contentDescription = "Live map of every car" }
+                .drawWithCache {
+                    val track = outline
+                    if (fit == null || track == null) {
+                        val text = measurer.measure(
+                            if (trackId < 0) "Waiting for the track" else "No map for this circuit",
+                            messageStyle,
+                        )
+                        return@drawWithCache onDrawBehind {
+                            drawText(text, topLeft = Offset((size.width - text.size.width) / 2f, (size.height - text.size.height) / 2f))
+                        }
+                    }
+                    val pad = (ZoneOffset + ZoneWidth + 6.dp).toPx()
+                    val originX = floor(track.boundsMinX * fit.scale + fit.offsetX - pad).coerceAtLeast(0f)
+                    val originY = floor(track.boundsMinY * fit.scale + fit.offsetY - pad).coerceAtLeast(0f)
+                    val boxWidth = (ceil(track.boundsMaxX * fit.scale + fit.offsetX + pad) - originX).coerceIn(1f, size.width - originX)
+                    val boxHeight = (ceil(track.boundsMaxY * fit.scale + fit.offsetY + pad) - originY).coerceIn(1f, size.height - originY)
+                    val circuit = ImageBitmap(boxWidth.toInt().coerceAtLeast(1), boxHeight.toInt().coerceAtLeast(1))
+                    val origin = Offset(originX, originY)
+                    CanvasDrawScope().draw(this, layoutDirection, androidx.compose.ui.graphics.Canvas(circuit), Size(boxWidth, boxHeight)) {
+                        drawCircuit(track, fit, origin, DarkMapPalette, trackColor, slm)
+                    }
+                    val circuitTexture = circuit.asAndroidBitmap().copy(android.graphics.Bitmap.Config.HARDWARE, false)
+                        ?.asImageBitmap() ?: circuit
+
+                    // The desktop label: a dark pill with the livery colour
+                    // down its left edge and the three-letter code, drawn once.
+                    val labelHeight = 13.dp.toPx()
+                    val accent = 3.dp.toPx()
+                    val padX = 5.dp.toPx()
+                    val minWidth = 30.dp.toPx()
+                    val corner = CornerRadius(3.dp.toPx())
+                    val pill = Color(0xeb0a0f1e)
+                    val sprites = cars.map { car ->
+                        val text = measurer.measure(car.label, labelStyle)
+                        val spriteWidth = max(minWidth, text.size.width + accent + padX * 2)
+                        val sprite = ImageBitmap(ceil(spriteWidth).toInt(), ceil(labelHeight).toInt())
+                        CanvasDrawScope().draw(this, layoutDirection, androidx.compose.ui.graphics.Canvas(sprite), Size(spriteWidth, labelHeight)) {
+                            drawRoundRect(pill, size = size, cornerRadius = corner)
+                            drawRoundRect(car.color, size = Size(accent * 2, size.height), cornerRadius = corner)
+                            drawRect(pill, topLeft = Offset(accent, 0f), size = Size(accent, size.height))
+                            drawText(text, topLeft = Offset(accent + (size.width - accent - text.size.width) / 2f, (size.height - text.size.height) / 2f))
+                        }
+                        sprite.asAndroidBitmap().copy(android.graphics.Bitmap.Config.HARDWARE, false)?.asImageBitmap() ?: sprite
+                    }
+                    val dotRadius = 4.5.dp.toPx()
+                    val labelGap = 3.dp.toPx()
+                    val snap = SnapFraction * max(size.width, size.height)
+                    glides.reset()
+                    onDrawBehind {
+                        val frame = frameTick.value
+                        drawImage(circuitTexture, topLeft = origin)
+                        val now = positions()
+                        cars.forEachIndexed { slot, car ->
+                            val index = car.index
+                            if (index !in 0 until CarGlides.CARS || !now.hasPosition(index)) return@forEachIndexed
+                            val target = fit.toScreen(track.mapPosition(now.xAt(index), now.zAt(index)))
+                            val point = glides.position(index, target.x, target.y, frame, snap)
+                            val x = point.x
+                            val y = point.y
+                            drawCircle(car.color, dotRadius, point)
+                            val sprite = sprites[slot]
+                            // Whole pixels, so the label text is not resampled every frame.
+                            drawImage(
+                                sprite,
+                                topLeft = Offset(
+                                    kotlin.math.round(x - sprite.width / 2f),
+                                    kotlin.math.round(y - dotRadius - labelGap - sprite.height),
+                                ),
+                            )
+                        }
+                    }
+                },
         )
     }
 }

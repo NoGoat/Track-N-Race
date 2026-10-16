@@ -298,6 +298,28 @@ internal class AnalysisDeltaCurve(
 ) {
     val size: Int get() = distance.size
 
+    /** Indices of the valid samples, in order. Built once per curve. */
+    internal val validIndices: IntArray by lazy { (0 until size).filter { valid[it] }.toIntArray() }
+
+    /**
+     * Valid samples split into runs at each invalid one: with sector delta
+     * the desktop marks each sector's start invalid, so a run is a sector.
+     */
+    internal val validRuns: List<IntArray> by lazy {
+        val runs = mutableListOf<IntArray>()
+        val current = ArrayList<Int>()
+        for (index in 0 until size) {
+            if (!valid[index]) {
+                if (current.isNotEmpty()) runs += current.toIntArray()
+                current.clear()
+                continue
+            }
+            current += index
+        }
+        if (current.isNotEmpty()) runs += current.toIntArray()
+        runs
+    }
+
     /** The plotted half-range in seconds, as the desktop rounds it. */
     val range: Double get() = max(0.5, kotlin.math.ceil(maxAbsDeltaSeconds * 10) / 10)
 
@@ -336,23 +358,30 @@ internal data class AnalysisDeltaSummary(
     val lap: Double? = null,
 )
 
-private fun interpolateDelta(curve: AnalysisDeltaCurve, indices: List<Int>, distance: Double?): Double? {
-    if (distance == null) return null
-    var before = -1
-    for (index in indices) {
-        val sample = curve.distance[index]
-        if (sample < distance) {
-            before = index
-            continue
-        }
-        if (sample == distance) return curve.delta[index]
-        if (before < 0) return null
-        val span = sample - curve.distance[before]
-        if (span <= 0) return curve.delta[index]
-        val ratio = (distance - curve.distance[before]) / span
-        return curve.delta[before] + (curve.delta[index] - curve.delta[before]) * ratio
+/**
+ * The delta at [distance] along the samples [indices] (ascending distance),
+ * interpolated between the samples either side. Called ten times a second
+ * while following the desktop, so it searches rather than scans.
+ */
+private fun interpolateDelta(curve: AnalysisDeltaCurve, indices: IntArray, distance: Double?): Double? {
+    if (distance == null || indices.isEmpty()) return null
+    // First position whose sample is at or beyond the distance.
+    var lo = 0
+    var hi = indices.size
+    while (lo < hi) {
+        val mid = (lo + hi) ushr 1
+        if (curve.distance[indices[mid]] < distance) lo = mid + 1 else hi = mid
     }
-    return if (before >= 0) curve.delta[before] else null
+    if (lo == indices.size) return curve.delta[indices.last()]
+    val index = indices[lo]
+    val sample = curve.distance[index]
+    if (sample == distance) return curve.delta[index]
+    if (lo == 0) return null
+    val before = indices[lo - 1]
+    val span = sample - curve.distance[before]
+    if (span <= 0) return curve.delta[index]
+    val ratio = (distance - curve.distance[before]) / span
+    return curve.delta[before] + (curve.delta[index] - curve.delta[before]) * ratio
 }
 
 /**
@@ -371,20 +400,12 @@ internal fun summarizeDelta(
     ) return AnalysisDeltaSummary()
 
     if (curve.sectorDelta) {
-        val sectors = mutableListOf(mutableListOf<Int>())
-        for (index in 0 until curve.size) {
-            if (!curve.valid[index]) {
-                if (sectors.last().isNotEmpty()) sectors += mutableListOf<Int>()
-                continue
-            }
-            sectors.last() += index
-        }
-        val bySector = sectors.filter { it.isNotEmpty() }
+        val bySector = curve.validRuns
         val full = bySector.lastOrNull()?.lastOrNull()?.let { curve.distance[it] }
         val visible = visibleDistance ?: full ?: return AnalysisDeltaSummary()
         val values = (0..2).map { sector ->
             val indices = bySector.getOrNull(sector)
-            if (indices.isNullOrEmpty() || visible < curve.distance[indices.first()]) {
+            if (indices == null || indices.isEmpty() || visible < curve.distance[indices.first()]) {
                 null
             } else {
                 interpolateDelta(curve, indices, min(visible, curve.distance[indices.last()]))
@@ -394,7 +415,7 @@ internal fun summarizeDelta(
         return AnalysisDeltaSummary(values, if (reached.isEmpty()) null else reached.sum())
     }
 
-    val indices = (0 until curve.size).filter { curve.valid[it] }
+    val indices = curve.validIndices
     val full = indices.lastOrNull()?.let { curve.distance[it] }
     val visible = visibleDistance ?: full ?: return AnalysisDeltaSummary()
     val splits = resolvedSectorSplits(current, comparison)

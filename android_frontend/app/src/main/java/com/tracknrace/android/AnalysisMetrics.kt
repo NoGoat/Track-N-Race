@@ -236,7 +236,6 @@ internal data class AnalysisSeries(
 internal data class AnalysisConfig(
     val view: AnalysisView = AnalysisView.GRAPH,
     val individualGraphs: Boolean = false,
-    val syncedTooltip: Boolean = false,
     val sectorBoundaries: Boolean = false,
     val sectorDelta: Boolean = false,
     val currentLabel: String = "",
@@ -253,7 +252,6 @@ internal data class AnalysisConfig(
         .put("version", 1)
         .put("view", view.name)
         .put("individualGraphs", individualGraphs)
-        .put("syncedTooltip", syncedTooltip)
         .put("sectorBoundaries", sectorBoundaries)
         .put("sectorDelta", sectorDelta)
         .put("currentLabel", currentLabel)
@@ -352,7 +350,6 @@ internal data class AnalysisConfig(
             return AnalysisConfig(
                 view = readView(root),
                 individualGraphs = root.optBoolean("individualGraphs"),
-                syncedTooltip = root.optBoolean("syncedTooltip"),
                 sectorBoundaries = root.optBoolean("sectorBoundaries"),
                 sectorDelta = root.optBoolean("sectorDelta"),
                 currentLabel = label("currentLabel"),

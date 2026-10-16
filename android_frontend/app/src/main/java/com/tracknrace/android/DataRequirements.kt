@@ -11,6 +11,7 @@ internal object DataRow {
     const val PARTICIPANTS = 1 shl 8
     const val ALL_STATUS = 1 shl 9
     const val TYRE_SETS = 1 shl 10
+    const val POSITIONS = 1 shl 13
 }
 
 /**
@@ -23,11 +24,21 @@ internal object V6Data {
     const val SPEED = 1
     const val RPM = 2
     const val GEAR = 3
+    const val THROTTLE = 4
+    const val BRAKE = 5
+    const val STEERING = 6
+    const val AERO = 7
     const val TYRE_SURFACE_TEMP = 8
+    const val TYRE_INNER_TEMP = 9
+    const val ENGINE_TEMP = 11
+    const val TYRE_WEAR = 12
     const val TYRE_STATE = 13
+    const val DAMAGE = 14
     const val FUEL = 15
     const val ERS_STORE = 16
+    const val ERS_DEPLOYMENT = 18
     const val BRAKE_BIAS = 20
+    const val POSITION = 23
     const val LAP_TIMING = 24
 }
 
@@ -53,14 +64,32 @@ internal enum class DataConsumer(
         listOf(V6Data.SPEED, V6Data.RPM, V6Data.GEAR),
     ),
 
-    /** The four-corner surface temperatures. */
-    TYRE_TEMPERATURES(DataRow.TELEMETRY, listOf(V6Data.TYRE_SURFACE_TEMP)),
+    /** Throttle, brake and the open DRS / SLM flag. */
+    PEDALS_AND_AERO(
+        DataRow.TELEMETRY,
+        listOf(V6Data.THROTTLE, V6Data.BRAKE, V6Data.AERO),
+    ),
 
-    /** ERS level and mode, fuel margin and brake bias. */
+    /** The four-corner surface and inner (carcass) temperatures. */
+    TYRE_TEMPERATURES(
+        DataRow.TELEMETRY,
+        listOf(V6Data.TYRE_SURFACE_TEMP, V6Data.TYRE_INNER_TEMP),
+    ),
+
+    /** The four-corner tyre wear. */
+    TYRE_WEAR(DataRow.DAMAGE, listOf(V6Data.TYRE_WEAR)),
+
+    /** Body, tyre and brake damage, faults and power-unit wear. */
+    CAR_DAMAGE(DataRow.DAMAGE, listOf(V6Data.DAMAGE)),
+
+    /** ERS level and deploy mode, fuel margin and brake bias. */
     POWER_UNIT(
         DataRow.STATUS,
-        listOf(V6Data.ERS_STORE, V6Data.FUEL, V6Data.BRAKE_BIAS),
+        listOf(V6Data.ERS_STORE, V6Data.ERS_DEPLOYMENT, V6Data.FUEL, V6Data.BRAKE_BIAS),
     ),
+
+    /** Every car's world position, for the dashboard's live map. */
+    CAR_POSITIONS(DataRow.POSITIONS, listOf(V6Data.POSITION)),
 
     /** Fitted compound and tyre age on the dashboard. */
     FITTED_TYRE(DataRow.STATUS, listOf(V6Data.TYRE_STATE)),

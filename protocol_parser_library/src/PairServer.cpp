@@ -129,6 +129,10 @@ struct PairLapBlock {
     int   lapNum{};
     float startSessionTime{};
     float endSessionTime{};
+    // The lap's tyre, as the desktop's lap picker labels it: actual and
+    // visual compound of its last status sample that has one, 0 if none.
+    int   tyreCompound{};
+    int   visualCompound{};
 };
 
 struct PairLapTime {
@@ -144,6 +148,29 @@ struct PairLapBlocksRow {
     bool                      deltaAvailable{};
     int                       trackLengthM{};
     int                       playbackDriverIndex{-1};
+};
+
+// The full row's blocks, read for the fields above plus each status sample's
+// compounds; the status history itself is not forwarded.
+struct PairStatusCompound {
+    int tyre_compound{};
+    int visual_compound{};
+};
+
+struct PairLapBlockSource {
+    int   lapNum{};
+    float startSessionTime{};
+    float endSessionTime{};
+    std::vector<PairStatusCompound> statusHistory;
+};
+
+struct PairLapBlocksSource {
+    std::vector<PairLapBlockSource> blocks;
+    std::vector<PairLapTime>        laps;
+    int                             fastestLapNum{};
+    bool                            deltaAvailable{};
+    int                             trackLengthM{};
+    int                             playbackDriverIndex{-1};
 };
 
 struct PairRowsFrame {
@@ -618,7 +645,9 @@ std::optional<uint64_t> stateKeyOf(uint8_t type, int v6Type, std::string_view js
     int car = -1;
     if (type == 10) {
         car = intFieldAfter(json, "\"car_idx\":").value_or(-1);
-    } else if (v6Type > 0 && (type == 7 || type == 9)) {
+    } else if (v6Type > 0 && (type == 7 || type == 9 || type == 13)) {
+        // V6 playback sends one car per timing, status or positions patch;
+        // keyed without the car, each would replace every other car's.
         static constexpr std::string_view CAR = "{\"idx\":";
         const size_t first = json.find(CAR);
         if (first == std::string_view::npos) return std::nullopt;
@@ -642,8 +671,25 @@ std::string writeJson(const T& value) {
 }
 
 std::string phoneLapBlocks(const std::string& json) {
+    PairLapBlocksSource source;
+    if (glz::read<kPartialRead>(source, std::string_view(json))) return json;
     PairLapBlocksRow row;
-    if (glz::read<kPartialRead>(row, std::string_view(json))) return json;
+    row.blocks.reserve(source.blocks.size());
+    for (const auto& block : source.blocks) {
+        PairLapBlock out{block.lapNum, block.startSessionTime, block.endSessionTime};
+        for (auto it = block.statusHistory.rbegin(); it != block.statusHistory.rend(); ++it) {
+            if (it->tyre_compound <= 0) continue;
+            out.tyreCompound = it->tyre_compound;
+            out.visualCompound = it->visual_compound;
+            break;
+        }
+        row.blocks.push_back(out);
+    }
+    row.laps = std::move(source.laps);
+    row.fastestLapNum = source.fastestLapNum;
+    row.deltaAvailable = source.deltaAvailable;
+    row.trackLengthM = source.trackLengthM;
+    row.playbackDriverIndex = source.playbackDriverIndex;
     return writeJson(row);
 }
 

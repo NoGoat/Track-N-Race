@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Track N Race · F1 car wireframe, top view, nose pointing right (driver's left side on top).
-  Shared by the Electron and Qt frontends; keep both copies identical:
+  Shared by the Electron, Qt and Android frontends; keep all copies identical:
     electron-frontend/src/renderer/src/assets/car/f1-car-wireframe.svg
     qt_frontend/assets/car/f1-car-wireframe.svg  (:/car/f1-car-wireframe.svg)
+    android_frontend/app/src/main/assets/car/f1-car-wireframe.svg
 
   Drawn from top-view reference photos of current cars (2.0 m wide, 5.2 m to the rear wing);
   the inner geometry is authored nose-up and rotated by the #car group transform.
