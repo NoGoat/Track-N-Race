@@ -83,6 +83,7 @@ import com.tracknrace.android.pages.RecordingsSheet
 import com.tracknrace.android.pages.SettingsScreen
 import com.tracknrace.android.pages.TimingScreen
 import com.tracknrace.android.pages.TyresScreen
+import com.tracknrace.android.pages.tyreDisplay
 import com.tracknrace.android.ui.theme.darkAppColorScheme
 import kotlinx.coroutines.delay
 
@@ -207,11 +208,10 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     // The cold state also carries the lap clock, ERS and fuel, which change
     // several times a second; the labels almost never do.
     val coldLabels by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.cold.labels } }
-    // Only what the Tyres page shows, so the lap clock does not recompose it.
-    val tyresCold by remember(store) {
-        derivedStateOf(structuralEqualityPolicy()) {
-            store.cold.let { DashboardColdState(sessionType = it.sessionType, tyreSets = it.tyreSets, labels = it.labels) }
-        }
+    // Only what the Tyres page shows, as it shows it: the lap clock, and
+    // tyre-set updates that change no shown value, recompose nothing.
+    val tyreRows by remember(store) {
+        derivedStateOf(structuralEqualityPolicy()) { tyreDisplay(store.cold) }
     }
     val rosterMissing by remember(store) {
         derivedStateOf(structuralEqualityPolicy()) { store.timing.needsParticipantsRefresh() }
@@ -332,7 +332,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             onRequestParticipants = telemetry::requestParticipants,
                         )
                         AppScreen.TYRES -> TyresScreen(
-                            rememberCurrentWhileActive(destinationActive) { tyresCold },
+                            display = { tyreRows },
                         )
                         AppScreen.ANALYSIS -> AnalysisScreen(
                             store = store,

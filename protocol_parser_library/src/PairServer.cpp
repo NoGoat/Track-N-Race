@@ -246,10 +246,6 @@ constexpr const char* kTooManyAttempts =
     "Pairing closed after too many wrong codes. Start pairing again.";
 constexpr size_t kMaxFrameBytes = 1024 * 1024;
 constexpr size_t kMaxBufferedBytes = 8 * 1024 * 1024;
-// Multi-car and session state that the game itself sends at 2 Hz. V6 playback
-// projects it at sample rate (22 timing patches per sample); a phone gets each
-// car's newest value at most this often.
-constexpr int64_t kThrottledRowIntervalMs = 250;
 // A send blocked this long means the phone stopped reading altogether. Shorter
 // pauses (app start-up, a GC, a rotation) are absorbed by the outbox.
 constexpr int64_t kSendStallMs = 15'000;
@@ -659,10 +655,6 @@ std::optional<uint64_t> stateKeyOf(uint8_t type, int v6Type, std::string_view js
         static_cast<uint16_t>(car);
 }
 
-bool throttledRowType(uint8_t type) {
-    return type == 5 || type == 7 || type == 9;
-}
-
 template <class T>
 std::string writeJson(const T& value) {
     std::string json;
@@ -747,11 +739,7 @@ struct PairServer::Impl {
         std::condition_variable outgoingReady;
         std::deque<OutboxUnit> outgoing;
         size_t pendingBytes{};
-        // Throttled rows that arrived before their key's interval elapsed.
-        std::map<uint64_t, std::string> held;
-        std::map<uint64_t, int64_t> lastReleasedMs;
         uint64_t supersededRows{};
-        uint64_t heldRows{};
 
         std::vector<uint8_t> incoming;
         bool upgraded{};
@@ -964,24 +952,6 @@ struct PairServer::Impl {
         batch.rows.emplace_back(key, std::move(row));
     }
 
-    // Moves held rows into the open batch: all of them before a frame, else
-    // those whose interval has elapsed. Returns the next held row's due time.
-    static std::optional<int64_t> releaseHeldLocked(Client& client, int64_t now, bool all) {
-        std::optional<int64_t> nextDue;
-        for (auto iterator = client.held.begin(); iterator != client.held.end();) {
-            const int64_t due = client.lastReleasedMs[iterator->first] + kThrottledRowIntervalMs;
-            if (all || due <= now) {
-                client.lastReleasedMs[iterator->first] = now;
-                putRowLocked(client, iterator->first, std::move(iterator->second));
-                iterator = client.held.erase(iterator);
-            } else {
-                nextDue = nextDue ? std::min(*nextDue, due) : due;
-                ++iterator;
-            }
-        }
-        return nextDue;
-    }
-
     bool checkOverflow(const std::shared_ptr<Client>& client, size_t pendingBytes,
                        size_t queuedUnits, size_t frameBytes) {
         if (pendingBytes <= kMaxBufferedBytes) return true;
@@ -1002,8 +972,6 @@ struct PairServer::Impl {
         size_t queuedUnits = 0;
         {
             std::lock_guard lock(client->outgoingMutex);
-            // Rows held back by the throttle predate this frame.
-            releaseHeldLocked(*client, nowMs(), true);
             client->pendingBytes += frameBytes;
             client->outgoing.push_back(std::move(unit));
             pendingBytes = client->pendingBytes;
@@ -1014,38 +982,15 @@ struct PairServer::Impl {
     }
 
     // Queues a latest-state row under its key, superseding an unsent older
-    // value. A throttled row waits until its key's interval has elapsed.
-    bool enqueueState(const std::shared_ptr<Client>& client, uint64_t key,
-                      const std::string& row, bool throttled, bool completeRow) {
+    // value: a phone gets every value as soon as it can take it, and never a
+    // stale one behind a newer.
+    bool enqueueState(const std::shared_ptr<Client>& client, uint64_t key, const std::string& row) {
         if (!client->running.load()) return false;
         size_t pendingBytes = 0;
         size_t queuedUnits = 0;
         {
             std::lock_guard lock(client->outgoingMutex);
-            const int64_t now = nowMs();
-            if (throttled && completeRow) {
-                // A complete row replaces every patch of its type, so patches
-                // still held back are older than it and must not follow it.
-                const uint64_t type = key >> 32;
-                for (auto iterator = client->held.begin(); iterator != client->held.end();) {
-                    if ((iterator->first >> 32) == type && iterator->first != key)
-                        iterator = client->held.erase(iterator);
-                    else
-                        ++iterator;
-                }
-            }
-            const auto released = client->lastReleasedMs.find(key);
-            const bool early = released != client->lastReleasedMs.end() &&
-                now - released->second < kThrottledRowIntervalMs;
-            if (throttled && (client->held.contains(key) || early)) {
-                auto& slot = client->held[key];
-                if (!slot.empty()) ++client->supersededRows;
-                slot = row;
-                ++client->heldRows;
-            } else {
-                if (throttled) client->lastReleasedMs[key] = now;
-                putRowLocked(*client, key, row);
-            }
+            putRowLocked(*client, key, row);
             pendingBytes = client->pendingBytes;
             queuedUnits = client->outgoing.size();
         }
@@ -1633,7 +1578,7 @@ struct PairServer::Impl {
     }
 
     // Takes the next outbox unit as one or two ready-to-send frames, waiting
-    // for output or for a held row to fall due. False once the client retires.
+    // for output. False once the client retires.
     // Sealing happens here, on the writer thread, in send order.
     bool nextOutgoing(const std::shared_ptr<Client>& client, pair::FrameCipher& cipher,
                       std::vector<uint8_t>& text, std::vector<uint8_t>& binary,
@@ -1641,14 +1586,8 @@ struct PairServer::Impl {
         std::unique_lock lock(client->outgoingMutex);
         while (true) {
             if (!client->running.load()) return false;
-            const auto nextDue = releaseHeldLocked(*client, nowMs(), false);
             if (!client->outgoing.empty()) break;
-            if (nextDue) {
-                client->outgoingReady.wait_for(lock,
-                    std::chrono::milliseconds(std::max<int64_t>(1, *nextDue - nowMs())));
-            } else {
-                client->outgoingReady.wait(lock);
-            }
+            client->outgoingReady.wait(lock);
         }
         if (client->pendingSendKey) {
             cipher.setKey(*client->pendingSendKey);
@@ -1783,11 +1722,9 @@ struct PairServer::Impl {
         if (client->writer.joinable()) client->writer.join();
         closePairSocket(socket);
         uint64_t superseded = 0;
-        uint64_t heldRows = 0;
         {
             std::lock_guard lock(client->outgoingMutex);
             superseded = client->supersededRows;
-            heldRows = client->heldRows;
         }
         {
             std::lock_guard lock(mutex);
@@ -1803,8 +1740,7 @@ struct PairServer::Impl {
             " lifetime_ms=" + std::to_string(nowMs() - client->acceptedAtMs) +
             " received_bytes=" + std::to_string(client->receivedBytes) +
             " sent_bytes=" + std::to_string(client->sentBytes) +
-            " superseded_rows=" + std::to_string(superseded) +
-            " throttled_rows=" + std::to_string(heldRows));
+            " superseded_rows=" + std::to_string(superseded));
         notifyRequirements();
         notifyState();
     }
@@ -2238,9 +2174,8 @@ void PairServer::publishRow(const std::string& source) {
         }
     }
     if (stateKey) {
-        const bool throttled = throttledRowType(type);
         for (const auto& client : recipients)
-            impl_->enqueueState(client, *stateKey, json, throttled, v6Type == 0);
+            impl_->enqueueState(client, *stateKey, json);
         return;
     }
     const std::string frame = writeJson(PairRowsFrame{"rows", {json}});

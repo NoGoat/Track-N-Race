@@ -72,12 +72,57 @@ import com.tracknrace.android.formatDelta
 import com.tracknrace.android.formatLapTimeMs
 import com.tracknrace.android.summarizeDelta
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.max
+import kotlin.math.min
 import kotlinx.coroutines.delay
 
 private const val LAP_SYNC_INTERVAL_MS = 1_000L
-private const val DELTA_READOUT_INTERVAL_MS = 100L
-private const val CLOCK_FRAME_NANOS = 30_000_000L
+// The followed cursor: how far ahead of the newest sample it may run before
+// waiting for the next, how quickly it closes on a sample it has drifted
+// from, and how far off a sample must be to be a seek rather than drift.
+private const val CURSOR_MAX_LEAD_SECONDS = 0.5
+private const val CURSOR_CORRECTION_SECONDS = 0.15
+private const val CURSOR_SNAP_SECONDS = 1.0
+
+/**
+ * The desktop's playback cursor as a smooth clock. Its position arrives a few
+ * times a second, in bursts; between samples the cursor moves on at the
+ * playback speed, and each new sample pulls it back gently rather than making
+ * it jump. A seek or a pause is followed at once.
+ */
+private class SmoothCursor {
+    private var sample = Double.NaN
+    private var sampleAt = 0L
+    private var shown = Double.NaN
+    private var shownAt = 0L
+
+    fun at(now: Long, latest: Double, playing: Boolean, speed: Float): Double {
+        if (!latest.isFinite()) {
+            shown = Double.NaN
+            sample = Double.NaN
+            return Double.NaN
+        }
+        if (latest != sample) {
+            sample = latest
+            sampleAt = now
+        }
+        val rate = if (playing) speed.toDouble().coerceAtLeast(0.0) else 0.0
+        // Where the desktop is now, by the newest sample and the speed.
+        val predicted = sample + min((now - sampleAt) / 1e9, CURSOR_MAX_LEAD_SECONDS) * rate
+        if (!shown.isFinite() || !playing || abs(predicted - shown) > CURSOR_SNAP_SECONDS) {
+            shown = predicted
+        } else {
+            val dt = ((now - shownAt) / 1e9).coerceIn(0.0, 0.1)
+            val advanced = shown + dt * rate
+            val pull = 1.0 - exp(-dt / CURSOR_CORRECTION_SECONDS)
+            shown = advanced + (predicted - advanced) * pull
+        }
+        shownAt = now
+        return shown
+    }
+}
 
 /**
  * Lap analysis of the recording the desktop is playing: Graph, Split and Map
@@ -143,15 +188,13 @@ internal fun AnalysisScreen(
     }
     LaunchedEffect(active, fixed, current) {
         if (!active) return@LaunchedEffect
-        var lastUpdate = 0L
+        val cursorClock = SmoothCursor()
         while (true) {
             withFrameNanos { now ->
-                // 30 Hz is smooth for a marker moving a pixel a frame, and on a
-                // low-end phone replaying the whole window costs ~9 ms of
-                // render-thread time per frame, so skip every other vsync.
-                if (now - lastUpdate < CLOCK_FRAME_NANOS) return@withFrameNanos
-                lastUpdate = now
-                val cursor = store.latestPlaybackCursorTime()
+                // Every frame: the desktop's cursor arrives in uneven bursts, so
+                // it is carried forward at the playback speed between them.
+                val transport = store.latestTransport()
+                val cursor = cursorClock.at(now, store.latestPlaybackCursorTime(), transport.playing, transport.speed)
                 val offset = if (!fixed && current != null && cursor.isFinite()) cursor - current.startSessionTime else Double.NaN
                 if (offset != cursorOffset.doubleValue && !(offset.isNaN() && cursorOffset.doubleValue.isNaN())) {
                     cursorOffset.doubleValue = offset
@@ -393,14 +436,15 @@ private fun rememberVisibleDistance(followCursor: Boolean, current: AnalysisLap?
             return@LaunchedEffect
         }
         while (true) {
+            withFrameNanos { }
             val offset = cursorOffset.value
             val progress = current?.progress
-            visible.value = when {
+            val next = when {
                 !offset.isFinite() || progress == null -> Double.NaN
                 offset >= progress.maxTime -> progress.maxDistance
                 else -> progress.distanceAt(offset)
             }
-            delay(DELTA_READOUT_INTERVAL_MS)
+            if (next != visible.value && !(next.isNaN() && visible.value?.isNaN() == true)) visible.value = next
         }
     }
     return visible

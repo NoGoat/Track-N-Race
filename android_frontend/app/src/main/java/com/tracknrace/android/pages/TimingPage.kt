@@ -22,6 +22,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.structuralEqualityPolicy
@@ -51,7 +54,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.conflate
 
 internal const val PARTICIPANTS_RETRY_DELAY_MS = 3_000L
-private const val TIMING_REFRESH_MS = 250L
+
+// The driver line of a compact row: tall enough for the "YOU" badge, and the
+// height the gap is painted over it at.
+private val DriverLineHeight = 26.dp
 
 // The tower's card, split across its header item and last row item.
 private val TopCardShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
@@ -66,42 +72,72 @@ internal fun TimingScreen(
     active: Boolean = true,
 ) {
     // Timing rows arrive several times a second and nearly every row's gap
-    // changes each time. Show the newest state at most every
-    // TIMING_REFRESH_MS: on a low-end phone a full tower update is 20-30 ms.
-    // An outgoing page stops collecting, which freezes it during the switch.
+    // changes each time. The newest state is shown as it arrives, at most once
+    // a frame (snapshot changes are applied per frame). An outgoing page stops
+    // collecting, which freezes it during the switch.
     val latest by rememberUpdatedState(state)
+    val rows = remember { TimingRows().also { it.update(Snapshot.withoutReadObservation { state() }) } }
     val shown = produceState(Snapshot.withoutReadObservation { state() }, active) {
         if (!active) return@produceState
         snapshotFlow { latest() }.conflate().collect {
+            rows.update(it)
             value = it
-            delay(TIMING_REFRESH_MS)
         }
     }
-    TimingTower(shown, labels, oneLine, onRequestParticipants, active)
+    TimingTower(shown, rows, labels, oneLine, onRequestParticipants, active)
+}
+
+/** One car's row values, each a state written only when it changes. */
+@Stable
+private class TimingRowState {
+    var car by mutableStateOf<TimingCarEntry?>(null)
+    var driver by mutableStateOf<TimingDriver?>(null)
+    var tyre by mutableStateOf<TimingTyreStatus?>(null)
+}
+
+/**
+ * The tower's rows, kept per car. Each update writes every car's values into
+ * its row; a write of an equal value is no change, so only the rows whose
+ * values changed recompose. The gap is left out: it changes on nearly every
+ * update and is painted from the newest state while drawing.
+ */
+@Stable
+private class TimingRows {
+    private val rows = HashMap<Int, TimingRowState>()
+
+    fun of(index: Int): TimingRowState = rows.getOrPut(index) { TimingRowState() }
+
+    fun update(tower: TimingTowerState) {
+        for (car in tower.cars) {
+            val row = of(car.index)
+            row.car = car.copy(currentLapMs = 0, gapMs = 0)
+            row.driver = tower.drivers[car.index]
+            row.tyre = tower.tyreStatuses[car.index]
+        }
+    }
 }
 
 @Composable
 private fun TimingTower(
     state: State<TimingTowerState>,
+    rows: TimingRows,
     labels: Map<String, String>,
     oneLine: Boolean,
     onRequestParticipants: () -> Unit,
     active: Boolean,
 ) {
-    // Gaps change on nearly every update and the current lap time on every
-    // one. The tower is composed from the rest, compared by value, so an
-    // update that only moves gaps recomposes nothing: the gap readouts read
-    // the newest state while drawing and repaint on their own.
-    val cars by remember(state) {
+    // The list holds only the running order: it recomposes when a car moves
+    // up or down, not when a car's lap or tyre changes. Each row reads its own
+    // car from the state, so an update recomposes the rows it changed and no
+    // others; gaps, which change on nearly every update, repaint while drawing.
+    val order by remember(state) {
         derivedStateOf(structuralEqualityPolicy()) {
             state.value.cars
                 .filter { it.position > 0 && it.resultStatus >= 1 }
                 .sortedBy(TimingCarEntry::position)
-                .map { it.copy(currentLapMs = 0, gapMs = 0) }
+                .map { it.index }
         }
     }
-    val drivers by remember(state) { derivedStateOf(structuralEqualityPolicy()) { state.value.drivers } }
-    val tyres by remember(state) { derivedStateOf(structuralEqualityPolicy()) { state.value.tyreStatuses } }
     val playerIndex by remember(state) { derivedStateOf(structuralEqualityPolicy()) { state.value.playerIndex } }
     val participantRosterMissing by remember(state) { derivedStateOf(structuralEqualityPolicy()) { state.value.needsParticipantsRefresh() } }
 
@@ -128,11 +164,11 @@ private fun TimingTower(
             // relays out and redraws only the rows whose values changed, not
             // the whole tower as one card.
             item(key = "header") {
-                val shape = if (cars.isEmpty()) MaterialTheme.shapes.large else TopCardShape
+                val shape = if (order.isEmpty()) MaterialTheme.shapes.large else TopCardShape
                 Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, shape)) {
-                    TimingHeader(cars.size)
+                    TimingHeader(order.size)
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    if (cars.isEmpty()) {
+                    if (order.isEmpty()) {
                         Text(
                             "Waiting for timing data…",
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 36.dp),
@@ -145,35 +181,52 @@ private fun TimingTower(
                     }
                 }
             }
-            itemsIndexed(cars, key = { _, car -> car.index }) { index, car ->
-                val carIndex = car.index
-                val gap = { gapText(state.value, carIndex) }
-                val shape = if (index == cars.lastIndex) BottomCardShape else RectangleShape
-                Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, shape)) {
-                    if (index > 0 || (wide && !oneLine)) {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    }
-                    if (oneLine) {
-                        TimingOneLineRow(
-                            car = car,
-                            gap = gap,
-                            driver = drivers[car.index],
-                            tyre = tyres[car.index],
-                            labels = labels,
-                        )
-                    } else {
-                        TimingRow(
-                            car = car,
-                            gap = gap,
-                            driver = drivers[car.index],
-                            tyre = tyres[car.index],
-                            labels = labels,
-                            isPlayer = car.index == playerIndex,
-                            wide = wide,
-                        )
-                    }
-                }
+            val last = order.lastIndex
+            itemsIndexed(order, key = { _, carIndex -> carIndex }) { index, carIndex ->
+                TimingItem(
+                    state = state,
+                    row = rows.of(carIndex),
+                    carIndex = carIndex,
+                    divider = index > 0 || (wide && !oneLine),
+                    bottom = index == last,
+                    oneLine = oneLine,
+                    wide = wide,
+                    labels = labels,
+                    isPlayer = carIndex == playerIndex,
+                )
             }
+        }
+    }
+}
+
+/**
+ * One car's row. It reads its own row state, which changes only when this
+ * car's shown values do: an update to another car, or to this car's gap alone,
+ * does not recompose it.
+ */
+@Composable
+private fun TimingItem(
+    state: State<TimingTowerState>,
+    row: TimingRowState,
+    carIndex: Int,
+    divider: Boolean,
+    bottom: Boolean,
+    oneLine: Boolean,
+    wide: Boolean,
+    labels: Map<String, String>,
+    isPlayer: Boolean,
+) {
+    val driver = row.driver
+    val tyre = row.tyre
+    val gap = remember(state, carIndex) { { gapText(state.value, carIndex) } }
+    val shown = row.car ?: return
+    val shape = if (bottom) BottomCardShape else RectangleShape
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, shape)) {
+        if (divider) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (oneLine) {
+            TimingOneLineRow(car = shown, gap = gap, driver = driver, tyre = tyre, labels = labels)
+        } else {
+            TimingRow(car = shown, gap = gap, driver = driver, tyre = tyre, labels = labels, isPlayer = isPlayer, wide = wide)
         }
     }
 }
@@ -202,40 +255,44 @@ private fun TimingOneLineRow(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PositionText(car.position, Modifier.width(36.dp))
-        Text(
-            driverCode(driver?.name, car.index),
-            modifier = Modifier.width(42.dp),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Clip,
-        )
-        Text(
-            car.lapNumber.toString(),
-            modifier = Modifier.width(24.dp),
-            style = numberStyle,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-        )
-        Text(
-            formatLapTime(car.lastLapMs),
-            modifier = Modifier.weight(1f),
-            style = numberStyle,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = TextAlign.End,
-            maxLines = 1,
-        )
-        Text(
-            tyreText,
-            modifier = Modifier.width(58.dp),
-            color = tyreColor,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-        )
+        // Everything but the gap changes only with a lap, a stop or a pass:
+        // cached as one texture, so a new gap repaints its readout alone.
+        Row(Modifier.weight(1f).staticLayer(), verticalAlignment = Alignment.CenterVertically) {
+            PositionText(car.position, Modifier.width(36.dp))
+            Text(
+                driverCode(driver?.name, car.index),
+                modifier = Modifier.width(42.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Clip,
+            )
+            Text(
+                car.lapNumber.toString(),
+                modifier = Modifier.width(24.dp),
+                style = numberStyle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
+            Text(
+                formatLapTime(car.lastLapMs),
+                modifier = Modifier.weight(1f),
+                style = numberStyle,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.End,
+                maxLines = 1,
+            )
+            Text(
+                tyreText,
+                modifier = Modifier.width(58.dp),
+                color = tyreColor,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
+        }
         Readout(
             runs = { listOf(ReadoutRun(gap(), onSurface)) },
             style = numberStyle.copy(fontWeight = FontWeight.SemiBold),
@@ -360,56 +417,59 @@ private fun TimingRow(
             StatusText(status, Modifier.width(116.dp), TextAlign.End)
         }
     } else {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            PositionText(car.position, Modifier.width(44.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    DriverIdentity(driverCode, driver, isPlayer, Modifier.weight(1f), showFullName = false)
-                    Spacer(Modifier.width(8.dp))
-                    // Nearly every gap changes on each update. Drawn at a fixed
-                    // width, a new gap repaints one line instead of re-shaping
-                    // text and re-measuring the row.
-                    val gapColor = if (resultLabel(car.resultStatus) != null) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
+        // Everything but the gap changes only with a lap, a stop or a pass, so
+        // the row is one cached texture with a gap-sized hole. The gap, which
+        // changes on nearly every update, is painted over it on its own layer:
+        // a new gap repaints one line, and the GPU draws the row as one image.
+        val gapColor = if (resultLabel(car.resultStatus) != null) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        }
+        Box(Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                PositionText(car.position, Modifier.width(44.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(Modifier.height(DriverLineHeight), verticalAlignment = Alignment.CenterVertically) {
+                        DriverIdentity(driverCode, driver, isPlayer, Modifier.weight(1f), showFullName = false)
+                        Spacer(Modifier.width(8.dp + GapWidth))
                     }
-                    Readout(
-                        runs = { listOf(ReadoutRun(gap(), gapColor)) },
-                        style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold),
-                        modifier = Modifier.width(GapWidth),
-                        alignEnd = true,
-                    )
-                }
-                Spacer(Modifier.height(5.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "Lap ${car.lapNumber}  ·  ${formatLapTime(car.lastLapMs)}  ·  ",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontFeatureSettings = "tnum",
-                        ),
-                        maxLines = 1,
-                    )
-                    Text(
-                        tyreText,
-                        modifier = Modifier.weight(1f),
-                        color = tyreColor,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (status.isNotEmpty()) {
-                        Spacer(Modifier.width(8.dp))
-                        StatusText(status, Modifier.widthIn(max = 104.dp), TextAlign.End)
+                    Spacer(Modifier.height(5.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Lap ${car.lapNumber}  ·  ${formatLapTime(car.lastLapMs)}  ·  ",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontFeatureSettings = "tnum",
+                            ),
+                            maxLines = 1,
+                        )
+                        Text(
+                            tyreText,
+                            modifier = Modifier.weight(1f),
+                            color = tyreColor,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (status.isNotEmpty()) {
+                            Spacer(Modifier.width(8.dp))
+                            StatusText(status, Modifier.widthIn(max = 104.dp), TextAlign.End)
+                        }
                     }
                 }
             }
+            Readout(
+                runs = { listOf(ReadoutRun(gap(), gapColor)) },
+                style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold),
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 11.dp, end = 14.dp).width(GapWidth).height(DriverLineHeight),
+                alignEnd = true,
+            )
         }
     }
 }

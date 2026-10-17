@@ -1,5 +1,6 @@
 package com.tracknrace.android.pages
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,20 +14,30 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -35,18 +46,115 @@ import androidx.compose.ui.unit.dp
 import com.tracknrace.android.DashboardColdState
 import com.tracknrace.android.TyreSetEntry
 import kotlin.math.roundToInt
+import kotlin.math.sign
 
 private enum class TyreColumn { SET, COMPOUND, STATUS, WEAR, WEAR_PER_LAP, LIFE, RECOMMENDED, DELTA }
 
-@Composable
-internal fun TyresScreen(cold: DashboardColdState) {
-    val dry = cold.tyreSets.filter { it.actualCompound !in setOf(7, 8) }
+// A section's card, drawn by its first and last items so each tyre set can be
+// its own list item.
+private val SectionTopShape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+private val SectionBottomShape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp)
+private val SectionShape = RoundedCornerShape(16.dp)
+
+/**
+ * One set's row as it is shown: rounded, formatted values. Tyre-set rows arrive
+ * about once a second with raw values that move in decimals the row does not
+ * show, so rows compare on what they display and an unchanged row is skipped.
+ */
+@androidx.compose.runtime.Immutable
+internal data class TyreRow(
+    val index: Int,
+    val compound: String,
+    val visualCompound: Int,
+    val status: String,
+    /** "16/23 L". */
+    val life: String,
+    /** The session the set was recommended for, e.g. "Q2". */
+    val session: String,
+    /** Wear in tenths of a percent, for the bar; the text shows whole percent. */
+    val wearTenths: Int,
+    val wearPerLap: String,
+    val delta: String,
+    /** The lap delta's sign: positive slower, negative faster. */
+    val deltaSign: Int,
+) {
+    val wear: Float get() = wearTenths / 10f
+}
+
+private fun tyreRow(set: TyreSetEntry, sessionType: Int?, labels: Map<String, String>) = TyreRow(
+    index = set.index,
+    compound = compoundName(set, labels),
+    visualCompound = set.visualCompound,
+    status = tyreStatus(set, sessionType),
+    life = "${set.lifeSpan}/${set.usableLife} L",
+    session = sessionLabel(set.recommendedSession),
+    wearTenths = (set.wear * 10f).roundToInt(),
+    wearPerLap = avgWearPerLap(set),
+    delta = lapDelta(set),
+    deltaSign = set.lapDeltaMs.sign,
+)
+
+/** What the Tyres page shows: its dry and wet rows, compared whole. */
+@androidx.compose.runtime.Immutable
+internal data class TyreDisplay(val dry: List<TyreRow> = emptyList(), val wet: List<TyreRow> = emptyList())
+
+/**
+ * The page's rows from the cold state. Read through derived state with
+ * structural equality, so a tyre-set update that changes nothing shown (they
+ * arrive about once a second) recomposes nothing.
+ */
+internal fun tyreDisplay(cold: DashboardColdState) = TyreDisplay(
+    dry = cold.tyreSets.filter { it.actualCompound !in setOf(7, 8) }
         .sortedWith(compareBy({ dryOrder(it.visualCompound) }, { it.index }))
-    val wet = cold.tyreSets.filter { it.actualCompound in setOf(7, 8) }
+        .map { tyreRow(it, cold.sessionType, cold.labels) },
+    wet = cold.tyreSets.filter { it.actualCompound in setOf(7, 8) }
         .sortedWith(compareBy({ wetOrder(it.actualCompound) }, { it.index }))
+        .map { tyreRow(it, cold.sessionType, cold.labels) },
+)
+
+/** One set's row, a state written only when what it shows changes. */
+@androidx.compose.runtime.Stable
+private class TyreRowState {
+    var row by mutableStateOf<TyreRow?>(null)
+}
+
+/**
+ * The page's rows, kept per set. Each update writes every set's row; an equal
+ * row is no change, so only the sets whose shown values changed recompose.
+ */
+@androidx.compose.runtime.Stable
+private class TyreRowStates {
+    private val rows = HashMap<Int, TyreRowState>()
+
+    fun of(index: Int): TyreRowState = rows.getOrPut(index) { TyreRowState() }
+
+    fun update(display: TyreDisplay) {
+        for (row in display.dry) of(row.index).row = row
+        for (row in display.wet) of(row.index).row = row
+    }
+}
+
+/**
+ * The dry and the wet sets, each a card of rows. The list holds only which
+ * sets there are, in order; each row reads its own state. A change to one set
+ * recomposes that row alone, and each row is cached as a texture.
+ */
+@Composable
+internal fun TyresScreen(display: () -> TyreDisplay) {
+    val rows = remember { TyreRowStates().also { it.update(Snapshot.withoutReadObservation { display() }) } }
+    LaunchedEffect(rows) {
+        snapshotFlow { display() }.collect { rows.update(it) }
+    }
+    val order by remember {
+        derivedStateOf(structuralEqualityPolicy()) {
+            display().let { shown -> shown.dry.map { it.index } to shown.wet.map { it.index } }
+        }
+    }
+    val (dry, wet) = order
     // A plain width check: BoxWithConstraints would re-run the list as a
     // subcomposition on every tyre update.
     val showTable = LocalConfiguration.current.screenWidthDp >= 600
+    val card = MaterialTheme.colorScheme.surfaceContainerLow
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.fillMaxSize(),
@@ -54,67 +162,25 @@ internal fun TyresScreen(cold: DashboardColdState) {
                 horizontal = if (showTable) 16.dp else 12.dp,
                 vertical = 12.dp,
             ),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            item {
-                TyreTableSection(
-                    title = "Dry sets (slicks)",
-                    sets = dry,
-                    cold = cold,
-                    showTable = showTable,
-                )
-            }
-            item {
-                TyreTableSection(
-                    title = "Wet / intermediate sets",
-                    sets = wet,
-                    cold = cold,
-                    showTable = showTable,
-                )
-            }
+            tyreSection("dry", "Dry sets (slicks)", dry, rows, showTable, card)
+            item(key = "gap") { Spacer(Modifier.height(16.dp)) }
+            tyreSection("wet", "Wet / intermediate sets", wet, rows, showTable, card)
         }
     }
 }
 
-@Composable
-private fun TyreTableSection(
+private fun androidx.compose.foundation.lazy.LazyListScope.tyreSection(
+    key: String,
     title: String,
-    sets: List<TyreSetEntry>,
-    cold: DashboardColdState,
+    sets: List<Int>,
+    rows: TyreRowStates,
     showTable: Boolean,
+    card: Color,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-    ) {
-        Column {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    title,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                ) {
-                    Text(
-                        sets.size.toString(),
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-            }
+    item(key = "$key-header") {
+        Column(Modifier.fillMaxWidth().background(card, if (sets.isEmpty()) SectionShape else SectionTopShape)) {
+            TyreSectionHeader(title, sets.size)
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             if (sets.isEmpty()) {
                 Text(
@@ -126,20 +192,51 @@ private fun TyreTableSection(
                 )
             } else if (showTable) {
                 TyreTableHeader()
-                sets.forEach { set ->
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    TyreTableRow(set, cold.sessionType, compoundName(set, cold.labels))
-                }
-            } else {
-                sets.forEachIndexed { index, set ->
-                    if (index > 0) {
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant,
-                        )
-                    }
-                    CompactTyreRow(set, cold.sessionType, compoundName(set, cold.labels))
-                }
             }
+        }
+    }
+    val last = sets.lastIndex
+    itemsIndexed(sets, key = { _, set -> "$key-$set" }) { index, set ->
+        TyreRowItem(rows.of(set), divider = index > 0 || showTable, bottom = index == last, showTable = showTable, card = card)
+    }
+}
+
+/** One set's row in its card: recomposed only when its own shown values change. */
+@Composable
+private fun TyreRowItem(state: TyreRowState, divider: Boolean, bottom: Boolean, showTable: Boolean, card: Color) {
+    val row = state.row ?: return
+    Column(Modifier.fillMaxWidth().background(card, if (bottom) SectionBottomShape else RectangleShape)) {
+        if (divider) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Box {
+            if (showTable) TyreTableRow(row) else CompactTyreRow(row)
+        }
+    }
+}
+
+@Composable
+private fun TyreSectionHeader(title: String, count: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Surface(
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        ) {
+            Text(
+                count.toString(),
+                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
     }
 }
@@ -162,9 +259,8 @@ private fun TyreTableHeader() {
 }
 
 @Composable
-private fun CompactTyreRow(set: TyreSetEntry, sessionType: Int?, compound: String) {
-    val status = tyreStatus(set, sessionType)
-    val wearColor = tyreWearColor(set.wear)
+private fun CompactTyreRow(row: TyreRow) {
+    val wearColor = tyreWearColor(row.wear)
     val primaryText = MaterialTheme.colorScheme.onSurface
     val secondaryText = MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
@@ -177,10 +273,10 @@ private fun CompactTyreRow(set: TyreSetEntry, sessionType: Int?, compound: Strin
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             CompactTyreIdentity(
-                label = compound,
-                accent = compoundColor(set.visualCompound),
-                setNumber = set.index + 1,
-                status = status,
+                label = row.compound,
+                accent = compoundColor(row.visualCompound),
+                setNumber = row.index + 1,
+                status = row.status,
                 numberColor = secondaryText,
             )
             Column(modifier = Modifier.weight(1f)) {
@@ -189,7 +285,7 @@ private fun CompactTyreRow(set: TyreSetEntry, sessionType: Int?, compound: Strin
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "${set.lifeSpan}/${set.usableLife} L  ·  ${sessionLabel(set.recommendedSession)}",
+                        "${row.life}  ·  ${row.session}",
                         modifier = Modifier.weight(1f),
                         color = secondaryText,
                         style = MaterialTheme.typography.bodySmall,
@@ -198,8 +294,8 @@ private fun CompactTyreRow(set: TyreSetEntry, sessionType: Int?, compound: Strin
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        lapDelta(set),
-                        color = tyreDeltaColor(set),
+                        row.delta,
+                        color = tyreDeltaColor(row.deltaSign),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -210,65 +306,52 @@ private fun CompactTyreRow(set: TyreSetEntry, sessionType: Int?, compound: Strin
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "Wear  ·  ${avgWearPerLap(set)} per lap",
+                        "Wear  ·  ${row.wearPerLap} per lap",
                         color = secondaryText,
                         style = MaterialTheme.typography.labelSmall,
                     )
                     Spacer(Modifier.weight(1f))
                     Text(
-                        "${set.wear.roundToInt()}%",
+                        "${row.wear.roundToInt()}%",
                         color = wearColor,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
                 Spacer(Modifier.height(4.dp))
-                LinearProgressIndicator(
-                    progress = { (set.wear / 100f).coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(MaterialTheme.shapes.extraLarge),
-                    color = wearColor,
-                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    strokeCap = StrokeCap.Round,
-                )
+                WearBar(row.wear, wearColor, Modifier.fillMaxWidth())
             }
         }
     }
 }
 
 @Composable
-private fun TyreTableRow(set: TyreSetEntry, sessionType: Int?, compound: String) {
-    val status = tyreStatus(set, sessionType)
-    val wearColor = tyreWearColor(set.wear)
+private fun TyreTableRow(row: TyreRow) {
+    val wearColor = tyreWearColor(row.wear)
     val rowTextColor = MaterialTheme.colorScheme.onSurface
     Surface(color = Color.Transparent, contentColor = rowTextColor) {
         Row(
             modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TyreTableText("${set.index + 1}", tyreColumnModifier(TyreColumn.SET), color = rowTextColor)
+            TyreTableText("${row.index + 1}", tyreColumnModifier(TyreColumn.SET), color = rowTextColor)
             TyreTableText(
-                compound,
+                row.compound,
                 tyreColumnModifier(TyreColumn.COMPOUND),
-                color = compoundColor(set.visualCompound),
+                color = compoundColor(row.visualCompound),
                 weight = FontWeight.Black,
             )
             Box(tyreColumnModifier(TyreColumn.STATUS), contentAlignment = Alignment.Center) {
-                TyreStatusPill(status)
+                TyreStatusPill(row.status)
             }
             Row(
                 modifier = tyreColumnModifier(TyreColumn.WEAR).padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                LinearProgressIndicator(
-                    progress = { (set.wear / 100f).coerceIn(0f, 1f) },
-                    modifier = Modifier.weight(1f).height(6.dp).clip(MaterialTheme.shapes.extraLarge),
-                    color = wearColor,
-                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    strokeCap = StrokeCap.Round,
-                )
+                WearBar(row.wear, wearColor, Modifier.weight(1f))
                 Text(
-                    "${set.wear.roundToInt()}%",
+                    "${row.wear.roundToInt()}%",
                     modifier = Modifier.width(40.dp),
                     color = wearColor,
                     style = MaterialTheme.typography.labelMedium,
@@ -276,18 +359,32 @@ private fun TyreTableRow(set: TyreSetEntry, sessionType: Int?, compound: String)
                     textAlign = TextAlign.End,
                 )
             }
-            TyreTableText(avgWearPerLap(set), tyreColumnModifier(TyreColumn.WEAR_PER_LAP), color = rowTextColor)
-            TyreTableText("${set.lifeSpan}/${set.usableLife} L", tyreColumnModifier(TyreColumn.LIFE), color = rowTextColor)
-            TyreTableText(sessionLabel(set.recommendedSession), tyreColumnModifier(TyreColumn.RECOMMENDED), color = rowTextColor)
+            TyreTableText(row.wearPerLap, tyreColumnModifier(TyreColumn.WEAR_PER_LAP), color = rowTextColor)
+            TyreTableText(row.life, tyreColumnModifier(TyreColumn.LIFE), color = rowTextColor)
+            TyreTableText(row.session, tyreColumnModifier(TyreColumn.RECOMMENDED), color = rowTextColor)
             TyreTableText(
-                lapDelta(set),
+                row.delta,
                 tyreColumnModifier(TyreColumn.DELTA),
-                color = tyreDeltaColor(set),
+                color = tyreDeltaColor(row.deltaSign),
                 weight = FontWeight.SemiBold,
                 align = TextAlign.End,
             )
         }
     }
+}
+
+/** Wear as a rounded bar, painted rather than clipped. */
+@Composable
+private fun WearBar(wear: Float, color: Color, modifier: Modifier) {
+    val track = MaterialTheme.colorScheme.surfaceContainerHighest
+    Spacer(
+        modifier.height(6.dp).drawBehind {
+            val corner = CornerRadius(size.height / 2f)
+            drawRoundRect(track, cornerRadius = corner)
+            val filled = size.width * (wear / 100f).coerceIn(0f, 1f)
+            if (filled > 0f) drawRoundRect(color, size = Size(maxOf(filled, size.height), size.height), cornerRadius = corner)
+        },
+    )
 }
 
 @Composable
@@ -363,9 +460,9 @@ private fun tyreWearColor(wear: Float): Color = when {
 }
 
 @Composable
-private fun tyreDeltaColor(set: TyreSetEntry): Color = when {
-    set.lapDeltaMs > 0 -> MaterialTheme.colorScheme.error
-    set.lapDeltaMs < 0 -> MaterialTheme.colorScheme.primary
+private fun tyreDeltaColor(sign: Int): Color = when {
+    sign > 0 -> MaterialTheme.colorScheme.error
+    sign < 0 -> MaterialTheme.colorScheme.primary
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 

@@ -101,7 +101,6 @@ private const val MIN_ZOOM_METRES = 25.0
 private const val DOUBLE_TAP_MS = 320L
 private const val RASTER_SETTLE_MS = 48L
 private const val HEADER_DP = 20f
-private const val HEADER_SAMPLE_MS = 100L
 private const val PANEL_GAP_DP = 6f
 private const val X_AXIS_DP = 20f
 // Below this a stacked panel's trace is too flat to read; past it the graph
@@ -309,8 +308,8 @@ internal fun AnalysisChart(
             )
         }
         // Per-frame inputs reduced to what is drawn: whole pixels. The desktop
-        // cursor and map clock move every frame, but the cut they place on the
-        // traces moves a pixel only every few frames.
+        // cursor and map clock move every frame; the cut they place on the
+        // traces moves in sixteenths of a pixel, so it redraws only when it shows.
         val cutoff = remember(layout, input.realtime) {
             derivedStateOf(structuralEqualityPolicy()) { cutoffPixel(input, layout.geometry, width.toFloat(), cursorOffset.value) }
         }
@@ -318,10 +317,10 @@ internal fun AnalysisChart(
             derivedStateOf(structuralEqualityPolicy()) {
                 val elapsed = mapElapsed?.value ?: return@derivedStateOf emptyList()
                 listOf(input.current, input.comparison).map { lap ->
-                    lap ?: return@map -1
+                    lap ?: return@map -1f
                     val clamped = elapsed.coerceIn(0.0, lap.duration)
                     val x = if (input.distanceMode) lap.progress?.distanceAt(clamped) ?: Double.NaN else clamped
-                    if (x.isFinite()) layout.geometry.xToPx(x).roundToInt() else -1
+                    if (x.isFinite()) layout.geometry.xToPx(x) else -1f
                 }
             }
         }
@@ -422,7 +421,7 @@ internal fun AnalysisChart(
                     Modifier.matchParentSize().graphicsLayer().drawBehind {
                         val geometry = layout.geometry
                         val dp = density.density
-                        val cutoffPx = cutoff.value.toFloat()
+                        val cutoffPx = cutoff.value
                         raster.value?.let { traces ->
                             val settled = traces.domainMin == geometry.domainMin && traces.domainMax == geometry.domainMax
                             val span = geometry.domainMax - geometry.domainMin
@@ -445,15 +444,22 @@ internal fun AnalysisChart(
                             }
                             // Grid, labels and the comparison lap: one image.
                             traces.base?.let { base -> stretched { drawImage(base) } }
-                            // The playing lap, cut at the desktop cursor.
-                            clipRect(right = cutoffPx) { stretched { drawImage(traces.current) } }
+                            // The playing lap, cut at the desktop cursor. The part
+                            // of the next pixel column it has reached fades in, so
+                            // the tip glides rather than stepping a pixel at a time.
+                            val whole = floor(cutoffPx)
+                            clipRect(right = whole) { stretched { drawImage(traces.current) } }
+                            val part = cutoffPx - whole
+                            if (part > 0f) {
+                                clipRect(left = whole, right = whole + 1f) { stretched { drawImage(traces.current, alpha = part) } }
+                            }
                         }
                         clipRect(geometry.left, 0f, geometry.right, size.height) {
                             val colorsOfLaps = input.mapCursorColors
                             if (colorsOfLaps != null) {
                                 mapCursors.value.forEachIndexed { index, px ->
-                                    if (px < 0) return@forEachIndexed
-                                    drawLine(colorsOfLaps.getOrElse(index) { crosshairColor }, Offset(px.toFloat(), geometry.top), Offset(px.toFloat(), geometry.bottom), 1.5f * dp)
+                                    if (px < 0f) return@forEachIndexed
+                                    drawLine(colorsOfLaps.getOrElse(index) { crosshairColor }, Offset(px, geometry.top), Offset(px, geometry.bottom), 1.5f * dp)
                                 }
                             }
                         }
@@ -660,23 +666,12 @@ private fun PanelHeaders(
 ) {
     val colors = MaterialTheme.colorScheme
     val density = LocalDensity.current
-    // The cursor and map clock move every frame, and re-shaping four lines of
-    // text that often is most of a low-end phone's frame. A readout needs no
-    // more than ten updates a second; a finger on the graph still updates it
-    // on every move.
-    val sampledCursor = remember { mutableDoubleStateOf(Double.NaN) }
-    val sampledMap = remember { mutableStateOf<Double?>(null) }
-    LaunchedEffect(cursorOffset, mapElapsed) {
-        while (true) {
-            sampledCursor.doubleValue = cursorOffset.value
-            sampledMap.value = mapElapsed?.value
-            delay(HEADER_SAMPLE_MS)
-        }
-    }
+    // The values follow the cursor and map clock every frame; they change only
+    // when a shown digit does, and the stacked panels paint them while drawing.
     val values by remember(input, layout) {
         derivedStateOf(structuralEqualityPolicy()) {
-            val cursor = sampledCursor.doubleValue
-            val x = inspectedX(input, state.crosshair, cursor, sampledMap.value)
+            val cursor = cursorOffset.value
+            val x = inspectedX(input, state.crosshair, cursor, mapElapsed?.value)
             layout.items.associate { it.metricId to headerRuns(input, it, x, cursor) }
         }
     }
@@ -836,18 +831,18 @@ private fun headerRuns(input: AnalysisChartInput, item: AnalysisSeries, x: Doubl
     }
 }
 
-/** Where the playing lap stops being drawn: the desktop cursor, in whole pixels. */
-private fun cutoffPixel(input: AnalysisChartInput, geometry: ChartGeometry, width: Float, offset: Double): Int {
-    if (!input.realtime) return width.roundToInt()
+/** Where the playing lap stops being drawn: the desktop cursor, in sixteenths of a pixel. */
+private fun cutoffPixel(input: AnalysisChartInput, geometry: ChartGeometry, width: Float, offset: Double): Float {
+    if (!input.realtime) return width
     val progress = input.current?.progress
     val cutoff = when {
-        !offset.isFinite() -> return geometry.left.roundToInt()
+        !offset.isFinite() -> return geometry.left
         !input.distanceMode -> offset
-        progress == null -> return geometry.left.roundToInt()
-        offset >= progress.maxTime -> return width.roundToInt()
-        else -> progress.distanceAt(offset).takeIf { it.isFinite() } ?: return geometry.left.roundToInt()
+        progress == null -> return geometry.left
+        offset >= progress.maxTime -> return width
+        else -> progress.distanceAt(offset).takeIf { it.isFinite() } ?: return geometry.left
     }
-    return geometry.xToPx(cutoff).coerceIn(geometry.left, width).roundToInt()
+    return (geometry.xToPx(cutoff).coerceIn(geometry.left, width) * 16f).roundToInt() / 16f
 }
 
 /** Seconds into the current lap at chart position [x], for the map. */

@@ -66,9 +66,6 @@ import kotlin.math.abs
 /** The desktop's playback speeds. */
 private val PlayerSpeeds = listOf(0.25f, 0.5f, 1f, 2f, 4f)
 
-/** The clock is redrawn when it moves this far; the label shows whole seconds. */
-private const val RedrawSeconds = 0.1
-
 private const val SkipSeconds = 5.0
 
 /**
@@ -105,7 +102,7 @@ internal fun PlayerBar(
         while (true) {
             withFrameNanos { }
             val now = store.latestTransport().currentTime
-            if (!dragging && abs(now - position.doubleValue) >= RedrawSeconds) position.doubleValue = now
+            if (!dragging && now != position.doubleValue) position.doubleValue = now
         }
     }
     var lapsOpen by remember { mutableStateOf(false) }

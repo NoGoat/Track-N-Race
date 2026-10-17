@@ -292,8 +292,7 @@ internal fun AnalysisMap(
                 fitTrack(track, width, height, pad)
             }
         }
-        // Marker positions as whole pixels: the map clock moves every frame,
-        // a marker moves a pixel only every few frames.
+        // Marker positions, recomputed as the map clock moves every frame.
         val markers = remember(fit, laps, outline) {
             derivedStateOf(structuralEqualityPolicy()) {
                 val track = outline
@@ -302,8 +301,7 @@ internal fun AnalysisMap(
                 laps.map { entry ->
                     val (x, z) = entry.lap.positionAt(seconds.coerceIn(0.0, entry.lap.duration))
                         ?: return@map null
-                    val point = fit.toScreen(track.mapPosition(x, z))
-                    IntOffset(point.x.roundToInt(), point.y.roundToInt())
+                    fit.toScreen(track.mapPosition(x, z))
                 }
             }
         }
@@ -356,9 +354,8 @@ internal fun AnalysisMap(
                         // The comparison car first, so the current car sits on top.
                         for (index in positions.indices.reversed()) {
                             val position = positions[index] ?: continue
-                            val point = Offset(position.x.toFloat(), position.y.toFloat())
-                            drawCircle(markerOutline, dotRadius + dotOutline, point)
-                            drawCircle(laps[index].color, dotRadius, point)
+                            drawCircle(markerOutline, dotRadius + dotOutline, position)
+                            drawCircle(laps[index].color, dotRadius, position)
                         }
                         // Pills centred over the current car and under the
                         // comparison car, so two cars side by side stay readable.
@@ -851,13 +848,10 @@ internal fun LiveTrackMap(
                             val y = point.y
                             drawCircle(car.color, dotRadius, point)
                             val sprite = sprites[slot]
-                            // Whole pixels, so the label text is not resampled every frame.
+                            // Exactly over the dot, so label and dot glide together.
                             drawImage(
                                 sprite,
-                                topLeft = Offset(
-                                    kotlin.math.round(x - sprite.width / 2f),
-                                    kotlin.math.round(y - dotRadius - labelGap - sprite.height),
-                                ),
+                                topLeft = Offset(x - sprite.width / 2f, y - dotRadius - labelGap - sprite.height),
                             )
                         }
                     }
