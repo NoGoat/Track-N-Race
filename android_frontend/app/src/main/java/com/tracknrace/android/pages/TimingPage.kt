@@ -36,6 +36,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalConfiguration
@@ -221,7 +222,8 @@ private fun TimingItem(
     val gap = remember(state, carIndex) { { gapText(state.value, carIndex) } }
     val shown = row.car ?: return
     val shape = if (bottom) BottomCardShape else RectangleShape
-    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, shape)) {
+    // Its own drawing list: another row changing does not re-record this one.
+    Column(Modifier.fillMaxWidth().graphicsLayer().background(MaterialTheme.colorScheme.surfaceContainerLow, shape)) {
         if (divider) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         if (oneLine) {
             TimingOneLineRow(car = shown, gap = gap, driver = driver, tyre = tyre, labels = labels)

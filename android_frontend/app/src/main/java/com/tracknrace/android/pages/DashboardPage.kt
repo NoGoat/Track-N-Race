@@ -301,7 +301,9 @@ private fun DashCard(modifier: Modifier, cached: Boolean = false, content: @Comp
         // its drawing. A card with a readout that changes several times a
         // second is drawn live, as re-rendering its texture that often costs
         // more than it saves.
-        modifier.then(if (cached) Modifier.staticLayer() else Modifier)
+        // Its own drawing list either way, so a value changing elsewhere on
+        // the page does not re-record this card's unchanged drawing.
+        modifier.then(if (cached) Modifier.staticLayer() else Modifier.graphicsLayer())
             .background(MaterialTheme.colorScheme.surfaceContainer, CardShape)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         content = content,
@@ -412,7 +414,7 @@ private fun Chip(text: String, background: Color, content: Color, dot: Color? = 
 /** Delta, gear, speed and RPM on the centre line; throttle and brake at the edges. */
 @Composable
 private fun HeroCard(frame: DashboardFrameState, modifier: Modifier) {
-    Box(modifier.background(MaterialTheme.colorScheme.surfaceContainer, CardShape)) {
+    Box(modifier.graphicsLayer().background(MaterialTheme.colorScheme.surfaceContainer, CardShape)) {
         Box(Modifier.fillMaxSize()) {
             PedalBar({ frame.throttle }, Gain, Modifier.align(Alignment.CenterStart).padding(start = 10.dp, top = 12.dp, bottom = 12.dp))
             PedalBar({ frame.brake }, Loss, Modifier.align(Alignment.CenterEnd).padding(end = 10.dp, top = 12.dp, bottom = 12.dp))

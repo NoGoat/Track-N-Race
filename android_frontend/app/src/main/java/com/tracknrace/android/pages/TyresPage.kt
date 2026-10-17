@@ -32,6 +32,7 @@ import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -205,7 +206,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.tyreSection(
 @Composable
 private fun TyreRowItem(state: TyreRowState, divider: Boolean, bottom: Boolean, showTable: Boolean, card: Color) {
     val row = state.row ?: return
-    Column(Modifier.fillMaxWidth().background(card, if (bottom) SectionBottomShape else RectangleShape)) {
+    // Its own drawing list: another row changing does not re-record this one.
+    Column(Modifier.fillMaxWidth().graphicsLayer().background(card, if (bottom) SectionBottomShape else RectangleShape)) {
         if (divider) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Box {
             if (showTable) TyreTableRow(row) else CompactTyreRow(row)
