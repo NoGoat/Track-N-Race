@@ -105,6 +105,23 @@ Data before a known lap or between attempts belongs to an unassigned interval
 for that driver, shown as lap 0. It must not be attached to a completed lap or
 silently discarded. These intervals close on the next lap or recording stop.
 
+In practice, qualifying and sprint shootout (`m_sessionType` 1–14) the game
+reports the coming timed lap's number throughout the garage stint and the
+out-lap (`m_driverStatus` 0 and 3). Both belong to the lap-0 interval; the
+numbered lap starts when the driver status leaves the out-lap. An out-lap starts
+that interval by itself, because a recording begun on track (a savestate
+reload) or a pit exit without a garage visit never shows the garage first. So
+does a run-up to the timing line, with the lap timer still 0 and a negative lap
+distance, which one-shot qualifying already reports as the flying lap. A race
+out-lap is a racing lap and keeps its number, as does race lap 1 from the grid.
+
+The numbered lap starts `current_lap_ms` before its first timed sample, since
+other cars' timing can arrive only twice a second, but never before the hold's
+last sample. The first timed sample can still carry the out-lap's timer (seen on
+a lobby car's timing at packet rate, for several samples), which would start
+the lap at the hold's start; such samples stay in the hold, for up to a second,
+and the first one carrying the reset timer starts the lap.
+
 ## 4. Data types follow the consumers
 
 A type is a small, fixed set of values used together by a chart or card. It is
@@ -221,6 +238,27 @@ is the order they chain in.
 
 The metadata JSON and the chunk directory are written as zstd frames; the
 header also records the metadata's plain size and the directory's stored size.
+
+Header offset 72 holds the writer revision as a u16, in bytes that were
+reserved zeros, so readers that predate it open newer files unchanged. Revision
+0 (`TNRD_V6`) is the first public writer, which held an out-lap in lap 0 only
+after seeing the garage, kept a run-up to the line in the lap and dated a lap
+from a stale out-lap timer; its timed-session laps can therefore open with the
+garage stint, out-lap or run-up.
+Revision 1 (`TNRD_V6.1`) applies the §3 rules. Opening a revision 0
+timed-session file moves each such lap's start to where its timed lap begins,
+by the same rules, and lists the garage stint, out-lap or run-up as a lap-0
+interval;
+a lap that never leaves them becomes lap 0. No rows are moved or dropped.
+
+Analysis distance maps and the lap delta also ignore a lap's samples before a
+timer reset that has no line crossing (the timer drops by over a second while
+the lap distance does not), so a lap window that still opens on its out-lap
+cannot contribute those samples. The delta also aligns each lap's elapsed
+times with its official S1, S1+S2 and lap times at the shared timing lines
+(zero at the lap start, linear in distance between lines): a lobby car's lap
+distance can run metres ahead of its own timer, which otherwise leaves the
+exact split values off the interpolated curve.
 
 ### Packet ownership: shared versus per driver
 
@@ -481,11 +519,10 @@ participants are distinct.
 
 Keep V1–V5 readers. Existing files cannot gain measurements they never recorded.
 
-V6 is a development-only format and has not been released, including in a closed
-beta. Replace its existing layout directly and retain the `TNRD_V6` name. Existing
-development V6 files may stop loading; no legacy V6 reader, migration or revision
-compatibility layer is required. Normal structural and checksum validation still
-applies. This permission does not change V1–V5 compatibility.
+V6 has been released. Released V6 files must keep loading: change the layout
+only in ways earlier V6 readers ignore, and record writer changes that affect
+stored data in the header revision (§5), with the reader repairing older
+revisions where it can. Normal structural and checksum validation still applies.
 
 ## 9. Implementation scope and review criteria
 

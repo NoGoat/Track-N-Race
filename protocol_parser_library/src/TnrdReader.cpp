@@ -64,6 +64,23 @@ std::vector<TyreStintRange> v6TyreStints(const detail::V6DriverHeader& driver) {
     });
 }
 
+// The compound `driver` had fitted at `time`, from its recorded Car Status tyre
+// state, for a lap no Session History stint covers: in Grand Prix qualifying the
+// game reports the set in use as an empty stint instead of an open one (end lap
+// 255). Every lap holds this state from its start, so the latest value at or
+// before the lap's end is the set it ran on, even when its start was repaired
+// past that sample.
+std::optional<StatusScanFields> v6CompoundAt(detail::TnrdV6Archive& v6, uint8_t driver, float time) {
+    std::vector<detail::V6TimedRow> rows;
+    if (!v6.readMultiDriverLatest(time, {driver}, {static_cast<uint8_t>(detail::V6DataType::TyreState)},
+                                  rows, nullptr)) return std::nullopt;
+    for (const auto& row : rows) {
+        StatusScanFields fields;
+        if (!glz::read<kPartialRead>(fields, row.json) && fields.tyre_compound > 0) return fields;
+    }
+    return std::nullopt;
+}
+
 // Recordings made before the parser filled avg_wear_per_lap carry only the raw
 // sets. Derive it against the car's first recorded sets, the same session
 // baseline the live parser uses, and splice the sets back into `row`.
@@ -965,6 +982,8 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
         setCursor(startTime_);
         if (detected == TnrdFormat::ChunkedV4)
             std::fprintf(stderr,"[tnrd] load OK: format=%s chunks=%zu laps=%zu strategyCheckpoints=%zu cacheBytes=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),indexedArchive_->chunks().size(),indexedArchive_->laps().size(),checkpointCount,indexedArchive_->cacheBytes(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
+        else if (const auto* v6 = dynamic_cast<const detail::TnrdV6Archive*>(indexedArchive_.get()))
+            std::fprintf(stderr,"[tnrd] load OK: format=%s revision=%s chunks=%zu laps=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),v6->revision() ? "TNRD_V6.1" : "TNRD_V6",indexedArchive_->chunks().size(),indexedArchive_->laps().size(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
         else
             std::fprintf(stderr,"[tnrd] load OK: format=%s chunks=%zu laps=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),indexedArchive_->chunks().size(),indexedArchive_->laps().size(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
         return true;
@@ -1315,6 +1334,15 @@ bool TnrdReader::rebuildV6LapCatalog() {
                         stint.actual_compound, stint.visual_compound,
                     });
                 }
+            }
+            for (auto& [lapNum, block] : lapBlocks_) {
+                if (lapNum == 0 || !block.slimStatus.empty()) continue;
+                if (const auto fields = v6CompoundAt(*const_cast<detail::TnrdV6Archive*>(v6),
+                        static_cast<uint8_t>(playbackDriverIndex_), block.endSessionTime))
+                    block.slimStatus.push_back({
+                        "status", block.endSessionTime, 0.0,
+                        fields->tyre_compound, fields->visual_compound,
+                    });
             }
         }
     }
@@ -2335,6 +2363,9 @@ std::string TnrdReader::lapBlocksMessage() const {
                     : loadedFormat_ == TnrdFormat::ZstdV3 ? "TNRD_V3"
                     : loadedFormat_ == TnrdFormat::ZstdV2 ? "TNRD_V2"
                     : loadedFormat_ == TnrdFormat::GzipV1 ? "TNRD_V1" : "";
+    if (loadedFormat_ == TnrdFormat::ChunkedV6)
+        if (const auto* v6 = dynamic_cast<const detail::TnrdV6Archive*>(indexedArchive_.get()))
+            msg.tnrdRevision = v6->revision();
     msg.deltaAvailable = loadedFormat_ == TnrdFormat::ZstdV3 || isChunkedTnrd(loadedFormat_);
     msg.lapDistanceAvailable = msg.deltaAvailable;
     msg.trackLengthM = msg.deltaAvailable ? trackLengthM_ : 0;
@@ -2375,6 +2406,15 @@ std::string TnrdReader::lapBlocksMessage() const {
                             stint.actual_compound, stint.visual_compound,
                         });
                     }
+                }
+                for (auto& block : catalog.blocks) {
+                    if (!block.statusHistory.empty()) continue;
+                    if (const auto fields = v6CompoundAt(*const_cast<detail::TnrdV6Archive*>(v6),
+                            driver.vehicleIndex, block.endSessionTime))
+                        block.statusHistory.push_back({
+                            "status", block.endSessionTime, 0.0,
+                            fields->tyre_compound, fields->visual_compound,
+                        });
                 }
                 msg.analysisDrivers.push_back(std::move(catalog));
             }

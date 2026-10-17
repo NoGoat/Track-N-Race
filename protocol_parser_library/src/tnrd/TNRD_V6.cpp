@@ -71,9 +71,18 @@ constexpr uint64_t MAX_CHUNK_PLAIN = 512ull * 1024ull * 1024ull;
 constexpr uint64_t MAX_METADATA_BYTES = 128ull * 1024ull * 1024ull;
 constexpr size_t DEFAULT_CACHE_BYTES = 64ull * 1024ull * 1024ull;
 constexpr float WRITE_DELAY = 30.0f;
+// The longest a timed lap's first samples are kept in the garage/out-lap hold
+// while their lap timer still shows the out-lap's time.
+constexpr float kStaleTimerHoldSeconds = 1.0f;
 constexpr int DEFAULT_COMPRESSION_LEVEL = 9;
 constexpr glz::opts kPartialRead{.null_terminated = false, .error_on_unknown_keys = false};
 const std::array<uint8_t, 8> MAGIC{{'T','N','R','D','_','V','6','\0'}};
+// Writer revision, a u16 in the header's reserved bytes (offset 72), which
+// readers before it ignore. 0: the first V6 writer, whose timed-session laps can
+// open with the out-lap that precedes them; the reader repairs those intervals
+// (repairLegacyOutLaps). 1: out-laps are held in lap 0 by the writer (V6.1).
+constexpr size_t REVISION_OFFSET = 72;
+constexpr uint16_t FILE_REVISION = 1;
 
 void fail(std::string* out, std::string value) { if (out) *out = std::move(value); }
 bool writeAll(std::FILE* f, const void* p, size_t n) {
@@ -1067,6 +1076,7 @@ std::vector<uint8_t> makeHeader(uint64_t metadataOffset, uint64_t metadataSize,
     put32(out, 3); put64(out, metadataOffset); put64(out, metadataSize);
     put64(out, directoryOffset); put32(out, chunkCount); put32(out, CHUNK_ENTRY_SIZE);
     put64(out, footerOffset); put64(out, metadataPlainSize); put64(out, directorySize);
+    put16(out, FILE_REVISION);
     while (out.size() < 120) out.push_back(0);
     put32(out, static_cast<uint32_t>(::crc32(0, out.data(), 120)));
     while (out.size() < HEADER_SIZE) out.push_back(0);
@@ -1251,6 +1261,10 @@ struct TnrdV6Writer::Impl {
         // lap number through both, so these stretches are held in a lap-0
         // interval until the car starts a timed lap.
         bool garageHold{};
+        // The latest garage or out-lap timing sample, and when the hold began
+        // keeping timed samples whose lap timer was still the out-lap's.
+        float lastHeldTime{-1.0f};
+        float deferredSince{-1.0f};
     };
     struct PendingRestriction { uint8_t driver{}; V6RestrictionChange change; };
     struct PendingTyreHistory { uint8_t driver{}; V6Phase phase{}; float time{}; std::vector<V6TyreStintSummary> stints; };
@@ -1283,6 +1297,12 @@ struct TnrdV6Writer::Impl {
     std::vector<std::pair<std::string, std::string>> fileErrors;  // path, why
     std::string path;
     HeaderRow session;
+    // m_sessionType from the header or the latest Session row. A live session
+    // writer opens before the first Session packet, so the header alone can
+    // still be 0 (unknown) while the first laps are segmented.
+    int sessionType{};
+    // Practice, qualifying and sprint shootout (m_sessionType 1-14).
+    bool timedSession() const { return sessionType >= 1 && sessionType <= 14; }
     static constexpr uint8_t kDriverSlots = 24;
     std::array<DriverState, kDriverSlots> drivers;
     std::map<uint8_t, V6DriverHeader> liveHeaders;
@@ -2096,12 +2116,37 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
                 // of TNRD_V6_DESIGN.md §3, and start the numbered lap when the
                 // car begins a timed lap. The abandoned in-lap joins the hold:
                 // keeping its number would give the next attempt a duplicate.
+                // An out-lap starts the hold on its own in a timed session: a
+                // recording begun on track (a savestate reload) or a pit exit
+                // without a garage visit never shows the garage first. So does
+                // a run-up to the timing line, which one-shot qualifying already
+                // reports as the flying lap: its timer is still 0 and its lap
+                // distance negative. A race out-lap is a racing lap and keeps
+                // its number, as does race lap 1 from the grid.
+                const bool runUp = car.current_lap_ms == 0 && car.lap_distance_m &&
+                    *car.lap_distance_m < 0.0f;
                 const bool wasHeld = state.garageHold;
-                if (car.driver_status == 0) {
+                if (car.driver_status == 0 ||
+                    ((car.driver_status == 3 || runUp) && timedSession())) {
                     if (!state.garageHold && state.current.lapNumber != 0) state.current.lapNumber = 0;
                     state.garageHold = true;
+                    state.deferredSince = -1.0f;
+                    state.lastHeldTime = time;
                 } else if (car.driver_status != 3) {
-                    state.garageHold = false;
+                    // The first timed samples can still carry the out-lap's
+                    // timer, reset a few samples later (a lobby car's timing at
+                    // packet rate). Their lap would start inside the hold, so
+                    // keep them in it, for up to kStaleTimerHoldSeconds.
+                    const bool stale = state.garageHold &&
+                        car.current_lap_ms > 0 && state.lastHeldTime >= 0.0f &&
+                        time - static_cast<float>(car.current_lap_ms) / 1000.0f < state.lastHeldTime &&
+                        (state.deferredSince < 0.0f || time - state.deferredSince < kStaleTimerHoldSeconds);
+                    if (stale) {
+                        if (state.deferredSince < 0.0f) state.deferredSince = time;
+                    } else {
+                        state.garageHold = false;
+                        state.deferredSince = -1.0f;
+                    }
                 }
                 const uint32_t gameLap = car.lap_num > 0 ? static_cast<uint32_t>(car.lap_num) : 0;
                 const uint32_t lapNumber = state.garageHold ? 0 : gameLap;
@@ -2114,10 +2159,11 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
                     const uint32_t total = numbered && car.last_lap_ms > 0 ? static_cast<uint32_t>(car.last_lap_ms) : 0;
                     const uint32_t s3 = total > s1 + s2 ? total - s1 - s2 : 0;
                     // Other cars' timing arrives about twice a second, so the
-                    // timed lap began current_lap_ms before this sample.
+                    // timed lap began current_lap_ms before this sample, though
+                    // not before the hold's last sample.
                     const float at = wasHeld && !state.garageHold && car.current_lap_ms > 0
-                        ? std::max(state.current.startSessionTime,
-                                   time - static_cast<float>(car.current_lap_ms) / 1000.0f)
+                        ? std::max({state.current.startSessionTime, state.lastHeldTime,
+                                    time - static_cast<float>(car.current_lap_ms) / 1000.0f})
                         : time;
                     boundary(index, lapNumber, at, total, s1, s2, s3,
                              lapNumber > state.current.lapNumber && total > 0,
@@ -2210,6 +2256,7 @@ bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, st
         if (changedShared(lastParticipants, json, time)) pendingShared.push_back({phase,time,std::string(json)});
     } else if (kind == "session") {
         SessionRow row; if (!glz::read<kPartialRead>(row,json)) {
+            if (row.session_type != 0) sessionType = row.session_type;
             if (row.safety_car_status == 3 && phase != V6Phase::Formation && phaseTime[1] < 0.0f) {
                 phase = V6Phase::Formation; phaseTime[1] = time;
                 // Participants and the first timing samples commonly precede
@@ -2300,6 +2347,8 @@ bool TnrdV6Writer::Impl::rewind(float time, std::string* errorOut) {
         // The next timing sample re-establishes a hold; only a lap-0 interval
         // can still be inside one after the rewind.
         if (!state.open || state.current.lapNumber != 0) state.garageHold = false;
+        state.lastHeldTime = std::min(state.lastHeldTime, time);
+        state.deferredSince = -1.0f;
         auto consider = [&](const std::map<V6DataType,Builder>& chunks) {
             for (const auto& [type,builder] : chunks) if (stateType(type) && builder.count) {
                 const V6DataType family = type;
@@ -2471,6 +2520,7 @@ bool TnrdV6Writer::Impl::attachFile(const std::string& filePath, const HeaderRow
     // Car Telemetry 2 may already have told the session its regulations.
     const auto regulations = session.regulations_2026;
     session = header; session.magic = "TNRD_V6"; session.compression = "zstd";
+    if (header.session_type != 0) sessionType = header.session_type;
     if (!session.regulations_2026) session.regulations_2026 = regulations;
     if (!writeFileBacklog(target, errorOut)) { std::fclose(target.file); return false; }
     files.push_back(std::move(target));
@@ -2571,6 +2621,7 @@ bool TnrdV6Writer::openMemory(const HeaderRow& header, std::string* errorOut) {
     const int level = impl_ ? impl_->compressionLevel : DEFAULT_COMPRESSION_LEVEL;
     impl_ = std::make_unique<Impl>(); impl_->compressionLevel = level; impl_->memory = true;
     impl_->session = header; impl_->session.magic = "TNRD_V6"; impl_->session.compression = "zstd";
+    impl_->sessionType = header.session_type;
     return true;
 }
 std::shared_ptr<const V6MemoryImage> TnrdV6Writer::memoryImage(const V6ImageFilter& filter) const {
@@ -2601,6 +2652,7 @@ bool TnrdV6Writer::open(const std::string& path, const HeaderRow& header, std::s
     impl_->path = path; impl_->file = openTnrdFile(path,"w+b");
     if (!impl_->file) { fail(errorOut,"could not create V6 file: " + std::string(std::strerror(errno))); return false; }
     impl_->session = header; impl_->session.magic = "TNRD_V6"; impl_->session.compression = "zstd";
+    impl_->sessionType = header.session_type;
     // A sentinel header: correct magic, version and CRC, but an empty index.
     // The file identifies itself as V6 from its first byte, while a reader
     // seeing metadataSize == 0 knows the index was never written and routes to
@@ -2700,6 +2752,8 @@ struct TnrdV6Archive::Impl {
     std::FILE* file{};
     uint64_t fileSize{};
     bool recovered{};
+    // The header's writer revision (REVISION_OFFSET); 0 for the first writer.
+    uint16_t revision{};
     // openMemory(): a live session's image in place of `file`.
     std::shared_ptr<const V6MemoryImage> memory;
     // The phase reads expose. A file always shows its race; a live session
@@ -2817,6 +2871,7 @@ struct TnrdV6Archive::Impl {
         }
         out = std::move(data); return true;
     }
+    bool repairLegacyOutLaps(std::string* errorOut);
     void rebuildCompatibility() {
         // Match V5's active race branch: formation remains in the archive but
         // is not exposed through the application playback timeline. (A live
@@ -2940,6 +2995,104 @@ private:
 
 } // namespace
 
+// Revision 0 writers could open a timed session's numbered lap with the garage
+// stint, out-lap or run-up to the line before it, whose lap_num the game already
+// reports as the coming timed lap:
+// - they kept a run-up (timer 0, negative lap distance; one-shot qualifying
+//   reports it as the flying lap) in the numbered lap;
+// - they held an out-lap in lap 0 only after seeing the car in the garage, so a
+//   recording begun on track (a savestate reload) or a pit exit without a garage
+//   visit kept the out-lap in the numbered lap;
+// - they started the timed lap current_lap_ms before its first sample, and that
+//   sample can still carry the out-lap's timer (a lobby car's timing at packet
+//   rate), which put the start back at the start of the hold.
+// Analysis then anchors the lap on the hold's samples. Move each such lap's
+// start to where its timed lap begins and put the hold in a lap-0 interval, as
+// the revision 1 writer records it. A lap that never leaves the hold becomes
+// lap 0 itself. Every row stays in the archive; only intervals change.
+bool TnrdV6Archive::Impl::repairLegacyOutLaps(std::string* errorOut) {
+    if (revision != 0 || session.session_type < 1 || session.session_type > 14) return true;
+    std::map<uint32_t, std::vector<size_t>> timingByLap;
+    for (size_t i = 0; i < v6Chunks.size(); ++i)
+        if (v6Chunks[i].typeId == static_cast<uint8_t>(V6DataType::LapTiming))
+            timingByLap[v6Chunks[i].lapId].push_back(i);
+    uint32_t nextLapId = 1;
+    for (const auto& lap : lapSummaries) nextLapId = std::max(nextLapId, lap.lapId + 1);
+    std::vector<V6LapSummary> holds;
+    for (auto& lap : lapSummaries) {
+        if (lap.lapNumber == 0) continue;
+        auto found = timingByLap.find(lap.lapId);
+        if (found == timingByLap.end()) continue;
+        auto& indices = found->second;
+        std::sort(indices.begin(), indices.end(), [this](size_t a, size_t b) {
+            return std::tie(v6Chunks[a].firstTime, v6Chunks[a].sequence) <
+                   std::tie(v6Chunks[b].firstTime, v6Chunks[b].sequence);
+        });
+        // 1: the lap opens in the garage or on its out-lap; 2: and its timed lap
+        // starts at `start`; 3: it opens on something else and is left as it is.
+        int state = 0;
+        float start = lap.startSessionTime;
+        float lastHeld = lap.startSessionTime;
+        float deferredSince = -1.0f;
+        for (size_t index : indices) {
+            std::shared_ptr<const ChunkData> data;
+            if (!load(index, data, errorOut)) return false;
+            const auto& table = data->table;
+            const ColumnarChunk::Column* status = nullptr;
+            const ColumnarChunk::Column* elapsed = nullptr;
+            const ColumnarChunk::Column* distance = nullptr;
+            for (const auto& column : table.columns) {
+                if (column.name == "lap_distance_m" && column.kind != ColumnKind::Int &&
+                    column.kind != ColumnKind::Bool && column.kind != ColumnKind::Json) distance = &column;
+                if (column.kind != ColumnKind::Int) continue;
+                if (column.name == "driver_status") status = &column;
+                else if (column.name == "current_lap_ms") elapsed = &column;
+            }
+            if (!status) continue;
+            for (uint32_t row = 0; row < table.time.size() && state < 2; ++row) {
+                const float time = table.time[row];
+                if (time < lap.startSessionTime || time > lap.endSessionTime || !status->has(row)) continue;
+                const int64_t ms = elapsed && elapsed->has(row) ? elapsed->ints[row] : 0;
+                const float began = time - static_cast<float>(ms) / 1000.0f;
+                const bool runUp = ms == 0 && distance && distance->has(row) && distance->reals[row] < 0.0;
+                if (status->ints[row] == 0 || status->ints[row] == 3 || runUp) {
+                    state = 1; lastHeld = time; deferredSince = -1.0f; continue;
+                }
+                if (state == 0) { state = 3; break; }
+                // A stale out-lap timer starts the lap inside the hold; a later
+                // sample carries the reset timer (the writer's rule).
+                if (ms > 0 && began < lastHeld &&
+                    (deferredSince < 0.0f || time - deferredSince < kStaleTimerHoldSeconds)) {
+                    if (deferredSince < 0.0f) deferredSince = time;
+                    continue;
+                }
+                // Timing arrives at packet rate, so the timed lap began
+                // current_lap_ms before its first sample, as the writer takes it.
+                start = ms > 0 ? std::max(lastHeld, began) : time;
+                state = 2;
+            }
+            if (state >= 2) break;
+        }
+        if (state == 0 || state == 3) continue;
+        if (state == 1) {
+            // A completed lap is the game's word that it was timed.
+            if (lap.isCompleted) continue;
+            lap.lapNumber = 0; lap.lapTimeMs = lap.s1Ms = lap.s2Ms = lap.s3Ms = 0;
+            lap.isCompleted = false; lap.isPartial = true;
+            continue;
+        }
+        if (start <= lap.startSessionTime) continue;
+        V6LapSummary hold;
+        hold.lapId = nextLapId++; hold.driverIndex = lap.driverIndex; hold.lapNumber = 0;
+        hold.phase = lap.phase; hold.startSessionTime = lap.startSessionTime;
+        hold.endSessionTime = start; hold.isPartial = true;
+        lap.startSessionTime = start;
+        holds.push_back(hold);
+    }
+    lapSummaries.insert(lapSummaries.end(), holds.begin(), holds.end());
+    return true;
+}
+
 TnrdV6Archive::TnrdV6Archive() : impl_(std::make_unique<Impl>()) {}
 TnrdV6Archive::~TnrdV6Archive() { close(); }
 
@@ -3021,6 +3174,7 @@ bool TnrdV6Archive::open(const std::string& path, HeaderRow& headerOut, std::str
         get32(header.data() + 120) != static_cast<uint32_t>(::crc32(0, header.data(), 120))) {
         fail(errorOut, "invalid V6 header"); close(); return false;
     }
+    impl_->revision = get16(header.data() + REVISION_OFFSET);
     const uint64_t metadataOffset = get64(header.data() + 16);
     const uint64_t metadataSize = get64(header.data() + 24);
     const uint64_t directoryOffset = get64(header.data() + 32);
@@ -3164,6 +3318,7 @@ bool TnrdV6Archive::open(const std::string& path, HeaderRow& headerOut, std::str
         impl_->shared.push_back({stored.phase, stored.sessionTime, std::move(plain)});
     }
     impl_->playback = impl_->player.value_or(impl_->drivers.empty() ? 0 : impl_->drivers.front().vehicleIndex);
+    if (!impl_->repairLegacyOutLaps(errorOut)) { close(); return false; }
     impl_->rebuildCompatibility(); headerOut = impl_->session; return true;
 }
 
@@ -3172,6 +3327,7 @@ bool TnrdV6Archive::openMemory(std::shared_ptr<const V6MemoryImage> image, Heade
     close(); impl_ = std::make_unique<Impl>();
     if (!image) { fail(errorOut, "no V6 memory image"); return false; }
     impl_->memory = image;
+    impl_->revision = FILE_REVISION;
     impl_->exposed = image->phase;
     impl_->session = image->session;
     impl_->drivers = image->drivers;
@@ -3196,6 +3352,7 @@ bool TnrdV6Archive::openMemory(std::shared_ptr<const V6MemoryImage> image, Heade
 }
 
 bool TnrdV6Archive::wasRecovered() const { return impl_ && impl_->recovered; }
+uint16_t TnrdV6Archive::revision() const { return impl_ ? impl_->revision : 0; }
 
 // Rebuilds a recording whose index is missing, stale or corrupt by walking the
 // append-only record stream. Everything the index held is derivable: chunk
@@ -3211,6 +3368,14 @@ bool TnrdV6Archive::recoverByScan(HeaderRow& headerOut, std::string* errorOut) {
     impl_->v6Chunks.clear(); impl_->shared.clear();
     impl_->clocks.clear(); impl_->clockByLap.clear();
     impl_->driverByIndex.clear(); impl_->player.reset();
+    // The sentinel header written at open carries the writer revision too.
+    // Without a valid header the file is treated as the first writer's.
+    impl_->revision = 0;
+    if (std::array<uint8_t, HEADER_SIZE> header{};
+        readAt(impl_->file, 0, header.data(), header.size()) &&
+        std::equal(MAGIC.begin(), MAGIC.end(), header.begin()) &&
+        get32(header.data() + 120) == static_cast<uint32_t>(::crc32(0, header.data(), 120)))
+        impl_->revision = get16(header.data() + REVISION_OFFSET);
 
     std::map<uint8_t, V6DriverHeader> headers;
     struct LapAccum {
@@ -3482,6 +3647,7 @@ bool TnrdV6Archive::recoverByScan(HeaderRow& headerOut, std::string* errorOut) {
     impl_->session.magic = "TNRD_V6";
     impl_->session.compression = "zstd";
     impl_->recovered = true;
+    if (!impl_->repairLegacyOutLaps(errorOut)) { close(); return false; }
     impl_->rebuildCompatibility();
     headerOut = impl_->session;
     if (errorOut) errorOut->clear();

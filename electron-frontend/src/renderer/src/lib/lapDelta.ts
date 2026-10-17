@@ -31,6 +31,16 @@ function isOriginSample(sessionTime: number, elapsedMs: number, distance: number
   return sessionTime >= start && elapsedMs === 0 && Number.isFinite(distance) && distance >= 0
 }
 
+// A lap timer that drops by more than this while the car keeps moving forward
+// was still showing the out-lap's time. A timing-line crossing also resets the
+// lap distance, and sector-line corrections move the timer by a frame or so.
+// Mirrors kStaleTimerResetMs in protocol_parser_library/src/LapDelta.cpp.
+const STALE_TIMER_RESET_MS = 1000
+
+function isStaleTimerReset(previousElapsedMs: number, previousDistance: number, elapsedMs: number, distance: number): boolean {
+  return elapsedMs + STALE_TIMER_RESET_MS < previousElapsedMs && distance >= previousDistance
+}
+
 /**
  * Builds a lap's progress map from its lap rows, consuming only the rows
  * appended since the previous update. Any other change to the rows, or to the
@@ -40,6 +50,13 @@ export class LapProgressBuilder {
   private source: ColumnView<LapProgressPoint> | null = null
   private start = NaN
   private end = NaN
+  // Where the timed lap begins: `start`, or later when the lap window opens on
+  // the out-lap and the timer resets without a line crossing. Earlier rows are
+  // not part of the timed lap.
+  private timedStart = NaN
+  // The latest in-window row seen, for spotting such a reset in appended rows.
+  private scanElapsed = NaN
+  private scanDistance = NaN
   private consumed = 0
   private stopped = false
   // Fingerprint of the first and last consumed rows, to detect rewritten rows.
@@ -61,8 +78,9 @@ export class LapProgressBuilder {
     if (!this.extends(rows, startSessionTime, endSessionTime)) this.rebuild(rows, startSessionTime, endSessionTime)
     else if (rows.length > this.consumed && !this.stopped) {
       // Origin samples only occur in the lap-start prefix; one that moves the
-      // origin changes the first point, which only a rebuild can apply.
-      if (this.newRowsMoveOrigin(rows)) this.rebuild(rows, startSessionTime, endSessionTime)
+      // origin changes the first point, which only a rebuild can apply. So
+      // does a stale-timer reset, which moves the timed lap's start.
+      if (this.newRowsMoveOrigin(rows) || this.newRowsResetTimer(rows)) this.rebuild(rows, startSessionTime, endSessionTime)
       else this.ingest(rows, this.consumed)
     }
     this.source = rows
@@ -87,13 +105,29 @@ export class LapProgressBuilder {
       Object.is(rows.num('lap_distance_m', last), this.lastRow[2])
   }
 
+  private newRowsResetTimer(rows: ColumnView<LapProgressPoint>): boolean {
+    let previousElapsed = this.scanElapsed
+    let previousDistance = this.scanDistance
+    for (let i = this.consumed; i < rows.length; i++) {
+      const sessionTime = rows.time(i)
+      if (sessionTime > this.end) break
+      const distance = rows.num('lap_distance_m', i)
+      if (sessionTime < this.start || !Number.isFinite(distance)) continue
+      const elapsedMs = rows.num('current_lap_ms', i)
+      if (isStaleTimerReset(previousElapsed, previousDistance, elapsedMs, distance)) return true
+      previousElapsed = elapsedMs
+      previousDistance = distance
+    }
+    return false
+  }
+
   private newRowsMoveOrigin(rows: ColumnView<LapProgressPoint>): boolean {
     let originRaw = this.originRaw
     for (let i = this.consumed; i < rows.length; i++) {
       const sessionTime = rows.time(i)
       if (sessionTime > this.end) break
       const distance = rows.num('lap_distance_m', i)
-      if (isOriginSample(sessionTime, rows.num('current_lap_ms', i), distance, this.start)) {
+      if (isOriginSample(sessionTime, rows.num('current_lap_ms', i), distance, this.timedStart)) {
         originRaw = Math.min(originRaw, distance)
       }
     }
@@ -110,12 +144,30 @@ export class LapProgressBuilder {
     this.splits.reset()
     this.map = null
     this.dirty = true
-    let originRaw = Infinity
+    let first = 0
+    let previousElapsed = NaN
+    let previousDistance = NaN
     for (let i = 0; i < rows.length; i++) {
       const sessionTime = rows.time(i)
       if (sessionTime > end) break
       const distance = rows.num('lap_distance_m', i)
-      if (isOriginSample(sessionTime, rows.num('current_lap_ms', i), distance, start)) {
+      if (sessionTime < start || !Number.isFinite(distance)) continue
+      const elapsedMs = rows.num('current_lap_ms', i)
+      if (isStaleTimerReset(previousElapsed, previousDistance, elapsedMs, distance)) first = i
+      previousElapsed = elapsedMs
+      previousDistance = distance
+    }
+    this.timedStart = first > 0
+      ? Math.max(start, rows.time(first) - Math.max(rows.num('current_lap_ms', first), 0) / 1000)
+      : start
+    this.scanElapsed = NaN
+    this.scanDistance = NaN
+    let originRaw = Infinity
+    for (let i = first; i < rows.length; i++) {
+      const sessionTime = rows.time(i)
+      if (sessionTime > end) break
+      const distance = rows.num('lap_distance_m', i)
+      if (isOriginSample(sessionTime, rows.num('current_lap_ms', i), distance, this.timedStart)) {
         originRaw = Math.min(originRaw, distance)
       }
     }
@@ -126,23 +178,27 @@ export class LapProgressBuilder {
     this.time = new Float64Array(capacity)
     this.elapsedMs = new Float64Array(capacity)
     this.distance = new Float64Array(capacity)
-    this.time[0] = start
+    this.time[0] = this.timedStart
     this.elapsedMs[0] = 0
     this.distance[0] = this.origin
     this.count = 1
-    this.lastTime = start
+    this.lastTime = this.timedStart
     this.lastDistance = this.origin
-    this.ingest(rows, 0)
+    this.ingest(rows, first)
   }
 
   private ingest(rows: ColumnView<LapProgressPoint>, from: number): void {
-    const start = this.start
+    const start = this.timedStart
     let i = from
     for (; i < rows.length; i++) {
       const sessionTime = rows.time(i)
       if (sessionTime > this.end) { this.stopped = true; break }
       const elapsedMs = rows.num('current_lap_ms', i)
       const distance = rows.num('lap_distance_m', i)
+      if (sessionTime >= this.start && Number.isFinite(distance)) {
+        this.scanElapsed = elapsedMs
+        this.scanDistance = distance
+      }
       if (isOriginSample(sessionTime, elapsedMs, distance, start)) this.originRaw = Math.min(this.originRaw, distance)
       if (!Number.isFinite(sessionTime) || !Number.isFinite(distance) ||
           !Number.isFinite(elapsedMs) || sessionTime < this.lastTime ||

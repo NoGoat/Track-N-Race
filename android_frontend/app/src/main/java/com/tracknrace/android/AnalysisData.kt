@@ -189,29 +189,50 @@ internal class AnalysisProgress private constructor(
     }
 
     companion object {
+        private const val STALE_TIMER_RESET_MS = 1000.0
+
         fun build(lap: AnalysisLap): AnalysisProgress? {
             val count = lap.progressTime.size
             if (count == 0) return null
             val end = lap.duration
-            // Race Lap 1 starts behind the line; keep the earliest distance
-            // recorded at the lap-start boundary instead of inventing zero.
-            var origin = Double.POSITIVE_INFINITY
+            // A lap window can open on the out-lap, whose timer the first
+            // timed sample may still show; the timed lap starts where that
+            // timer resets without a line crossing (desktop STALE_TIMER_RESET_MS).
+            var first = 0
+            var previousElapsed = Double.NaN
+            var previousDistance = Double.NaN
             for (index in 0 until count) {
                 val time = lap.progressTime[index].toDouble()
                 if (time > end) break
                 val distance = lap.progressDistance[index].toDouble()
-                if (time < 0 || lap.progressElapsedMs[index] != 0f ||
+                if (time < 0 || !distance.isFinite()) continue
+                val elapsedMs = lap.progressElapsedMs[index].toDouble()
+                if (elapsedMs + STALE_TIMER_RESET_MS < previousElapsed && distance >= previousDistance) first = index
+                previousElapsed = elapsedMs
+                previousDistance = distance
+            }
+            val start = if (first > 0) {
+                max(0.0, lap.progressTime[first] - max(lap.progressElapsedMs[first].toDouble(), 0.0) / 1000.0)
+            } else 0.0
+            // Race Lap 1 starts behind the line; keep the earliest distance
+            // recorded at the lap-start boundary instead of inventing zero.
+            var origin = Double.POSITIVE_INFINITY
+            for (index in first until count) {
+                val time = lap.progressTime[index].toDouble()
+                if (time > end) break
+                val distance = lap.progressDistance[index].toDouble()
+                if (time < start || lap.progressElapsedMs[index] != 0f ||
                     !distance.isFinite() || distance < 0
                 ) continue
                 origin = min(origin, distance)
             }
             if (!origin.isFinite()) origin = 0.0
-            val times = ArrayList<Double>(count + 1).apply { add(0.0) }
+            val times = ArrayList<Double>(count + 1).apply { add(start) }
             val distances = ArrayList<Double>(count + 1).apply { add(origin) }
             val elapsed = ArrayList<Double>(count + 1).apply { add(0.0) }
-            var lastTime = 0.0
+            var lastTime = start
             var lastDistance = origin
-            for (index in 0 until count) {
+            for (index in first until count) {
                 val time = lap.progressTime[index].toDouble()
                 val distance = lap.progressDistance[index].toDouble()
                 val elapsedMs = lap.progressElapsedMs[index].toDouble()
@@ -219,7 +240,7 @@ internal class AnalysisProgress private constructor(
                 if (!time.isFinite() || !distance.isFinite() || !elapsedMs.isFinite() ||
                     time < lastTime || distance < lastDistance || elapsedMs < 0
                 ) continue
-                if (time == 0.0) continue
+                if (time == start) continue
                 if (times.size == 1) {
                     if (distance == origin) continue
                     times += time; distances += distance; elapsed += elapsedMs

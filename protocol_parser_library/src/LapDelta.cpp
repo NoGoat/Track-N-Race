@@ -4,43 +4,79 @@
 #include <cmath>
 #include <iterator>
 #include <limits>
+#include <utility>
 
 namespace tnrp {
 namespace {
 
 struct ProgressMap {
     std::vector<LapProgressPoint> points;
+    // Elapsed time at each point, in ms: current_lap_ms, aligned with the lap's
+    // official split times by alignToOfficialTimes().
+    std::vector<double> elapsedMs;
     float maxDistance{};
 };
+
+// A lap timer that drops by more than this while the car keeps moving forward
+// was still showing the out-lap's time. A timing-line crossing also resets the
+// lap distance, and sector-line corrections move the timer by a frame or so.
+constexpr int kStaleTimerResetMs = 1000;
+
+// Where the lap's timer last reset without a line crossing, as an index into
+// lap.points, or 0. A lap window that opens on the out-lap ends its out-lap
+// there, so earlier samples are not part of the timed lap.
+size_t timedLapStart(const AnalysisLapProgress& lap) {
+    size_t cut = 0;
+    const LapProgressPoint* previous = nullptr;
+    for (size_t i = 0; i < lap.points.size(); ++i) {
+        const auto& point = lap.points[i];
+        if (point.session_time > lap.endSessionTime) break;
+        if (point.session_time < lap.startSessionTime || !std::isfinite(point.lap_distance_m)) continue;
+        if (previous && point.current_lap_ms + kStaleTimerResetMs < previous->current_lap_ms &&
+            point.lap_distance_m >= previous->lap_distance_m) cut = i;
+        previous = &point;
+    }
+    return cut;
+}
 
 ProgressMap buildProgressMap(const AnalysisLapProgress& lap) {
     ProgressMap result;
     if (lap.points.empty()) return result;
 
+    const size_t first = timedLapStart(lap);
+    float startTime = lap.startSessionTime;
+    if (first > 0) {
+        const auto& reset = lap.points[first];
+        startTime = std::max(startTime, reset.session_time -
+            static_cast<float>(std::max(reset.current_lap_ms, 0)) / 1000.0f);
+    }
+
     float originDistance = std::numeric_limits<float>::infinity();
-    for (const auto& point : lap.points) {
+    for (size_t i = first; i < lap.points.size(); ++i) {
+        const auto& point = lap.points[i];
         if (point.session_time > lap.endSessionTime) break;
-        if (point.session_time < lap.startSessionTime || point.current_lap_ms != 0 ||
+        if (point.session_time < startTime || point.current_lap_ms != 0 ||
             !std::isfinite(point.lap_distance_m) || point.lap_distance_m < 0.0f) continue;
         originDistance = std::min(originDistance, point.lap_distance_m);
     }
     if (!std::isfinite(originDistance)) originDistance = 0.0f;
 
     LapProgressPoint origin;
-    origin.session_time = lap.startSessionTime;
+    origin.session_time = startTime;
     origin.current_lap_ms = 0;
     origin.lap_distance_m = originDistance;
     origin.sector = 0;
     result.points.push_back(origin);
 
-    float lastTime = lap.startSessionTime;
+    float lastTime = startTime;
     float lastDistance = originDistance;
-    for (const auto& point : lap.points) {
+    for (size_t i = first; i < lap.points.size(); ++i) {
+        const auto& point = lap.points[i];
         if (point.session_time > lap.endSessionTime) break;
         if (!std::isfinite(point.session_time) || !std::isfinite(point.lap_distance_m) ||
             point.session_time < lastTime || point.lap_distance_m < lastDistance ||
             point.current_lap_ms < 0) continue;
-        if (point.session_time == lap.startSessionTime) continue;
+        if (point.session_time == startTime) continue;
         if (result.points.size() == 1) {
             if (point.lap_distance_m == originDistance) continue;
             result.points.push_back(point);
@@ -58,6 +94,8 @@ ProgressMap buildProgressMap(const AnalysisLapProgress& lap) {
         result.points.clear();
         return result;
     }
+    result.elapsedMs.reserve(result.points.size());
+    for (const auto& point : result.points) result.elapsedMs.push_back(point.current_lap_ms);
     result.maxDistance = lastDistance;
     return result;
 }
@@ -70,15 +108,30 @@ double interpolateElapsed(const ProgressMap& progress, float distance) {
         [](const LapProgressPoint& point, float value) {
             return point.lap_distance_m < value;
         });
-    if (after == progress.points.end())
-        return static_cast<double>(progress.points.back().current_lap_ms) / 1000.0;
-    const auto& before = *std::prev(after);
+    if (after == progress.points.end()) return progress.elapsedMs.back() / 1000.0;
+    const size_t index = static_cast<size_t>(after - progress.points.begin());
+    const auto& before = progress.points[index - 1];
     const float span = after->lap_distance_m - before.lap_distance_m;
     const double ratio = span > 0.0f
         ? static_cast<double>(distance - before.lap_distance_m) / span
         : 1.0;
-    return (before.current_lap_ms +
-        (after->current_lap_ms - before.current_lap_ms) * ratio) / 1000.0;
+    return (progress.elapsedMs[index - 1] +
+        (progress.elapsedMs[index] - progress.elapsedMs[index - 1]) * ratio) / 1000.0;
+}
+
+// Elapsed seconds at a timing line, extended linearly past the last sample
+// when the lap's final packet lands just short of the finish line.
+constexpr float kAnchorExtrapolationM = 50.0f;
+double anchorElapsed(const ProgressMap& progress, float distance) {
+    const double inside = interpolateElapsed(progress, distance);
+    if (std::isfinite(inside) || progress.points.size() < 2 || distance <= progress.maxDistance ||
+        distance - progress.maxDistance > kAnchorExtrapolationM)
+        return inside;
+    const size_t last = progress.points.size() - 1;
+    const float span = progress.points[last].lap_distance_m - progress.points[last - 1].lap_distance_m;
+    if (span <= 0.0f) return std::numeric_limits<double>::quiet_NaN();
+    const double rate = (progress.elapsedMs[last] - progress.elapsedMs[last - 1]) / span;
+    return (progress.elapsedMs[last] + rate * (distance - progress.points[last].lap_distance_m)) / 1000.0;
 }
 
 void appendValid(LapDeltaResult& result, float distance, double delta) {
@@ -146,6 +199,44 @@ bool exactSectorDelta(const AnalysisLapProgress& current,
     return true;
 }
 
+// A remote car's lap distance can run metres ahead of its own lap timer (a
+// lobby car's network position), so the timer interpolated at a timing line
+// misses the official split by tens of milliseconds. The delta then left its
+// curve for the exact split value at each line and returned: a kink. Shift the
+// lap's elapsed times so they pass through its official splits at the shared
+// timing lines, zero at the lap's start, linearly in distance between them and
+// held after the last one.
+constexpr double kMaxAlignmentMs = 1000.0;
+void alignToOfficialTimes(ProgressMap& progress, const AnalysisLapProgress& lap,
+                          const std::vector<float>& sectorStarts, float finishDistance) {
+    std::vector<std::pair<float, double>> knots{{progress.points.front().lap_distance_m, 0.0}};
+    const auto anchor = [&](float distance, int completedSectors) {
+        double official = 0.0;
+        if (distance <= knots.back().first ||
+            !exactCumulativeElapsed(lap, completedSectors, official)) return;
+        const double sampled = anchorElapsed(progress, distance);
+        if (!std::isfinite(sampled)) return;
+        const double offsetMs = (official - sampled) * 1000.0;
+        if (std::abs(offsetMs) <= kMaxAlignmentMs) knots.push_back({distance, offsetMs});
+    };
+    for (size_t index = 0; index < sectorStarts.size(); ++index)
+        anchor(sectorStarts[index], static_cast<int>(index + 1));
+    if (finishDistance > 0.0f) anchor(finishDistance, 3);
+    if (knots.size() < 2) return;
+    size_t knot = 1;
+    for (size_t index = 0; index < progress.points.size(); ++index) {
+        const float distance = progress.points[index].lap_distance_m;
+        while (knot < knots.size() && knots[knot].first < distance) ++knot;
+        double offset = knots.back().second;
+        if (knot < knots.size()) {
+            const auto& [d0, o0] = knots[knot - 1];
+            const auto& [d1, o1] = knots[knot];
+            offset = d1 > d0 ? o0 + (o1 - o0) * (distance - d0) / (d1 - d0) : o1;
+        }
+        progress.elapsedMs[index] += offset;
+    }
+}
+
 } // namespace
 
 LapDeltaResult calculateLapDelta(const AnalysisLapProgress& current,
@@ -156,8 +247,8 @@ LapDeltaResult calculateLapDelta(const AnalysisLapProgress& current,
     result.comparisonLapNum = comparison.lapNum;
     result.sectorDelta = sectorDelta;
 
-    const ProgressMap currentMap = buildProgressMap(current);
-    const ProgressMap comparisonMap = buildProgressMap(comparison);
+    ProgressMap currentMap = buildProgressMap(current);
+    ProgressMap comparisonMap = buildProgressMap(comparison);
     if (currentMap.points.empty() || comparisonMap.points.empty()) return result;
 
     std::vector<float> sectorStarts;
@@ -169,6 +260,10 @@ LapDeltaResult calculateLapDelta(const AnalysisLapProgress& current,
     if (sector1 > 0.0f && sector2 > sector1) sectorStarts.push_back(sector2);
 
     const float finishDistance = resolvedDistance(current.trackLengthM, comparison.trackLengthM);
+    const float alignedFinish = sectorStarts.empty() || finishDistance > sectorStarts.back()
+        ? finishDistance : 0.0f;
+    alignToOfficialTimes(currentMap, current, sectorStarts, alignedFinish);
+    alignToOfficialTimes(comparisonMap, comparison, sectorStarts, alignedFinish);
     double exactFinishDelta = 0.0;
     const bool hasExactFinish = finishDistance > 0.0f &&
         (sectorStarts.empty() || finishDistance > sectorStarts.back()) &&

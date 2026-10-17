@@ -280,6 +280,8 @@ public:
     // chunk stream, because the writer was interrupted before writing one.
     // Callers should surface this: the final lap of each driver may be absent.
     bool wasRecovered() const;
+    // The header's writer revision: 0 for TNRD_V6, 1 for TNRD_V6.1.
+    uint16_t revision() const;
 
 private:
     bool recoverByScan(HeaderRow&, std::string*);

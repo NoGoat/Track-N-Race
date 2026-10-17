@@ -430,6 +430,8 @@ struct PlaybackLapBlocksRow {
     std::vector<glz::raw_json> events;
     std::vector<LapMeta>       laps;
     std::string                tnrdVersion;
+    // TNRD_V6 writer revision (0 = TNRD_V6, 1 = TNRD_V6.1); 0 for other versions.
+    int                        tnrdRevision{};
     bool                       deltaAvailable{};
     bool                       lapDistanceAvailable{};
     int                        trackLengthM{};

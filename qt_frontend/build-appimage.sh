@@ -20,7 +20,7 @@ APPDIR="$SCRIPT_DIR/AppDir"
 TOOLS_DIR="$SCRIPT_DIR/.appimage-tools"
 
 QT_PREFIX="${QT_PREFIX:-}"
-APP_VERSION="${TNR_APP_VERSION:-1.6.0}"
+APP_VERSION="${TNR_APP_VERSION:-1.6.1}"
 BREEZE_PREFIX=""   # empty => build.sh's default ($BUILD_DIR/breeze_stack/prefix)
 while [[ $# -gt 0 ]]; do
     case "$1" in
