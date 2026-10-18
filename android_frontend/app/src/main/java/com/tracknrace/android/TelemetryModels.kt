@@ -141,6 +141,10 @@ internal data class DashboardColdState(
     val tyreSets: List<TyreSetEntry> = emptyList(),
     val aeroMode: String = "drs",
     val protocolYear: Int? = null,
+    /** The format the desktop presents (2026 after the Formula gate), for its limits. */
+    val presentationYear: Int? = null,
+    /** The format has an MGU-H, so its harvest is plotted. */
+    val hasMguh: Boolean = false,
     val formula: Int? = null,
     val labels: Map<String, String> = emptyMap(),
 )

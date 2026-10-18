@@ -23,6 +23,9 @@ internal const val ANALYSIS_REQUEST_BASE = 1L shl 40
 // game's 255 "no such car" marker, e.g. a spectator's player index.
 private const val MAX_CARS = 24
 
+// The row families that arrive as binary records.
+private val HOT_ROWS = listOf(RowFamily.TELEMETRY, RowFamily.MOTION, RowFamily.MOTION_EX)
+
 private data class LiveLapSample(
     val sessionTime: Double,
     val lapNumber: Int,
@@ -213,6 +216,28 @@ internal class TelemetryStore {
 
     var cold by mutableStateOf(DashboardColdState())
         private set
+
+    /** Each graph tab's samples, collected while it is subscribed; main thread only. */
+    val graphHistories: Map<GraphFamily, SampleHistory> = GraphFamily.entries.associateWith { SampleHistory(it) }
+
+    /** The Power graphs' status samples. */
+    val statusHistory: SampleHistory get() = graphHistories.getValue(GraphFamily.STATUS)
+
+    /** The histories timed by [row] rows; read on the socket thread for [SampleHistory.enabled] only. */
+    private val historiesByRow: Map<RowFamily, List<SampleHistory>> =
+        RowFamily.entries.associateWith { row -> graphHistories.values.filter { it.family.row == row } }
+
+    // Fields a history holds from another row family, by that family.
+    private val heldByRow: Map<RowFamily, List<GraphField>> =
+        RowFamily.entries.associateWith { row -> GraphField.entries.filter { it.source == row && it.family.row != row } }
+
+    /** Where the current tyre stint began, for Stint Laps outside the status charts; main thread only. */
+    val stint = StintTracker()
+
+    private fun resetGraphHistories() {
+        graphHistories.values.forEach { it.reset() }
+        stint.reset()
+    }
     /** The recording playing on the phone itself, or null; main thread only. */
     var localRecording by mutableStateOf<String?>(null)
         private set
@@ -301,6 +326,9 @@ internal class TelemetryStore {
             statedRestrictionDriver != selectedDriverIndex
 
     fun latestHot(): HotTelemetry = hot.get()
+
+    /** The circuit's length in metres from the session or recording, 0 while unknown; main thread. */
+    fun knownTrackLengthM(): Double = trackLengthM
     fun latestMapPositions(): MapPositions = mapPositions.get()
     fun latestLapComparison(): DashboardLapComparisonState = lapComparison.get()
 
@@ -309,7 +337,20 @@ internal class TelemetryStore {
     fun totalHotRows(): Long = hotRows.get()
 
     fun acceptBinary(bytes: ByteArray) {
-        val result = BinaryTelemetryDecoder.decodeLatest(bytes)
+        // Graph tabs keep every hot sample, not only the newest.
+        val listening = HOT_ROWS.flatMap { row -> historiesByRow.getValue(row).filter { it.enabled } }
+        val samples = if (listening.isEmpty()) null else BinarySamples(
+            telemetry = listening.any { it.family.row == RowFamily.TELEMETRY },
+            motion = listening.any { it.family.row == RowFamily.MOTION },
+            motionEx = listening.any { it.family.row == RowFamily.MOTION_EX },
+        )
+        val result = BinaryTelemetryDecoder.decodeLatest(bytes, samples)
+        if (samples != null) post {
+            for (history in listening) {
+                val rows = samples.of(history.family.row) ?: continue
+                if (rows.count > 0) history.acceptBatch(rows.times, rows.columnsFor(history.family), rows.count)
+            }
+        }
         result.latest?.let(hot::lazySet)
         result.latestPositions?.let(mapPositions::lazySet)
         if (result.telemetryRows > 0) hotRows.addAndGet(result.telemetryRows.toLong())
@@ -335,8 +376,10 @@ internal class TelemetryStore {
             "telemetry" -> {
                 if (row.optionalBoolean("available") == false) {
                     hot.set(HotTelemetry())
+                    post { historiesByRow.getValue(RowFamily.TELEMETRY).forEach { it.markUnavailable() } }
                 } else {
                     hot.updateAndGet { it.withPatch(row) }
+                    acceptGraphRow(row, RowFamily.TELEMETRY)
                 }
             }
 
@@ -366,6 +409,16 @@ internal class TelemetryStore {
                         invalid = invalid ?: previous.invalid,
                     )
                     liveLapState = sample
+                    for (history in graphHistories.values) {
+                        history.acceptLap(
+                            sample.sessionTime,
+                            sample.lapNumber,
+                            sample.currentLapMs,
+                            sample.lapDistanceM,
+                            sample.invalid,
+                            sample.lastLapMs,
+                        )
+                    }
                     cold = cold.copy(
                         position = position ?: cold.position,
                         lapNumber = sample.lapNumber,
@@ -383,6 +436,7 @@ internal class TelemetryStore {
 
             "playback_loaded" -> post {
                 resetAllLapComparison()
+                resetGraphHistories()
                 playbackActive = row.optBoolean("ok")
                 newParticipantsRoster = true   // the recording brings its own grid
             }
@@ -508,6 +562,7 @@ internal class TelemetryStore {
 
             "playback_close" -> post {
                 resetAllLapComparison()
+                resetGraphHistories()
                 newParticipantsRoster = true   // live rows bring their own grid
                 statedRestriction = null
                 statedRestrictionDriver = -1
@@ -529,7 +584,14 @@ internal class TelemetryStore {
                 val carriesFields = ersPercent != null || ersMode != null || fuelKg != null ||
                     fuelLaps != null || brakeBias != null || tyreCompound != null ||
                     tyreActualCompound != null || tyreAgeLaps != null
+                val sessionTime = row.optionalDouble("session_time") ?: Double.NaN
+                if (unavailable) {
+                    post { historiesByRow.getValue(RowFamily.STATUS).forEach { it.markUnavailable() } }
+                } else {
+                    acceptGraphRow(row, RowFamily.STATUS)
+                }
                 post {
+                    if (!unavailable) stint.accept(sessionTime, tyreActualCompound, tyreCompound, tyreAgeLaps)
                     cold = when {
                         unavailable -> cold.copy(statusAvailable = false)
                         !carriesFields -> cold
@@ -557,6 +619,11 @@ internal class TelemetryStore {
                 val carriesWear = wearFl != null || wearFr != null || wearRl != null ||
                     wearRr != null
                 val carriesDamage = CarDamageState.carriesDamage(row)
+                if (unavailable) {
+                    post { historiesByRow.getValue(RowFamily.DAMAGE).forEach { it.markUnavailable() } }
+                } else {
+                    acceptGraphRow(row, RowFamily.DAMAGE)
+                }
                 post {
                     if (unavailable) damage = CarDamageState()
                     else if (carriesDamage) damage = damage.withPatch(row)
@@ -577,6 +644,10 @@ internal class TelemetryStore {
             // Indexed/legacy TNRD playback keeps Positions as JSON rather than
             // placing it in the packed telemetry lanes. Live direct/paired
             // positions still arrive through acceptBinary().
+            // V6 playback sends the motion families as rows, live as binary.
+            "motion" -> acceptGraphRow(row, RowFamily.MOTION)
+            "motion_ex" -> acceptGraphRow(row, RowFamily.MOTION_EX)
+
             "positions" -> {
                 // A V6 recording sends one car per row; a live session all of
                 // them. Either way, merge into the cars already known.
@@ -795,6 +866,7 @@ internal class TelemetryStore {
                 val regulations2026 = row.optionalBoolean("regulations_2026")
                 post {
                     resetAllLapComparison()
+                    resetGraphHistories()
                     damage = CarDamageState()
                     cold = cold.copy(
                         protocolYear = year,
@@ -824,6 +896,8 @@ internal class TelemetryStore {
                 mapPositions.lazySet(MapPositions())
                 post {
                     resetPlaybackCursorComparison()
+                    graphHistories.values.forEach { it.clear() }
+                    stint.reset()
                     // A seek/reset may be delivered after its reconstructed
                     // Participants row. Keep that roster; a real game-session
                     // change has its own participants_reset signal.
@@ -838,6 +912,7 @@ internal class TelemetryStore {
                 setSelectedDriver(-1)
                 post {
                     resetAllLapComparison()
+                    resetGraphHistories()
                     newParticipantsRoster = true
                     timing = timing.copy(drivers = emptyMap(), hasParticipants = false)
                 }
@@ -848,6 +923,8 @@ internal class TelemetryStore {
                 val formula = row.optionalInt("formula")
                 val regulations2026 = row.optionalBoolean("regulations_2026")
                 val fallbackAero = row.optString("aero_mode").takeIf { it.isNotEmpty() }
+                val presentationYear = row.optionalInt("presentation_format") ?: year
+                val hasMguh = row.optJSONObject("capabilities")?.optionalBoolean("hasMguh") ?: false
                 val labelsObject = row.optJSONObject("labels")
                 val labels = buildMap {
                     if (labelsObject != null) {
@@ -860,6 +937,8 @@ internal class TelemetryStore {
                 post {
                     cold = cold.copy(
                         protocolYear = year,
+                        presentationYear = presentationYear,
+                        hasMguh = hasMguh,
                         formula = formula,
                         aeroMode = resolveAeroMode(year, regulations2026, formula, fallbackAero),
                         labels = labels,
@@ -886,6 +965,7 @@ internal class TelemetryStore {
         post {
             selectedDriverIndex = index
             liveLapState = BLANK_LIVE_LAP
+            resetGraphHistories()
             damage = CarDamageState()
             cold = cold.copy(
                 statusAvailable = false,
@@ -954,6 +1034,30 @@ internal class TelemetryStore {
     fun showMessage(text: String) = post {
         message = UiMessage(messageIds.incrementAndGet(), text)
     }
+
+    /**
+     * A [row] row for the graph histories: a sample for each enabled history
+     * timed by that family, and the newest value of fields others hold from it.
+     */
+    private fun acceptGraphRow(row: JSONObject, family: RowFamily) {
+        val samples = historiesByRow.getValue(family).filter { it.enabled }
+        val held = heldByRow.getValue(family).filter { graphHistories.getValue(it.family).enabled }
+        if (samples.isEmpty() && held.isEmpty()) return
+        val sessionTime = row.optionalDouble("session_time") ?: Double.NaN
+        val patches = samples.map { it to graphPatch(row, it.family) }
+        val values = held.map { it to (row.optionalDouble(it.key)?.toFloat() ?: Float.NaN) }
+        post {
+            for ((field, value) in values) graphHistories.getValue(field.family).hold(field, value)
+            for ((history, patch) in patches) history.accept(sessionTime, patch)
+        }
+    }
+
+    /** A row's values of [family]'s own fields by slot, NaN where the patch left one out. */
+    private fun graphPatch(row: JSONObject, family: GraphFamily): FloatArray =
+        FloatArray(family.fields.size) { slot ->
+            val field = family.fields[slot]
+            if (field.source != family.row) Float.NaN else row.optionalDouble(field.key)?.toFloat() ?: Float.NaN
+        }
 
     private fun post(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)

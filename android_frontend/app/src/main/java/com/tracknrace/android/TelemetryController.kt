@@ -46,6 +46,7 @@ internal class TelemetryController(
         ::requestLapData,
         ::requestLapDelta,
     )
+    internal val graphs = GraphsController(context, store, ::requestLapData)
 
     /** A recording open on the phone; it replaces the game or desktop source. */
     private class OpenRecording(val file: RecordingFile, val handle: RecordingLibrary.Handle)
@@ -143,6 +144,7 @@ internal class TelemetryController(
 
     fun setActivePage(page: PairedTelemetryPage) {
         activePage = page
+        for ((family, history) in store.graphHistories) history.setEnabled(family in page.graphFamilies)
         pairedTelemetry.setPage(page)
         playbackCommand { directTelemetry.setRequirements(page.streamMask, page.v6Types.toIntArray()) }
     }
@@ -217,13 +219,13 @@ internal class TelemetryController(
         playbackExecutor.execute { if (playback != null) block() }
     }
 
-    /** Analysis lap columns: from the phone's recording when one is open, else the desktop. */
+    /** Lap columns for Analysis or Graphs: from the phone's recording when one is open, else the desktop. */
     private fun requestLapData(requestId: Long, lapNumber: Int, channels: Collection<String>): Boolean {
         if (playback == null) return pairedTelemetry.requestLapData(requestId, lapNumber, channels)
         val names = channels.toTypedArray()
         lapExecutor.execute {
             val data = directTelemetry.lapData(lapNumber, names)
-            analysis.onLapData("{\"type\":\"lap_data\",\"requestId\":$requestId,\"lapNum\":$lapNumber,\"data\":${data ?: "null"}}")
+            onLapData("{\"type\":\"lap_data\",\"requestId\":$requestId,\"lapNum\":$lapNumber,\"data\":${data ?: "null"}}")
         }
         return true
     }
@@ -448,7 +450,10 @@ internal class TelemetryController(
 
     override fun onBinary(bytes: ByteArray) = store.acceptBinary(bytes)
 
-    override fun onLapData(json: String) = analysis.onLapData(json)
+    override fun onLapData(json: String) {
+        val requestId = AnalysisLapParser.requestIdOf(json) ?: return
+        if (requestId >= GRAPHS_REQUEST_BASE) graphs.onLapData(json) else analysis.onLapData(json)
+    }
 
     override fun onState(state: String, detail: String?) {
         if (pairingPending && (state == "error" || state == "disconnected")) {

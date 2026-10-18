@@ -10,6 +10,9 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
@@ -72,46 +75,69 @@ internal fun Readout(
 ) {
     val density = LocalDensity.current
     val sizePx = with(density) { style.fontSize.toPx() }
-    val monospace = style.fontFamily == FontFamily.Monospace
-    val paints = remember(sizePx, style.fontWeight, monospace) {
-        val bold = (style.fontWeight ?: FontWeight.SemiBold).weight.coerceAtLeast(600)
-        textPaint(sizePx, bold, monospace) to textPaint(sizePx, FontWeight.Normal.weight, monospace)
-    }
+    val paints = remember(sizePx, style.fontWeight, style.fontFamily) { readoutPaints(style, sizePx) }
     val lineHeight = with(density) {
         if (style.lineHeight.isSpecified) style.lineHeight.toDp() else (sizePx * 1.35f).toDp()
     }
     Spacer(
         // Its own layer, so a new value repaints this line and nothing around it.
         modifier.height(lineHeight).graphicsLayer().drawBehind {
-            val list = runs()
-            if (list.isEmpty()) return@drawBehind
-            val (bold, regular) = paints
-            fun paintOf(run: ReadoutRun): Paint = (if (run.bold) bold else regular).also { it.textSize = sizePx * run.scale }
-            val widths = FloatArray(list.size) { paintOf(list[it]).measureText(list[it].text) }
-            val total = widths.sum()
-            var x = when {
-                alignEnd -> size.width - total
-                center -> (size.width - total) / 2f
-                else -> 0f
-            }
-            bold.textSize = sizePx
-            val metrics = bold.fontMetrics
-            val baseline = size.height / 2f - (metrics.ascent + metrics.descent) / 2f
-            val canvas = drawContext.canvas.nativeCanvas
-            // Too wide for its slot: shrink about the aligned edge rather than
-            // spill over a neighbour.
-            val save = canvas.save()
-            if (total > size.width && total > 0f) {
-                val scale = size.width / total
-                canvas.scale(scale, scale, if (alignEnd) size.width else if (center) size.width / 2f else 0f, size.height / 2f)
-            }
-            list.forEachIndexed { index, run ->
-                val paint = paintOf(run)
-                paint.color = run.color.toArgb()
-                canvas.drawText(run.text, x, baseline, paint)
-                x += widths[index]
-            }
-            canvas.restoreToCount(save)
+            paintReadout(runs(), paints, sizePx, Rect(Offset.Zero, size), alignEnd, center)
         },
     )
+}
+
+/** Bold and regular paints for a readout in [style], at [sizePx]. */
+internal fun readoutPaints(style: TextStyle, sizePx: Float): Pair<Paint, Paint> {
+    val monospace = style.fontFamily == FontFamily.Monospace
+    val bold = (style.fontWeight ?: FontWeight.SemiBold).weight.coerceAtLeast(600)
+    return textPaint(sizePx, bold, monospace) to textPaint(sizePx, FontWeight.Normal.weight, monospace)
+}
+
+/**
+ * Paints one readout line of [list] into [bounds], aligned to its end, its
+ * centre or its start; too wide for it, it shrinks about the aligned edge
+ * rather than spill over a neighbour.
+ */
+internal fun DrawScope.paintReadout(
+    list: List<ReadoutRun>,
+    paints: Pair<Paint, Paint>,
+    sizePx: Float,
+    bounds: Rect,
+    alignEnd: Boolean,
+    center: Boolean = false,
+) {
+    if (list.isEmpty() || bounds.width <= 0f) return
+    val (bold, regular) = paints
+    fun paintOf(run: ReadoutRun): Paint = (if (run.bold) bold else regular).also { it.textSize = sizePx * run.scale }
+    val widths = FloatArray(list.size) { paintOf(list[it]).measureText(list[it].text) }
+    val total = widths.sum()
+    var x = bounds.left + when {
+        alignEnd -> bounds.width - total
+        center -> (bounds.width - total) / 2f
+        else -> 0f
+    }
+    bold.textSize = sizePx
+    val metrics = bold.fontMetrics
+    val middle = bounds.top + bounds.height / 2f
+    val baseline = middle - (metrics.ascent + metrics.descent) / 2f
+    val canvas = drawContext.canvas.nativeCanvas
+    val save = canvas.save()
+    if (total > bounds.width && total > 0f) {
+        val scale = bounds.width / total
+        val pivot = when {
+            alignEnd -> bounds.right
+            center -> bounds.left + bounds.width / 2f
+            else -> bounds.left
+        }
+        canvas.scale(scale, scale, pivot, middle)
+        x = if (alignEnd) bounds.right - total else if (center) pivot - total / 2f else bounds.left
+    }
+    list.forEachIndexed { index, run ->
+        val paint = paintOf(run)
+        paint.color = run.color.toArgb()
+        canvas.drawText(run.text, x, baseline, paint)
+        x += widths[index]
+    }
+    canvas.restoreToCount(save)
 }

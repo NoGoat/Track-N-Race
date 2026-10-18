@@ -75,6 +75,8 @@ import com.google.zxing.client.android.Intents
 import com.journeyapps.barcodescanner.ScanContract
 import com.tracknrace.android.pages.AnalysisScreen
 import com.tracknrace.android.pages.DashboardScreen
+import com.tracknrace.android.pages.GraphWindowDialog
+import com.tracknrace.android.pages.GraphsScreen
 import com.tracknrace.android.pages.LicensesScreen
 import com.tracknrace.android.pages.PARTICIPANTS_RETRY_DELAY_MS
 import com.tracknrace.android.pages.PairingScreen
@@ -91,6 +93,7 @@ private enum class AppScreen(val telemetryPage: PairedTelemetryPage, val isPrima
     DASHBOARD(PairedTelemetryPage.DASHBOARD),
     TIMING(PairedTelemetryPage.TIMING),
     TYRES(PairedTelemetryPage.TYRES),
+    GRAPHS(PairedTelemetryPage.GRAPHS_POWER),
     ANALYSIS(PairedTelemetryPage.ANALYSIS),
     SETTINGS(PairedTelemetryPage.NONE, isPrimary = false),
     PAIRING(PairedTelemetryPage.NONE, isPrimary = false),
@@ -118,6 +121,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     var recordingsOpen by rememberSaveable { mutableStateOf(false) }
     var foldersVersion by remember { mutableIntStateOf(0) }
     var driverPickerOpen by remember { mutableStateOf(false) }
+    var graphWindowOpen by remember { mutableStateOf(false) }
     val localRecording = store.localRecording
     val appContext = LocalContext.current.applicationContext
     val folderLauncher = rememberLauncherForActivityResult(
@@ -217,10 +221,11 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
         derivedStateOf(structuralEqualityPolicy()) { store.timing.needsParticipantsRefresh() }
     }
     // The Timing page retries a missing roster itself. Dashboard, Tyres and
-    // Analysis share the same subscription bit now, so give them the same retry.
+    // Analysis and Graphs share the same subscription bit now, so give them the same retry.
     LaunchedEffect(paired, rosterMissing, screen) {
         if (!paired || !rosterMissing ||
-            (screen != AppScreen.DASHBOARD && screen != AppScreen.TYRES && screen != AppScreen.ANALYSIS)
+            (screen != AppScreen.DASHBOARD && screen != AppScreen.TYRES && screen != AppScreen.ANALYSIS &&
+                screen != AppScreen.GRAPHS)
         ) return@LaunchedEffect
         while (true) {
             delay(PARTICIPANTS_RETRY_DELAY_MS)
@@ -246,6 +251,8 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                     onSettings = openSettings,
                     onBack = ::navigateBack,
                     onAnalysisSettings = { telemetry.analysis.settingsOpen = true },
+                    graphWindow = telemetry.graphs.globalWindow.takeIf(telemetry.graphs::available) ?: GraphWindow.DEFAULT,
+                    onGraphWindow = { graphWindowOpen = true },
                     recordingOpen = localRecording != null,
                     onOpenRecordings = { recordingsOpen = true },
                     onCloseRecording = telemetry::closeRecording,
@@ -273,7 +280,9 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                     var downPosition = Offset.Zero
                     var movedBeyondTapSlop = false
                     while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        // After the page has handled the touch, so a tap that a tab,
+                        // chip or button took does not also bring up the bars.
+                        val event = awaitPointerEvent(PointerEventPass.Final)
                         event.changes.forEach { change ->
                             if (trackedPointerId == null && change.pressed && !change.previousPressed) {
                                 trackedPointerId = change.id.value
@@ -286,8 +295,9 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                                 }
                                 if (!change.pressed && change.previousPressed) {
                                     if (!movedBeyondTapSlop) {
-                                        landscapeChromeVisible = true
-                                        landscapeChromeInteraction += 1
+                                        // A control's tap only keeps bars that are already up.
+                                        if (!change.isConsumed) landscapeChromeVisible = true
+                                        if (landscapeChromeVisible) landscapeChromeInteraction += 1
                                     }
                                     trackedPointerId = null
                                 }
@@ -333,6 +343,13 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                         )
                         AppScreen.TYRES -> TyresScreen(
                             display = { tyreRows },
+                        )
+                        AppScreen.GRAPHS -> GraphsScreen(
+                            store = store,
+                            graphs = telemetry.graphs,
+                            active = destinationActive,
+                            // Each graph tab asks the desktop for its own data.
+                            onPage = telemetry::setActivePage,
                         )
                         AppScreen.ANALYSIS -> AnalysisScreen(
                             store = store,
@@ -416,6 +433,8 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                         onSettings = openSettings,
                         onBack = ::navigateBack,
                         onAnalysisSettings = { telemetry.analysis.settingsOpen = true },
+                        graphWindow = telemetry.graphs.globalWindow.takeIf(telemetry.graphs::available) ?: GraphWindow.DEFAULT,
+                        onGraphWindow = { graphWindowOpen = true },
                         recordingOpen = localRecording != null,
                         onOpenRecordings = { recordingsOpen = true },
                         onCloseRecording = telemetry::closeRecording,
@@ -452,6 +471,18 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                 foldersVersion++
             },
             onDismiss = { recordingsOpen = false },
+        )
+    }
+    if (graphWindowOpen) {
+        GraphWindowDialog(
+            title = "Chart window",
+            selected = telemetry.graphs.globalWindow,
+            options = GraphWindow.entries.filter(telemetry.graphs::available),
+            onSelect = { window ->
+                telemetry.graphs.selectGlobalWindow(window)
+                graphWindowOpen = false
+            },
+            onDismiss = { graphWindowOpen = false },
         )
     }
     if (driverPickerOpen && localRecording != null) {
@@ -539,6 +570,9 @@ private fun AppTopBar(
     onSettings: () -> Unit,
     onBack: () -> Unit,
     onAnalysisSettings: () -> Unit,
+    /** The Graphs page's global window. */
+    graphWindow: GraphWindow,
+    onGraphWindow: () -> Unit,
     recordingOpen: Boolean,
     onOpenRecordings: () -> Unit,
     onCloseRecording: () -> Unit,
@@ -551,6 +585,7 @@ private fun AppTopBar(
         AppScreen.DASHBOARD -> "Dashboard"
         AppScreen.TIMING -> "Timing"
         AppScreen.TYRES -> "Tyres"
+        AppScreen.GRAPHS -> "Graphs"
         AppScreen.ANALYSIS -> "Analysis"
         AppScreen.SETTINGS -> "Settings"
         AppScreen.PAIRING -> "Pair desktop"
@@ -604,6 +639,15 @@ private fun AppTopBar(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                    }
+                }
+                if (screen == AppScreen.GRAPHS) {
+                    // The window every chart follows unless it picks its own.
+                    TextButton(onClick = onGraphWindow) {
+                        Icon(painterResource(R.drawable.ic_timer), contentDescription = null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(graphWindow.label, maxLines = 1)
+                        Icon(painterResource(R.drawable.ic_expand_more), contentDescription = "Chart window", Modifier.size(18.dp))
                     }
                 }
                 if (screen == AppScreen.ANALYSIS) {
@@ -666,6 +710,7 @@ private fun AppNavigationBar(selected: AppScreen, onSelected: (AppScreen) -> Uni
         Triple(AppScreen.DASHBOARD, "Dashboard", R.drawable.ic_overview),
         Triple(AppScreen.TIMING, "Timing", R.drawable.ic_standings),
         Triple(AppScreen.TYRES, "Tyres", R.drawable.ic_tyres),
+        Triple(AppScreen.GRAPHS, "Graphs", R.drawable.ic_graphs),
         Triple(AppScreen.ANALYSIS, "Analysis", R.drawable.ic_analysis),
     )
     NavigationBar(

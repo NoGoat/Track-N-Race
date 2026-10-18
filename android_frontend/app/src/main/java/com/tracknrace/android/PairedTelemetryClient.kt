@@ -26,6 +26,8 @@ import org.json.JSONObject
 internal enum class PairedTelemetryPage(
     val pageId: String,
     val consumers: List<DataConsumer>,
+    /** The graph histories the phone keeps while this page is subscribed. */
+    val graphFamilies: Set<GraphFamily> = emptySet(),
 ) {
     // DRIVER_ROSTER is on every top-bar page: the app bar names the selected
     // driver, and the desktop only sends the roster to a subscription that asks.
@@ -79,6 +81,122 @@ internal enum class PairedTelemetryPage(
             DataConsumer.SESSION_INFO,
             DataConsumer.TYRE_SETS,
         ),
+    ),
+    // The stream carries the samples the phone keeps as history; in playback
+    // the visible window is backfilled from request_lap_data.
+    GRAPHS_POWER(
+        "graphs-power",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.POWER_HISTORY,
+        ),
+        setOf(GraphFamily.STATUS),
+    ),
+    // A Power chart in a lap mode: live, the lap rows place each sample by distance.
+    GRAPHS_POWER_LAPS(
+        "graphs-power-laps",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.POWER_HISTORY,
+            DataConsumer.LAP_PROGRESS,
+        ),
+        setOf(GraphFamily.STATUS),
+    ),
+    // The fitted tyre tells Stint Laps where the stint began.
+    GRAPHS_INPUTS(
+        "graphs-inputs",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.INPUT_HISTORY,
+            DataConsumer.FITTED_TYRE,
+        ),
+        setOf(GraphFamily.TELEMETRY),
+    ),
+    GRAPHS_INPUTS_LAPS(
+        "graphs-inputs-laps",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.INPUT_HISTORY,
+            DataConsumer.FITTED_TYRE,
+            DataConsumer.LAP_PROGRESS,
+        ),
+        setOf(GraphFamily.TELEMETRY),
+    ),
+    GRAPHS_SPEED(
+        "graphs-speed",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.DRIVING_INPUTS,
+            DataConsumer.ERS_LEVEL,
+            DataConsumer.FITTED_TYRE,
+        ),
+        setOf(GraphFamily.DRIVE),
+    ),
+    GRAPHS_SPEED_LAPS(
+        "graphs-speed-laps",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.DRIVING_INPUTS,
+            DataConsumer.ERS_LEVEL,
+            DataConsumer.FITTED_TYRE,
+            DataConsumer.LAP_PROGRESS,
+        ),
+        setOf(GraphFamily.DRIVE),
+    ),
+    GRAPHS_TYRES(
+        "graphs-tyres",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.TYRE_TEMPERATURES,
+            DataConsumer.BRAKE_TEMPERATURES,
+            DataConsumer.TYRE_WEAR,
+            DataConsumer.FITTED_TYRE,
+        ),
+        setOf(GraphFamily.TYRE_TEMPS, GraphFamily.TYRE_WEAR),
+    ),
+    GRAPHS_TYRES_LAPS(
+        "graphs-tyres-laps",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.TYRE_TEMPERATURES,
+            DataConsumer.BRAKE_TEMPERATURES,
+            DataConsumer.TYRE_WEAR,
+            DataConsumer.FITTED_TYRE,
+            DataConsumer.LAP_PROGRESS,
+        ),
+        setOf(GraphFamily.TYRE_TEMPS, GraphFamily.TYRE_WEAR),
+    ),
+    GRAPHS_MISC(
+        "graphs-misc",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.G_FORCE_HISTORY,
+            DataConsumer.RIDE_HEIGHT_HISTORY,
+            DataConsumer.FITTED_TYRE,
+        ),
+        setOf(GraphFamily.G_FORCE, GraphFamily.RIDE_HEIGHT),
+    ),
+    GRAPHS_MISC_LAPS(
+        "graphs-misc-laps",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.G_FORCE_HISTORY,
+            DataConsumer.RIDE_HEIGHT_HISTORY,
+            DataConsumer.FITTED_TYRE,
+            DataConsumer.LAP_PROGRESS,
+        ),
+        setOf(GraphFamily.G_FORCE, GraphFamily.RIDE_HEIGHT),
+    ),
+    // Trends always needs the lap rows: each lap's start, time and validity.
+    GRAPHS_TRENDS(
+        "graphs-trends",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.LAP_ENERGY,
+            DataConsumer.TYRE_WEAR,
+            DataConsumer.LAP_PROGRESS,
+        ),
+        setOf(GraphFamily.TREND_ENERGY, GraphFamily.TYRE_WEAR),
     ),
     // Lap samples are requested one lap at a time (request_lap_data), so the
     // stream only needs the track and the roster; the playback cursor and lap
