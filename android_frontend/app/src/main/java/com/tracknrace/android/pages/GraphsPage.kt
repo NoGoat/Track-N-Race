@@ -1149,7 +1149,7 @@ private fun LapTrendChart(
     val emptyPx = with(density) { MaterialTheme.typography.bodyMedium.fontSize.toPx() }
     val emptyPaint = remember(emptyPx) { textPaint(emptyPx, FontWeight.Normal.weight) }
     val yGutter = LocalYGutter.current
-    val style = PlotStyle(colors.outlineVariant.copy(alpha = 0.35f), dim, colors.outline, labelPaint, emptyPaint, yGutter)
+    val style = PlotStyle(colors.outlineVariant.copy(alpha = 0.35f), dim, colors.outline, colors.inverseSurface, colors.inverseOnSurface, labelPaint, emptyPaint, yGutter)
     var inspectLap by remember { mutableStateOf<Int?>(null) }
     val laps = remember(window) { derivedStateOf(structuralEqualityPolicy()) { data.value.lapsFor(window) } }
     NeedYGutter(spec.id, labelPaint) {
@@ -1703,7 +1703,7 @@ private fun GraphChart(
     val emptyPaint = remember(emptyPx) { textPaint(emptyPx, FontWeight.Normal.weight) }
     fun shown(): BooleanArray = BooleanArray(spec.series.size) { hidden["${spec.title}/${spec.series[it].label}"] != true }
     val yGutter = LocalYGutter.current
-    val style = PlotStyle(gridColor, dim, crosshairColor, labelPaint, emptyPaint, yGutter)
+    val style = PlotStyle(gridColor, dim, crosshairColor, colors.inverseSurface, colors.inverseOnSurface, labelPaint, emptyPaint, yGutter)
 
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
     // The plot within the box, past the tab's shared gutter and this chart's right axes.
@@ -2144,6 +2144,9 @@ private class PlotStyle(
     val grid: Color,
     val label: Color,
     val crosshair: Color,
+    /** The read point's label: M3's plain-tooltip colours. */
+    val tipFill: Color,
+    val tipInk: Color,
     val labelPaint: Paint,
     val emptyPaint: Paint,
     val gutter: YGutter,
@@ -2257,13 +2260,13 @@ private fun DrawScope.drawReadLabel(area: PlotArea, x: Float, text: String, styl
     val half = paint.measureText(text) / 2f + 4f * density
     val baseline = area.bottom + X_AXIS_DP * density - paint.fontMetrics.descent - 2f * density
     drawRoundRect(
-        style.crosshair,
+        style.tipFill,
         topLeft = Offset(centre - half, area.bottom + 1f * density),
         size = Size(half * 2f, X_AXIS_DP * density - 2f * density),
         cornerRadius = CornerRadius(4f * density),
     )
     val previous = paint.color
-    paint.color = android.graphics.Color.WHITE
+    paint.color = style.tipInk.toArgb()
     drawContext.canvas.nativeCanvas.drawText(text, centre, baseline, paint)
     paint.color = previous
 }

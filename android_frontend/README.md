@@ -38,8 +38,9 @@ saved preferences, and recording storage remain native Android code.
 Prerequisites:
 
 - JDK 21
-- Gradle 8.13 or newer on `PATH` (or a Gradle wrapper in this directory)
-- Android SDK Platform 36 and Build-Tools
+- Gradle 9.6 or newer on `PATH` (or a Gradle wrapper in this directory),
+  as required by Android Gradle plugin 9.4
+- Android SDK Platform 37 and Build-Tools
 - Android SDK Platform-Tools and Command-line Tools
 - NDK 27.0.12077973 and CMake 3.22.1
 - USB debugging, or Android 11+ Wireless debugging
@@ -76,6 +77,14 @@ The release script supports the same `-SdkRoot`, `-DeviceSerial`, and
 APK with Android's standard debug key so that `adb` can install it. This local
 signature is not intended for a distributed release.
 
+On Linux, use the equivalent shell scripts. They take `--sdk-root`,
+`--device-serial` and `--skip-build`, and default to `~/Android/Sdk`:
+
+```bash
+./android_frontend/build-and-run.sh
+./android_frontend/build-and-run-release.sh
+```
+
 ## Phone and game network setup
 
 Keep the phone and the PC/console running F1 on the same local network. Enable
@@ -85,3 +94,8 @@ receiving; Android may suspend its listener in the background.
 
 The app uses scoped storage. It declares normal network and camera permissions;
 selecting a recording destination grants access only to the chosen folder.
+
+The app targets API 37. On Android 17 and later, game UDP, desktop discovery
+and pairing all need the "Nearby devices" (`ACCESS_LOCAL_NETWORK`) permission.
+The app asks for it on launch; until it is granted, the source shows "Local
+network access is off" and nothing listens or connects.

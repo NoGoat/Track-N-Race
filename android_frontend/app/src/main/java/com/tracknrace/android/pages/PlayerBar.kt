@@ -1,12 +1,11 @@
 package com.tracknrace.android.pages
 
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -56,6 +55,7 @@ import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tracknrace.android.PlaybackLapInfo
@@ -69,11 +69,11 @@ private val PlayerSpeeds = listOf(0.25f, 0.5f, 1f, 2f, 4f)
 private const val SkipSeconds = 5.0
 
 /**
- * The player for a recording open on the phone, sitting on the navigation bar
- * in the same colour, laid out like the Analysis playback bar. The top line
- * names the recording with the lap (tap to jump to another), the speed and
- * close; the bottom line has ±5 s, play, and the time on a scrubber ticked at
- * every lap. The clock and scrubber are drawn, so playing recomposes nothing.
+ * The player for a recording open on the phone: a mini-player card over the
+ * navigation bar. The top row has play, the recording with its lap (tap to
+ * jump to another), ±5 s, the speed and close; under it the time runs along a
+ * full-width scrubber marked at the laps. The clock and scrubber are drawn, so
+ * playing recomposes nothing.
  */
 @Composable
 internal fun PlayerBar(
@@ -107,7 +107,7 @@ internal fun PlayerBar(
     }
     var lapsOpen by remember { mutableStateOf(false) }
     var speedOpen by remember { mutableStateOf(false) }
-    val timeStyle = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum")
+    val timeStyle = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum")
     // Wide enough for "0:00:00", so the scrubber never shifts.
     val timeWidth = with(LocalDensity.current) { (timeStyle.fontSize.toPx() * 3.9f).toDp() }
 
@@ -118,15 +118,26 @@ internal fun PlayerBar(
         onSeek((clamped / total).toFloat())
     }
 
-    Surface(modifier.fillMaxWidth(), color = colors.surfaceContainer) {
-        Column(Modifier.padding(horizontal = 8.dp)) {
-            Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+    Surface(
+        modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+        shape = MaterialTheme.shapes.large,
+        color = colors.surfaceContainerHigh,
+    ) {
+        Column(Modifier.padding(start = 8.dp, end = 4.dp, top = 6.dp, bottom = 4.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                FilledIconButton(onClick = if (playing) onPause else onPlay, modifier = Modifier.size(48.dp)) {
+                    Icon(
+                        painterResource(if (playing) R.drawable.ic_pause else R.drawable.ic_play),
+                        contentDescription = if (playing) "Pause" else "Play",
+                    )
+                }
                 Column(
                     Modifier
                         .weight(1f)
+                        .padding(start = 4.dp)
                         .clip(MaterialTheme.shapes.small)
                         .clickable(enabled = laps.isNotEmpty(), onClickLabel = "Go to lap") { lapsOpen = true }
-                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
                 ) {
                     Text(
                         title,
@@ -139,7 +150,7 @@ internal fun PlayerBar(
                         Text(
                             when {
                                 laps.isEmpty() -> "Loading laps"
-                                currentLap > 0 -> "Lap $currentLap of ${laps.last().lapNumber}"
+                                currentLap > 0 -> "Lap $currentLap / ${laps.last().lapNumber}"
                                 else -> "${laps.size} laps"
                             },
                             style = MaterialTheme.typography.bodySmall,
@@ -156,59 +167,39 @@ internal fun PlayerBar(
                         }
                     }
                 }
-                // A 48 dp target around a compact outlined label, as on Analysis.
-                Box(
-                    Modifier
-                        .height(48.dp)
-                        .widthIn(min = 48.dp)
-                        .clip(MaterialTheme.shapes.small)
-                        .clickable(onClickLabel = "Change speed") { speedOpen = true },
-                    contentAlignment = Alignment.Center,
+                IconButton(onClick = { seekTo(store.latestTransport().currentTime - SkipSeconds) }) {
+                    Icon(painterResource(R.drawable.ic_seek_back), contentDescription = "Back 5 seconds")
+                }
+                IconButton(onClick = { seekTo(store.latestTransport().currentTime + SkipSeconds) }) {
+                    Icon(painterResource(R.drawable.ic_seek_forward), contentDescription = "Forward 5 seconds")
+                }
+                TextButton(
+                    onClick = { speedOpen = true },
+                    modifier = Modifier.widthIn(min = 48.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp),
                 ) {
-                    Row(
-                        Modifier
-                            .border(1.dp, colors.outlineVariant, MaterialTheme.shapes.small)
-                            .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(speedLabel(speed), style = timeStyle, color = colors.primary, maxLines = 1)
-                        Icon(
-                            painterResource(R.drawable.ic_expand_more),
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = colors.primary,
-                        )
-                    }
+                    Text(speedLabel(speed), style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"), maxLines = 1)
                 }
                 IconButton(onClick = onClose) {
                     Icon(painterResource(R.drawable.ic_close), contentDescription = "Close recording")
                 }
             }
-            Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { seekTo(store.latestTransport().currentTime - SkipSeconds) }) {
-                    Icon(painterResource(R.drawable.ic_replay), contentDescription = "Back 5 seconds")
-                }
-                FilledIconButton(onClick = if (playing) onPause else onPlay) {
-                    Icon(
-                        painterResource(if (playing) R.drawable.ic_pause else R.drawable.ic_play),
-                        contentDescription = if (playing) "Pause" else "Play",
-                    )
-                }
-                IconButton(onClick = { seekTo(store.latestTransport().currentTime + SkipSeconds) }) {
-                    Icon(painterResource(R.drawable.ic_forward), contentDescription = "Forward 5 seconds")
-                }
+            Row(
+                Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 // Drawn, not composed: the clock moves every frame while playing.
                 Readout(
                     runs = { listOf(ReadoutRun(clock(position.doubleValue), colors.onSurface, bold = false)) },
                     style = timeStyle,
-                    modifier = Modifier.padding(start = 4.dp).width(timeWidth),
+                    modifier = Modifier.width(timeWidth),
                 )
                 LapScrubber(
                     position = position,
                     total = total,
                     marks = remember(laps, catalog) {
                         val start = store.latestTransport().startTime
-                        laps.drop(1).map { it.startSessionTime - start }
+                        laps.drop(1).map { it.lapNumber to it.startSessionTime - start }
                     },
                     onDrag = { dragging = it },
                     onSeek = ::seekTo,
@@ -219,7 +210,8 @@ internal fun PlayerBar(
                     style = timeStyle,
                     color = colors.onSurfaceVariant,
                     maxLines = 1,
-                    modifier = Modifier.padding(end = 4.dp),
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.width(timeWidth),
                 )
             }
         }
@@ -250,16 +242,24 @@ internal fun PlayerBar(
     }
 }
 
+/** Lap strides for the scrubber's marks; a race of 50+ laps cannot mark each one. */
+private val MarkStrides = intArrayOf(1, 2, 5, 10, 20, 50)
+
+/** The narrowest gap between two lap marks before they thin out. */
+private val MinMarkSpacing = 12.dp
+
 /**
- * The Analysis scrubber's look: a thin track filled to the clock, a tick at
- * every lap, and a thumb that grows while dragged. Dragging moves the thumb;
- * letting go seeks, so a drag costs one seek rather than one per frame.
+ * A thin track filled to the clock, with a dot at each lap start (every 2nd,
+ * 5th or 10th lap when they would crowd) and a thumb that grows while dragged.
+ * Dragging moves the thumb; letting go seeks, so a drag costs one seek rather
+ * than one per frame.
  */
 @Composable
 private fun LapScrubber(
     position: MutableDoubleState,
     total: Double,
-    marks: List<Double>,
+    /** Each lap after the first: its number and when it starts. */
+    marks: List<Pair<Int, Double>>,
     onDrag: (Boolean) -> Unit,
     onSeek: (Double) -> Unit,
     modifier: Modifier,
@@ -270,7 +270,7 @@ private fun LapScrubber(
     fun fraction(): Float = if (total > 0) (position.doubleValue / total).toFloat().coerceIn(0f, 1f) else 0f
     Spacer(
         modifier
-            .height(48.dp)
+            .height(32.dp)
             .graphicsLayer()
             .semantics {
                 contentDescription = "Playback position"
@@ -311,13 +311,18 @@ private fun LapScrubber(
                 val at = edge + span * fraction()
                 drawRoundRect(colors.surfaceContainerHighest, Offset(edge, y - track / 2), Size(span, track), corner)
                 drawRoundRect(colors.primary, Offset(edge, y - track / 2), Size(at - edge, track), corner)
-                // Lap starts, so a lap can be found by eye.
-                if (total > 0) for (mark in marks) {
-                    if (mark <= 0 || mark >= total) continue
-                    val x = edge + span * (mark / total).toFloat()
-                    drawLine(colors.onSurfaceVariant, Offset(x, y - 5.dp.toPx()), Offset(x, y + 5.dp.toPx()), 1.dp.toPx())
+                // Lap starts as dots on the track, thinned so they never crowd.
+                if (total > 0 && marks.isNotEmpty()) {
+                    val spacing = span / (marks.size + 1)
+                    val stride = MarkStrides.firstOrNull { it * spacing >= MinMarkSpacing.toPx() } ?: MarkStrides.last()
+                    val dot = 1.5.dp.toPx()
+                    for ((lap, start) in marks) {
+                        if (lap % stride != 0 || start <= 0 || start >= total) continue
+                        val x = edge + span * (start / total).toFloat()
+                        drawCircle(if (x <= at) colors.onPrimary else colors.onSurfaceVariant, dot, Offset(x, y))
+                    }
                 }
-                drawCircle(colors.primary, (if (dragging) 10.dp else 7.dp).toPx(), Offset(at, y))
+                drawCircle(colors.primary, (if (dragging) 9.dp else 7.dp).toPx(), Offset(at, y))
             },
     )
 }

@@ -116,7 +116,7 @@ internal fun AnalysisLapSheet(
                         },
                         shape = SegmentedButtonDefaults.itemShape(0, 2),
                         enabled = catalog.active,
-                    ) { Text("Follow desktop") }
+                    ) { Text("Follow playback") }
                     SegmentedButton(
                         selected = fixed,
                         onClick = {

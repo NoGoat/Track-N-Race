@@ -1,5 +1,6 @@
 package com.tracknrace.android
 
+import com.tracknrace.android.ui.theme.ThemeMode
 import org.json.JSONObject
 
 internal data class HotTelemetry(
@@ -358,6 +359,7 @@ internal data class AndroidSettings(
     val desktopName: String = "",
     val recordingDirectory: String = "",
     val usingCustomDirectory: Boolean = false,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
 )
 
 internal data class SourceStatus(

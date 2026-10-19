@@ -1,6 +1,7 @@
 package com.tracknrace.android
 
 import com.tracknrace.android.pages.staticLayer
+import android.Manifest
 import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -41,6 +42,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.structuralEqualityPolicy
@@ -82,7 +84,6 @@ import com.tracknrace.android.pages.SettingsScreen
 import com.tracknrace.android.pages.TimingScreen
 import com.tracknrace.android.pages.TyresScreen
 import com.tracknrace.android.pages.tyreDisplay
-import com.tracknrace.android.ui.theme.darkAppColorScheme
 import kotlinx.coroutines.delay
 
 private enum class AppScreen(val telemetryPage: PairedTelemetryPage, val isPrimary: Boolean = true) {
@@ -109,7 +110,6 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     val snackbar = remember { SnackbarHostState() }
     val message = store.message
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val dashboardBackground = darkAppColorScheme().surface
     var landscapeChromeVisible by remember { mutableStateOf(false) }
     var landscapeChromeInteraction by remember { mutableIntStateOf(0) }
 
@@ -145,6 +145,20 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
         } else if (result.originalIntent?.hasExtra(Intents.Scan.MISSING_CAMERA_PERMISSION) == true) {
             store.showMessage("Camera permission is required to scan the desktop QR code")
         }
+    }
+
+    // Android 17 local network access: the controller asks through this
+    // launcher on launch, on returning to the app, and before pairing.
+    val localNetworkLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> telemetry.onLocalNetworkResult(granted) }
+    DisposableEffect(telemetry, localNetworkLauncher) {
+        telemetry.localNetworkRequester = {
+            localNetworkLauncher.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        }
+        // onHostStart ran before this first composition, so ask here once.
+        if (!telemetry.hasLocalNetworkAccess()) telemetry.localNetworkRequester?.invoke()
+        onDispose { telemetry.localNetworkRequester = null }
     }
 
     LaunchedEffect(message?.id) {
@@ -247,9 +261,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
-        // The dashboard is always dark; painting its background here instead
-        // of over the theme background saves a full-screen fill every frame.
-        containerColor = if (screen == AppScreen.DASHBOARD) dashboardBackground else MaterialTheme.colorScheme.background,
+        containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         val revealChromeModifier = if (landscape) {
             Modifier.pointerInput(Unit) {
@@ -346,6 +358,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             onPairing = { screen = AppScreen.PAIRING },
                             onRecording = telemetry::setRecording,
                             onTimingOneLine = telemetry::setTimingOneLine,
+                            onThemeMode = telemetry::setThemeMode,
                             onChooseDirectory = { directoryLauncher.launch(telemetry.recordingDirectoryIntent()) },
                             onDefaultDirectory = telemetry::useDefaultRecordingDirectory,
                             onForgetDesktop = telemetry::forgetDesktop,

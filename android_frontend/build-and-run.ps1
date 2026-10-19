@@ -37,7 +37,7 @@ function Find-AndroidSdk {
     throw @"
 A complete Android SDK was not found.$adbNote
 Install Android Studio (no emulator required), then use SDK Manager to install:
-  - Android SDK Platform 36
+  - Android SDK Platform 37
   - Android SDK Build-Tools
   - Android SDK Platform-Tools
   - NDK (Side by side) 27.0.12077973
@@ -80,12 +80,12 @@ function Find-Gradle {
     if (Test-Path -LiteralPath $localWrapper) { return $localWrapper }
     $fromPath = Get-Command gradle -ErrorAction SilentlyContinue
     if ($fromPath) { return $fromPath.Source }
-    throw 'Gradle was not found. Install Gradle 8.13+ or generate a Gradle wrapper in android_frontend.'
+    throw 'Gradle was not found. Install Gradle 9.6+ or generate a Gradle wrapper in android_frontend.'
 }
 
 function Assert-AndroidSdkPackages([string]$AndroidSdk) {
     $required = @(
-        @{ Path = 'platforms\android-36\android.jar'; Name = 'Android SDK Platform 36' },
+        @{ Path = 'platforms\android-37.0\android.jar'; Name = 'Android SDK Platform 37' },
         @{ Path = 'ndk\27.0.12077973'; Name = 'NDK 27.0.12077973' },
         @{ Path = 'cmake\3.22.1'; Name = 'CMake 3.22.1' },
         @{ Path = 'platform-tools\adb.exe'; Name = 'Android SDK Platform-Tools' }

@@ -4,7 +4,7 @@
     android:id="@+id/qr_scanner_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/dashboard_background">
+    android:background="?attr/colorSurface">
 
     <com.journeyapps.barcodescanner.DecoratedBarcodeView
         android:id="@+id/zxing_barcode_scanner"

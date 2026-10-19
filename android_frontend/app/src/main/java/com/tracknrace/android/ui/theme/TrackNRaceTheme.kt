@@ -3,7 +3,6 @@ package com.tracknrace.android.ui.theme
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
@@ -43,10 +42,28 @@ private val AppShapes = Shapes(
     extraLarge = RoundedCornerShape(28.dp),
 )
 
+/** The Settings theme choice: follow the system, or keep the app light or dark. */
+internal enum class ThemeMode(val key: String) {
+    SYSTEM("system"),
+    LIGHT("light"),
+    DARK("dark");
+
+    companion object {
+        fun fromKey(key: String?): ThemeMode = entries.firstOrNull { it.key == key } ?: SYSTEM
+    }
+}
+
+/** Whether [mode] draws the app dark right now. */
 @Composable
-internal fun TrackNRaceTheme(content: @Composable () -> Unit) {
+internal fun ThemeMode.isDark(): Boolean = when (this) {
+    ThemeMode.SYSTEM -> isSystemInDarkTheme()
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK -> true
+}
+
+@Composable
+internal fun TrackNRaceTheme(dark: Boolean, content: @Composable () -> Unit) {
     val context = LocalContext.current
-    val dark = isSystemInDarkTheme()
     val colors = when {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && dark -> dynamicDarkColorScheme(context)
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> dynamicLightColorScheme(context)
@@ -69,14 +86,6 @@ internal fun TrackNRaceTheme(content: @Composable () -> Unit) {
         shapes = AppShapes,
         content = content,
     )
-}
-
-/** The app's dark scheme whatever the system setting, for screens that are always dark. */
-@Composable
-internal fun darkAppColorScheme(): ColorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-    dynamicDarkColorScheme(LocalContext.current)
-} else {
-    FallbackDark
 }
 
 private fun TextStyle.tabular() = copy(

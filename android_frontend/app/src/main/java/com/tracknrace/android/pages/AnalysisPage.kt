@@ -125,9 +125,10 @@ private class SmoothCursor {
 }
 
 /**
- * Lap analysis of the recording the desktop is playing: Graph, Split and Map
- * tabs over a lap bar that names the compared laps and their delta. The
- * current lap follows the desktop's cursor unless two fixed laps are chosen.
+ * Lap analysis of the recording playing, on this phone or on the paired
+ * desktop: Graph, Split and Map tabs over a lap bar that names the compared
+ * laps and their delta. The current lap follows the playback cursor unless
+ * two fixed laps are chosen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -136,6 +137,9 @@ internal fun AnalysisScreen(
     analysis: AnalysisController,
     active: Boolean,
 ) {
+    // The recording analysed: one open on the phone (Direct mode), else the
+    // one the paired desktop is playing.
+    val local = store.localRecording != null
     val paired = store.settings.source == PairedTelemetryClient.SOURCE_PAIRED
     // Read through derived state: the rest of the cold state (lap clock, ERS,
     // fuel) changes several times a second and would recompose this screen.
@@ -257,12 +261,13 @@ internal fun AnalysisScreen(
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
         val empty = when {
-            !paired -> EmptyState(
-                "No paired desktop",
-                "Analysis reads the recording playing on your desktop. Pair it and choose Paired mode in Settings.",
+            !local && !paired -> EmptyState(
+                "No recording open",
+                "Analysis reads a recording's laps. Open one from the menu, or pair a desktop and play one there.",
             )
-            !catalog.active -> EmptyState("No recording playing", "Open a recording on the desktop to analyse its laps.")
-            analysis.lapDataUnavailable -> EmptyState(
+            !catalog.active && local -> EmptyState("Opening the recording", "Reading its laps.", loading = true)
+            !catalog.active -> EmptyState("No recording playing", "Open a recording on the desktop, or one on this phone from the menu.")
+            !local && analysis.lapDataUnavailable -> EmptyState(
                 "Desktop update needed",
                 "This desktop cannot send laps yet. Update Track N Race on the desktop.",
             )
@@ -271,8 +276,12 @@ internal fun AnalysisScreen(
                 "Pick Lap A and Lap B to compare.",
                 action = "Choose laps",
             )
-            currentLapNumber <= 0 -> EmptyState("Waiting for a lap", "The desktop's playback has not reached a lap yet.", loading = true)
-            current == null -> EmptyState("Loading lap $currentLapNumber", "Fetching it from the desktop.", loading = true)
+            currentLapNumber <= 0 -> EmptyState("Waiting for a lap", "Playback has not reached a lap yet.", loading = true)
+            current == null -> EmptyState(
+                "Loading lap $currentLapNumber",
+                if (local) "Reading it from the recording." else "Fetching it from the desktop.",
+                loading = true,
+            )
             else -> null
         }
         Box(Modifier.fillMaxWidth().weight(1f)) {

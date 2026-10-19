@@ -7,10 +7,14 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.graphics.Color
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.DisposableEffect
 import com.tracknrace.android.ui.theme.TrackNRaceTheme
+import com.tracknrace.android.ui.theme.isDark
 
 class MainActivity : ComponentActivity() {
     private lateinit var telemetry: TelemetryController
@@ -22,7 +26,15 @@ class MainActivity : ComponentActivity() {
         telemetry = TelemetryController(this, TelemetryStore())
         updateSystemBars()
         setContent {
-            TrackNRaceTheme {
+            val dark = telemetry.store.settings.themeMode.isDark()
+            // The bars' icons follow the app's theme, which Settings can set
+            // apart from the system's.
+            DisposableEffect(dark) {
+                val style = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark }
+                enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+                onDispose {}
+            }
+            TrackNRaceTheme(dark) {
                 TrackNRaceApp(telemetry)
             }
         }

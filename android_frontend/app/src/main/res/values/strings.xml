@@ -99,6 +99,8 @@
     <string name="pairing_discovery_error">LAN discovery unavailable: %1$s. QR pairing still works.</string>
     <string name="pairing_invalid_qr">Could not use that QR: %1$s</string>
     <string name="pairing_success">Desktop paired</string>
+    <string name="local_network_required">Allow Nearby devices for Track N Race to receive telemetry and pair over Wi-Fi</string>
+    <string name="local_network_off">Local network access is off</string>
 
     <string name="overview_placeholder">Live speed, gear and race-state cards will live here.</string>
     <string name="session_placeholder">Weather, session clock, flags and proximity will live here.</string>

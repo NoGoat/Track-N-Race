@@ -1,65 +1,70 @@
 plugins {
+    // AGP 9 compiles Kotlin itself; org.jetbrains.kotlin.android is no longer
+    // applied (see the top-level build file for the pinned Kotlin version).
     id "com.android.application"
-    id "org.jetbrains.kotlin.android"
     id "org.jetbrains.kotlin.plugin.compose"
 }
 
+// AGP 9's DSL: properties are assigned, and collection options are added to
+// rather than called as methods.
 android {
-    namespace "com.tracknrace.android"
-    compileSdk 36
-    ndkVersion "27.0.12077973"
+    namespace = "com.tracknrace.android"
+    compileSdk = 37
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId "com.tracknrace.android"
-        minSdk 26
-        targetSdk 36
-        versionCode 1
-        versionName "0.1.0"
+        applicationId = "com.tracknrace.android"
+        minSdk = 26
+        // API 37 blocks local network traffic until the user grants
+        // ACCESS_LOCAL_NETWORK; TelemetryController gates every LAN use on it.
+        targetSdk = 37
+        versionCode = 1
+        versionName = "0.1.0"
 
         externalNativeBuild {
             cmake {
-                cppFlags "-std=c++20"
-                arguments "-DANDROID_STL=c++_shared", "-DTNRP_USE_QT=OFF"
+                cppFlags.add("-std=c++20")
+                arguments.addAll("-DANDROID_STL=c++_shared", "-DTNRP_USE_QT=OFF")
             }
         }
 
         ndk {
-            abiFilters "arm64-v8a"
+            abiFilters.add("arm64-v8a")
         }
     }
 
     externalNativeBuild {
         cmake {
-            path file("src/main/cpp/CMakeLists.txt")
-            version "3.22.1"
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 
     buildTypes {
         debug {
-            debuggable true
+            debuggable = true
         }
         release {
             // Compose performance should be evaluated with R8 optimization;
             // a non-debuggable build alone is not an optimized release.
-            minifyEnabled true
-            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            minifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Local release builds must be signed before adb can install them.
             // Distribution builds remain unsigned unless their caller supplies
             // a production signing configuration.
             if (project.hasProperty("tnrLocalReleaseSigning")) {
-                signingConfig signingConfigs.debug
+                signingConfig = signingConfigs.debug
             }
         }
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_21
-        targetCompatibility JavaVersion.VERSION_21
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     buildFeatures {
-        compose true
+        compose = true
     }
 }
 
@@ -68,9 +73,7 @@ kotlin {
 }
 
 dependencies {
-    // Compose 1.12 requires compileSdk 37 / AGP 9.1. Keep the newest stable
-    // API-36-compatible line until this app intentionally upgrades toolchains.
-    def composeBom = platform("androidx.compose:compose-bom:2026.06.00")
+    def composeBom = platform("androidx.compose:compose-bom:2026.09.00")
     implementation composeBom
     androidTestImplementation composeBom
 

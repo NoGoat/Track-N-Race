@@ -1,8 +1,10 @@
 package com.tracknrace.android
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -10,6 +12,7 @@ import android.provider.DocumentsContract
 import android.system.ErrnoException
 import android.system.Os
 import com.journeyapps.barcodescanner.ScanOptions
+import com.tracknrace.android.ui.theme.ThemeMode
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
@@ -21,6 +24,7 @@ internal class TelemetryController(
     companion object {
         private const val UDP_PORT = 20777
         private const val PREF_TIMING_ONE_LINE = "timing_one_line"
+        private const val PREF_THEME_MODE = "theme_mode"
     }
 
     private val context: Context = activity.applicationContext
@@ -63,6 +67,9 @@ internal class TelemetryController(
     @Volatile private var qrScannerActive = false
     private var lowLatencyLock: WifiManager.WifiLock? = null
 
+    /** Shows the system local network prompt; set by the UI that owns the launcher. */
+    @Volatile var localNetworkRequester: (() -> Unit)? = null
+
     init {
         // Older recordings (V2–V5) are decompressed to a temporary file, and
         // Android sets no temporary folder for native code.
@@ -83,6 +90,7 @@ internal class TelemetryController(
         if (qrScannerActive) return
         holdLowLatencyWifi(true)
         sourceRequested = true
+        if (!hasLocalNetworkAccess()) localNetworkRequester?.invoke()
         // A recording stays open, paused where it was left.
         if (playback != null) return
         restartConfiguredSource()
@@ -130,6 +138,7 @@ internal class TelemetryController(
             store.showMessage("No paired desktop is saved")
             return
         }
+        if (!requireLocalNetwork()) return
         sourceRequested = true
         restartConfiguredSource()
     }
@@ -283,6 +292,11 @@ internal class TelemetryController(
         publishSettings()
     }
 
+    fun setThemeMode(mode: ThemeMode) {
+        preferences().edit().putString(PREF_THEME_MODE, mode.key).apply()
+        publishSettings()
+    }
+
     fun recordingDirectoryIntent(): Intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
         .addFlags(
             Intent.FLAG_GRANT_READ_URI_PERMISSION or
@@ -317,11 +331,13 @@ internal class TelemetryController(
 
     fun startDiscovery() {
         discoveryRequested = true
+        if (!requireLocalNetwork()) return
         startDiscoveryInternal(clear = true)
     }
 
     // DNS-SD runs in the system mDNS stack, so no multicast lock is needed.
     private fun startDiscoveryInternal(clear: Boolean) {
+        if (!hasLocalNetworkAccess()) return
         if (clear) {
             discovery.stop()
             store.clearDiscovery()
@@ -384,6 +400,7 @@ internal class TelemetryController(
     }
 
     fun pairQr(payload: String) {
+        if (!requireLocalNetwork()) return
         try {
             val uri = Uri.parse(payload)
             require(uri.scheme == "tnrpair") { "Unsupported pairing QR" }
@@ -422,6 +439,7 @@ internal class TelemetryController(
             store.showMessage("Select a desktop and enter its matching code")
             return
         }
+        if (!requireLocalNetwork()) return
         prepareForPairing()
         pairedTelemetry.pair(
             PairedTelemetryClient.Endpoint(
@@ -433,6 +451,35 @@ internal class TelemetryController(
             // CPace: the code is proven, never sent.
             PairedTelemetryClient.Credential.Code(code),
         )
+    }
+
+    /**
+     * Android 17 blocks every LAN socket and NsdManager call for apps targeting
+     * it until the user grants ACCESS_LOCAL_NETWORK (the "Nearby devices"
+     * permission). Game UDP, desktop discovery and the paired connection are
+     * all local traffic; earlier Android versions allow it implicitly.
+     */
+    fun hasLocalNetworkAccess(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.CINNAMON_BUN ||
+            context.checkSelfPermission(Manifest.permission.ACCESS_LOCAL_NETWORK) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /** Whether LAN use may go ahead; otherwise asks for access and says why it stopped. */
+    private fun requireLocalNetwork(): Boolean {
+        if (hasLocalNetworkAccess()) return true
+        store.showMessage(context.getString(R.string.local_network_required))
+        localNetworkRequester?.invoke()
+        return false
+    }
+
+    fun onLocalNetworkResult(granted: Boolean) {
+        if (!granted) {
+            store.showMessage(context.getString(R.string.local_network_required))
+            return
+        }
+        // Start what the missing permission held back.
+        if (sourceRequested && playback == null) restartConfiguredSource()
+        if (discoveryRequested) startDiscoveryInternal(clear = true)
     }
 
     fun forgetDesktop() {
@@ -531,6 +578,7 @@ internal class TelemetryController(
         desktopName = PairedTelemetryClient.savedDesktopName(context),
         recordingDirectory = RecordingStorage.selectedDirectoryLabel(context),
         usingCustomDirectory = RecordingStorage.selectedDirectory(context) != null,
+        themeMode = ThemeMode.fromKey(preferences().getString(PREF_THEME_MODE, null)),
     )
 
     private fun publishSettings() = store.updateSettings(currentSettings())
@@ -548,6 +596,10 @@ internal class TelemetryController(
             }
             store.resetLapComparison()
             if (!sourceRequested || generation != sourceGeneration) return@execute
+            if (!hasLocalNetworkAccess()) {
+                store.updateSource("error", context.getString(R.string.local_network_off))
+                return@execute
+            }
             if (!isDirectSource() && PairedTelemetryClient.hasSavedDesktop(context)) {
                 store.updateSource("connecting", PairedTelemetryClient.savedDesktopName(context))
                 pairedTelemetry.connectSaved()

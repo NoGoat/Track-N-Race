@@ -767,10 +767,13 @@ internal fun LiveTrackMap(
         fontSize = 8.5.sp,
         fontWeight = FontWeight.Bold,
         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-        color = Color.White,
+        color = MaterialTheme.colorScheme.inverseOnSurface,
     )
+    // The car labels' backing: M3's plain-tooltip surface.
+    val pill = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.92f)
     val messageStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = trackColor.copy(alpha = 0.6f))
     val slm = aeroMode == "slm"
+    val palette = if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) DarkMapPalette else LightMapPalette
     val glides = remember { CarGlides() }
     BoxWithConstraints(modifier.clipToBounds()) {
         val density = LocalDensity.current
@@ -806,19 +809,18 @@ internal fun LiveTrackMap(
                     val circuit = ImageBitmap(boxWidth.toInt().coerceAtLeast(1), boxHeight.toInt().coerceAtLeast(1))
                     val origin = Offset(originX, originY)
                     CanvasDrawScope().draw(this, layoutDirection, androidx.compose.ui.graphics.Canvas(circuit), Size(boxWidth, boxHeight)) {
-                        drawCircuit(track, fit, origin, DarkMapPalette, trackColor, slm)
+                        drawCircuit(track, fit, origin, palette, trackColor, slm)
                     }
                     val circuitTexture = circuit.asAndroidBitmap().copy(android.graphics.Bitmap.Config.HARDWARE, false)
                         ?.asImageBitmap() ?: circuit
 
-                    // The desktop label: a dark pill with the livery colour
-                    // down its left edge and the three-letter code, drawn once.
+                    // The desktop label: a pill with the livery colour down its
+                    // left edge and the three-letter code, drawn once.
                     val labelHeight = 13.dp.toPx()
                     val accent = 3.dp.toPx()
                     val padX = 5.dp.toPx()
                     val minWidth = 30.dp.toPx()
                     val corner = CornerRadius(3.dp.toPx())
-                    val pill = Color(0xeb0a0f1e)
                     val sprites = cars.map { car ->
                         val text = measurer.measure(car.label, labelStyle)
                         val spriteWidth = max(minWidth, text.size.width + accent + padX * 2)

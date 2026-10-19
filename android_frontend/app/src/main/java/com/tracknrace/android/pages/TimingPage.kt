@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -245,7 +246,7 @@ private fun TimingOneLineRow(
         val compound = labels["tyre.actual.${it.actualCompound}"] ?: compoundLabel(it.actualCompound)
         "$compound ${it.ageLaps}L"
     } ?: "—"
-    val tyreColor = tyre?.let { compoundColor(it.visualCompound) }
+    val tyreColor = tyre?.let { tyreTextColor(it.visualCompound) }
         ?: MaterialTheme.colorScheme.onSurfaceVariant
     val numberStyle = MaterialTheme.typography.bodySmall.copy(
         fontFamily = FontFamily.Monospace,
@@ -385,7 +386,7 @@ private fun TimingRow(
         val compound = labels["tyre.actual.${it.actualCompound}"] ?: compoundLabel(it.actualCompound)
         "$compound ${it.ageLaps}L"
     } ?: "—"
-    val tyreColor = tyre?.let { compoundColor(it.visualCompound) }
+    val tyreColor = tyre?.let { tyreTextColor(it.visualCompound) }
         ?: MaterialTheme.colorScheme.onSurfaceVariant
     val status = statusLabel(car)
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -635,6 +636,12 @@ private fun compoundLabel(compound: Int) = when (compound) {
     7 -> "INT"; 8 -> "WET"; 16 -> "C5"; 17 -> "C4"; 18 -> "C3"
     19 -> "C2"; 20 -> "C1"; 21 -> "C0"; 22 -> "C6"; else -> compound.toString()
 }
+
+/** A compound's colour for tyre text: the hard's white reads black on a light surface. */
+@Composable
+private fun tyreTextColor(visualCompound: Int): Color =
+    if (visualCompound == 18 && MaterialTheme.colorScheme.surface.luminance() >= 0.5f) Color.Black
+    else compoundColor(visualCompound)
 
 private fun compoundColor(compound: Int) = when (compound) {
     16 -> Color(0xffe53935); 17 -> Color(0xffffc107); 18 -> Color(0xffeceff1)
