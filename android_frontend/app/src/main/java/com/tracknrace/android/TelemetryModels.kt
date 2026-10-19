@@ -360,6 +360,8 @@ internal data class AndroidSettings(
     val recordingDirectory: String = "",
     val usingCustomDirectory: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    /** Landscape hides the bars until tapped; null until chosen, when phones do and tablets don't. */
+    val wheelDisplay: Boolean? = null,
 )
 
 internal data class SourceStatus(

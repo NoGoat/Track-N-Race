@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -33,6 +34,7 @@ import com.tracknrace.android.AndroidSettings
 import com.tracknrace.android.PairedTelemetryClient
 import com.tracknrace.android.R
 import com.tracknrace.android.ui.theme.ThemeMode
+import com.tracknrace.android.ui.wheelDisplay
 
 // ── Design ──────────────────────────────────────────────────────────────────
 // Material 3 settings: a small label over each group, and every setting one
@@ -47,6 +49,7 @@ internal fun SettingsScreen(
     onRecording: (Boolean) -> Unit,
     onTimingOneLine: (Boolean) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
+    onWheelDisplay: (Boolean) -> Unit,
     onChooseDirectory: () -> Unit,
     onDefaultDirectory: () -> Unit,
     onForgetDesktop: () -> Unit,
@@ -74,6 +77,14 @@ internal fun SettingsScreen(
                     supporting = if (settings.timingOneLine) "Compact single-line layout" else "Detailed two-line layout",
                     checked = settings.timingOneLine,
                     onCheckedChange = onTimingOneLine,
+                )
+                GroupDivider()
+                val wheel = wheelDisplay(settings.wheelDisplay, LocalConfiguration.current)
+                SwitchRow(
+                    title = "Wheel display",
+                    supporting = if (wheel) "Landscape hides the bars until you tap" else "Landscape keeps the bars on screen",
+                    checked = wheel,
+                    onCheckedChange = onWheelDisplay,
                 )
             }
         }
@@ -141,8 +152,8 @@ internal fun SettingsScreen(
         item {
             SettingsGroup("About") {
                 LinkRow(
-                    title = "Open-source licences",
-                    supporting = "Libraries, notices, and software licences",
+                    title = "Licenses",
+                    supporting = "Track N Race and the open-source software it uses",
                     onClick = onLicenses,
                 )
             }

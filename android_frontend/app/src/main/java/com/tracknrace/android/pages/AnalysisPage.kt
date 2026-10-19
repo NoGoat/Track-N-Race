@@ -246,7 +246,11 @@ internal fun AnalysisScreen(
 
     Column(Modifier.fillMaxSize()) {
         if (landscape) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            // One bar: the lap chips share the tabs' container colour.
+            Row(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 lapBar(Modifier.weight(1f))
                 ViewTabs(config.view, onView, Modifier.width(320.dp))
             }

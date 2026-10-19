@@ -13,6 +13,8 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import com.tracknrace.android.ui.immersiveLandscape
 import com.tracknrace.android.ui.theme.TrackNRaceTheme
 import com.tracknrace.android.ui.theme.isDark
 
@@ -34,6 +36,9 @@ class MainActivity : ComponentActivity() {
                 enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
                 onDispose {}
             }
+            // The Wheel display setting decides whether landscape hides the system bars.
+            val wheelDisplay = telemetry.store.settings.wheelDisplay
+            LaunchedEffect(wheelDisplay) { updateSystemBars() }
             TrackNRaceTheme(dark) {
                 TrackNRaceApp(telemetry)
             }
@@ -75,15 +80,17 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Landscape is an immersive steering-wheel display; portrait shows the
-     * system bars. The window stays edge-to-edge in both, as enableEdgeToEdge()
+     * Landscape is an immersive steering-wheel display, unless the Wheel
+     * display setting (off by default on tablets) says otherwise; portrait
+     * shows the system bars. The window stays edge-to-edge in both, as enableEdgeToEdge()
      * set it: Compose applies the insets itself. Handing them to the decor in
      * portrait instead left Compose holding the last landscape insets after a
      * rotation, padding the layout twice.
      */
     @Suppress("DEPRECATION")
     private fun updateSystemBars() {
-        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        // As the wheel display; a tablet in landscape keeps its bars unless chosen.
+        val landscape = immersiveLandscape(telemetry.store.settings.wheelDisplay, resources.configuration)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             window.attributes = window.attributes.apply {
                 layoutInDisplayCutoutMode = if (landscape) {

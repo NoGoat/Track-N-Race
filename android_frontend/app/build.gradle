@@ -30,6 +30,12 @@ android {
 
         ndk {
             abiFilters.add("arm64-v8a")
+            // x86_64 lets the APK run natively on an x86_64 emulator image.
+            // Opt-in so phone builds don't compile the native code twice;
+            // build-and-run passes it when an x86_64 device is targeted.
+            if (project.hasProperty("tnrX86")) {
+                abiFilters.add("x86_64")
+            }
         }
     }
 

@@ -27,6 +27,7 @@ pip-delete-this-directory.txt
 # Java / Kotlin / Android
 *.class
 *.jar
+!android_frontend/gradle/wrapper/gradle-wrapper.jar
 *.war
 *.ear
 *.nar

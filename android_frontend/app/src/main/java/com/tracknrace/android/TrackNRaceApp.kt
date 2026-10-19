@@ -2,7 +2,6 @@ package com.tracknrace.android
 
 import com.tracknrace.android.pages.staticLayer
 import android.Manifest
-import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import com.tracknrace.android.ui.immersiveLandscape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -109,7 +109,10 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     var settingsReturn by rememberSaveable { mutableStateOf(AppScreen.DASHBOARD) }
     val snackbar = remember { SnackbarHostState() }
     val message = store.message
-    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // Landscape as the wheel display hides the bars until a tap; a tablet
+    // keeps them unless the Wheel display setting is on.
+    val configuration = LocalConfiguration.current
+    val landscape = immersiveLandscape(store.settings.wheelDisplay, configuration)
     var landscapeChromeVisible by remember { mutableStateOf(false) }
     var landscapeChromeInteraction by remember { mutableIntStateOf(0) }
 
@@ -359,6 +362,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             onRecording = telemetry::setRecording,
                             onTimingOneLine = telemetry::setTimingOneLine,
                             onThemeMode = telemetry::setThemeMode,
+                            onWheelDisplay = telemetry::setWheelDisplay,
                             onChooseDirectory = { directoryLauncher.launch(telemetry.recordingDirectoryIntent()) },
                             onDefaultDirectory = telemetry::useDefaultRecordingDirectory,
                             onForgetDesktop = telemetry::forgetDesktop,
@@ -599,7 +603,7 @@ private fun AppTopBar(
         AppScreen.ANALYSIS -> "Analysis"
         AppScreen.SETTINGS -> "Settings"
         AppScreen.PAIRING -> "Pair desktop"
-        AppScreen.LICENSES -> "Open-source licences"
+        AppScreen.LICENSES -> "Licenses"
     }
     TopAppBar(
         modifier = Modifier.staticLayer(),

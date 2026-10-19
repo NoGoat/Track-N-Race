@@ -87,8 +87,22 @@ Then rerun this script."
     die 'Android SDK licenses have not been accepted. Accept them in Android Studio SDK Manager, then rerun this script.'
 }
 
+# Prints the binary of an already-running adb server, if any. A client whose
+# version differs from the server kills and restarts it, which drops every
+# Wireless Debugging connection, so reuse whichever adb owns the server.
+find_running_adb_server() {
+    local pid exe
+    for pid in $(pgrep -x adb 2>/dev/null); do
+        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'fork-server server' || continue
+        exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
+        [[ -x "$exe" ]] && { echo "$exe"; return 0; }
+    done
+    return 1
+}
+
 find_adb() {
     local android_sdk="$1"
+    find_running_adb_server && return
     if [[ -n "$android_sdk" && -x "$android_sdk/platform-tools/adb" ]]; then
         echo "$android_sdk/platform-tools/adb"
         return
@@ -242,6 +256,13 @@ if ! $SKIP_BUILD; then
         # debug key for this local build-and-run workflow only.
         GRADLE_ARGS+=(-PtnrLocalReleaseSigning)
     fi
+    # Emulator images are x86_64; include that ABI only when one is targeted.
+    for serial in "${RESOLVED_DEVICE_SERIALS[@]}"; do
+        if [[ "$("$ADB" -s "$serial" shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r')" == "x86_64" ]]; then
+            GRADLE_ARGS+=(-PtnrX86)
+            break
+        fi
+    done
 
     cyan "Building the native Jetpack Compose Android $BUILD_TYPE_LOWER APK..."
     "$GRADLE" "${GRADLE_ARGS[@]}" || die "Gradle build failed with exit code $?."

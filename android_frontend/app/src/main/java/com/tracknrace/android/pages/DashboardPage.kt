@@ -90,6 +90,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -103,6 +104,7 @@ import com.tracknrace.android.PairedTelemetryPage
 import com.tracknrace.android.TelemetryStore
 import com.tracknrace.android.TimingCarEntry
 import com.tracknrace.android.TimingTowerState
+import com.tracknrace.android.ui.currentWidthClass
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -274,11 +276,13 @@ internal fun DashboardScreen(
                 }
             }
             HorizontalPager(pager, Modifier.fillMaxWidth().weight(1f), beyondViewportPageCount = 0) { page ->
-                when (DashboardTab.entries[page]) {
-                    DashboardTab.DRIVE ->
-                        if (landscape) LandscapeDrive(frame, alert, gaps, race) else DriveTab(frame, alert, gaps, race)
-                    DashboardTab.MAP -> MapTab(store, active && current == page)
-                    DashboardTab.DAMAGE -> DamageTab(store, landscape)
+                TabletZoom {
+                    when (DashboardTab.entries[page]) {
+                        DashboardTab.DRIVE ->
+                            if (landscape) LandscapeDrive(frame, alert, gaps, race) else DriveTab(frame, alert, gaps, race)
+                        DashboardTab.MAP -> MapTab(store, active && current == page)
+                        DashboardTab.DAMAGE -> DamageTab(store, landscape)
+                    }
                 }
             }
         }
@@ -293,6 +297,31 @@ private fun KeepScreenOn(enabled: Boolean) {
         view.keepScreenOn = enabled
         onDispose { view.keepScreenOn = false }
     }
+}
+
+/** How much larger a tablet draws each tab: the same layout, read from further away. */
+private const val TabletZoomFactor = 1.3f
+
+/** The tabs are drawn zoomed, at tablet widths. */
+private val LocalTabletDash = staticCompositionLocalOf { false }
+
+/**
+ * At tablet widths the tabs draw at [TabletZoomFactor] times the density, so
+ * text, cards and spacing grow together and each layout gets the room of a
+ * large phone, which is what it was laid out for.
+ */
+@Composable
+private fun TabletZoom(content: @Composable () -> Unit) {
+    if (!currentWidthClass().atLeastMedium) {
+        content()
+        return
+    }
+    val density = LocalDensity.current
+    CompositionLocalProvider(
+        LocalDensity provides Density(density.density * TabletZoomFactor, density.fontScale),
+        LocalTabletDash provides true,
+        content = content,
+    )
 }
 
 // ── Drive ───────────────────────────────────────────────────────────────────
@@ -317,7 +346,10 @@ private fun DriveTab(
             FuelCard(frame, Modifier.weight(1f).fillMaxHeight())
         }
         if (race) GapsCard(gaps, frame, Modifier.fillMaxWidth().height(58.dp))
-        Row(Modifier.fillMaxWidth().height(132.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        // A tablet's tall window shares its height with tyres and lap times
+        // instead of giving it all to the hero.
+        val bottom = if (LocalTabletDash.current) Modifier.weight(0.55f) else Modifier.height(132.dp)
+        Row(Modifier.fillMaxWidth().then(bottom), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             TyreCard(frame, "Tyres", Modifier.weight(1.3f).fillMaxHeight())
             LapTimesCard(frame, Modifier.weight(1f).fillMaxHeight())
         }
@@ -331,9 +363,27 @@ private fun LandscapeDrive(
     gaps: State<RaceGaps>,
     race: Boolean,
 ) {
+    val tablet = LocalTabletDash.current
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         ShiftLights(frame, Modifier.fillMaxWidth().height(8.dp).graphicsLayer())
         Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (tablet) {
+                // A tablet's taller window: the cards at their own height, and
+                // lap times in the room that frees; tyres take the right column.
+                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    StatusRow(frame, alert, Modifier.fillMaxWidth().height(32.dp))
+                    ErsCard(frame, Modifier.fillMaxWidth().height(66.dp))
+                    FuelCard(frame, Modifier.fillMaxWidth().height(66.dp))
+                    if (race) GapsCard(gaps, frame, Modifier.fillMaxWidth().height(58.dp))
+                    LapTimesCard(frame, Modifier.fillMaxWidth().weight(1f))
+                }
+                Column(Modifier.weight(1.15f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    HeroCard(frame, Modifier.fillMaxWidth().weight(1f))
+                    SectorStrip(frame, Modifier.fillMaxWidth().height(22.dp))
+                }
+                TyreCard(frame, "Tyres", Modifier.weight(1f).fillMaxHeight())
+                return@Row
+            }
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 StatusRow(frame, alert, Modifier.fillMaxWidth().height(32.dp))
                 ErsCard(frame, Modifier.fillMaxWidth().weight(1f))
@@ -528,7 +578,9 @@ private fun Gear(frame: DashboardFrameState, modifier: Modifier) {
     val c = LocalDashPalette.current
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
         val density = LocalDensity.current
-        val fontSize = with(density) { (maxHeight.toPx() * 0.92f).coerceAtMost(144.dp.toPx()).toSp() }
+        // A tablet's hero has room for a larger digit.
+        val cap = if (LocalTabletDash.current) 220.dp else 144.dp
+        val fontSize = with(density) { (maxHeight.toPx() * 0.92f).coerceAtMost(cap.toPx()).toSp() }
         Text(
             gearLabel(frame.gear),
             modifier = Modifier.graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen),

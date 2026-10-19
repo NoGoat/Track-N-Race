@@ -188,6 +188,14 @@ if (-not $SkipBuild) {
         # debug key for this local build-and-run workflow only.
         $GradleArgs += '-PtnrLocalReleaseSigning'
     }
+    # Emulator images are x86_64; include that ABI only when one is targeted.
+    foreach ($serial in $ResolvedDeviceSerials) {
+        $abi = (& $Adb -s $serial shell getprop ro.product.cpu.abi 2>$null | Out-String).Trim()
+        if ($abi -eq 'x86_64') {
+            $GradleArgs += '-PtnrX86'
+            break
+        }
+    }
 
     Write-Host "Building the native Jetpack Compose Android $BuildTypeLower APK..." -ForegroundColor Cyan
     & $Gradle @GradleArgs

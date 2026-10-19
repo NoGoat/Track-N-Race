@@ -25,6 +25,7 @@ internal class TelemetryController(
         private const val UDP_PORT = 20777
         private const val PREF_TIMING_ONE_LINE = "timing_one_line"
         private const val PREF_THEME_MODE = "theme_mode"
+        private const val PREF_WHEEL_DISPLAY = "wheel_display"
     }
 
     private val context: Context = activity.applicationContext
@@ -294,6 +295,11 @@ internal class TelemetryController(
 
     fun setThemeMode(mode: ThemeMode) {
         preferences().edit().putString(PREF_THEME_MODE, mode.key).apply()
+        publishSettings()
+    }
+
+    fun setWheelDisplay(enabled: Boolean) {
+        preferences().edit().putBoolean(PREF_WHEEL_DISPLAY, enabled).apply()
         publishSettings()
     }
 
@@ -579,6 +585,11 @@ internal class TelemetryController(
         recordingDirectory = RecordingStorage.selectedDirectoryLabel(context),
         usingCustomDirectory = RecordingStorage.selectedDirectory(context) != null,
         themeMode = ThemeMode.fromKey(preferences().getString(PREF_THEME_MODE, null)),
+        wheelDisplay = if (preferences().contains(PREF_WHEEL_DISPLAY)) {
+            preferences().getBoolean(PREF_WHEEL_DISPLAY, true)
+        } else {
+            null
+        },
     )
 
     private fun publishSettings() = store.updateSettings(currentSettings())
