@@ -15,17 +15,24 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.Snapshot
@@ -45,9 +52,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tracknrace.android.DashboardColdState
+import com.tracknrace.android.GraphsController
+import com.tracknrace.android.PairedTelemetryPage
+import com.tracknrace.android.TelemetryStore
 import com.tracknrace.android.TyreSetEntry
 import kotlin.math.roundToInt
 import kotlin.math.sign
+import kotlinx.coroutines.launch
 
 private enum class TyreColumn { SET, COMPOUND, STATUS, WEAR, WEAR_PER_LAP, LIFE, RECOMMENDED, DELTA }
 
@@ -140,8 +151,62 @@ private class TyreRowStates {
  * sets there are, in order; each row reads its own state. A change to one set
  * recomposes that row alone, and each row is cached as a texture.
  */
+/** The Tyres page's tabs, and the stream each asks the desktop for. */
+private enum class TyresTab(val title: String) { ALLOCATION("Allocation"), CHARTS("Charts") }
+
+/**
+ * The Tyres page: the tyre-set allocation, and the desktop's Tyres graphs.
+ * Each tab asks the desktop for its own data while it is the one shown.
+ */
 @Composable
-internal fun TyresScreen(display: () -> TyreDisplay) {
+internal fun TyresScreen(
+    display: () -> TyreDisplay,
+    store: TelemetryStore,
+    graphs: GraphsController,
+    active: Boolean = true,
+    onPage: (PairedTelemetryPage) -> Unit = {},
+    /** Told whether the Charts tab is the one shown, so the app bar can offer the chart window. */
+    onChartsShown: (Boolean) -> Unit = {},
+) {
+    var saved by rememberSaveable { mutableIntStateOf(0) }
+    val pager = rememberPagerState(initialPage = saved) { TyresTab.entries.size }
+    val scope = rememberCoroutineScope()
+    val current = pager.currentPage
+    LaunchedEffect(current, active) {
+        saved = current
+        onChartsShown(TyresTab.entries[current] == TyresTab.CHARTS)
+        // The Charts tab asks for its own stream, which follows its windows.
+        if (active && TyresTab.entries[current] == TyresTab.ALLOCATION) onPage(PairedTelemetryPage.TYRES)
+    }
+    Column(Modifier.fillMaxSize()) {
+        PrimaryTabRow(
+            selectedTabIndex = current,
+            modifier = Modifier.staticLayer(),
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            divider = {},
+        ) {
+            TyresTab.entries.forEachIndexed { index, tab ->
+                Tab(
+                    selected = current == index,
+                    onClick = { scope.launch { pager.animateScrollToPage(index) } },
+                    text = { Text(tab.title, maxLines = 1) },
+                    selectedContentColor = MaterialTheme.colorScheme.primary,
+                    unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        HorizontalPager(pager, Modifier.fillMaxWidth().weight(1f), beyondViewportPageCount = 0) { page ->
+            when (TyresTab.entries[page]) {
+                TyresTab.ALLOCATION -> TyreAllocation(display)
+                TyresTab.CHARTS -> TyreChartsTab(store, graphs, active && current == page, onPage)
+            }
+        }
+    }
+}
+
+/** Every tyre set the car has, dry then wet, as the desktop's allocation table. */
+@Composable
+private fun TyreAllocation(display: () -> TyreDisplay) {
     val rows = remember { TyreRowStates().also { it.update(Snapshot.withoutReadObservation { display() }) } }
     LaunchedEffect(rows) {
         snapshotFlow { display() }.collect { rows.update(it) }

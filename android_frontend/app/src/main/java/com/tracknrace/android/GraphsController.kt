@@ -162,6 +162,10 @@ internal class GraphsController(
     /** The lap each Selected chart compares against, by chart id; for this recording only. */
     val referenceLaps = mutableStateMapOf<String, Int>()
 
+    /** The lap Selected charts compare against unless they chose their own; 0 for the fastest. For this recording only. */
+    var globalReferenceLap by mutableIntStateOf(0)
+        private set
+
     fun history(family: GraphFamily): SampleHistory = store.graphHistories.getValue(family)
 
     /** The choices on offer: Selected needs a recording, as on the desktop. */
@@ -194,9 +198,17 @@ internal class GraphsController(
         preferences.edit().putString(PREF_GRAPH_WINDOW_OVERRIDES, json.toString()).apply()
     }
 
+    /** As the window, choosing the global lap again follows it. */
     fun selectReferenceLap(chartId: String, lapNumber: Int) {
-        referenceLaps[chartId] = lapNumber
+        if (lapNumber == globalLap()) referenceLaps.remove(chartId) else referenceLaps[chartId] = lapNumber
     }
+
+    fun selectGlobalReferenceLap(lapNumber: Int) {
+        globalReferenceLap = lapNumber
+    }
+
+    /** The lap Selected charts compare against unless they chose their own. */
+    fun globalLap(): Int = globalReferenceLap.takeIf { it > 0 } ?: store.playbackCatalog.fastestLap
 
     /** The current lap: under the desktop's cursor in playback, the newest lap row live. */
     fun currentLap(family: GraphFamily): Int =
@@ -209,7 +221,7 @@ internal class GraphsController(
             GraphWindow.PREVIOUS -> (currentLap(family) - 1).coerceAtLeast(0)
             GraphWindow.FASTEST ->
                 if (playback) store.playbackCatalog.fastestLap else history(family).fastestLiveLap()
-            GraphWindow.SELECTED -> referenceLaps[chartId] ?: store.playbackCatalog.fastestLap
+            GraphWindow.SELECTED -> referenceLaps[chartId] ?: globalLap()
             else -> 0
         }
     }
@@ -414,6 +426,7 @@ internal class GraphsController(
             initialFuelSentAt = 0L
             initialFuel = Float.NaN
             referenceLaps.clear()
+            globalReferenceLap = 0
             lapsVersion++
         }
         val history = history(family)

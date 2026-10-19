@@ -1,23 +1,16 @@
 package com.tracknrace.android
 
-import android.Manifest
-import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
-import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
-import android.provider.MediaStore
-import android.provider.Settings
 import java.io.Closeable
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONObject
 
-/** One .tnrd recording found on the phone. */
+/** One .tnrd recording found. */
 internal data class RecordingFile(
     /** Name, size and time: the same file found two ways is listed once. */
     val key: String,
@@ -39,31 +32,13 @@ internal data class RecordingFile(
 )
 
 /**
- * Finds every recording on the phone the way a gallery finds photos: by asking
- * the system's media index, which with "All files access" covers every file in
- * shared storage. Folders picked through the system picker are walked as well,
- * as is this app's own recording folder. Without "All files access" only those
- * folders are searched.
+ * Finds the recordings in this app's own recording folder and in the folders
+ * picked through the system picker.
  */
 internal object RecordingLibrary {
     private const val PREF_FOLDERS = "recordings.folders"
     private const val EXTENSION = ".tnrd"
     private const val MAX_FOLDER_DEPTH = 8
-
-    /** Whether the media index may list every file, not only media. */
-    fun hasAllFilesAccess(context: Context): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        Environment.isExternalStorageManager()
-    } else {
-        context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-    }
-
-    /** Android 11+: the system page that grants "All files access" to this app. */
-    fun allFilesAccessIntent(context: Context): Intent =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}"))
-        } else {
-            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
-        }
 
     fun folderPickerIntent(): Intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
@@ -110,7 +85,6 @@ internal object RecordingLibrary {
         fun add(file: RecordingFile) {
             found.putIfAbsent(file.key, file)
         }
-        if (hasAllFilesAccess(context)) scanMediaIndex(context, ::add)
         // The app's own recordings wait in its private folder until moved.
         try {
             RecordingStorage.stagingDirectory(context).listFiles()
@@ -165,37 +139,6 @@ internal object RecordingLibrary {
             recordedMs = row.optLong("startTime").takeIf { it > 0 },
             durationSeconds = row.optDouble("duration", 0.0).takeIf { it > 0.0 },
         )
-    }
-
-    private fun scanMediaIndex(context: Context, add: (RecordingFile) -> Unit) {
-        val collection = MediaStore.Files.getContentUri("external")
-        @Suppress("DEPRECATION")
-        val projection = arrayOf(
-            MediaStore.Files.FileColumns._ID,
-            MediaStore.Files.FileColumns.DISPLAY_NAME,
-            MediaStore.Files.FileColumns.SIZE,
-            MediaStore.Files.FileColumns.DATE_MODIFIED,
-            MediaStore.Files.FileColumns.DATA,
-        )
-        try {
-            context.contentResolver.query(
-                collection,
-                projection,
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?",
-                arrayOf("%$EXTENSION"),
-                null,
-            )?.use { cursor ->
-                while (cursor.moveToNext()) {
-                    val name = cursor.getString(1) ?: continue
-                    if (!name.endsWith(EXTENSION, ignoreCase = true)) continue
-                    val path = cursor.getString(4)?.takeIf { File(it).canRead() }
-                    val uri = ContentUris.withAppendedId(collection, cursor.getLong(0))
-                    add(entry(name, cursor.getLong(2), cursor.getLong(3) * 1000, path, if (path == null) uri else null))
-                }
-            }
-        } catch (_: SecurityException) {
-            // Access was withdrawn while scanning.
-        }
     }
 
     private fun scanTree(context: Context, tree: Uri, add: (RecordingFile) -> Unit) {

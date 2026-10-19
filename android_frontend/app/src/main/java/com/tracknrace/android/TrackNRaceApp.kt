@@ -1,11 +1,7 @@
 package com.tracknrace.android
 
 import com.tracknrace.android.pages.staticLayer
-import android.Manifest
-import android.content.ActivityNotFoundException
-import android.content.Intent
 import android.content.res.Configuration
-import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,12 +23,8 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -74,8 +66,12 @@ import androidx.compose.ui.unit.dp
 import com.google.zxing.client.android.Intents
 import com.journeyapps.barcodescanner.ScanContract
 import com.tracknrace.android.pages.AnalysisScreen
+import com.tracknrace.android.pages.AppMenuSheet
+import com.tracknrace.android.pages.MenuDriver
+import com.tracknrace.android.pages.MenuSource
 import com.tracknrace.android.pages.DashboardScreen
-import com.tracknrace.android.pages.GraphWindowDialog
+import com.tracknrace.android.pages.GraphWindowSheet
+import com.tracknrace.android.pages.windowPillText
 import com.tracknrace.android.pages.GraphsScreen
 import com.tracknrace.android.pages.LicensesScreen
 import com.tracknrace.android.pages.PARTICIPANTS_RETRY_DELAY_MS
@@ -122,6 +118,9 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     var foldersVersion by remember { mutableIntStateOf(0) }
     var driverPickerOpen by remember { mutableStateOf(false) }
     var graphWindowOpen by remember { mutableStateOf(false) }
+    // The Tyres page's Charts tab is showing: the app bar offers the chart window there too.
+    var tyreChartsShown by rememberSaveable { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
     val localRecording = store.localRecording
     val appContext = LocalContext.current.applicationContext
     val folderLauncher = rememberLauncherForActivityResult(
@@ -132,23 +131,6 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
             else store.showMessage("Could not keep access to that folder")
         }
     }
-    val readPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { foldersVersion++ }
-    val allowAllFiles = {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                appContext.startActivity(
-                    RecordingLibrary.allFilesAccessIntent(appContext).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            } catch (_: ActivityNotFoundException) {
-                store.showMessage("This phone has no All files access page; add folders instead")
-            }
-        } else {
-            readPermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-    }
-
     val directoryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
@@ -246,17 +228,13 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
             if (!landscape) {
                 AppTopBar(
                     screen = screen,
-                    driverName = selectedDriverName.takeIf { paired || localRecording != null },
-                    driverRestricted = driverRestricted,
-                    onSettings = openSettings,
+                    showsGraphWindow = screen == AppScreen.GRAPHS || (screen == AppScreen.TYRES && tyreChartsShown),
                     onBack = ::navigateBack,
                     onAnalysisSettings = { telemetry.analysis.settingsOpen = true },
                     graphWindow = telemetry.graphs.globalWindow.takeIf(telemetry.graphs::available) ?: GraphWindow.DEFAULT,
+                    graphReferenceLap = telemetry.graphs.globalLap(),
                     onGraphWindow = { graphWindowOpen = true },
-                    recordingOpen = localRecording != null,
-                    onOpenRecordings = { recordingsOpen = true },
-                    onCloseRecording = telemetry::closeRecording,
-                    onPickDriver = { driverPickerOpen = true }.takeIf { localRecording != null },
+                    onMenu = { menuOpen = true },
                 )
             }
         },
@@ -343,6 +321,12 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                         )
                         AppScreen.TYRES -> TyresScreen(
                             display = { tyreRows },
+                            store = store,
+                            graphs = telemetry.graphs,
+                            active = destinationActive,
+                            // The allocation and the charts each ask the desktop for their own data.
+                            onPage = telemetry::setActivePage,
+                            onChartsShown = { tyreChartsShown = it },
                         )
                         AppScreen.GRAPHS -> GraphsScreen(
                             store = store,
@@ -428,17 +412,13 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                 ) {
                     AppTopBar(
                         screen = screen,
-                        driverName = selectedDriverName.takeIf { paired || localRecording != null },
-                        driverRestricted = driverRestricted,
-                        onSettings = openSettings,
+                        showsGraphWindow = screen == AppScreen.GRAPHS || (screen == AppScreen.TYRES && tyreChartsShown),
                         onBack = ::navigateBack,
                         onAnalysisSettings = { telemetry.analysis.settingsOpen = true },
                         graphWindow = telemetry.graphs.globalWindow.takeIf(telemetry.graphs::available) ?: GraphWindow.DEFAULT,
+                        graphReferenceLap = telemetry.graphs.globalLap(),
                         onGraphWindow = { graphWindowOpen = true },
-                        recordingOpen = localRecording != null,
-                        onOpenRecordings = { recordingsOpen = true },
-                        onCloseRecording = telemetry::closeRecording,
-                        onPickDriver = { driverPickerOpen = true }.takeIf { localRecording != null },
+                        onMenu = { menuOpen = true },
                     )
                 }
                 AnimatedVisibility(
@@ -464,7 +444,6 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                 recordingsOpen = false
                 telemetry.openRecording(file)
             },
-            onAllowAccess = allowAllFiles,
             onAddFolder = { folderLauncher.launch(RecordingLibrary.folderPickerIntent()) },
             onRemoveFolder = { folder ->
                 RecordingLibrary.removeFolder(appContext, folder)
@@ -473,8 +452,26 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
             onDismiss = { recordingsOpen = false },
         )
     }
+    if (menuOpen) {
+        val status = store.sourceStatus
+        AppMenuSheet(
+            source = when {
+                localRecording != null -> MenuSource.Recording(localRecording)
+                paired -> MenuSource.Desktop(store.settings.desktopName, status.state, status.detail)
+                else -> MenuSource.Direct
+            },
+            driver = selectedDriverName?.takeIf { paired || localRecording != null }?.let { name ->
+                MenuDriver(name, driverRestricted, onPick = { driverPickerOpen = true }.takeIf { localRecording != null })
+            },
+            onOpenRecordings = { recordingsOpen = true },
+            onCloseRecording = telemetry::closeRecording,
+            onReconnect = telemetry::reconnect,
+            onSettings = openSettings,
+            onDismiss = { menuOpen = false },
+        )
+    }
     if (graphWindowOpen) {
-        GraphWindowDialog(
+        GraphWindowSheet(
             title = "Chart window",
             selected = telemetry.graphs.globalWindow,
             options = GraphWindow.entries.filter(telemetry.graphs::available),
@@ -483,6 +480,9 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                 graphWindowOpen = false
             },
             onDismiss = { graphWindowOpen = false },
+            laps = store.playbackCatalog,
+            referenceLap = telemetry.graphs.globalLap(),
+            onReferenceLap = telemetry.graphs::selectGlobalReferenceLap,
         )
     }
     if (driverPickerOpen && localRecording != null) {
@@ -565,27 +565,24 @@ private fun <T> rememberCurrentWhileActive(active: Boolean, current: () -> T): T
 @Composable
 private fun AppTopBar(
     screen: AppScreen,
-    driverName: String?,
-    driverRestricted: Boolean?,
-    onSettings: () -> Unit,
+    /** The page shows charts that follow the global window. */
+    showsGraphWindow: Boolean,
     onBack: () -> Unit,
     onAnalysisSettings: () -> Unit,
     /** The Graphs page's global window. */
     graphWindow: GraphWindow,
+    /** The lap a global Selected window compares against. */
+    graphReferenceLap: Int,
     onGraphWindow: () -> Unit,
-    recordingOpen: Boolean,
-    onOpenRecordings: () -> Unit,
-    onCloseRecording: () -> Unit,
-    /** Set while a recording plays: the driver name opens the driver picker. */
-    onPickDriver: (() -> Unit)?,
+    /** Opens the app's menu sheet: the source, the driver, recordings and settings. */
+    onMenu: () -> Unit,
 ) {
     val primary = screen.isPrimary
-    var overflowOpen by remember { mutableStateOf(false) }
     val title = when (screen) {
         AppScreen.DASHBOARD -> "Dashboard"
         AppScreen.TIMING -> "Timing"
         AppScreen.TYRES -> "Tyres"
-        AppScreen.GRAPHS -> "Graphs"
+        AppScreen.GRAPHS -> "Charts"
         AppScreen.ANALYSIS -> "Analysis"
         AppScreen.SETTINGS -> "Settings"
         AppScreen.PAIRING -> "Pair desktop"
@@ -617,36 +614,12 @@ private fun AppTopBar(
         },
         actions = {
             if (primary) {
-                if (driverName != null) {
-                    // Matches the desktop driver selector's wording. An unknown
-                    // setting says so rather than implying full telemetry.
-                    val label = when (driverRestricted) {
-                        true -> "$driverName · Public data only"
-                        null -> "$driverName · Telemetry access unknown"
-                        false -> driverName
-                    }
-                    if (onPickDriver != null) {
-                        TextButton(onClick = onPickDriver, modifier = Modifier.widthIn(max = 220.dp)) {
-                            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Icon(painterResource(R.drawable.ic_expand_more), contentDescription = null, Modifier.size(18.dp))
-                        }
-                    } else {
-                        Text(
-                            label,
-                            modifier = Modifier.widthIn(max = 220.dp),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                if (screen == AppScreen.GRAPHS) {
+                if (showsGraphWindow) {
                     // The window every chart follows unless it picks its own.
                     TextButton(onClick = onGraphWindow) {
                         Icon(painterResource(R.drawable.ic_timer), contentDescription = null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text(graphWindow.label, maxLines = 1)
+                        Text(windowPillText(graphWindow, narrow = false, referenceLap = graphReferenceLap), maxLines = 1)
                         Icon(painterResource(R.drawable.ic_expand_more), contentDescription = "Chart window", Modifier.size(18.dp))
                     }
                 }
@@ -655,49 +628,8 @@ private fun AppTopBar(
                         Icon(painterResource(R.drawable.ic_tune), contentDescription = "Chart settings")
                     }
                 }
-                Box {
-                    IconButton(onClick = { overflowOpen = true }) {
-                        Icon(painterResource(R.drawable.ic_more), contentDescription = "More options")
-                    }
-                    // M3 menu: actions first, a divider between groups, then Settings.
-                    DropdownMenu(
-                        expanded = overflowOpen,
-                        onDismissRequest = { overflowOpen = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Open recording") },
-                            leadingIcon = {
-                                Icon(painterResource(R.drawable.ic_folder_open), contentDescription = null)
-                            },
-                            onClick = {
-                                overflowOpen = false
-                                onOpenRecordings()
-                            },
-                        )
-                        if (recordingOpen) {
-                            DropdownMenuItem(
-                                text = { Text("Close recording") },
-                                leadingIcon = {
-                                    Icon(painterResource(R.drawable.ic_close), contentDescription = null)
-                                },
-                                onClick = {
-                                    overflowOpen = false
-                                    onCloseRecording()
-                                },
-                            )
-                        }
-                        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                        DropdownMenuItem(
-                            text = { Text("Settings") },
-                            leadingIcon = {
-                                Icon(painterResource(R.drawable.ic_settings), contentDescription = null)
-                            },
-                            onClick = {
-                                overflowOpen = false
-                                onSettings()
-                            },
-                        )
-                    }
+                IconButton(onClick = onMenu) {
+                    Icon(painterResource(R.drawable.ic_more), contentDescription = "Menu")
                 }
             }
         },
@@ -709,8 +641,8 @@ private fun AppNavigationBar(selected: AppScreen, onSelected: (AppScreen) -> Uni
     val destinations = listOf(
         Triple(AppScreen.DASHBOARD, "Dashboard", R.drawable.ic_overview),
         Triple(AppScreen.TIMING, "Timing", R.drawable.ic_standings),
+        Triple(AppScreen.GRAPHS, "Charts", R.drawable.ic_graphs),
         Triple(AppScreen.TYRES, "Tyres", R.drawable.ic_tyres),
-        Triple(AppScreen.GRAPHS, "Graphs", R.drawable.ic_graphs),
         Triple(AppScreen.ANALYSIS, "Analysis", R.drawable.ic_analysis),
     )
     NavigationBar(

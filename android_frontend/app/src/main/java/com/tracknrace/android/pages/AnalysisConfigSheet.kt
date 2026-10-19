@@ -25,20 +25,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -81,24 +78,11 @@ import com.tracknrace.android.AnalysisConfig
 import com.tracknrace.android.AnalysisController
 import com.tracknrace.android.AnalysisSeries
 import com.tracknrace.android.AnalysisTyreRow
-import com.tracknrace.android.DEFAULT_COMPARE_LABEL
-import com.tracknrace.android.DEFAULT_CURRENT_LABEL
 import com.tracknrace.android.DEFAULT_DELTA_NEGATIVE_COLOR
 import com.tracknrace.android.DEFAULT_DELTA_POSITIVE_COLOR
-import com.tracknrace.android.DEFAULT_LAP_A_LABEL
-import com.tracknrace.android.DEFAULT_LAP_B_LABEL
-import com.tracknrace.android.DEFAULT_MAP_COMPARISON_COLOR
-import com.tracknrace.android.DEFAULT_MAP_CURRENT_COLOR
 import com.tracknrace.android.PlaybackCatalog
 import com.tracknrace.android.R
 import kotlin.math.roundToInt
-
-// Swatches offered by the colour picker: the desktop's default series colours
-// plus a few neutrals.
-private val Palette = listOf(
-    0xF2495C, 0xC4162A, 0xE10600, 0xFF780A, 0xFF9830, 0xF0A500, 0xFADE2A, 0xFFD700,
-    0x73BF69, 0x37872D, 0x8AB8FF, 0x5794F2, 0x4488FF, 0xB877DB, 0xBF5FFF, 0xFFFFFF,
-).map { (0xff shl 24) or it }
 
 /** A colour being picked, and what it resets to. */
 private class ColorTarget(
@@ -120,7 +104,6 @@ internal fun AnalysisConfigSheet(
     val config = analysis.config
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var pickerOpen by remember { mutableStateOf(false) }
-    var lapsOpen by remember { mutableStateOf(false) }
     var colorTarget by remember { mutableStateOf<ColorTarget?>(null) }
     val update: ((AnalysisConfig) -> AnalysisConfig) -> Unit = analysis::updateConfig
     fun updateSeries(transform: (List<AnalysisSeries>) -> List<AnalysisSeries>) =
@@ -177,22 +160,12 @@ internal fun AnalysisConfigSheet(
                 SwitchRow("Y axes", null, allAxes) { value ->
                     updateSeries { series -> series.map { it.copy(showYAxis = value) } }
                 }
-                HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant)
-                ListItem(
-                    headlineContent = { Text("Lap colours and names") },
-                    trailingContent = { Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier.clickable { lapsOpen = true },
-                )
             }
         }
     }
 
     if (pickerOpen) {
         MetricSearch(config.series, ::updateSeries, onClose = { pickerOpen = false })
-    }
-    if (lapsOpen) {
-        LapAppearanceDialog(config, update, onColor = { colorTarget = it }, onDismiss = { lapsOpen = false })
     }
     colorTarget?.let { target ->
         ColorDialog(
@@ -707,100 +680,9 @@ private fun MatrixCell(on: Boolean, description: String, onClick: () -> Unit) {
     }
 }
 
-/** The two lap colours, and the names the map and headers give each lap. */
 @Composable
-private fun LapAppearanceDialog(
-    config: AnalysisConfig,
-    update: ((AnalysisConfig) -> AnalysisConfig) -> Unit,
-    onColor: (ColorTarget) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Lap colours and names") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                LapAppearanceRow(
-                    color = config.mapCurrentColor,
-                    onColor = {
-                        onColor(ColorTarget("First lap colour", config.mapCurrentColor, DEFAULT_MAP_CURRENT_COLOR) { color ->
-                            update { it.copy(mapCurrentColor = color) }
-                        })
-                    },
-                    names = listOf(
-                        Triple(config.currentLabel, DEFAULT_CURRENT_LABEL) { value: String -> update { it.copy(currentLabel = value) } },
-                        Triple(config.lapALabel, DEFAULT_LAP_A_LABEL) { value: String -> update { it.copy(lapALabel = value) } },
-                    ),
-                )
-                LapAppearanceRow(
-                    color = config.mapComparisonColor,
-                    onColor = {
-                        onColor(ColorTarget("Second lap colour", config.mapComparisonColor, DEFAULT_MAP_COMPARISON_COLOR) { color ->
-                            update { it.copy(mapComparisonColor = color) }
-                        })
-                    },
-                    names = listOf(
-                        Triple(config.compareLabel, DEFAULT_COMPARE_LABEL) { value: String -> update { it.copy(compareLabel = value) } },
-                        Triple(config.lapBLabel, DEFAULT_LAP_B_LABEL) { value: String -> update { it.copy(lapBLabel = value) } },
-                    ),
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-    )
-}
-
-@Composable
-private fun LapAppearanceRow(
-    color: Int,
-    onColor: () -> Unit,
-    names: List<Triple<String, String, (String) -> Unit>>,
-) {
-    Row(verticalAlignment = Alignment.Top) {
-        Swatch(color, "Colour", size = 28, onClick = onColor)
-        Column(Modifier.weight(1f).padding(start = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            for ((value, default, onChange) in names) {
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = { onChange(it.take(40)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text(default) },
-                    placeholder = { Text(default) },
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ColorDialog(target: ColorTarget, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(target.title) },
-        text = {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (color in Palette) {
-                    Box(
-                        Modifier
-                            .size(48.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color(color))
-                            .border(
-                                if (color == target.color) 3.dp else 1.dp,
-                                if (color == target.color) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
-                                RoundedCornerShape(10.dp),
-                            )
-                            .clickable { onPick(color) },
-                    )
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-        dismissButton = { TextButton(onClick = { onPick(target.default) }) { Text("Default") } },
-    )
-}
+private fun ColorDialog(target: ColorTarget, onPick: (Int) -> Unit, onDismiss: () -> Unit) =
+    ColorPickerDialog(target.title, target.color, target.default, onPick, onDismiss)
 
 // ── Series edits, ported from the desktop's Analysis sidebar ───────────────
 

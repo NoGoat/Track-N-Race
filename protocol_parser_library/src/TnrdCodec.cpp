@@ -13,6 +13,12 @@
 #ifdef _WIN32
 #  include <windows.h>
 #endif
+#ifdef __ANDROID__
+#  include <cstdlib>
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#endif
 
 namespace tnrp::detail {
 namespace {
@@ -63,7 +69,85 @@ std::wstring windowsExtendedPath(const std::string& path) {
 
 namespace {
 
+#ifdef __ANDROID__
+// A recording picked through Android's document picker reaches the engine as
+// /proc/self/fd/N. Opening that path again opens the file it points to, which
+// shared storage refuses to an app without "All files access". Read through
+// the descriptor instead: each opener gets a duplicate read with pread from
+// its own offset, so readers on several threads never move each other.
+constexpr char kDescriptorPrefix[] = "/proc/self/fd/";
+
+int descriptorOf(const std::string& path) {
+    if (path.rfind(kDescriptorPrefix, 0) != 0) return -1;
+    const char* digits = path.c_str() + sizeof(kDescriptorPrefix) - 1;
+    char* end = nullptr;
+    const long fd = std::strtol(digits, &end, 10);
+    return end != digits && *end == '\0' && fd >= 0 && fd <= 0x7fffffff ? static_cast<int>(fd) : -1;
+}
+
+struct DescriptorReader {
+    int fd;
+    off64_t offset;
+};
+
+int descriptorRead(void* cookie, char* buffer, int size) {
+    auto* reader = static_cast<DescriptorReader*>(cookie);
+    ssize_t got;
+    do got = ::pread64(reader->fd, buffer, static_cast<size_t>(size), reader->offset);
+    while (got < 0 && errno == EINTR);
+    if (got > 0) reader->offset += got;
+    return static_cast<int>(got);
+}
+
+off64_t descriptorSeek(void* cookie, off64_t offset, int whence) {
+    auto* reader = static_cast<DescriptorReader*>(cookie);
+    off64_t base = 0;
+    if (whence == SEEK_CUR) {
+        base = reader->offset;
+    } else if (whence == SEEK_END) {
+        struct stat64 info {};
+        if (::fstat64(reader->fd, &info) != 0) return -1;
+        base = info.st_size;
+    } else if (whence != SEEK_SET) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (offset < 0 && base < -offset) {
+        errno = EINVAL;
+        return -1;
+    }
+    reader->offset = base + offset;
+    return reader->offset;
+}
+
+int descriptorClose(void* cookie) {
+    auto* reader = static_cast<DescriptorReader*>(cookie);
+    const int result = ::close(reader->fd);
+    delete reader;
+    return result;
+}
+
+std::FILE* openDescriptor(int source) {
+    const int fd = ::fcntl(source, F_DUPFD_CLOEXEC, 0);
+    if (fd < 0) return nullptr;
+    auto* reader = new DescriptorReader{fd, 0};
+    std::FILE* file = ::funopen64(reader, descriptorRead, nullptr, descriptorSeek, descriptorClose);
+    if (!file) {
+        ::close(fd);
+        delete reader;
+    }
+    return file;
+}
+
+bool readOnly(const char* mode) {
+    return std::strchr(mode, 'r') && !std::strchr(mode, '+');
+}
+#endif
+
 std::FILE* openFile(const std::string& path, const char* mode) {
+#ifdef __ANDROID__
+    if (const int fd = descriptorOf(path); fd >= 0 && readOnly(mode)) return openDescriptor(fd);
+#endif
 #ifdef _WIN32
     const std::wstring wide = windowsExtendedPath(path);
     if (wide.empty()) return nullptr;
@@ -80,6 +164,21 @@ gzFile openGzip(const std::string& path, const char* mode) {
     const std::wstring wide = windowsExtendedPath(path);
     return wide.empty() ? nullptr : gzopen_w(wide.c_str(), mode);
 #else
+#  ifdef __ANDROID__
+    // As openFile: a gzip stream reads straight through, so a duplicate
+    // rewound to the start serves it.
+    if (const int source = descriptorOf(path); source >= 0 && readOnly(mode)) {
+        const int fd = ::fcntl(source, F_DUPFD_CLOEXEC, 0);
+        if (fd < 0) return nullptr;
+        if (::lseek64(fd, 0, SEEK_SET) != 0) {
+            ::close(fd);
+            return nullptr;
+        }
+        gzFile file = gzdopen(fd, mode);
+        if (!file) ::close(fd);
+        return file;
+    }
+#  endif
     return gzopen(path.c_str(), mode);
 #endif
 }

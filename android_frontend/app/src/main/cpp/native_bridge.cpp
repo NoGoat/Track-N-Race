@@ -1,9 +1,8 @@
 #include <jni.h>
 
-#include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <memory>
-#include <optional>
 #include <mutex>
 #include <string_view>
 #include <string>
@@ -14,7 +13,6 @@
 #include "tnrp/PairCrypto.h"
 #include "tnrp/Engine.h"
 #include "tnrp/PairServer.h"
-#include "tnrp/Parser.h"
 #include "tnrp/Sink.h"
 #include "tnrp/TnrdReader.h"
 
@@ -25,8 +23,8 @@ std::mutex gMutex;
 
 class AndroidSink final : public tnrp::Sink {
 public:
-    AndroidSink(JNIEnv* env, jobject receiver, bool playback = false)
-        : receiver_(env->NewGlobalRef(receiver)), playback_(playback) {
+    AndroidSink(JNIEnv* env, jobject receiver)
+        : receiver_(env->NewGlobalRef(receiver)) {
         jclass cls = env->GetObjectClass(receiver);
         onRow_ = env->GetMethodID(cls, "onNativeRow", "(Ljava/lang/String;)V");
         onBinary_ = env->GetMethodID(cls, "onNativeBinary", "([B)V");
@@ -49,19 +47,6 @@ public:
             return;
         }
         deliver(json);
-        // A JSON-only engine does not restate the protocol when a recording
-        // loads. Label the recording with its own format's catalogue, as the
-        // desktop does, so track names and aero labels follow the file.
-        if (playback_ && std::string_view(json).starts_with("{\"type\":\"playback_loaded\",\"ok\":true")) {
-            const auto protocol = intAfter(json, "\"protocol\":");
-            if (protocol && *protocol >= 2024) {
-                std::optional<bool> regulations;
-                if (json.find("\"regulations_2026\":true") != std::string::npos) regulations = true;
-                else if (json.find("\"regulations_2026\":false") != std::string::npos) regulations = false;
-                deliver(tnrp::Parser::statusRowForFormat(
-                    static_cast<uint16_t>(*protocol), intAfter(json, "\"formula\":"), regulations));
-            }
-        }
     }
 
     void deliver(const std::string& json) {
@@ -79,23 +64,57 @@ public:
     }
 
     void onBinary(const uint8_t* data, size_t len) override {
-        // The dashboard consumes telemetry plus all-car positions. The filter
-        // takes logical row ids (1 and 13), not packed wire tags (1 and 3).
-        thread_local std::vector<uint8_t> dashboardRows;
-        dashboardRows.clear();
-        dashboardRows.reserve(len);
-        constexpr uint32_t mask = (1u << 1) | (1u << 13);
-        if (!tnrp::bin::appendFilteredBatch(dashboardRows, data, len, mask)
-            || dashboardRows.empty()) return;
+        // The engine has already narrowed the batch to the subscribed
+        // families; keep only the packed ones the Kotlin decoder reads
+        // (logical row ids: telemetry, motion, motion_ex, positions).
+        thread_local std::vector<uint8_t> rows;
+        rows.clear();
+        rows.reserve(len);
+        constexpr uint32_t mask = (1u << 1) | (1u << 11) | (1u << 12) | (1u << 13);
+        if (!tnrp::bin::appendFilteredBatch(rows, data, len, mask) || rows.empty()) return;
+        deliverBinary(rows.data(), rows.size());
+    }
 
+    // A playback seek: the reset the app applies to its timeline, then the
+    // window's packed rows and its cold rows. The engine sends the panel rows
+    // at the cursor straight after this. A V6 recording's seek carries columnar
+    // history ("V6H1") instead of packed rows; the phone reads its history per
+    // lap and asks seeks for none, so that block is skipped.
+    void onSeekFlush(std::shared_ptr<const std::vector<uint8_t>> binStore,
+                     size_t binBegin, size_t binEnd, std::string&& coldJson,
+                     float currentLapStart, int lapNum, bool allHistory,
+                     uint64_t, bool, uint32_t, float) override {
+        if (!allHistory) {
+            char flush[128];
+            std::snprintf(flush, sizeof(flush),
+                "{\"type\":\"playback_seek_flush\",\"currentLapStart\":%.9g,\"lapNum\":%d}",
+                currentLapStart, lapNum);
+            deliver(flush);
+        }
+        if (binStore && binEnd > binBegin && binEnd <= binStore->size()) {
+            const uint8_t* data = binStore->data() + binBegin;
+            const size_t len = binEnd - binBegin;
+            const bool columnar = len >= 4 && std::memcmp(data, "V6H1", 4) == 0;
+            if (!columnar) onBinary(data, len);
+        }
+        size_t start = 0;
+        while (start < coldJson.size()) {
+            size_t end = coldJson.find('\n', start);
+            if (end == std::string::npos) end = coldJson.size();
+            if (end > start) deliver(coldJson.substr(start, end - start));
+            start = end + 1;
+        }
+    }
+
+    void deliverBinary(const uint8_t* data, size_t len) {
         bool attached = false;
         JNIEnv* env = environment(attached);
         if (!env || !receiver_ || !onBinary_) return;
 
-        jbyteArray value = env->NewByteArray(static_cast<jsize>(dashboardRows.size()));
+        jbyteArray value = env->NewByteArray(static_cast<jsize>(len));
         if (value) {
-            env->SetByteArrayRegion(value, 0, static_cast<jsize>(dashboardRows.size()),
-                reinterpret_cast<const jbyte*>(dashboardRows.data()));
+            env->SetByteArrayRegion(value, 0, static_cast<jsize>(len),
+                reinterpret_cast<const jbyte*>(data));
             env->CallVoidMethod(receiver_, onBinary_, value);
             env->DeleteLocalRef(value);
         }
@@ -104,19 +123,6 @@ public:
     }
 
 private:
-    static std::optional<int> intAfter(const std::string& json, std::string_view key) {
-        const size_t at = json.find(key);
-        if (at == std::string::npos) return std::nullopt;
-        size_t index = at + key.size();
-        const bool negative = index < json.size() && json[index] == '-';
-        if (negative) ++index;
-        if (index >= json.size() || !std::isdigit(static_cast<unsigned char>(json[index]))) return std::nullopt;
-        int value = 0;
-        while (index < json.size() && std::isdigit(static_cast<unsigned char>(json[index])))
-            value = value * 10 + (json[index++] - '0');
-        return negative ? -value : value;
-    }
-
     JNIEnv* environment(bool& attached) const {
         JNIEnv* env = nullptr;
         const jint state = gVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
@@ -128,7 +134,6 @@ private:
     }
 
     jobject receiver_{};
-    bool playback_{};
     jmethodID onRow_{};
     jmethodID onBinary_{};
 };
@@ -171,7 +176,12 @@ tnrp::Config androidConfig() {
     config.bindAddress = "0.0.0.0";
     config.protocol = tnrp::Override::Auto;
     config.hotRowsAsJson = false;
-    config.binaryPlayback = false;
+    // The desktop's engine mode: packed hot rows, seeks as a flush, V6
+    // recordings as sparse field patches and their seek history read
+    // columnar on the history handle.
+    config.binaryPlayback = true;
+    config.sparseV6Playback = true;
+    config.columnarV6History = true;
     return config;
 }
 
@@ -238,7 +248,7 @@ Java_com_tracknrace_android_NativeTelemetry_nativeOpenRecording(
     JNIEnv* env, jobject receiver, jstring path) {
     const std::string file = utf8(env, path);
     auto next = std::make_shared<Session>();
-    next->sink = std::make_unique<AndroidSink>(env, receiver, true);
+    next->sink = std::make_unique<AndroidSink>(env, receiver);
     next->engine = std::make_unique<tnrp::Engine>(androidConfig(), next->sink.get());
     {
         std::lock_guard lock(gMutex);
@@ -273,7 +283,8 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_tracknrace_android_NativeTelemetry_nativeSeek(
     JNIEnv*, jobject, jfloat fraction, jlong requestId) {
     if (auto current = session())
-        current->engine->playerSeek(fraction, false, static_cast<uint64_t>(requestId));
+        // State at the cursor only: the phone's history comes from lap reads.
+        current->engine->playerSeek(fraction, false, static_cast<uint64_t>(requestId), 0u);
 }
 
 extern "C" JNIEXPORT void JNICALL

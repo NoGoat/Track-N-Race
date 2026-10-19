@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,9 +30,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -60,9 +59,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Every recording on the phone, newest first and grouped by day, the way a
- * gallery lists photos. Picking one opens it. Without "All files access" a
- * banner asks for it; folders can be added either way.
+ * The recordings in the app's folder and the added folders, newest first and
+ * grouped by day, the way a gallery lists photos. Picking one opens it.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -72,33 +70,32 @@ internal fun RecordingsSheet(
     /** Changes when a folder is added or removed, to search again. */
     foldersVersion: Int,
     onOpen: (RecordingFile) -> Unit,
-    onAllowAccess: () -> Unit,
     onAddFolder: () -> Unit,
     onRemoveFolder: (Uri) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current.applicationContext
     var scans by remember { mutableIntStateOf(0) }
-    // Coming back from the "All files access" page, or any return to the app.
+    // Any return to the app: files may have arrived meanwhile.
     LifecycleResumeEffect(Unit) {
         scans++
         onPauseOrDispose { }
     }
-    var allFiles by remember { mutableStateOf(RecordingLibrary.hasAllFilesAccess(context)) }
     var folders by remember { mutableStateOf(RecordingLibrary.folders(context)) }
     var recordings by remember { mutableStateOf<List<RecordingFile>?>(null) }
     var scanning by remember { mutableStateOf(true) }
     LaunchedEffect(scans, foldersVersion) {
         scanning = true
-        allFiles = RecordingLibrary.hasAllFilesAccess(context)
         folders = RecordingLibrary.folders(context)
         recordings = withContext(Dispatchers.IO) { RecordingLibrary.scan(context) }
         scanning = false
     }
-    val sheetState = rememberModalBottomSheetState()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
-        Column(Modifier.fillMaxWidth()) {
+        // Always the full height: a sheet whose content is about as tall as the
+        // screen never settles, as its status bar padding moves where it rests.
+        Column(Modifier.fillMaxWidth().fillMaxHeight()) {
             Row(
                 Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -116,9 +113,6 @@ internal fun RecordingsSheet(
                 IconButton(onClick = onAddFolder) {
                     Icon(painterResource(R.drawable.ic_create_new_folder), contentDescription = "Add a folder")
                 }
-            }
-            if (!allFiles) {
-                AccessBanner(onAllowAccess, onAddFolder)
             }
             if (folders.isNotEmpty()) {
                 FlowRow(
@@ -143,7 +137,7 @@ internal fun RecordingsSheet(
             }
             val list = recordings
             if (list != null && list.isEmpty() && !scanning) {
-                EmptyRecordings()
+                EmptyRecordings(onAddFolder)
             } else if (list != null) {
                 RecordingList(list, openTitle, onOpen)
             }
@@ -152,33 +146,7 @@ internal fun RecordingsSheet(
 }
 
 @Composable
-private fun AccessBanner(onAllowAccess: () -> Unit, onAddFolder: () -> Unit) {
-    Surface(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.secondaryContainer,
-    ) {
-        Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp)) {
-            Text(
-                "Find recordings anywhere",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-            )
-            Text(
-                "Allow access to all files, or add the folders to search.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-            )
-            Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onAddFolder) { Text("Add folder") }
-                FilledTonalButton(onClick = onAllowAccess) { Text("Allow") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun EmptyRecordings() {
+private fun EmptyRecordings(onAddFolder: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 48.dp, horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -192,10 +160,12 @@ private fun EmptyRecordings() {
         Spacer(Modifier.height(12.dp))
         Text("No recordings found", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Recordings are .tnrd files from Track N Race.",
+            "Add the folder your .tnrd files are in.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(16.dp))
+        FilledTonalButton(onClick = onAddFolder) { Text("Add folder") }
     }
 }
 

@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -58,7 +57,10 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asComposePath
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -75,13 +77,18 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.tracknrace.android.CarDamageState
 import com.tracknrace.android.DashboardColdState
@@ -108,8 +115,8 @@ import kotlinx.coroutines.launch
 //   DRIVE  the glance screen: shift lights, status, delta / gear / speed,
 //          sector splits, ERS and fuel, gaps (races), tyres, lap times
 //   MAP    the live map of every car, full page
-//   DAMAGE the desktop Damage page: the car with each part's damage, faults,
-//          power-unit and gearbox wear
+//   DAMAGE the desktop Damage page: faults and the worst part, the car with
+//          each part's damage, power-unit and gearbox wear
 //
 // Landscape keeps all three tabs, with Drive and Damage laid out wide. Every changing number is painted by Readout and
 // read while drawing, so a telemetry tick repaints one small layer and never
@@ -746,22 +753,24 @@ private fun liveryColor(value: String?): Color = try {
 }
 
 // ── Damage tab ──────────────────────────────────────────────────────────────
-// The desktop Damage page on a phone: the car drawn nose-up with each part's
-// damage beside it, the fault flags, and power-unit and gearbox wear. Colours
-// follow the desktop: body damage and wear on a three-step scale; tyre, brake
-// and blister damage on its five 20% bands.
+// The desktop Damage page on a phone: one line for faults and the worst part,
+// the car with each part's damage beside it and a leader to the part, and
+// power-unit and gearbox wear as bars. Colours and thresholds are Electron's:
+// body damage and wear on a three-step scale, tyre, brake and blister damage
+// on its five 20% bands. Tyre values keep their green band; body damage and
+// wear stay uncoloured until the first warning step, so damage stands out.
 
 private val DamageOk = Color(0xff37872d)
 private val DamageWarn = Color(0xffe0a800)
 private val DamageCrit = Color(0xffc4162a)
-private val WireColor = Color(0xff8a93c4)
-private val TubeColor = Color(0xff4a5175)
+private val WireColor = Color(0xff76809f)
+private val TubeColor = Color(0xff3b4260)
+private val LeaderColor = Color(0xff4d556b)
+private val LeaderDot = Color(0xff8e95a8)
+private val WearTick = Color(0xff59627a)
 
-/** The desktop's wheel colours, used for each wheel's name. */
-private val WheelFl = Color(0xffe10600)
-private val WheelFr = Color(0xff4488ff)
-private val WheelRl = Color(0xff37872d)
-private val WheelRr = Color(0xffffd700)
+private val WheelCalloutWidth = 84.dp
+private val PartValue = Body.copy(fontSize = 17.sp, lineHeight = 19.sp, fontWeight = FontWeight.Bold)
 
 /** Body damage: any is worth seeing; above 20% it costs real performance. */
 private fun damageColor(value: Int?): Color? = when {
@@ -771,15 +780,69 @@ private fun damageColor(value: Int?): Color? = when {
     else -> DamageCrit
 }
 
+/** A body part's value: dimmed while undamaged. */
+private fun partColor(value: Int?): Color = if (value == null || value == 0) Dis else damageColor(value) ?: Dis
+
+private fun tyreColor(value: Int?): Color = value?.let(::tyreBandColor) ?: Dis
+
 /** Power-unit and gearbox wear accumulate normally, so only high wear warns. */
-private fun puWearColor(value: Int?): Color = when {
-    value == null -> Dis
-    value < 50 -> DamageOk
+private fun wearColor(value: Int?): Color = when {
+    value == null || value == 0 -> Dis
+    value < 50 -> Hi
     value < 75 -> DamageWarn
     else -> DamageCrit
 }
 
 private fun percentText(value: Int?) = value?.let { "$it%" } ?: "—"
+
+/** A percentage with a smaller % sign. */
+private fun percent(value: Int?): AnnotatedString = buildAnnotatedString {
+    if (value == null) {
+        append("—")
+    } else {
+        append(value.toString())
+        withStyle(SpanStyle(fontSize = 0.65.em, fontWeight = FontWeight.Medium)) { append("%") }
+    }
+}
+
+private class WheelDamage(val name: String, val tyre: Int?, val brake: Int?, val blisters: Int?)
+
+private fun wheels(damage: CarDamageState) = listOf(
+    WheelDamage("FL", damage.tyreFl, damage.brakeFl, damage.blistersFl),
+    WheelDamage("FR", damage.tyreFr, damage.brakeFr, damage.blistersFr),
+    WheelDamage("RL", damage.tyreRl, damage.brakeRl, damage.blistersRl),
+    WheelDamage("RR", damage.tyreRr, damage.brakeRr, damage.blistersRr),
+)
+
+/** Where a leader leaves the car for its callout. */
+private enum class LeaderSide { LEFT, RIGHT, TOP, BOTTOM }
+
+/** A leader from the car's edge to a point on a part, in the nose-up drawing's units. */
+private class Leader(val zone: String, val x: Float, val y: Float, val side: LeaderSide)
+
+/** Portrait, nose up: each side's callouts top to bottom. */
+private val PortraitLeaders = listOf(
+    Leader("z-fw-l", 34f, 62f, LeaderSide.LEFT),
+    Leader("t-fl", 20f, 190f, LeaderSide.LEFT),
+    Leader("z-sp-l", 55f, 520f, LeaderSide.LEFT),
+    Leader("t-rl", 2f, 757f, LeaderSide.LEFT),
+    Leader("z-fw-r", 316f, 62f, LeaderSide.RIGHT),
+    Leader("t-fr", 330f, 190f, LeaderSide.RIGHT),
+    Leader("z-floor", 323f, 335f, LeaderSide.RIGHT),
+    Leader("t-rr", 348f, 757f, LeaderSide.RIGHT),
+)
+
+/** Landscape, nose right with the driver's left on top: each band's callouts left to right. */
+private val LandscapeLeaders = listOf(
+    Leader("t-rl", 2f, 757f, LeaderSide.TOP),
+    Leader("z-floor", 38f, 380f, LeaderSide.TOP),
+    Leader("t-fl", 20f, 190f, LeaderSide.TOP),
+    Leader("z-fw-l", 34f, 62f, LeaderSide.TOP),
+    Leader("t-rr", 348f, 757f, LeaderSide.BOTTOM),
+    Leader("z-sp-r", 296f, 520f, LeaderSide.BOTTOM),
+    Leader("t-fr", 330f, 190f, LeaderSide.BOTTOM),
+    Leader("z-fw-r", 316f, 62f, LeaderSide.BOTTOM),
+)
 
 @Composable
 private fun DamageTab(store: TelemetryStore, landscape: Boolean) {
@@ -793,23 +856,31 @@ private fun DamageTab(store: TelemetryStore, landscape: Boolean) {
         value = withContext(Dispatchers.IO) { loadCarWireframe(context) }
     }
     val drawn = { store.damage }
-    // Never scrolls: the car card takes the height the other cards leave, and
-    // the car and its callouts are fitted into it.
+    val faults = faultSummary(damage, wingFault)
+    val worst = worstPart(damage)
+    // Never scrolls: the car card takes the room the others leave, and the
+    // car and its callouts are fitted into it.
     if (landscape) {
-        // As the desktop lays it out: the car nose-right across the page, its
-        // parts around it, and the faults and wear in one strip below.
-        Column(
+        // The car nose-right as on the desktop, faults and wear in a column beside it.
+        Row(
             Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            WideCarDamageCard(damage, drawn, wireframe, Modifier.fillMaxWidth().weight(1f))
-            DamageStrip(damage, wingFault, Modifier.fillMaxWidth())
+            WideCarDamageCard(damage, drawn, wireframe, Modifier.weight(1f).fillMaxHeight())
+            Column(Modifier.width(220.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                DamageStatusCard(faults, worst, Modifier.fillMaxWidth())
+                WearCard(damage, columns = 1, Modifier.fillMaxWidth().weight(1f))
+            }
         }
     } else {
-        Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            FaultsCard(damage, wingFault, Modifier.fillMaxWidth())
+        Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth().height(32.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                FaultChip(faults)
+                Spacer(Modifier.weight(1f).width(8.dp))
+                if (worst != null) WorstReadout(worst)
+            }
             CarDamageCard(damage, drawn, wireframe, Modifier.fillMaxWidth().weight(1f))
-            WearCard(damage, Modifier.fillMaxWidth())
+            WearCard(damage, columns = 2, Modifier.fillMaxWidth())
         }
     }
 }
@@ -826,47 +897,158 @@ private fun engineStatus(damage: CarDamageState): String? = when {
     else -> "OK"
 }
 
-private fun faultFlag(value: Int?): String? = when (value) {
-    null -> null
-    0 -> "OK"
-    else -> "Fault"
+/** The engine, wing (DRS) and ERS checks: what has failed, and what is fine. */
+private class FaultSummary(val failed: List<String>, val ok: List<String>) {
+    val known get() = failed.isNotEmpty() || ok.isNotEmpty()
 }
 
-private fun faultColor(value: String?): Color = when (value) {
-    null -> Dis
-    "OK" -> DamageOk
-    else -> DamageCrit
-}
-
-/** Engine status, the wing (DRS) fault and the ERS fault. */
-@Composable
-private fun FaultsCard(damage: CarDamageState, wingFault: String, modifier: Modifier) {
-    DashCard(modifier, cached = true) {
-        Row(Modifier.fillMaxWidth()) {
-            FaultCell("Engine", engineStatus(damage), Modifier.weight(1f))
-            FaultCell(wingFault, faultFlag(damage.drsFault), Modifier.weight(1f))
-            FaultCell("ERS", faultFlag(damage.ersFault), Modifier.weight(1f))
+private fun faultSummary(damage: CarDamageState, wingFault: String): FaultSummary {
+    val failed = mutableListOf<String>()
+    val ok = mutableListOf<String>()
+    when (val engine = engineStatus(damage)) {
+        null -> Unit
+        "OK" -> ok += "Engine"
+        else -> failed += "Engine ${engine.lowercase()}"
+    }
+    for ((name, flag) in listOf(wingFault to damage.drsFault, "ERS" to damage.ersFault)) {
+        when (flag) {
+            null -> Unit
+            0 -> ok += name
+            else -> failed += "$name fault"
         }
+    }
+    return FaultSummary(failed, ok)
+}
+
+private class WorstPart(val name: String, val value: Int, val color: Color)
+
+/** The most damaged part: the highest severity step, then the highest value. */
+private fun worstPart(damage: CarDamageState): WorstPart? {
+    var worst: WorstPart? = null
+    var worstRank = -1
+    fun offer(name: String, value: Int?, rank: Int, color: Color) {
+        if (value == null) return
+        if (rank > worstRank || rank == worstRank && value > (worst?.value ?: -1)) {
+            worst = WorstPart(name, value, color)
+            worstRank = rank
+        }
+    }
+    for (wheel in wheels(damage)) {
+        for ((part, value) in listOf("tyre" to wheel.tyre, "brake" to wheel.brake, "blisters" to wheel.blisters)) {
+            // The five 20% bands.
+            offer("${wheel.name} $part", value, ((value ?: 0) / 20).coerceAtMost(4), tyreColor(value))
+        }
+    }
+    for ((name, value) in listOf(
+        "Wing L" to damage.wingFl, "Wing R" to damage.wingFr, "Rear wing" to damage.wingRear,
+        "Floor" to damage.floor, "Sidepods" to damage.sidepods, "Diffuser" to damage.diffuser,
+    )) {
+        // On the same steps as the tyre bands' amber and red.
+        val rank = when {
+            value == null || value == 0 -> 0
+            value <= 20 -> 2
+            else -> 4
+        }
+        offer(name, value, rank, partColor(value))
+    }
+    return worst
+}
+
+/** "No faults", or a filled chip naming what has failed. */
+@Composable
+private fun FaultChip(faults: FaultSummary) {
+    val failed = faults.failed.isNotEmpty()
+    val fill = when {
+        failed -> DamageCrit
+        faults.known -> DamageOk.copy(alpha = 0.22f)
+        else -> MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val ink = when {
+        failed -> Color.White
+        faults.known -> DamageOk
+        else -> Dis
+    }
+    val text = when {
+        failed -> faults.failed.joinToString(" · ")
+        faults.known -> "No faults"
+        else -> "No data"
+    }
+    Row(
+        Modifier.height(26.dp).background(fill, CircleShape).padding(start = 8.dp, end = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        if (faults.known) {
+            Spacer(
+                Modifier.size(14.dp).drawBehind {
+                    val w = size.width
+                    val h = size.height
+                    if (failed) {
+                        val triangle = Path().apply {
+                            moveTo(w * 0.5f, h * 0.06f)
+                            lineTo(w * 0.97f, h * 0.9f)
+                            lineTo(w * 0.03f, h * 0.9f)
+                            close()
+                        }
+                        drawPath(triangle, ink)
+                        drawLine(fill, Offset(w * 0.5f, h * 0.38f), Offset(w * 0.5f, h * 0.6f), 1.6.dp.toPx(), StrokeCap.Round)
+                        drawCircle(fill, 0.9.dp.toPx(), Offset(w * 0.5f, h * 0.75f))
+                    } else {
+                        val tick = Path().apply {
+                            moveTo(w * 0.18f, h * 0.52f)
+                            lineTo(w * 0.4f, h * 0.74f)
+                            lineTo(w * 0.82f, h * 0.3f)
+                        }
+                        drawPath(tick, ink, style = Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    }
+                },
+            )
+        }
+        Text(text, style = Label.copy(fontWeight = FontWeight.Bold), color = ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
 @Composable
-private fun FaultCell(label: String, value: String?, modifier: Modifier) {
-    Column(modifier) {
-        CardLabel(label)
+private fun WorstReadout(worst: WorstPart) {
+    Row {
+        Text("WORST", Modifier.alignByBaseline(), style = Label.copy(fontSize = 10.sp, letterSpacing = 1.sp), color = Dis, maxLines = 1)
+        Spacer(Modifier.width(6.dp))
+        Text(worst.name, Modifier.alignByBaseline(), style = BodySmall, color = Med, maxLines = 1)
+        Spacer(Modifier.width(5.dp))
         Text(
-            value ?: "—",
-            style = Title.copy(fontSize = 18.sp),
-            color = faultColor(value),
+            percentText(worst.value),
+            Modifier.alignByBaseline(),
+            style = Body.copy(fontWeight = FontWeight.Bold),
+            color = worst.color,
             maxLines = 1,
         )
     }
 }
 
+/** Landscape: the fault chip, what was checked, and the worst part. */
+@Composable
+private fun DamageStatusCard(faults: FaultSummary, worst: WorstPart?, modifier: Modifier) {
+    DashCard(modifier, cached = true) {
+        FaultChip(faults)
+        val checked = when {
+            faults.failed.isEmpty() -> faults.ok.joinToString(" · ")
+            faults.ok.isEmpty() -> ""
+            else -> faults.ok.joinToString(" · ") + " OK"
+        }
+        if (checked.isNotEmpty()) {
+            Text(checked, Modifier.padding(top = 4.dp), style = BodySmall, color = Dis, maxLines = 2)
+        }
+        if (worst != null) {
+            HorizontalDivider(Modifier.padding(vertical = 6.dp), color = MaterialTheme.colorScheme.outlineVariant)
+            WorstReadout(worst)
+        }
+    }
+}
+
 /**
- * The car with its damage around it: front wings, wheels, sidepods and rear
- * wing on the left; the right wing, wheels, floor and diffuser on the right,
- * each level with its part. Fills the height it is given.
+ * Portrait: the car nose-up with the front wings, wheels, sidepods and floor
+ * either side of it, each level with its part, and the rear wing and diffuser
+ * under it. Fills the height it is given.
  */
 @Composable
 private fun CarDamageCard(
@@ -875,59 +1057,67 @@ private fun CarDamageCard(
     wireframe: CarWireframe?,
     modifier: Modifier,
 ) {
+    val (fl, fr, rl, rr) = wheels(damage)
     DashCard(modifier, cached = true) {
-        CardLabel("Car")
-        Spacer(Modifier.height(4.dp))
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
             val bounds = wireframe?.bounds
             // Height over width of the drawing; the car's nose-up proportions.
             val aspect = if (bounds == null || bounds.width() <= 0f) 2.66f else bounds.height() / bounds.width()
-            val carWidth = minOf(maxWidth * 0.34f, maxHeight / aspect)
+            val gap = 8.dp
+            val carWidth = minOf(maxWidth - (WheelCalloutWidth + gap) * 2, maxHeight / aspect).coerceAtLeast(0.dp)
             val carHeight = carWidth * aspect
             val carTop = (maxHeight - carHeight) / 2
             // Where along the car each part sits, in the drawing's units.
             fun at(y: Float): Float = if (bounds == null) 0f else ((y - bounds.top) / bounds.height()).coerceIn(0f, 1f)
             Row(Modifier.fillMaxSize()) {
-                CalloutColumn(
-                    listOf(at(50f), at(190f), at(540f), at(757f), at(860f)),
+                CalloutStack(
+                    PortraitLeaders.filter { it.side == LeaderSide.LEFT }.map { at(it.y) },
                     carTop,
                     carHeight,
+                    vertical = true,
                     alignEnd = true,
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                 ) {
-                    PartCallout("Wing L", damage.wingFl)
-                    WheelCallout("FL", WheelFl, damage.tyreFl, damage.brakeFl, damage.blistersFl, alignEnd = true)
-                    PartCallout("Sidepods", damage.sidepods)
-                    WheelCallout("RL", WheelRl, damage.tyreRl, damage.brakeRl, damage.blistersRl, alignEnd = true)
-                    PartCallout("Rear wing", damage.wingRear)
+                    PartCallout("Wing L", damage.wingFl, Alignment.End)
+                    WheelCallout(fl, valueFirst = true)
+                    PartCallout("Sidepods", damage.sidepods, Alignment.End)
+                    WheelCallout(rl, valueFirst = true)
                 }
                 CarDrawing(
                     wireframe,
                     drawn,
-                    Modifier.align(Alignment.CenterVertically).padding(horizontal = 8.dp).width(carWidth).height(carHeight),
+                    PortraitLeaders,
+                    Modifier.align(Alignment.CenterVertically).padding(horizontal = gap).width(carWidth).height(carHeight),
                 )
-                CalloutColumn(
-                    listOf(at(50f), at(190f), at(450f), at(757f), at(800f)),
+                CalloutStack(
+                    PortraitLeaders.filter { it.side == LeaderSide.RIGHT }.map { at(it.y) },
                     carTop,
                     carHeight,
+                    vertical = true,
                     alignEnd = false,
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                 ) {
-                    PartCallout("Wing R", damage.wingFr)
-                    WheelCallout("FR", WheelFr, damage.tyreFr, damage.brakeFr, damage.blistersFr, alignEnd = false)
-                    PartCallout("Floor", damage.floor)
-                    WheelCallout("RR", WheelRr, damage.tyreRr, damage.brakeRr, damage.blistersRr, alignEnd = false)
-                    PartCallout("Diffuser", damage.diffuser)
+                    PartCallout("Wing R", damage.wingFr, Alignment.Start)
+                    WheelCallout(fr, valueFirst = false)
+                    PartCallout("Floor", damage.floor, Alignment.Start)
+                    WheelCallout(rr, valueFirst = false)
                 }
             }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally),
+        ) {
+            InlinePart("Rear wing", damage.wingRear)
+            InlinePart("Diffuser", damage.diffuser)
         }
     }
 }
 
 /**
  * Landscape: the car nose-right with the driver's left side on top, as on the
- * desktop. The rear wheels, rear wing and diffuser sit left of it, the front
- * wheels and wings right of it, the floor above and the sidepods below.
+ * desktop. The left wheels, floor and wing sit above it, the right ones and
+ * the sidepods below, each over its part; the rear wing and diffuser behind it.
  */
 @Composable
 private fun WideCarDamageCard(
@@ -936,125 +1126,124 @@ private fun WideCarDamageCard(
     wireframe: CarWireframe?,
     modifier: Modifier,
 ) {
+    val (fl, fr, rl, rr) = wheels(damage)
     DashCard(modifier, cached = true) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val bounds = wireframe?.bounds
             // Turned nose-right, the drawing's length becomes its width.
             val aspect = if (bounds == null || bounds.width() <= 0f) 2.66f else bounds.height() / bounds.width()
-            val band = 24.dp
-            val side = 150.dp
-            val carHeight = minOf(maxHeight - band * 2, (maxWidth - side * 2 - 16.dp) / aspect).coerceAtLeast(0.dp)
-            val carWidth = carHeight * aspect
-            val carTop = (maxHeight - carHeight) / 2
-            // Across the car, top to bottom, in the drawing's units.
-            fun across(x: Float): Float = if (bounds == null) 0f else ((x - bounds.left) / bounds.width()).coerceIn(0f, 1f)
-            Row(Modifier.fillMaxSize()) {
-                CalloutColumn(
-                    listOf(across(45f), across(140f), across(210f), across(305f)),
-                    carTop,
-                    carHeight,
-                    alignEnd = true,
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
-                ) {
-                    WheelCallout("RL", WheelRl, damage.tyreRl, damage.brakeRl, damage.blistersRl, alignEnd = true)
-                    PartCallout("Rear wing", damage.wingRear)
-                    PartCallout("Diffuser", damage.diffuser)
-                    WheelCallout("RR", WheelRr, damage.tyreRr, damage.brakeRr, damage.blistersRr, alignEnd = true)
+            val tail = 64.dp
+            val gap = 8.dp
+            // Room above and below for a wheel callout.
+            val band = 56.dp
+            val carWidth = minOf(maxWidth - tail - gap, (maxHeight - (band + gap) * 2) * aspect).coerceAtLeast(0.dp)
+            val carHeight = carWidth / aspect
+            // Across the page, rear to nose, in the drawing's units.
+            fun along(y: Float): Float = if (bounds == null) 0f else (1f - (y - bounds.top) / bounds.height()).coerceIn(0f, 1f)
+            // The wings' callouts sit a little toward the nose, clear of the front wheels'.
+            val wingShift = if (carWidth > 0.dp) 16.dp / carWidth else 0f
+            fun fractions(side: LeaderSide) = LandscapeLeaders.filter { it.side == side }
+                .map { along(it.y) + if (it.zone.startsWith("z-fw")) wingShift else 0f }
+            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.width(tail).height(carHeight), verticalArrangement = Arrangement.SpaceAround) {
+                    PartCallout("Rear wing", damage.wingRear, Alignment.Start)
+                    PartCallout("Diffuser", damage.diffuser, Alignment.Start)
                 }
-                Column(
-                    Modifier.padding(horizontal = 8.dp).width(carWidth).fillMaxHeight(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Box(Modifier.height(band), contentAlignment = Alignment.Center) { PartCallout("Floor", damage.floor) }
-                    CarDrawing(wireframe, drawn, Modifier.width(carWidth).height(carHeight), noseRight = true)
-                    Box(Modifier.height(band), contentAlignment = Alignment.Center) { PartCallout("Sidepods", damage.sidepods) }
-                }
-                CalloutColumn(
-                    listOf(across(53f), across(95f), across(255f), across(297f)),
-                    carTop,
-                    carHeight,
-                    alignEnd = false,
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
-                ) {
-                    WheelCallout("FL", WheelFl, damage.tyreFl, damage.brakeFl, damage.blistersFl, alignEnd = false)
-                    PartCallout("Wing L", damage.wingFl)
-                    PartCallout("Wing R", damage.wingFr)
-                    WheelCallout("FR", WheelFr, damage.tyreFr, damage.brakeFr, damage.blistersFr, alignEnd = false)
+                Column(Modifier.padding(start = gap).width(carWidth).fillMaxHeight()) {
+                    CalloutStack(
+                        fractions(LeaderSide.TOP),
+                        0.dp,
+                        carWidth,
+                        vertical = false,
+                        alignEnd = true,
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                    ) {
+                        WheelCallout(rl, valueFirst = false)
+                        PartCallout("Floor", damage.floor, Alignment.CenterHorizontally)
+                        WheelCallout(fl, valueFirst = false)
+                        PartCallout("Wing L", damage.wingFl, Alignment.CenterHorizontally)
+                    }
+                    CarDrawing(
+                        wireframe,
+                        drawn,
+                        LandscapeLeaders,
+                        Modifier.padding(vertical = gap).width(carWidth).height(carHeight),
+                        noseRight = true,
+                    )
+                    CalloutStack(
+                        fractions(LeaderSide.BOTTOM),
+                        0.dp,
+                        carWidth,
+                        vertical = false,
+                        alignEnd = false,
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                    ) {
+                        WheelCallout(rr, valueFirst = false)
+                        PartCallout("Sidepods", damage.sidepods, Alignment.CenterHorizontally)
+                        WheelCallout(fr, valueFirst = false)
+                        PartCallout("Wing R", damage.wingFr, Alignment.CenterHorizontally)
+                    }
                 }
             }
         }
     }
 }
 
-/** Landscape: the three faults, then every wear tile, in one row. */
-@Composable
-private fun DamageStrip(damage: CarDamageState, wingFault: String, modifier: Modifier) {
-    DashCard(modifier, cached = true) {
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            val engine = engineStatus(damage)
-            val wing = faultFlag(damage.drsFault)
-            val ers = faultFlag(damage.ersFault)
-            StatusTile("Engine", engine, faultColor(engine), Modifier.weight(1f).fillMaxHeight())
-            StatusTile(wingFault, wing, faultColor(wing), Modifier.weight(1f).fillMaxHeight())
-            StatusTile("ERS", ers, faultColor(ers), Modifier.weight(1f).fillMaxHeight())
-            for ((name, value) in wearTiles(damage)) WearTile(name, value, Modifier.weight(1f).fillMaxHeight())
-        }
-    }
-}
-
-@Composable
-private fun StatusTile(name: String, value: String?, tone: Color, modifier: Modifier) {
-    Column(modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh, CellShape).padding(horizontal = 8.dp, vertical = 5.dp)) {
-        Text(name, style = Label.copy(fontSize = 11.sp), color = Med, maxLines = 1)
-        Text(value ?: "—", style = Title.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold), color = tone, maxLines = 1)
-    }
-}
-
 /**
- * Callouts level with their parts, always inside the column: each is centred
- * on its share of the car, pushed below the one above and kept above the
- * bottom edge. When they cannot all fit at full size they shrink together.
+ * Callouts level with their parts, always inside the stack: each is centred
+ * on its share of the car along the stack's axis, pushed past the one before
+ * and kept inside the far end. When they cannot all fit at full size they
+ * shrink together. [alignEnd] puts them against the right edge of a vertical
+ * stack, or the bottom of a horizontal one.
  */
 @Composable
-private fun CalloutColumn(
+private fun CalloutStack(
     fractions: List<Float>,
-    carTop: Dp,
-    carHeight: Dp,
+    start: Dp,
+    span: Dp,
+    vertical: Boolean,
     alignEnd: Boolean,
     modifier: Modifier,
     content: @Composable () -> Unit,
 ) {
     Layout(content, modifier) { measurables, constraints ->
         val placeables = measurables.map { it.measure(constraints.copy(minWidth = 0, minHeight = 0)) }
-        val height = constraints.maxHeight
-        val natural = placeables.sumOf { it.height } + 4.dp.roundToPx() * (placeables.size - 1)
-        val scale = if (natural > height && natural > 0) height.toFloat() / natural else 1f
-        val gap = 4.dp.toPx() * scale
-        val sizes = placeables.map { it.height * scale }
-        val top = carTop.toPx()
-        val span = carHeight.toPx()
-        val tops = FloatArray(placeables.size)
-        var bottom = -gap
+        val length = if (vertical) constraints.maxHeight else constraints.maxWidth
+        val lengths = placeables.map { if (vertical) it.height else it.width }
+        val natural = lengths.sum() + 6.dp.roundToPx() * (placeables.size - 1)
+        val scale = if (natural > length && natural > 0) length.toFloat() / natural else 1f
+        val gap = 6.dp.toPx() * scale
+        val sizes = lengths.map { it * scale }
+        val first = start.toPx()
+        val extent = span.toPx()
+        val leads = FloatArray(placeables.size)
+        var end = -gap
         for (index in placeables.indices) {
-            val wanted = top + fractions.getOrElse(index) { 1f } * span - sizes[index] / 2f
-            tops[index] = max(max(wanted, 0f), bottom + gap)
-            bottom = tops[index] + sizes[index]
+            val wanted = first + fractions.getOrElse(index) { 1f } * extent - sizes[index] / 2f
+            leads[index] = max(max(wanted, 0f), end + gap)
+            end = leads[index] + sizes[index]
         }
-        var limit = height.toFloat()
+        var limit = length.toFloat()
         for (index in placeables.indices.reversed()) {
-            tops[index] = min(tops[index], limit - sizes[index])
-            limit = tops[index] - gap
+            leads[index] = min(leads[index], limit - sizes[index])
+            limit = leads[index] - gap
         }
-        layout(constraints.maxWidth, height) {
+        layout(constraints.maxWidth, constraints.maxHeight) {
             placeables.forEachIndexed { index, placeable ->
-                val x = if (alignEnd) constraints.maxWidth - placeable.width else 0
-                val y = tops[index].roundToInt()
+                val lead = leads[index].roundToInt()
+                val cross = when {
+                    !alignEnd -> 0
+                    vertical -> constraints.maxWidth - placeable.width
+                    else -> constraints.maxHeight - placeable.height
+                }
+                val x = if (vertical) cross else lead
+                val y = if (vertical) lead else cross
                 if (scale < 1f) {
                     placeable.placeWithLayer(x, y) {
                         scaleX = scale
                         scaleY = scale
-                        transformOrigin = TransformOrigin(if (alignEnd) 1f else 0f, 0f)
+                        val far = if (alignEnd) 1f else 0f
+                        transformOrigin = if (vertical) TransformOrigin(far, 0f) else TransformOrigin(0f, far)
                     }
                 } else {
                     placeable.place(x, y)
@@ -1064,43 +1253,88 @@ private fun CalloutColumn(
     }
 }
 
-/** A body part on one line: its name and damage. */
+/** A body part: its name over its damage. */
 @Composable
-private fun PartCallout(name: String, value: Int?) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(name, style = Label, color = Med, maxLines = 1)
+private fun PartCallout(name: String, value: Int?, align: Alignment.Horizontal) {
+    Column(horizontalAlignment = align) {
+        Text(name, style = BodySmall, color = Med, maxLines = 1)
+        Text(percent(value), style = PartValue, color = partColor(value), maxLines = 1)
+    }
+}
+
+/** A body part on one line, under the car in portrait. */
+@Composable
+private fun InlinePart(name: String, value: Int?) {
+    Row {
+        Text(name, Modifier.alignByBaseline(), style = BodySmall, color = Med, maxLines = 1)
         Spacer(Modifier.width(6.dp))
-        Text(percentText(value), style = Body.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold), color = damageColor(value) ?: Dis, maxLines = 1)
+        Text(percent(value), Modifier.alignByBaseline(), style = PartValue, color = partColor(value), maxLines = 1)
+    }
+}
+
+/** A wheel: tyre damage large beside its name, brake and blisters under it. */
+@Composable
+private fun WheelCallout(wheel: WheelDamage, valueFirst: Boolean) {
+    Column(Modifier.width(WheelCalloutWidth)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            if (valueFirst) {
+                WheelTyre(wheel.tyre)
+                WheelName(wheel.name)
+            } else {
+                WheelName(wheel.name)
+                WheelTyre(wheel.tyre)
+            }
+        }
+        WheelLine("Brake", wheel.brake)
+        WheelLine("Blisters", wheel.blisters)
     }
 }
 
 @Composable
-private fun WheelCallout(name: String, tone: Color, tyre: Int?, brake: Int?, blisters: Int?, alignEnd: Boolean) {
-    Column(horizontalAlignment = if (alignEnd) Alignment.End else Alignment.Start) {
-        Text(name, style = Label.copy(fontWeight = FontWeight.Bold), color = tone, maxLines = 1)
-        for ((label, value) in listOf("Tyre" to tyre, "Brake" to brake, "Blisters" to blisters)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(label, style = BodySmall, color = Med, maxLines = 1, modifier = Modifier.width(50.dp))
-                Text(
-                    percentText(value),
-                    style = Body.copy(fontWeight = FontWeight.Bold),
-                    color = value?.let(::tyreBandColor) ?: Dis,
-                    maxLines = 1,
-                    textAlign = TextAlign.End,
-                    modifier = Modifier.width(40.dp),
-                )
-            }
-        }
+private fun RowScope.WheelName(name: String) {
+    Text(
+        name,
+        Modifier.alignByBaseline(),
+        style = Label.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+        color = Med,
+        maxLines = 1,
+    )
+}
+
+@Composable
+private fun RowScope.WheelTyre(value: Int?) {
+    Text(
+        percent(value),
+        Modifier.alignByBaseline(),
+        style = Title.copy(fontSize = 21.sp, lineHeight = 23.sp, fontWeight = FontWeight.Bold),
+        color = tyreColor(value),
+        maxLines = 1,
+    )
+}
+
+@Composable
+private fun WheelLine(label: String, value: Int?) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        val style = BodySmall.copy(fontSize = 11.sp, lineHeight = 14.sp)
+        Text(label, style = style, color = Dis, maxLines = 1)
+        Text(value?.toString() ?: "—", style = style.copy(fontWeight = FontWeight.Bold), color = tyreColor(value), maxLines = 1)
     }
 }
 
 /**
  * The wireframe with damaged parts outlined and tinted as on the desktop: a
  * body part once it has any damage, a tyre always, in the band of its worst
- * tyre, brake or blister value. [damage] is read while drawing.
+ * tyre, brake or blister value. Each leader runs from just outside the car to
+ * its part, in that part's colour once marked. [damage] is read while drawing.
  */
 @Composable
-private fun CarDrawing(wireframe: CarWireframe?, damage: () -> CarDamageState, modifier: Modifier, noseRight: Boolean = false) {
+private fun CarDrawing(
+    wireframe: CarWireframe?,
+    damage: () -> CarDamageState,
+    leaders: List<Leader>,
+    modifier: Modifier,
+    noseRight: Boolean = false,
+) {
     val card = MaterialTheme.colorScheme.surfaceContainer
     Spacer(
         modifier.semantics { contentDescription = "Car damage by part" }.drawWithCache {
@@ -1114,10 +1348,26 @@ private fun CarDrawing(wireframe: CarWireframe?, damage: () -> CarDamageState, m
             matrix.postScale(scale, scale)
             matrix.postTranslate((size.width - turned.width() * scale) / 2f, (size.height - turned.height() * scale) / 2f)
             val paths = car.parts.map { part -> android.graphics.Path(part.path).apply { transform(matrix) }.asComposePath() }
-            val wire = Stroke(1.2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
-            val marked = Stroke(2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
-            val detail = Stroke(0.7.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
-            val tube = Stroke(0.9.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            val anchors = leaders.map { leader ->
+                val point = floatArrayOf(leader.x, leader.y).also { matrix.mapPoints(it) }
+                Offset(point[0], point[1])
+            }
+            val reach = 6.dp.toPx()
+            val starts = leaders.mapIndexed { index, leader ->
+                val anchor = anchors[index]
+                when (leader.side) {
+                    LeaderSide.LEFT -> Offset(-reach, anchor.y)
+                    LeaderSide.RIGHT -> Offset(size.width + reach, anchor.y)
+                    LeaderSide.TOP -> Offset(anchor.x, -reach)
+                    LeaderSide.BOTTOM -> Offset(anchor.x, size.height + reach)
+                }
+            }
+            val wire = Stroke(1.2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+            val marked = Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+            val detail = Stroke(0.7.dp.toPx(), cap = StrokeCap.Round)
+            val tube = Stroke(0.9.dp.toPx(), cap = StrokeCap.Round)
+            val line = 1.dp.toPx()
+            val dot = 2.4.dp.toPx()
             onDrawBehind {
                 val zones = zoneColors(damage())
                 car.parts.forEachIndexed { index, part ->
@@ -1125,12 +1375,17 @@ private fun CarDrawing(wireframe: CarWireframe?, damage: () -> CarDamageState, m
                     val path = paths[index]
                     when (part.kind) {
                         CarWireframe.Kind.SOLID -> {
-                            drawPath(path, if (tone != null) lerp(card, tone, 0.12f) else card)
+                            drawPath(path, if (tone != null) lerp(card, tone, 0.24f) else card)
                             drawPath(path, tone ?: WireColor, style = if (tone != null) marked else wire)
                         }
                         CarWireframe.Kind.DETAIL -> drawPath(path, (tone ?: WireColor).copy(alpha = 0.6f), style = detail)
                         CarWireframe.Kind.TUBE -> drawPath(path, TubeColor, style = tube)
                     }
+                }
+                leaders.forEachIndexed { index, leader ->
+                    val tone = zones[leader.zone]
+                    drawLine(tone ?: LeaderColor, starts[index], anchors[index], line)
+                    drawCircle(tone ?: LeaderDot, dot, anchors[index])
                 }
             }
         },
@@ -1150,6 +1405,7 @@ private fun zoneColors(damage: CarDamageState): Map<String, Color> = buildMap {
     body("z-sp-l", damage.sidepods)
     body("z-sp-r", damage.sidepods)
     body("z-diff", damage.diffuser)
+    // Tyres always take the band of their worst value, green included.
     fun tyre(zone: String, vararg values: Int?) {
         values.filterNotNull().maxOrNull()?.let { put(zone, tyreBandColor(it)) }
     }
@@ -1159,17 +1415,27 @@ private fun zoneColors(damage: CarDamageState): Map<String, Color> = buildMap {
     tyre("t-rr", damage.tyreRr, damage.brakeRr, damage.blistersRr)
 }
 
-/** Power-unit components, engine and gearbox wear, as the desktop's wear tiles. */
+/** Power-unit and gearbox wear as bars, with ticks where their colour changes. */
 @Composable
-private fun WearCard(damage: CarDamageState, modifier: Modifier) {
+private fun WearCard(damage: CarDamageState, columns: Int, modifier: Modifier) {
     val tiles = wearTiles(damage)
     DashCard(modifier, cached = true) {
-        CardLabel("Wear")
-        Spacer(Modifier.height(6.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            for (row in tiles.chunked(4)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for ((name, value) in row) WearTile(name, value, Modifier.weight(1f))
+        Row {
+            Text("Power unit", Modifier.alignByBaseline(), style = Label, color = Med, maxLines = 1)
+            Text(" wear", Modifier.alignByBaseline(), style = Label.copy(fontWeight = FontWeight.Normal), color = Dis, maxLines = 1)
+        }
+        Spacer(Modifier.height(4.dp))
+        if (columns == 1) {
+            // Spread over the card's height.
+            Column(Modifier.fillMaxWidth().weight(1f)) {
+                for ((name, value) in tiles) WearRow(name, value, Modifier.fillMaxWidth().weight(1f))
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                for (row in tiles.chunked(columns)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        for ((name, value) in row) WearRow(name, value, Modifier.weight(1f).height(20.dp))
+                    }
                 }
             }
         }
@@ -1188,20 +1454,33 @@ private fun wearTiles(damage: CarDamageState): List<Pair<String, Int?>> = listOf
 )
 
 @Composable
-private fun WearTile(name: String, value: Int?, modifier: Modifier) {
-    val tone = puWearColor(value)
+private fun WearRow(name: String, value: Int?, modifier: Modifier) {
+    val tone = wearColor(value)
+    // Below the first threshold the bar is grey, like the text is plain.
+    val bar = if (value != null && value >= 50) tone else Dis
     val track = MaterialTheme.colorScheme.surfaceContainerHighest
-    Column(modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh, CellShape).padding(horizontal = 8.dp, vertical = 5.dp)) {
-        Text(name, style = Label.copy(fontSize = 11.sp), color = Med, maxLines = 1)
-        Text(percentText(value), style = Title.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold), color = tone, maxLines = 1)
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(name, Modifier.width(54.dp), style = BodySmall, color = Med, maxLines = 1)
         Spacer(
-            Modifier.padding(top = 4.dp).fillMaxWidth().height(3.dp).drawBehind {
+            Modifier.weight(1f).height(6.dp).drawBehind {
                 val corner = CornerRadius(size.height / 2f)
                 drawRoundRect(track, cornerRadius = corner)
-                if (value != null) {
-                    drawRoundRect(tone, size = Size(size.width * (value / 100f).coerceIn(0f, 1f), size.height), cornerRadius = corner)
+                val tick = 1.dp.toPx()
+                for (mark in floatArrayOf(0.5f, 0.75f)) {
+                    drawRect(WearTick, Offset(size.width * mark - tick / 2f, 0f), Size(tick, size.height))
+                }
+                if (value != null && value > 0) {
+                    drawRoundRect(bar, size = Size(size.width * (value / 100f).coerceIn(0f, 1f), size.height), cornerRadius = corner)
                 }
             },
+        )
+        Text(
+            percentText(value),
+            Modifier.width(38.dp),
+            style = BodySmall.copy(fontWeight = FontWeight.Bold),
+            color = tone,
+            maxLines = 1,
+            textAlign = TextAlign.End,
         )
     }
 }

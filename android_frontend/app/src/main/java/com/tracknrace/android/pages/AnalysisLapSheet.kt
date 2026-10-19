@@ -1,8 +1,11 @@
 package com.tracknrace.android.pages
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
@@ -11,11 +14,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -27,7 +32,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.semantics.Role
@@ -38,6 +45,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.tracknrace.android.AnalysisController
+import com.tracknrace.android.DEFAULT_COMPARE_LABEL
+import com.tracknrace.android.DEFAULT_CURRENT_LABEL
+import com.tracknrace.android.DEFAULT_LAP_A_LABEL
+import com.tracknrace.android.DEFAULT_LAP_B_LABEL
+import com.tracknrace.android.DEFAULT_MAP_COMPARISON_COLOR
+import com.tracknrace.android.DEFAULT_MAP_CURRENT_COLOR
 import com.tracknrace.android.PlaybackCatalog
 import com.tracknrace.android.PlaybackLapInfo
 import com.tracknrace.android.formatLapTimeMs
@@ -61,10 +74,12 @@ internal fun AnalysisLapSheet(
     lapBColor: Color,
     onDismiss: () -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var target by remember {
         mutableStateOf(if (analysis.fixedMode) initialTarget.takeIf { it != LapTarget.COMPARE } ?: LapTarget.LAP_A else LapTarget.COMPARE)
     }
+    // The lap whose colour is being picked: Lap A for the first, Lap B for the second.
+    var colorTarget by remember { mutableStateOf<LapTarget?>(null) }
     val fixed = analysis.fixedMode
     val selected = when (target) {
         LapTarget.COMPARE -> analysis.compareLap
@@ -136,6 +151,27 @@ internal fun AnalysisLapSheet(
                     }
                 }
             }
+            // The two laps' names and colours, as the chart, map and headers show them.
+            item {
+                val config = analysis.config
+                Column(Modifier.padding(top = 8.dp)) {
+                    if (fixed) {
+                        LapAppearanceRow(lapAColor, "Lap A colour", config.lapALabel, DEFAULT_LAP_A_LABEL, { colorTarget = LapTarget.LAP_A }) { value ->
+                            analysis.updateConfig { it.copy(lapALabel = value) }
+                        }
+                        LapAppearanceRow(lapBColor, "Lap B colour", config.lapBLabel, DEFAULT_LAP_B_LABEL, { colorTarget = LapTarget.LAP_B }) { value ->
+                            analysis.updateConfig { it.copy(lapBLabel = value) }
+                        }
+                    } else {
+                        LapAppearanceRow(lapAColor, "Current lap colour", config.currentLabel, DEFAULT_CURRENT_LABEL, { colorTarget = LapTarget.LAP_A }) { value ->
+                            analysis.updateConfig { it.copy(currentLabel = value) }
+                        }
+                        LapAppearanceRow(lapBColor, "Comparison lap colour", config.compareLabel, DEFAULT_COMPARE_LABEL, { colorTarget = LapTarget.LAP_B }) { value ->
+                            analysis.updateConfig { it.copy(compareLabel = value) }
+                        }
+                    }
+                }
+            }
             item {
                 Text(
                     when (target) {
@@ -172,10 +208,62 @@ internal fun AnalysisLapSheet(
             }
         }
     }
+
+    colorTarget?.let { lap ->
+        val first = lap == LapTarget.LAP_A
+        val config = analysis.config
+        ColorPickerDialog(
+            title = when {
+                fixed && first -> "Lap A colour"
+                fixed -> "Lap B colour"
+                first -> "Current lap colour"
+                else -> "Comparison lap colour"
+            },
+            initial = if (first) config.mapCurrentColor else config.mapComparisonColor,
+            default = if (first) DEFAULT_MAP_CURRENT_COLOR else DEFAULT_MAP_COMPARISON_COLOR,
+            onPick = { color ->
+                analysis.updateConfig { if (first) it.copy(mapCurrentColor = color) else it.copy(mapComparisonColor = color) }
+                colorTarget = null
+            },
+            onDismiss = { colorTarget = null },
+        )
+    }
+}
+
+/** One radio row of a picker: a lap, or any choice, with FL on the fastest lap. */
+/** One lap's colour, tapped to change, beside its name. */
+@Composable
+private fun LapAppearanceRow(
+    color: Color,
+    colorLabel: String,
+    name: String,
+    defaultName: String,
+    onColor: () -> Unit,
+    onName: (String) -> Unit,
+) {
+    Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(onClickLabel = colorLabel, onClick = onColor),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(Modifier.size(24.dp).background(color, RoundedCornerShape(6.dp)))
+        }
+        OutlinedTextField(
+            value = name,
+            onValueChange = { onName(it.take(40)) },
+            modifier = Modifier.weight(1f).padding(start = 4.dp),
+            singleLine = true,
+            label = { Text(defaultName) },
+            placeholder = { Text(defaultName) },
+        )
+    }
 }
 
 @Composable
-private fun LapRow(label: AnnotatedString, fastest: Boolean, selected: Boolean, onClick: () -> Unit) {
+internal fun LapRow(label: AnnotatedString, fastest: Boolean, selected: Boolean, onClick: () -> Unit) {
     ListItem(
         headlineContent = { Text(label, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal) },
         leadingContent = { RadioButton(selected = selected, onClick = null) },

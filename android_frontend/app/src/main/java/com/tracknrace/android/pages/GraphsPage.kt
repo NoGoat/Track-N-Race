@@ -3,19 +3,16 @@ package com.tracknrace.android.pages
 import android.content.res.Configuration
 import android.graphics.Paint
 import android.graphics.RectF
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -23,30 +20,29 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.VerticalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -56,6 +52,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.structuralEqualityPolicy
@@ -63,8 +60,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -76,6 +73,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
@@ -88,17 +86,19 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.tracknrace.android.GraphWindow
 import com.tracknrace.android.GraphsController
 import com.tracknrace.android.PlaybackCatalog
+import com.tracknrace.android.R
 import com.tracknrace.android.LapTrace
 import com.tracknrace.android.SampleSeries
 import com.tracknrace.android.TrendData
 import com.tracknrace.android.TrendLap
-import com.tracknrace.android.R
 import com.tracknrace.android.formatLapTimeMs
 import com.tracknrace.android.PairedTelemetryPage
 import com.tracknrace.android.GraphFamily
@@ -133,8 +133,18 @@ private const val GAP_SECONDS = 2.5
 private const val BACKFILL_TICK_MS = 250L
 // A tab's padding either side of its name, as Material's tabs.
 private const val TAB_PADDING_DP = 16
-private const val Y_TICKS = 5
+// A chart's header is inset as the tabs; its plot only enough to keep the Y labels off the screen's edge.
+private const val HEADER_INSET_DP = 12
+private const val PLOT_START_INSET_DP = 2
+private const val Y_TICKS = 3
+// A chart's Y axis of more than one line beyond this is thinned to this many.
+private const val MAX_Y_LINES = 3
+// Round ticks asked of a per-lap trend's range: enough that a narrow one still gets several, before thinning.
+private const val Y_TICKS_BEFORE_THINNING = 5
+// The left gutter before any chart on a tab has Y labels to fit.
 private const val Y_GUTTER_DP = 46f
+// Between a Y label and the plot.
+private const val Y_LABEL_GAP_DP = 2f
 // One right-hand axis's labels, as the desktop's 50 px offset.
 private const val RIGHT_AXIS_DP = 38f
 private const val X_AXIS_DP = 18f
@@ -186,7 +196,6 @@ private enum class GraphsTab(
     POWER("Power", POWER_CHART_IDS, PairedTelemetryPage.GRAPHS_POWER, PairedTelemetryPage.GRAPHS_POWER_LAPS),
     INPUTS("Inputs", INPUT_CHART_IDS, PairedTelemetryPage.GRAPHS_INPUTS, PairedTelemetryPage.GRAPHS_INPUTS_LAPS),
     SPEED("Speed", SPEED_CHART_IDS, PairedTelemetryPage.GRAPHS_SPEED, PairedTelemetryPage.GRAPHS_SPEED_LAPS),
-    TYRES("Tyres", TYRE_CHART_IDS, PairedTelemetryPage.GRAPHS_TYRES, PairedTelemetryPage.GRAPHS_TYRES_LAPS),
     MISC("Misc", MISC_CHART_IDS, PairedTelemetryPage.GRAPHS_MISC, PairedTelemetryPage.GRAPHS_MISC_LAPS),
     TRENDS("Trends", TREND_CHART_IDS, PairedTelemetryPage.GRAPHS_TRENDS, PairedTelemetryPage.GRAPHS_TRENDS),
 }
@@ -255,7 +264,6 @@ internal fun GraphsScreen(
                 GraphsTab.POWER -> PowerTab(store, graphs, active && current == page)
                 GraphsTab.INPUTS -> InputsTab(store, graphs, active && current == page)
                 GraphsTab.SPEED -> SpeedTab(store, graphs, active && current == page)
-                GraphsTab.TYRES -> TyresTab(store, graphs, active && current == page)
                 GraphsTab.MISC -> MiscTab(store, graphs, active && current == page)
                 GraphsTab.TRENDS -> TrendsTab(store, graphs, active && current == page)
             }
@@ -301,7 +309,9 @@ private class ReadoutBoard {
     // [owner] is the header holding the slot: when a layout change moves a
     // chart, its new header registers before the old one leaves, and only the
     // owner may take the slot away.
-    private class Slot(var owner: Any, var runs: () -> List<ReadoutRun>, var place: LayoutCoordinates? = null)
+    private class Slot(var owner: Any, var tokens: () -> List<HeaderToken>, var place: LayoutCoordinates? = null) {
+        val hits = TokenHits()
+    }
 
     private val slots = LinkedHashMap<String, Slot>()
     private var root: LayoutCoordinates? = null
@@ -310,16 +320,19 @@ private class ReadoutBoard {
     var layout by mutableIntStateOf(0)
         private set
 
-    fun register(id: String, owner: Any, runs: () -> List<ReadoutRun>) {
+    fun register(id: String, owner: Any, tokens: () -> List<HeaderToken>) {
         val slot = slots[id]
         if (slot == null) {
-            slots[id] = Slot(owner, runs)
+            slots[id] = Slot(owner, tokens)
         } else {
             if (slot.owner !== owner) slot.place = null
             slot.owner = owner
-            slot.runs = runs
+            slot.tokens = tokens
         }
     }
+
+    /** The series label of the token last painted at [x] across slot [id], or null. */
+    fun keyAt(id: String, owner: Any, x: Float): String? = slots[id]?.takeIf { it.owner === owner }?.hits?.keyAt(x)
 
     fun unregister(id: String, owner: Any) {
         if (slots[id]?.owner !== owner) return
@@ -338,12 +351,12 @@ private class ReadoutBoard {
         layout++
     }
 
-    fun DrawScope.paint(paints: Pair<Paint, Paint>, sizePx: Float) {
+    fun DrawScope.paint(paints: HeaderPaints, colors: HeaderColors) {
         layout
         val board = root?.takeIf { it.isAttached } ?: return
         for (slot in slots.values) {
             val place = slot.place?.takeIf { it.isAttached } ?: continue
-            paintReadout(slot.runs(), paints, sizePx, board.localBoundingBoxOf(place, clipBounds = false), alignEnd = true)
+            paintTokens(slot.tokens(), paints, colors, board.localBoundingBoxOf(place, clipBounds = false), slot.hits)
         }
     }
 }
@@ -426,10 +439,8 @@ private class ChartSpec(
     val axisColor: Color? = null,
     /** Labels of the same ticks on the right, one column per axis. */
     val rightAxes: List<RightAxis> = emptyList(),
-    /** Room the header keeps for the values before wrapping onto a second line. */
-    val readoutWidthDp: Float = 120f,
-    /** The header values for each series' value at the read point, NaN where unknown. */
-    val readout: (values: FloatArray, shown: BooleanArray, dim: Color) -> List<ReadoutRun>,
+    /** The header's tokens for each series' value at the read point, NaN where unknown; a series' token is keyed by its label. */
+    val readout: (values: FloatArray, shown: BooleanArray) -> List<HeaderToken>,
     /** The desktop's graph section whose window and reference lap this chart follows; charts split from one share it. */
     val windowId: String = id,
     /** Width of each right-hand label column. */
@@ -456,7 +467,7 @@ private class LapOverlay(
     val data: State<TrendData>,
     val series: List<OverlaySeries>,
     val axes: List<OverlayAxis>,
-    val readout: (TrendLap, Color) -> List<ReadoutRun>,
+    val readout: (TrendLap) -> List<HeaderToken>,
 )
 
 // The desktop's Power colours, with its light-theme variants.
@@ -480,15 +491,14 @@ private fun powerCharts(isDark: Boolean, hasMguh: Boolean, harvestLimit: Double)
             ),
             range = { visibleMax, _ -> expand(0.0, 500.0, visibleMax) },
             tick = { "${it.roundToLong()}kW" },
-            readout = { values, shown, dim ->
-                buildList {
-                    if (shown[0]) add(ReadoutRun(whole(values[0]), ice))
-                    if (shown[0] && shown[1]) add(ReadoutRun(" + ", dim, bold = false))
-                    if (shown[1]) add(ReadoutRun(whole(values[1]), mguk))
-                    val total = values[0].orZero() + values[1].orZero()
-                    if (shown[0] && shown[1]) add(ReadoutRun(" = ${whole(total)}", dim, bold = false))
-                    add(ReadoutRun(" kW", dim, bold = false))
-                }
+            // The total of the lines shown, after a hairline.
+            readout = { values, shown ->
+                val total = (if (shown[0]) values[0].orZero() else 0f) + (if (shown[1]) values[1].orZero() else 0f)
+                listOf(
+                    HeaderToken(whole(values[0]), ice, "ICE", key = "ICE"),
+                    HeaderToken(whole(values[1]), mguk, "MGU-K", key = "MGU-K"),
+                    HeaderToken(whole(total), Color.Unspecified, "TOTAL", unit = "kW", separated = true),
+                )
             },
         ),
         ChartSpec(
@@ -501,14 +511,15 @@ private fun powerCharts(isDark: Boolean, hasMguh: Boolean, harvestLimit: Double)
             ),
             range = { visibleMax, _ -> expand(0.0, harvestLimit, visibleMax) },
             tick = { "${it.roundToLong()}kJ" },
-            readout = { values, shown, dim ->
-                buildList {
-                    if (shown[0]) add(ReadoutRun(whole(values[0]), harvestK))
-                    if (values.size > 1 && shown[1]) {
-                        if (shown[0]) add(ReadoutRun("  ", dim, bold = false))
-                        add(ReadoutRun(whole(values[1]), harvestH))
-                    }
-                    add(ReadoutRun(" kJ", dim, bold = false))
+            // Named only beside the MGU-H.
+            readout = { values, _ ->
+                if (values.size > 1) {
+                    listOf(
+                        HeaderToken(whole(values[0]), harvestK, "MGU-K", key = "MGU-K"),
+                        HeaderToken(whole(values[1]), harvestH, "MGU-H", unit = "kJ", key = "MGU-H"),
+                    )
+                } else {
+                    listOf(HeaderToken(whole(values[0]), harvestK, unit = "kJ"))
                 }
             },
         ),
@@ -519,11 +530,15 @@ private fun powerCharts(isDark: Boolean, hasMguh: Boolean, harvestLimit: Double)
             series = listOf(SeriesSpec("ERS", GraphField.ERS_PCT, ice)),
             range = { _, _ -> 0.0 to 100.0 },
             tick = { "${it.roundToLong()}%" },
-            readout = { values, _, dim ->
+            // The store in MJ under the percentage.
+            readout = { values, _ ->
                 val pct = values[0]
                 listOf(
-                    ReadoutRun(if (pct.isFinite()) "%.1f%%".format(Locale.US, pct) else "—", ice),
-                    ReadoutRun(if (pct.isFinite()) " · %.2f / 4.00 MJ".format(Locale.US, pct / 100f * 4f) else "", dim, bold = false),
+                    HeaderToken(
+                        if (pct.isFinite()) "%.1f%%".format(Locale.US, pct) else "—",
+                        ice,
+                        detail = if (pct.isFinite()) "%.2f / 4.00 MJ".format(Locale.US, pct / 100f * 4f) else null,
+                    ),
                 )
             },
         ),
@@ -538,12 +553,9 @@ private fun powerCharts(isDark: Boolean, hasMguh: Boolean, harvestLimit: Double)
                 0.0 to max(1.0, (if (peak.isFinite()) peak else visibleMax.takeIf { it.isFinite() } ?: 0.0) + 1.0)
             },
             tick = { "%.1fkg".format(Locale.US, it) },
-            readout = { values, _, dim ->
+            readout = { values, _ ->
                 val kg = values[0]
-                listOf(
-                    ReadoutRun(if (kg.isFinite()) "%.2f".format(Locale.US, kg) else "—", fuel),
-                    ReadoutRun(" kg", dim, bold = false),
-                )
+                listOf(HeaderToken(if (kg.isFinite()) "%.2f".format(Locale.US, kg) else "—", fuel, unit = "kg"))
             },
         ),
     )
@@ -569,11 +581,9 @@ private fun inputCharts(isDark: Boolean): List<ChartSpec> {
             series = listOf(SeriesSpec("Gear", GraphField.GEAR, gear, style = LineStyle(step = 1f, widthDp = 2f, fillBaseline = 0.5))),
             range = { _, _ -> 0.5 to 8.5 },
             tick = { it.roundToLong().toString() },
-            ticks = { _, _ -> (1..8).map { it.toDouble() } },
-            readoutWidthDp = 24f,
-            refLines = listOf(2.0, 4.0, 6.0).map { RefLine(it, dashed = true) },
-            readout = { values, _, _ ->
-                listOf(ReadoutRun(if (values[0].isFinite()) Math.round(values[0]).toString() else "—", gear))
+            ticks = { _, _ -> listOf(2.0, 4.0, 6.0, 8.0) },
+            readout = { values, _ ->
+                listOf(HeaderToken(if (values[0].isFinite()) Math.round(values[0]).toString() else "—", gear))
             },
         ),
         ChartSpec(
@@ -589,13 +599,11 @@ private fun inputCharts(isDark: Boolean): List<ChartSpec> {
             tick = { "${Math.round(abs(it) * 100)}%" },
             ticks = { _, _ -> PEDAL_TICKS },
             refLines = listOf(RefLine(0.0, dashed = false)),
-            readoutWidthDp = 80f,
-            readout = { values, shown, dim ->
-                buildList {
-                    if (shown[0]) add(ReadoutRun(percent(values[0]), accelerator))
-                    if (shown[0] && shown[1]) add(ReadoutRun("  ", dim, bold = false))
-                    if (shown[1]) add(ReadoutRun(percent(values[1]), brake))
-                }
+            readout = { values, _ ->
+                listOf(
+                    HeaderToken(percent(values[0]), accelerator, "ACCEL", key = "Accelerator"),
+                    HeaderToken(percent(values[1]), brake, "BRAKE", key = "Brake"),
+                )
             },
         ),
         ChartSpec(
@@ -607,8 +615,7 @@ private fun inputCharts(isDark: Boolean): List<ChartSpec> {
             tick = ::formatSteeringAxis,
             ticks = { _, _ -> PEDAL_TICKS },
             refLines = listOf(RefLine(0.0, dashed = false)),
-            readoutWidthDp = 60f,
-            readout = { values, _, _ -> listOf(ReadoutRun(formatSteering(values[0]), steering)) },
+            readout = { values, _ -> listOf(HeaderToken(formatSteering(values[0]), steering)) },
         ),
     )
 }
@@ -644,19 +651,12 @@ private fun speedCharts(isDark: Boolean): List<ChartSpec> {
                 RightAxis(rpm) { if (it == 0.0) "0" else "${Math.round(it * RPM_MAX / 1000)}k" },
                 RightAxis(ers) { "${Math.round(it * 100)}%" },
             ),
-            readoutWidthDp = 170f,
-            readout = { values, shown, dim ->
-                buildList {
-                    if (shown[0]) {
-                        add(ReadoutRun(whole(values[0] * SPEED_MAX), speed))
-                        add(ReadoutRun(" kph  ", dim, bold = false))
-                    }
-                    if (shown[1]) {
-                        add(ReadoutRun(whole(values[1] * RPM_MAX), rpm))
-                        add(ReadoutRun(" rpm  ", dim, bold = false))
-                    }
-                    if (shown[2]) add(ReadoutRun("${whole(values[2] * 100)}%", ers))
-                }
+            readout = { values, _ ->
+                listOf(
+                    HeaderToken(whole(values[0] * SPEED_MAX), speed, "SPEED", unit = "kph", key = "Speed"),
+                    HeaderToken(whole(values[1] * RPM_MAX), rpm, "RPM", key = "RPM"),
+                    HeaderToken("${whole(values[2] * 100)}%", ers, "ERS", key = "ERS"),
+                )
             },
         ),
     )
@@ -683,8 +683,7 @@ private fun separateSpeedCharts(isDark: Boolean): List<ChartSpec> {
             range = { _, _ -> 0.0 to SPEED_MAX.toDouble() },
             tick = { Math.round(it).toString() },
             ticks = quarters(SPEED_MAX.toDouble()),
-            readoutWidthDp = 70f,
-            readout = { values, _, dim -> listOf(ReadoutRun(whole(values[0]), speed), ReadoutRun(" kph", dim, bold = false)) },
+            readout = { values, _ -> listOf(HeaderToken(whole(values[0]), speed, unit = "kph")) },
         ),
         ChartSpec(
             id = "overviewRpm",
@@ -695,8 +694,7 @@ private fun separateSpeedCharts(isDark: Boolean): List<ChartSpec> {
             range = { _, _ -> 0.0 to RPM_MAX.toDouble() },
             tick = { if (it == 0.0) "0" else "${Math.round(it / 1000)}k" },
             ticks = quarters(RPM_MAX.toDouble()),
-            readoutWidthDp = 80f,
-            readout = { values, _, dim -> listOf(ReadoutRun(whole(values[0]), rpm), ReadoutRun(" rpm", dim, bold = false)) },
+            readout = { values, _ -> listOf(HeaderToken(whole(values[0]), rpm, unit = "rpm")) },
         ),
         ChartSpec(
             id = "overviewErs",
@@ -707,8 +705,7 @@ private fun separateSpeedCharts(isDark: Boolean): List<ChartSpec> {
             range = { _, _ -> 0.0 to 100.0 },
             tick = { "${Math.round(it)}%" },
             ticks = quarters(100.0),
-            readoutWidthDp = 50f,
-            readout = { values, _, _ -> listOf(ReadoutRun("${whole(values[0])}%", ers)) },
+            readout = { values, _ -> listOf(HeaderToken("${whole(values[0])}%", ers)) },
         ),
     )
 }
@@ -790,13 +787,17 @@ private fun tyreCharts(isDark: Boolean): List<ChartSpec> {
         SeriesSpec("RR", rr, corners.rr, style = LineStyle(widthDp = 2f)),
     )
     val colors = listOf(corners.fl, corners.fr, corners.rl, corners.rr)
-    fun cornerReadout(unit: String): (FloatArray, BooleanArray, Color) -> List<ReadoutRun> = { values, shown, dim ->
-        buildList {
-            values.indices.filter { shown[it] }.forEachIndexed { position, corner ->
-                if (position > 0) add(ReadoutRun(" ", dim, bold = false))
-                add(ReadoutRun(if (values[corner].isFinite()) Math.round(values[corner]).toString() else "—", colors[corner]))
-            }
-            add(ReadoutRun(unit, dim, bold = false))
+    val names = listOf("FL", "FR", "RL", "RR")
+    // Each corner named under its value, so the numbers read without the colours.
+    fun cornerReadout(unit: String): (FloatArray, BooleanArray) -> List<HeaderToken> = { values, _ ->
+        List(values.size) { corner ->
+            HeaderToken(
+                if (values[corner].isFinite()) Math.round(values[corner]).toString() else "—",
+                colors[corner],
+                names[corner],
+                unit = unit.takeIf { corner == values.lastIndex },
+                key = names[corner],
+            )
         }
     }
     return listOf(
@@ -828,7 +829,6 @@ private fun tyreCharts(isDark: Boolean): List<ChartSpec> {
             range = { visibleMax, _ -> expand(0.0, 1250.0, visibleMax) },
             tick = { tyreTickText(it, "°C") },
             ticks = ::temperatureTicks,
-            readoutWidthDp = 150f,
             readout = cornerReadout("°C"),
         ),
         ChartSpec(
@@ -844,8 +844,21 @@ private fun tyreCharts(isDark: Boolean): List<ChartSpec> {
     )
 }
 
+/**
+ * The Tyres page's Charts tab: the desktop's Tyres graphs. It asks the
+ * desktop for their stream, with the lap rows while any chart shows laps.
+ */
 @Composable
-private fun TyresTab(store: TelemetryStore, graphs: GraphsController, active: Boolean) {
+internal fun TyreChartsTab(
+    store: TelemetryStore,
+    graphs: GraphsController,
+    active: Boolean,
+    onPage: (PairedTelemetryPage) -> Unit,
+) {
+    val lapMode = TYRE_CHART_IDS.any { graphs.windowOf(it).isLap }
+    LaunchedEffect(active, lapMode) {
+        if (active) onPage(if (lapMode) PairedTelemetryPage.GRAPHS_TYRES_LAPS else PairedTelemetryPage.GRAPHS_TYRES)
+    }
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val charts = remember(isDark) { tyreCharts(isDark) }
     ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0, 1), listOf(2, 3)))
@@ -877,14 +890,11 @@ private fun miscCharts(isDark: Boolean): List<ChartSpec> {
             tick = { "${Math.round(it)}g" },
             ticks = { _, _ -> listOf(-6.0, -4.0, -2.0, 0.0, 2.0, 4.0, 6.0) },
             refLines = listOf(RefLine(0.0, dashed = false), RefLine(4.0, dashed = true), RefLine(-4.0, dashed = true)),
-            readoutWidthDp = 100f,
-            readout = { values, shown, dim ->
-                buildList {
-                    if (shown[0]) add(ReadoutRun(fixed(values[0], 2), lateral))
-                    if (shown[0] && shown[1]) add(ReadoutRun("  ", dim, bold = false))
-                    if (shown[1]) add(ReadoutRun(fixed(values[1], 2), longitudinal))
-                    add(ReadoutRun(" g", dim, bold = false))
-                }
+            readout = { values, _ ->
+                listOf(
+                    HeaderToken(fixed(values[0], 2), lateral, "LAT", key = "Lateral"),
+                    HeaderToken(fixed(values[1], 2), longitudinal, "LONG", unit = "g", key = "Longitudinal"),
+                )
             },
         ),
         ChartSpec(
@@ -900,14 +910,11 @@ private fun miscCharts(isDark: Boolean): List<ChartSpec> {
             },
             tick = { tyreTickText(it, "mm") },
             ticks = ::tyreTicks,
-            readoutWidthDp = 110f,
-            readout = { values, shown, dim ->
-                buildList {
-                    if (shown[0]) add(ReadoutRun(fixed(values[0], 1), front))
-                    if (shown[0] && shown[1]) add(ReadoutRun("  ", dim, bold = false))
-                    if (shown[1]) add(ReadoutRun(fixed(values[1], 1), rear))
-                    add(ReadoutRun(" mm", dim, bold = false))
-                }
+            readout = { values, _ ->
+                listOf(
+                    HeaderToken(fixed(values[0], 1), front, "FRONT", key = "Front"),
+                    HeaderToken(fixed(values[1], 1), rear, "REAR", unit = "mm", key = "Rear"),
+                )
             },
         ),
     )
@@ -937,11 +944,11 @@ private fun lapAxisText(seconds: Double): String {
 
 private fun lapTimeText(lap: TrendLap): String = formatLapTimeMs(lap.lapTimeMs) ?: "—"
 
-/** How a lap reads in a header: its number, and whether it was the fastest or invalid. */
+/** How a lap reads under its value in a header: its number, and whether it was the fastest or invalid. */
 private fun lapLabel(lap: TrendLap, data: TrendData): String =
     "L${lap.lap}" + when {
-        lap.valid == false -> " · Invalid"
-        lap.lap == data.fastestLap -> " · Fastest"
+        lap.valid == false -> " · INVALID"
+        lap.lap == data.fastestLap -> " · FASTEST"
         else -> ""
     }
 
@@ -1022,10 +1029,13 @@ private fun trendTyreWearSpec(isDark: Boolean, id: String, overlay: LapOverlay?)
             range = { _, _ -> 0.0 to 1.0 },
             tick = { "" },
             ticks = { _, _ -> QUARTER_TICKS },
-            readoutWidthDp = 260f,
             // Room for "10.04 MJ", as the desktop's wider extra axes.
             rightAxisDp = 56f,
-            readout = { values, shown, dim -> wear.readout(FloatArray(values.size) { values[it] * 100f }, shown, dim) },
+            // The wear after the lap's figures, set apart by a hairline.
+            readout = { values, shown ->
+                wear.readout(FloatArray(values.size) { values[it] * 100f }, shown)
+                    .mapIndexed { index, token -> if (index == 0) token.copy(separated = true) else token }
+            },
             windowChoices = TREND_WINDOWS,
             lapOverlay = overlay,
         )
@@ -1054,17 +1064,13 @@ private fun trendOverlay(data: State<TrendData>, colors: TrendColors): LapOverla
             energyAxis,
             OverlayAxis(null, { "${Math.round(it)}%" }) { 0.0 to 100.0 },
         ),
-        readout = { lap, dim ->
+        readout = { lap ->
             val used = lap.deployedMj?.let { "%.2f".format(Locale.US, it) } ?: "—"
             val recharged = lap.harvestedMj?.let { "%.2f".format(Locale.US, it) } ?: "—"
             listOf(
-                ReadoutRun(lapLabel(lap, data.value) + "  ", dim, bold = false),
-                ReadoutRun(lapTimeText(lap), colors.lapTime),
-                ReadoutRun("  ", dim, bold = false),
-                ReadoutRun(used, colors.used),
-                ReadoutRun(" / ", dim, bold = false),
-                ReadoutRun(recharged, colors.recharged),
-                ReadoutRun(" MJ", dim, bold = false),
+                HeaderToken(lapTimeText(lap), colors.lapTime, lapLabel(lap, data.value), key = "Lap time"),
+                HeaderToken(used, colors.used, "USED", key = "Used"),
+                HeaderToken(recharged, colors.recharged, "RECHARGED", unit = "MJ", key = "Recharged"),
             )
         },
     )
@@ -1108,7 +1114,7 @@ private fun TrendsTab(store: TelemetryStore, graphs: GraphsController, active: B
         },
     )
     rangePicker?.let { spec ->
-        GraphWindowDialog(
+        GraphWindowSheet(
             title = "${spec.title} range",
             selected = windowFor(graphs, spec.id, TREND_WINDOWS),
             options = TREND_WINDOWS,
@@ -1126,7 +1132,6 @@ private fun TrendsTab(store: TelemetryStore, graphs: GraphsController, active: B
  * the desktop's per-lap trend charts. A few dozen points, drawn directly.
  * Press and drag to read a lap.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LapTrendChart(
     spec: LapTrendSpec,
@@ -1143,47 +1148,41 @@ private fun LapTrendChart(
     val labelPaint = remember(labelPx) { textPaint(labelPx, FontWeight.Normal.weight) }
     val emptyPx = with(density) { MaterialTheme.typography.bodyMedium.fontSize.toPx() }
     val emptyPaint = remember(emptyPx) { textPaint(emptyPx, FontWeight.Normal.weight) }
-    val style = PlotStyle(colors.outlineVariant.copy(alpha = 0.35f), dim, colors.outline, labelPaint, emptyPaint)
+    val yGutter = LocalYGutter.current
+    val style = PlotStyle(colors.outlineVariant.copy(alpha = 0.35f), dim, colors.outline, labelPaint, emptyPaint, yGutter)
     var inspectLap by remember { mutableStateOf<Int?>(null) }
     val laps = remember(window) { derivedStateOf(structuralEqualityPolicy()) { data.value.lapsFor(window) } }
+    NeedYGutter(spec.id, labelPaint) {
+        val shown = laps.value
+        if (shown.isEmpty()) emptyList() else spec.range(shown).let { (min, max) -> trendTicks(min, max).map(spec.tick) }
+    }
 
-    Column(modifier.padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 2.dp)) {
-        FlowRow(
-            Modifier.fillMaxWidth().staticLayer(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            itemVerticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                spec.title,
-                style = MaterialTheme.typography.titleSmall,
-                color = colors.onSurface,
-                maxLines = 1,
-                modifier = Modifier.height(24.dp).wrapContentHeight(Alignment.CenterVertically),
-            )
-            HeaderChip(window.label, emphasised = false, description = "Laps shown", onClick = onRange)
-            ReadoutSlot(
-                board = board,
-                id = spec.id,
-                runs = {
-                    val shown = laps.value
-                    val lap = inspectLap?.let { number -> shown.firstOrNull { it.lap == number } } ?: shown.lastOrNull()
-                    if (lap == null) emptyList() else listOf(
-                        ReadoutRun(lapLabel(lap, data.value) + "  ", dim, bold = false),
-                        ReadoutRun(spec.valueText(lap), spec.series.color),
-                    )
-                },
-                modifier = Modifier.widthIn(min = 90.dp).weight(1f),
-            )
-        }
+    Column(modifier.padding(top = 4.dp, bottom = 2.dp)) {
+        ChartHeader(
+            title = spec.title,
+            pill = { narrow -> windowPillText(window, narrow) },
+            emphasised = false,
+            pillDescription = "Laps shown",
+            onPill = onRange,
+            board = board,
+            id = spec.id,
+            modifier = Modifier.padding(horizontal = HEADER_INSET_DP.dp),
+            tokens = {
+                val shown = laps.value
+                val lap = inspectLap?.let { number -> shown.firstOrNull { it.lap == number } } ?: shown.lastOrNull()
+                if (lap == null) emptyList() else listOf(HeaderToken(spec.valueText(lap), spec.series.color, lapLabel(lap, data.value)))
+            },
+        )
         Box(
             Modifier
                 .fillMaxWidth()
                 .weight(1f)
+                .padding(start = PLOT_START_INSET_DP.dp, end = HEADER_INSET_DP.dp)
                 .pointerInput(spec.id) {
-                    val gutter = Y_GUTTER_DP.dp.toPx()
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         fun inspectAt(px: Float) {
+                            val gutter = yGutter.px
                             val shown = laps.value
                             if (shown.isEmpty()) return
                             val first = shown.first().lap - 0.5
@@ -1219,7 +1218,7 @@ private fun LapTrendChart(
 
 /** A per-lap trend chart's [layer]: axes and lap labels, the joined values, or the lap being read. */
 private fun DrawScope.drawLapTrend(spec: LapTrendSpec, laps: List<TrendLap>, inspectLap: Int?, style: PlotStyle, layer: PlotLayer) {
-    val left = Y_GUTTER_DP * density
+    val left = style.gutter.px
     val top = PLOT_PAD_DP * density
     val bottom = size.height - X_AXIS_DP * density
     if (bottom <= top || size.width <= left) return
@@ -1240,10 +1239,11 @@ private fun DrawScope.drawLapTrend(spec: LapTrendSpec, laps: List<TrendLap>, ins
             val metrics = paint.fontMetrics
             val centre = -(metrics.ascent + metrics.descent) / 2f
             val canvas = drawContext.canvas.nativeCanvas
-            for (value in niceTicks(min, max, 5)) {
+            drawFrame(area, style)
+            for (value in trendTicks(min, max)) {
                 val y = area.yPx(value)
                 drawLine(style.grid, Offset(area.left, y), Offset(area.right, y), 1f * density)
-                canvas.drawText(spec.tick(value), area.left - 6f * density, y + centre, paint)
+                canvas.drawText(spec.tick(value), area.left - Y_LABEL_GAP_DP * density, y + centre, paint)
             }
             // A label every few laps, so they do not collide.
             paint.textAlign = Paint.Align.CENTER
@@ -1252,6 +1252,8 @@ private fun DrawScope.drawLapTrend(spec: LapTrendSpec, laps: List<TrendLap>, ins
             val baseline = area.bottom + X_AXIS_DP * density - metrics.descent - 2f * density
             for (lap in laps) {
                 if (lap.lap % every != 0 && every > 1) continue
+                val x = xPx(lap.lap.toDouble())
+                drawLine(style.grid, Offset(x, area.top), Offset(x, area.bottom), 1f * density)
                 canvas.drawText("L${lap.lap}", xPx(lap.lap.toDouble()), baseline, paint)
             }
         }
@@ -1358,12 +1360,13 @@ private fun ChartsTab(
     val board = remember { ReadoutBoard() }
     val beat = remember { RasterBeat() }
     LaunchedEffect(active) { if (active) beat.run() }
-    val readoutStyle = MaterialTheme.typography.labelLarge
-    val readoutPx = with(LocalDensity.current) { readoutStyle.fontSize.toPx() }
-    val readoutPaints = remember(readoutPx) { readoutPaints(readoutStyle, readoutPx) }
+    val density = LocalDensity.current
+    val valuePx = with(density) { MaterialTheme.typography.titleSmall.fontSize.toPx() }
+    val headerPaints = remember(valuePx, density) { HeaderPaints(valuePx, valuePx * TOKEN_LABEL_SCALE, density.density) }
     val clock = remember { GraphClock() }
     val colors = MaterialTheme.colorScheme
-    // Series switched off from a chart's legend, by chart and label.
+    val headerColors = HeaderColors(colors.onSurface, colors.onSurfaceVariant, colors.outline, colors.outlineVariant)
+    // Series switched off by tapping their values in a chart's header, by chart and label.
     val hidden = remember { mutableStateMapOf<String, Boolean>() }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
@@ -1401,7 +1404,6 @@ private fun ChartsTab(
         }
     }
     var windowPicker by remember { mutableStateOf<ChartSpec?>(null) }
-    var lapPicker by remember { mutableStateOf<ChartSpec?>(null) }
 
     @Composable
     fun Chart(index: Int, showXAxis: Boolean, modifier: Modifier) {
@@ -1409,44 +1411,50 @@ private fun ChartsTab(
         GraphChart(
             spec, store, graphs, clock, hidden, showXAxis, active, board, beat,
             window = windowFor(graphs, spec.windowId, spec.windowChoices),
-            overridden = spec.windowChoices == null && spec.windowId in graphs.windowOverrides,
+            // Its own window, or its own lap for the global Selected.
+            overridden = spec.windowChoices == null && (
+                spec.windowId in graphs.windowOverrides ||
+                    (graphs.windowOf(spec.windowId) == GraphWindow.SELECTED && spec.windowId in graphs.referenceLaps)
+                ),
             onWindow = { windowPicker = spec },
-            onReferenceLap = { lapPicker = spec },
             modifier = modifier,
         )
     }
 
-    Box(Modifier.fillMaxSize()) {
-        if (landscape) {
-            Column(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
-                landscapeRows.forEachIndexed { rowIndex, row ->
-                    Row(Modifier.fillMaxWidth().weight(1f)) {
-                        row.forEach { index -> Chart(index, rowIndex == landscapeRows.lastIndex, Modifier.weight(1f).fillMaxHeight()) }
+    val yGutter = remember(density) { YGutter(Y_GUTTER_DP * density.density) }
+    CompositionLocalProvider(LocalYGutter provides yGutter) {
+        Box(Modifier.fillMaxSize()) {
+            if (landscape) {
+                Column(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
+                    landscapeRows.forEachIndexed { rowIndex, row ->
+                        Row(Modifier.fillMaxWidth().weight(1f)) {
+                            row.forEach { index -> Chart(index, rowIndex == landscapeRows.lastIndex, Modifier.weight(1f).fillMaxHeight()) }
+                        }
+                    }
+                }
+            } else if (portrait != null) {
+                portrait({ index, showXAxis, modifier -> Chart(index, showXAxis, modifier) }, board)
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    charts.indices.forEach { index ->
+                        if (index > 0) HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.5f))
+                        Chart(index, index == charts.lastIndex, Modifier.fillMaxWidth().weight(1f))
                     }
                 }
             }
-        } else if (portrait != null) {
-            portrait({ index, showXAxis, modifier -> Chart(index, showXAxis, modifier) }, board)
-        } else {
-            Column(Modifier.fillMaxSize()) {
-                charts.indices.forEach { index ->
-                    if (index > 0) HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.5f))
-                    Chart(index, index == charts.lastIndex, Modifier.fillMaxWidth().weight(1f))
-                }
-            }
+            // Every chart's header values, in one layer over the tab.
+            Spacer(
+                Modifier
+                    .matchParentSize()
+                    .onGloballyPositioned { board.placeRoot(it) }
+                    .graphicsLayer()
+                    .drawBehind { with(board) { paint(headerPaints, headerColors) } },
+            )
         }
-        // Every chart's header values, in one layer over the tab.
-        Spacer(
-            Modifier
-                .matchParentSize()
-                .onGloballyPositioned { board.placeRoot(it) }
-                .graphicsLayer()
-                .drawBehind { with(board) { paint(readoutPaints, readoutPx) } },
-        )
     }
 
     windowPicker?.let { spec ->
-        GraphWindowDialog(
+        GraphWindowSheet(
             title = "${spec.title} window",
             selected = windowFor(graphs, spec.windowId, spec.windowChoices),
             options = spec.windowChoices ?: GraphWindow.entries.filter(graphs::available),
@@ -1455,98 +1463,153 @@ private fun ChartsTab(
                 windowPicker = null
             },
             onDismiss = { windowPicker = null },
-        )
-    }
-    lapPicker?.let { spec ->
-        ReferenceLapDialog(
-            catalog = store.playbackCatalog,
-            selected = graphs.comparisonLap(spec.family, GraphWindow.SELECTED, spec.windowId),
-            onSelect = { lapNumber ->
-                graphs.selectReferenceLap(spec.windowId, lapNumber)
-                lapPicker = null
-            },
-            onDismiss = { lapPicker = null },
+            // Only a chart that follows the global windows has a Selected lap of its own.
+            laps = store.playbackCatalog.takeIf { spec.windowChoices == null },
+            referenceLap = graphs.comparisonLap(spec.family, GraphWindow.SELECTED, spec.windowId),
+            onReferenceLap = { lap -> graphs.selectReferenceLap(spec.windowId, lap) },
         )
     }
 }
 
-/** The window choices as radio lists, laps then time as on the desktop; picking one closes it. */
+/** Which of the window sheet's fields has its choices open. */
+private enum class WindowPicker { WINDOW, LAP }
+
+/**
+ * A chart's window, in a bottom sheet: a field for the window and, given
+ * [laps] and Selected, one for the lap it compares against. Each field opens
+ * its choices in a dialog. Nothing changes until Apply.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun GraphWindowDialog(
+internal fun GraphWindowSheet(
     title: String,
     selected: GraphWindow,
     options: List<GraphWindow>,
     onSelect: (GraphWindow) -> Unit,
     onDismiss: () -> Unit,
+    /** The recording's laps for Selected to compare against; null where Selected has no lap of its own. */
+    laps: PlaybackCatalog? = null,
+    referenceLap: Int = 0,
+    onReferenceLap: (Int) -> Unit = {},
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column(Modifier.selectableGroup().verticalScroll(rememberScrollState())) {
-                listOf("Laps" to GraphWindow.LAPS, "Time" to GraphWindow.TIMES).forEach { (heading, group) ->
-                    val shown = group.filter { it in options }
-                    if (shown.isEmpty()) return@forEach
-                    Text(
-                        heading,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
-                    )
-                    shown.forEach { window ->
-                        RadioRow(window.label, window == selected) { onSelect(window) }
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    var window by remember { mutableStateOf(selected) }
+    var lap by remember { mutableIntStateOf(referenceLap) }
+    var picking by remember { mutableStateOf<WindowPicker?>(null) }
+    val catalog = laps?.takeIf { window == GraphWindow.SELECTED }
+    val colors = MaterialTheme.colorScheme
+    // Slides the sheet away, then acts.
+    fun close(then: () -> Unit) {
+        scope.launch { sheetState.hide() }.invokeOnCompletion { then() }
+    }
 
-/** The recording's laps for a Selected chart to compare against. */
-@Composable
-private fun ReferenceLapDialog(
-    catalog: PlaybackCatalog,
-    selected: Int,
-    onSelect: (Int) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Reference lap") },
-        text = {
-            LazyColumn(Modifier.selectableGroup()) {
-                items(catalog.laps, key = { it.lapNumber }) { lap ->
-                    val time = formatLapTimeMs(lap.lapTimeMs)
-                    val fastest = if (lap.lapNumber == catalog.fastestLap) " · Fastest" else ""
-                    RadioRow(
-                        "Lap ${lap.lapNumber}",
-                        lap.lapNumber == selected,
-                        detail = (time ?: "") + fastest,
-                    ) { onSelect(lap.lapNumber) }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.titleLarge)
+            PickerField("Window", window.label) { picking = WindowPicker.WINDOW }
+            if (catalog != null) {
+                val current = catalog.laps.firstOrNull { it.lapNumber == lap }
+                val currentText = if (current == null) {
+                    "Choose a lap"
+                } else {
+                    lapLabel(current, colors.onSurface, colors.surface).text +
+                        if (current.lapNumber == catalog.fastestLap) " · Fastest" else ""
                 }
+                PickerField("Reference lap", currentText) { picking = WindowPicker.LAP }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-@Composable
-private fun RadioRow(label: String, selected: Boolean, detail: String? = null, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .height(48.dp)
-            .clip(MaterialTheme.shapes.small)
-            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(selected = selected, onClick = null)
-        Spacer(Modifier.width(12.dp))
-        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-        if (!detail.isNullOrEmpty()) {
-            Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                TextButton(onClick = { close(onDismiss) }) { Text("Cancel") }
+                Button(
+                    enabled = catalog == null || lap > 0,
+                    onClick = {
+                        close {
+                            // The lap first, so switching to Selected compares against it straight away.
+                            if (catalog != null) onReferenceLap(lap)
+                            onSelect(window)
+                        }
+                    },
+                ) { Text("Apply") }
+            }
         }
+
+        when (picking) {
+            WindowPicker.WINDOW -> AlertDialog(
+                onDismissRequest = { picking = null },
+                title = { Text("Window") },
+                text = {
+                    LazyColumn {
+                        listOf("Laps" to GraphWindow.LAPS, "Time" to GraphWindow.TIMES).forEach { (heading, group) ->
+                            val shown = group.filter { it in options }
+                            if (shown.isEmpty()) return@forEach
+                            item(key = heading) {
+                                Text(
+                                    heading,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = colors.primary,
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                                )
+                            }
+                            items(shown, key = { it.id }) { option ->
+                                LapRow(AnnotatedString(option.label), fastest = false, selected = option == window) {
+                                    window = option
+                                    picking = null
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { picking = null }) { Text("Cancel") } },
+            )
+            WindowPicker.LAP -> if (catalog != null) {
+                AlertDialog(
+                    onDismissRequest = { picking = null },
+                    title = { Text("Reference lap") },
+                    text = {
+                        LazyColumn {
+                            items(catalog.laps, key = { it.lapNumber }) { option ->
+                                LapRow(
+                                    lapLabel(option, colors.onSurface, colors.surfaceContainerHigh),
+                                    fastest = option.lapNumber == catalog.fastestLap,
+                                    selected = option.lapNumber == lap,
+                                ) {
+                                    lap = option.lapNumber
+                                    picking = null
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = { TextButton(onClick = { picking = null }) { Text("Cancel") } },
+                )
+            }
+            null -> Unit
+        }
+    }
+}
+
+/** A field that reads like a dropdown and opens its choices when tapped. */
+@Composable
+private fun PickerField(label: String, value: String, onClick: () -> Unit) {
+    Box {
+        OutlinedTextField(
+            value = value,
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text(label) },
+            trailingIcon = { Icon(painterResource(R.drawable.ic_expand_more), contentDescription = null) },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        // Over the whole field, so a tap opens the choices rather than focusing the read-only text.
+        Box(
+            Modifier
+                .matchParentSize()
+                .clip(MaterialTheme.shapes.extraSmall)
+                .clickable(role = Role.DropdownList, onClickLabel = label, onClick = onClick),
+        )
     }
 }
 
@@ -1593,7 +1656,6 @@ private fun lapFrame(
     return LapFrame(current, if (cutoff.isNaN()) Double.POSITIVE_INFINITY else cutoff, comparison, max(trackLength, 1.0))
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun GraphChart(
     spec: ChartSpec,
@@ -1610,7 +1672,6 @@ private fun GraphChart(
     /** The chart chose its own window rather than following the global one. */
     overridden: Boolean,
     onWindow: () -> Unit,
-    onReferenceLap: () -> Unit,
     modifier: Modifier,
 ) {
     val history = graphs.history(spec.family)
@@ -1641,9 +1702,22 @@ private fun GraphChart(
     val labelPaint = remember(labelPx) { textPaint(labelPx, FontWeight.Normal.weight) }
     val emptyPaint = remember(emptyPx) { textPaint(emptyPx, FontWeight.Normal.weight) }
     fun shown(): BooleanArray = BooleanArray(spec.series.size) { hidden["${spec.title}/${spec.series[it].label}"] != true }
-    val style = PlotStyle(gridColor, dim, crosshairColor, labelPaint, emptyPaint)
+    val yGutter = LocalYGutter.current
+    val style = PlotStyle(gridColor, dim, crosshairColor, labelPaint, emptyPaint, yGutter)
 
-    var plotSize by remember { mutableStateOf(IntSize.Zero) }
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    // The plot within the box, past the tab's shared gutter and this chart's right axes.
+    val plotSize by remember(spec, showXAxis, yGutter, density) {
+        derivedStateOf {
+            val box = boxSize
+            if (box == IntSize.Zero) return@derivedStateOf IntSize.Zero
+            val left = yGutter.px.toInt()
+            val right = (rightGutterDp(spec) * density.density).toInt()
+            val top = (PLOT_PAD_DP * density.density).toInt()
+            val bottom = ((if (showXAxis) X_AXIS_DP else PLOT_PAD_DP) * density.density).toInt()
+            IntSize(box.width - left - right, box.height - top - bottom)
+        }
+    }
     val rasterLock = remember { Mutex() }
     val lines = remember(spec) { spec.series.map { RasterLine(it.field, it.scale, it.color, it.style) } }
 
@@ -1779,92 +1853,70 @@ private fun GraphChart(
     val lapAxis = remember(spec, window) {
         derivedStateOf(structuralEqualityPolicy()) { lapRaster?.let { LapAxis(it.yMin, it.yMax, it.request.trackLength) } }
     }
+    NeedYGutter(spec.id, labelPaint) {
+        val overlay = spec.lapOverlay
+        when {
+            window.isDistance -> lapAxis.value?.let { axis -> yTicks(spec, axis.yMin, axis.yMax).map(spec.tick) }
+            window.isSpan && overlay != null -> overlayLeftLabels(overlay, overlay.data.value.lapsFor(window))
+            else -> timeRange.value?.let { (min, max) -> yTicks(spec, min, max).map(spec.tick) }
+        } ?: emptyList()
+    }
 
-    Column(modifier.padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 2.dp)) {
-        // The values keep room to be read; when the title, window and legend
-        // leave too little, they move onto a second line.
-        FlowRow(
-            // Kept as a texture: the values over it are painted by the tab's board.
-            Modifier.fillMaxWidth().staticLayer(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            itemVerticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                spec.title,
-                style = MaterialTheme.typography.titleSmall,
-                color = colors.onSurface,
-                maxLines = 1,
-                modifier = Modifier.height(24.dp).wrapContentHeight(Alignment.CenterVertically),
-            )
-            // This chart's window, as the desktop's selector beside the title.
-            HeaderChip(window.label, emphasised = overridden, description = "Chart window", onClick = onWindow)
-            if (window == GraphWindow.SELECTED) {
-                val lap = graphs.comparisonLap(spec.family, window, spec.windowId)
-                HeaderChip(if (lap > 0) "L$lap" else "Lap", emphasised = false, description = "Reference lap", onClick = onReferenceLap)
-            }
-            // Tapping a legend entry hides its line, as on the desktop.
-            val legend = (spec.lapOverlay?.series?.map { it.label to it.color } ?: emptyList()) +
-                spec.series.map { it.label to it.color }
-            if (legend.size > 1) legend.forEach { (label, color) ->
-                val key = "${spec.title}/$label"
-                val off = hidden[key] == true
-                Row(
-                    Modifier.clip(MaterialTheme.shapes.small).clickable { hidden[key] = !off }.padding(horizontal = 2.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        Modifier.size(8.dp).clip(CircleShape)
-                            .drawBehind { drawRect(if (off) dim.copy(alpha = 0.4f) else color) },
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        label,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (off) dim.copy(alpha = 0.5f) else dim,
-                        maxLines = 1,
-                    )
-                }
-            }
-            // The values at the read point, or the newest ones; a comparison lap's follow, faded.
-            ReadoutSlot(
-                board = board,
-                id = spec.id,
-                runs = {
-                    if (window.isDistance) {
-                        lapReadout(spec, lapFrame(store, graphs, spec.family, window, spec.windowId, right.value), clock.inspectDistance, shown(), dim)
+    Column(modifier.padding(top = 4.dp, bottom = 2.dp)) {
+        // One row: the title, this chart's window, then the values at the read
+        // point, or the newest ones, each naming its series; tapping one hides its line.
+        ChartHeader(
+            title = spec.title,
+            pill = { narrow ->
+                val lap = if (window == GraphWindow.SELECTED) graphs.comparisonLap(spec.family, window, spec.windowId) else 0
+                windowPillText(window, narrow, lap)
+            },
+            emphasised = overridden,
+            pillDescription = "Chart window",
+            onPill = onWindow,
+            board = board,
+            id = spec.id,
+            modifier = Modifier.padding(horizontal = HEADER_INSET_DP.dp),
+            tokens = {
+                val tokens = if (window.isDistance) {
+                    lapTokens(spec, lapFrame(store, graphs, spec.family, window, spec.windowId, right.value), clock.inspectDistance, shown())
+                } else {
+                    history.version
+                    val series = if (window.isSpan) graphs.spanSeries(spec.family, window) else history
+                    val inspectTime = clock.inspect
+                    val at = inspectTime ?: right.value.takeIf { it.isFinite() } ?: Double.POSITIVE_INFINITY
+                    val overlayTokens = spec.lapOverlay?.let { overlay ->
+                        val laps = overlay.data.value.lapsFor(window)
+                        // The lap being read: the one under the finger, else the last completed.
+                        val lap = laps.lastOrNull { it.startTime <= at && (inspectTime == null || at < it.endTime) } ?: laps.lastOrNull()
+                        lap?.let { overlay.readout(it) }
+                    } ?: emptyList()
+                    val index = series.indexAtOrBefore(at)
+                    if (index < 0) {
+                        overlayTokens
                     } else {
-                        history.version
-                        val series = if (window.isSpan) graphs.spanSeries(spec.family, window) else history
-                        val inspectTime = clock.inspect
-                        val at = inspectTime ?: right.value.takeIf { it.isFinite() } ?: Double.POSITIVE_INFINITY
-                        val lapRuns = spec.lapOverlay?.let { overlay ->
-                            val laps = overlay.data.value.lapsFor(window)
-                            // The lap being read: the one under the finger, else the last completed.
-                            val lap = laps.lastOrNull { it.startTime <= at && (inspectTime == null || at < it.endTime) } ?: laps.lastOrNull()
-                            lap?.let { overlay.readout(it, dim) + ReadoutRun("   ", dim, bold = false) }
-                        } ?: emptyList()
-                        val index = series.indexAtOrBefore(at)
-                        if (index < 0) {
-                            lapRuns
-                        } else {
-                            lapRuns + spec.readout(FloatArray(spec.series.size) { series.value(spec.series[it].field, index) * spec.series[it].scale }, shown(), dim)
-                        }
+                        overlayTokens + spec.readout(FloatArray(spec.series.size) { series.value(spec.series[it].field, index) * spec.series[it].scale }, shown())
                     }
-                },
-                modifier = Modifier.widthIn(min = spec.readoutWidthDp.dp).weight(1f),
-            )
-        }
+                }
+                tokens.map { if (it.key != null && hidden["${spec.title}/${it.key}"] == true) it.copy(hidden = true) else it }
+            },
+            onToggle = { label ->
+                val key = "${spec.title}/$label"
+                hidden[key] = hidden[key] != true
+            },
+        )
         Box(
             Modifier
                 .fillMaxWidth()
                 .weight(1f)
+                .padding(start = PLOT_START_INSET_DP.dp, end = HEADER_INSET_DP.dp)
                 .pointerInput(history, window) {
-                    val gutter = Y_GUTTER_DP.dp.toPx()
                     val rightGutter = rightGutterDp(spec).dp.toPx()
                     // Press and drag to read the values; letting go follows the clock again.
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         fun inspectAt(px: Float) {
+                            val gutter = yGutter.px
                             val span = (size.width - gutter - rightGutter).coerceAtLeast(1f)
                             val fraction = ((px - gutter) / span).coerceIn(0f, 1f).toDouble()
                             val edge = right.value
@@ -1894,13 +1946,7 @@ private fun GraphChart(
                         }
                     }
                 }
-                .onSizeChanged { size ->
-                    val left = (Y_GUTTER_DP * density.density).toInt()
-                    val right = (rightGutterDp(spec) * density.density).toInt()
-                    val top = (PLOT_PAD_DP * density.density).toInt()
-                    val bottom = ((if (showXAxis) X_AXIS_DP else PLOT_PAD_DP) * density.density).toInt()
-                    plotSize = IntSize(size.width - left - right, size.height - top - bottom)
-                },
+                .onSizeChanged { boxSize = it },
         ) {
             // Two layers: the plot, redrawn as the data and window move, and the
             // read point over it, redrawn as the finger moves. Reading values
@@ -1946,39 +1992,73 @@ private fun GraphChart(
 }
 
 /**
- * Where a chart's header values go: an empty space in the header, painted
- * by the tab's [ReadoutBoard] from [runs].
+ * A chart's header: one row that never wraps, so every plot on a tab lines
+ * up. Its title, its window as a pill, then its values, painted by the tab's
+ * [ReadoutBoard]. Below [NARROW_HEADER_DP] the pill shows the window's short id.
  */
 @Composable
-private fun ReadoutSlot(board: ReadoutBoard, id: String, runs: () -> List<ReadoutRun>, modifier: Modifier) {
-    val owner = remember { Any() }
-    board.register(id, owner, runs)
-    DisposableEffect(board, id) { onDispose { board.unregister(id, owner) } }
-    val height = with(LocalDensity.current) { (MaterialTheme.typography.labelLarge.fontSize.toPx() * 1.35f).toDp() }
-    Spacer(modifier.height(height).onGloballyPositioned { board.place(id, owner, it) })
-}
-
-@Composable
-private fun HeaderChip(text: String, emphasised: Boolean, description: String, onClick: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    val tint = if (emphasised) colors.primary else colors.onSurfaceVariant
-    Row(
-        Modifier.clip(MaterialTheme.shapes.small).clickable(onClick = onClick)
-            .padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text, style = MaterialTheme.typography.labelMedium, color = tint, maxLines = 1)
-        Icon(
-            painterResource(R.drawable.ic_expand_more),
-            contentDescription = description,
-            modifier = Modifier.size(16.dp),
-            tint = tint,
-        )
+private fun ChartHeader(
+    title: String,
+    pill: (narrow: Boolean) -> String,
+    emphasised: Boolean,
+    pillDescription: String,
+    onPill: () -> Unit,
+    board: ReadoutBoard,
+    id: String,
+    tokens: () -> List<HeaderToken>,
+    /** Called with a tapped token's series label; null where tapping hides nothing. */
+    onToggle: ((String) -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val narrow = maxWidth < NARROW_HEADER_DP.dp
+        Row(
+            // Kept as a texture: the values over it are painted by the tab's board.
+            Modifier.fillMaxWidth().height(HEADER_HEIGHT_DP.dp).staticLayer(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            WindowPill(pill(narrow), emphasised, pillDescription, onPill)
+            ReadoutSlot(board, id, tokens, onToggle, Modifier.weight(1f).fillMaxHeight())
+        }
     }
 }
 
-/** The header values of a lap-mode chart: the current lap, then the comparison lap faded. */
-private fun lapReadout(spec: ChartSpec, frame: LapFrame, inspect: Double?, shown: BooleanArray, dim: Color): List<ReadoutRun> {
+/**
+ * Where a chart's header values go: an empty space in the header, painted
+ * by the tab's [ReadoutBoard] from [tokens]. A tap on a token passes its
+ * series to [onToggle].
+ */
+@Composable
+private fun ReadoutSlot(
+    board: ReadoutBoard,
+    id: String,
+    tokens: () -> List<HeaderToken>,
+    onToggle: ((String) -> Unit)?,
+    modifier: Modifier,
+) {
+    val owner = remember { Any() }
+    board.register(id, owner, tokens)
+    DisposableEffect(board, id) { onDispose { board.unregister(id, owner) } }
+    val toggle by rememberUpdatedState(onToggle)
+    val taps = if (onToggle == null) Modifier else Modifier.pointerInput(board, id) {
+        detectTapGestures { offset -> board.keyAt(id, owner, offset.x)?.let { toggle?.invoke(it) } }
+    }
+    Spacer(modifier.then(taps).onGloballyPositioned { board.place(id, owner, it) })
+}
+
+/**
+ * The header tokens of a lap-mode chart: the current lap's values, each with
+ * the comparison lap's value at the same point faded on its second line.
+ */
+private fun lapTokens(spec: ChartSpec, frame: LapFrame, inspect: Double?, shown: BooleanArray): List<HeaderToken> {
     val current = frame.current
     val currentIndex = when {
         current == null -> -1
@@ -1988,18 +2068,69 @@ private fun lapReadout(spec: ChartSpec, frame: LapFrame, inspect: Double?, shown
     val at = inspect ?: current?.takeIf { currentIndex >= 0 }?.distance?.get(currentIndex)?.toDouble()
     fun values(trace: LapTrace, index: Int) =
         FloatArray(spec.series.size) { trace.value(spec.series[it].field, index) * spec.series[it].scale }
-    val runs = ArrayList<ReadoutRun>()
-    if (current != null && currentIndex >= 0) runs += spec.readout(values(current, currentIndex), shown, dim)
-    val comparison = frame.comparison
-    if (comparison != null && at != null) {
-        val index = comparison.indexAtDistance(at)
-        if (index >= 0) {
-            if (runs.isNotEmpty()) runs += ReadoutRun("  │  ", dim.copy(alpha = 0.5f), bold = false)
-            runs += spec.readout(values(comparison, index), shown, dim).map { it.copy(color = it.color.copy(alpha = COMPARISON_ALPHA)) }
+    fun faded(color: Color) = if (color.isSpecified) color.copy(alpha = COMPARISON_ALPHA) else color
+    val tokens = if (current != null && currentIndex >= 0) spec.readout(values(current, currentIndex), shown) else emptyList()
+    val comparison = frame.comparison ?: return tokens
+    val index = if (at != null) comparison.indexAtDistance(at) else -1
+    if (index < 0) return tokens
+    val compared = spec.readout(values(comparison, index), shown)
+    // Only the comparison so far: its values, faded.
+    if (tokens.isEmpty()) return compared.map { it.copy(color = faded(it.color)) }
+    return tokens.mapIndexed { position, token ->
+        val other = compared.getOrNull(position) ?: return@mapIndexed token
+        token.copy(
+            detail = if (token.name == null) "vs ${other.value}" else other.value,
+            detailColor = faded(other.color),
+        )
+    }
+}
+
+/**
+ * A tab's left gutter: as wide as the widest Y label on any of its charts
+ * needs, so every plot on the tab lines up. In px; [fallback] until a chart has labels.
+ */
+@Stable
+private class YGutter(private val fallback: Float) {
+    private val needs = mutableStateMapOf<String, Float>()
+    val px: Float by derivedStateOf { needs.values.maxOrNull() ?: fallback }
+
+    fun need(id: String, px: Float?) {
+        if (px == null) needs.remove(id) else if (needs[id] != px) needs[id] = px
+    }
+}
+
+private val LocalYGutter = compositionLocalOf<YGutter> { error("No Y gutter outside a charts tab") }
+
+/** Claims room in the tab's gutter for the Y labels [labels] gives, while this chart is shown. */
+@Composable
+private fun NeedYGutter(id: String, paint: Paint, labels: () -> List<String>) {
+    val gutter = LocalYGutter.current
+    val gap = with(LocalDensity.current) { Y_LABEL_GAP_DP.dp.toPx() }
+    val current by rememberUpdatedState(labels)
+    LaunchedEffect(gutter, id, paint, gap) {
+        snapshotFlow { current() }.distinctUntilChanged().collect { list ->
+            gutter.need(id, list.maxOfOrNull { paint.measureText(it) }?.plus(gap))
         }
     }
-    return runs
+    DisposableEffect(gutter, id) { onDispose { gutter.need(id, null) } }
 }
+
+/** A chart's Y ticks for [min]..[max]: its own, else even steps, thinned. */
+private fun yTicks(spec: ChartSpec, min: Double, max: Double): List<Double> =
+    sparseTicks(spec.ticks?.invoke(min, max) ?: List(Y_TICKS) { min + (max - min) * it / (Y_TICKS - 1) })
+
+/** The overlay's lines, as shares of its 0-1 scale. */
+private val OVERLAY_TICKS = sparseTicks(QUARTER_TICKS)
+
+/** The overlay's left labels: its first axis's, for [laps]. */
+private fun overlayLeftLabels(overlay: LapOverlay, laps: List<TrendLap>): List<String> {
+    val axis = overlay.axes.first()
+    val (min, max) = axis.range(laps)
+    return OVERLAY_TICKS.map { axis.format(min + it * (max - min)) }
+}
+
+/** A per-lap trend's Y ticks for [min]..[max]. */
+private fun trendTicks(min: Double, max: Double): List<Double> = sparseTicks(niceTicks(min, max, Y_TICKS_BEFORE_THINNING))
 
 /** The plot beneath, or the read point drawn over it. */
 /**
@@ -2015,6 +2146,7 @@ private class PlotStyle(
     val crosshair: Color,
     val labelPaint: Paint,
     val emptyPaint: Paint,
+    val gutter: YGutter,
 )
 
 /** The plot's frame: where the axes are, and the y scale. */
@@ -2029,8 +2161,8 @@ private fun rightGutterDp(spec: ChartSpec): Float =
     maxOf(spec.rightAxes.size, (spec.lapOverlay?.axes?.size ?: 1) - 1) * spec.rightAxisDp
 
 /** Plot bounds for this canvas, or null when it is too small to draw in. */
-private fun DrawScope.plotBounds(showXAxis: Boolean, spec: ChartSpec): FloatArray? {
-    val left = Y_GUTTER_DP * density
+private fun DrawScope.plotBounds(showXAxis: Boolean, spec: ChartSpec, style: PlotStyle): FloatArray? {
+    val left = style.gutter.px
     val right = size.width - rightGutterDp(spec) * density
     val top = PLOT_PAD_DP * density
     val bottom = size.height - (if (showXAxis) X_AXIS_DP * density else PLOT_PAD_DP * density)
@@ -2056,15 +2188,15 @@ private fun DrawScope.drawYAxis(spec: ChartSpec, area: PlotArea, style: PlotStyl
     paint.textAlign = Paint.Align.RIGHT
     val metrics = paint.fontMetrics
     val centre = -(metrics.ascent + metrics.descent) / 2f
-    val ticks = spec.ticks?.invoke(area.yMin, area.yMax)
-        ?: List(Y_TICKS) { area.yMin + (area.yMax - area.yMin) * it / (Y_TICKS - 1) }
+    val ticks = yTicks(spec, area.yMin, area.yMax)
     val canvas = drawContext.canvas.nativeCanvas
+    drawFrame(area, style)
     for (value in ticks) {
         val y = area.yPx(value)
         drawLine(style.grid, Offset(area.left, y), Offset(area.right, y), 1f * density)
         paint.textAlign = Paint.Align.RIGHT
         paint.color = (spec.axisColor ?: style.label).toArgb()
-        canvas.drawText(spec.tick(value), area.left - 6f * density, y + centre, paint)
+        canvas.drawText(spec.tick(value), area.left - Y_LABEL_GAP_DP * density, y + centre, paint)
         // The same ticks for the series on their own scales, to the right.
         paint.textAlign = Paint.Align.LEFT
         spec.rightAxes.forEachIndexed { index, axis ->
@@ -2080,15 +2212,37 @@ private fun DrawScope.drawYAxis(spec: ChartSpec, area: PlotArea, style: PlotStyl
     }
 }
 
-/** X labels from [first] in [step]s up to [last], skipping any too close to the edges. */
-private fun DrawScope.drawXLabels(area: PlotArea, first: Double, last: Double, step: Double, xPx: (Double) -> Float, format: (Double) -> String, style: PlotStyle) {
+/** [ticks], or for a longer list [MAX_Y_LINES] evenly spaced from its first to its last. */
+private fun sparseTicks(ticks: List<Double>): List<Double> {
+    if (ticks.size <= MAX_Y_LINES + 1) return ticks
+    val first = ticks.first()
+    val last = ticks.last()
+    return List(MAX_Y_LINES) { first + (last - first) * it / (MAX_Y_LINES - 1) }
+}
+
+/** The plot's outline, closing the grid on all four sides. */
+private fun DrawScope.drawFrame(area: PlotArea, style: PlotStyle) {
+    drawRect(
+        style.grid.copy(alpha = minOf(1f, style.grid.alpha * 2f)),
+        topLeft = Offset(area.left, area.top),
+        size = Size(area.right - area.left, area.bottom - area.top),
+        style = Stroke(width = 1f * density),
+    )
+}
+
+/**
+ * A vertical grid line at each [step] from [first] up to [last], labelled
+ * beneath when [labels], skipping labels too close to the edges.
+ */
+private fun DrawScope.drawXGrid(area: PlotArea, first: Double, last: Double, step: Double, xPx: (Double) -> Float, format: (Double) -> String, style: PlotStyle, labels: Boolean) {
     val paint = style.labelPaint
     paint.textAlign = Paint.Align.CENTER
     val baseline = area.bottom + X_AXIS_DP * density - paint.fontMetrics.descent - 2f * density
     var tick = ceil(first / step) * step
     while (tick <= last) {
         val x = xPx(tick)
-        if (x > area.left + 12f * density && x < area.right - 12f * density) {
+        if (x > area.left && x < area.right) drawLine(style.grid, Offset(x, area.top), Offset(x, area.bottom), 1f * density)
+        if (labels && x > area.left + 12f * density && x < area.right - 12f * density) {
             drawContext.canvas.nativeCanvas.drawText(format(tick), x, baseline, paint)
         }
         tick += step
@@ -2139,7 +2293,7 @@ private fun DrawScope.drawPlot(
     overlayLaps: List<TrendLap>? = null,
     hidden: (String) -> Boolean = { false },
 ) {
-    val bounds = plotBounds(showXAxis, spec) ?: return
+    val bounds = plotBounds(showXAxis, spec, style) ?: return
     if (series.size == 0 || !right.isFinite() || !windowStart.isFinite() || right <= windowStart || yRange == null) {
         return if (layer == PlotLayer.AXES) drawEmpty(bounds, style) else Unit
     }
@@ -2153,10 +2307,10 @@ private fun DrawScope.drawPlot(
         drawYAxis(spec, area, style, overlayLaps)
         if (lapStarts != null) drawLapStarts(area, windowStart, right, lapStarts, ::xPx, showXAxis, style)
     }
-    // A time window's labels scroll with its lines.
-    if (layer == PlotLayer.LINES && lapStarts == null && showXAxis) {
+    // A time window's vertical grid and labels scroll with its lines.
+    if (layer == PlotLayer.LINES && lapStarts == null) {
         val step = X_STEPS.firstOrNull { it / windowSeconds * plotWidth >= MIN_X_LABEL_SPACING_DP * density } ?: X_STEPS.last()
-        drawXLabels(area, windowStart, right, step, ::xPx, { formatClock(it) }, style)
+        drawXGrid(area, windowStart, right, step, ::xPx, { formatClock(it) }, style, showXAxis)
     }
 
     clipRect(area.left, 0f, area.right, size.height) {
@@ -2192,14 +2346,15 @@ private fun DrawScope.drawOverlayAxes(overlay: LapOverlay, laps: List<TrendLap>,
     val centre = -(metrics.ascent + metrics.descent) / 2f
     val canvas = drawContext.canvas.nativeCanvas
     val ranges = overlay.axes.map { it.range(laps) }
-    for (quarter in QUARTER_TICKS) {
+    drawFrame(area, style)
+    for (quarter in OVERLAY_TICKS) {
         val y = area.yPx(quarter)
         drawLine(style.grid, Offset(area.left, y), Offset(area.right, y), 1f * density)
         overlay.axes.forEachIndexed { index, axis ->
             val (min, max) = ranges[index]
             paint.color = (axis.color ?: style.label).toArgb()
             paint.textAlign = if (index == 0) Paint.Align.RIGHT else Paint.Align.LEFT
-            val x = if (index == 0) area.left - 6f * density else area.right + (4f + (index - 1) * columnDp) * density
+            val x = if (index == 0) area.left - Y_LABEL_GAP_DP * density else area.right + (4f + (index - 1) * columnDp) * density
             canvas.drawText(axis.format(min + quarter * (max - min)), x, y + centre, paint)
         }
     }
@@ -2235,7 +2390,7 @@ private fun DrawScope.drawOverlayLines(overlay: LapOverlay, laps: List<TrendLap>
 
 /** A time window's grid and Y labels, which stay put as it scrolls. */
 private fun DrawScope.drawTimeAxes(spec: ChartSpec, yRange: Pair<Double, Double>?, showXAxis: Boolean, style: PlotStyle) {
-    val bounds = plotBounds(showXAxis, spec) ?: return
+    val bounds = plotBounds(showXAxis, spec, style) ?: return
     if (yRange == null) return drawEmpty(bounds, style)
     drawYAxis(spec, PlotArea(bounds[0], bounds[1], bounds[2], bounds[3], yRange.first, yRange.second), style)
 }
@@ -2288,7 +2443,7 @@ private fun DrawScope.drawLapPlot(
     style: PlotStyle,
     layer: PlotLayer,
 ) {
-    val bounds = plotBounds(showXAxis, spec) ?: return
+    val bounds = plotBounds(showXAxis, spec, style) ?: return
     if (axis == null) return if (layer == PlotLayer.AXES) drawEmpty(bounds, style) else Unit
     val current = frame?.current
     val comparison = frame?.comparison
@@ -2301,10 +2456,8 @@ private fun DrawScope.drawLapPlot(
 
     if (layer == PlotLayer.AXES) {
         drawYAxis(spec, area, style)
-        if (showXAxis) {
-            val step = DISTANCE_STEPS.firstOrNull { it / length * plotWidth >= MIN_X_LABEL_SPACING_DP * density } ?: DISTANCE_STEPS.last()
-            drawXLabels(area, 0.0, length, step, ::xPx, ::formatDistance, style)
-        }
+        val step = DISTANCE_STEPS.firstOrNull { it / length * plotWidth >= MIN_X_LABEL_SPACING_DP * density } ?: DISTANCE_STEPS.last()
+        drawXGrid(area, 0.0, length, step, ::xPx, ::formatDistance, style, showXAxis)
     }
 
     clipRect(area.left, 0f, area.right, size.height) {
