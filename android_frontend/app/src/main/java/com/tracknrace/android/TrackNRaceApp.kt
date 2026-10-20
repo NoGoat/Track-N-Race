@@ -67,6 +67,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.google.zxing.client.android.Intents
 import com.journeyapps.barcodescanner.ScanContract
+import androidx.compose.foundation.gestures.detectTapGestures
+import com.tracknrace.android.pages.PlayerStrip
+import com.tracknrace.android.pages.PlayerSheet
+import com.tracknrace.android.pages.PlayerStripHeight
+import com.tracknrace.android.pages.PlayerSheetWidthLandscape
 import com.tracknrace.android.pages.AnalysisScreen
 import com.tracknrace.android.pages.AppMenuSheet
 import com.tracknrace.android.pages.MenuDriver
@@ -78,7 +83,6 @@ import com.tracknrace.android.pages.GraphsScreen
 import com.tracknrace.android.pages.LicensesScreen
 import com.tracknrace.android.pages.PARTICIPANTS_RETRY_DELAY_MS
 import com.tracknrace.android.pages.PairingScreen
-import com.tracknrace.android.pages.PlayerBar
 import com.tracknrace.android.pages.RecordingsSheet
 import com.tracknrace.android.pages.SettingsScreen
 import com.tracknrace.android.pages.TimingScreen
@@ -125,6 +129,11 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     var tyreChartsShown by rememberSaveable { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     val localRecording = store.localRecording
+    // The recording player stays a sliver until tapped open.
+    var playerOpen by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(localRecording) {
+        if (localRecording == null) playerOpen = false
+    }
     val appContext = LocalContext.current.applicationContext
     val folderLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -239,6 +248,9 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     BackHandler(enabled = !isPrimary) {
         navigateBack()
     }
+    BackHandler(enabled = playerOpen && isPrimary) {
+        playerOpen = false
+    }
 
     Scaffold(
         topBar = {
@@ -258,7 +270,9 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
         bottomBar = {
             if (!landscape && isPrimary) {
                 Column {
-                    if (localRecording != null) RecordingPlayer(telemetry)
+                    // Room for the player's strip, which is drawn with the page
+                    // so the open player can take its place.
+                    if (localRecording != null) Spacer(Modifier.height(PlayerStripHeight))
                     AppNavigationBar(selected = screen, onSelected = { screen = it })
                 }
             }
@@ -302,11 +316,15 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
         } else {
             Modifier
         }
+        // Where the player's strip and sheet sit: on the navigation bar in
+        // portrait, on the screen's edge in landscape.
+        val playerBottom = if (landscape) 0.dp else (padding.calculateBottomPadding() - PlayerStripHeight).coerceAtLeast(0.dp)
+        val playerRoom = if (landscape && isPrimary && localRecording != null) PlayerStripHeight else 0.dp
         Box(Modifier.fillMaxSize().then(revealChromeModifier)) {
             // Page content consumes Scaffold's safe-area padding. Landscape
             // app-bar surfaces are separate siblings, so their backgrounds
             // can still draw edge-to-edge behind the cutout.
-            Box(Modifier.fillMaxSize().padding(padding)) {
+            Box(Modifier.fillMaxSize().padding(padding).padding(bottom = playerRoom)) {
                 AnimatedContent(
                     targetState = screen,
                     modifier = Modifier.fillMaxSize(),
@@ -420,6 +438,20 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                 }
             }
 
+            // The hidden player: on the navigation bar in portrait; along the
+            // screen's edge in landscape, under the navigation bar when that is up.
+            if (isPrimary && localRecording != null && !playerOpen) {
+                PlayerStrip(
+                    store,
+                    onPlay = telemetry::playbackPlay,
+                    onPause = telemetry::playbackPause,
+                    onOpen = {
+                        playerOpen = true
+                        landscapeChromeVisible = false
+                    },
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = playerBottom),
+                )
+            }
             if (landscape) {
                 AnimatedVisibility(
                     visible = landscapeChromeVisible,
@@ -444,11 +476,24 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                     enter = fadeIn(),
                     exit = fadeOut(),
                 ) {
-                    Column {
-                        if (localRecording != null) RecordingPlayer(telemetry)
-                        AppNavigationBar(selected = screen, onSelected = { screen = it })
-                    }
+                    AppNavigationBar(selected = screen, onSelected = { screen = it })
                 }
+            }
+            if (playerOpen && isPrimary && localRecording != null) {
+                // Over the page: a tap outside it hides it, and is not passed on.
+                Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { playerOpen = false } })
+                RecordingPlayer(
+                    telemetry,
+                    onHide = { playerOpen = false },
+                    modifier = Modifier.align(Alignment.BottomCenter).then(
+                        if (landscape) {
+                            Modifier.width(PlayerSheetWidthLandscape)
+                        } else {
+                            // On the navigation bar, in the strip's place.
+                            Modifier.fillMaxWidth().padding(bottom = playerBottom)
+                        },
+                    ),
+                )
             }
         }
     }
@@ -515,14 +560,16 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
 }
 
 @Composable
-private fun RecordingPlayer(telemetry: TelemetryController) {
-    PlayerBar(
+private fun RecordingPlayer(telemetry: TelemetryController, onHide: () -> Unit, modifier: Modifier) {
+    PlayerSheet(
         store = telemetry.store,
         onPlay = telemetry::playbackPlay,
         onPause = telemetry::playbackPause,
         onSeek = telemetry::playbackSeek,
         onSpeed = telemetry::playbackSetSpeed,
         onClose = telemetry::closeRecording,
+        onHide = onHide,
+        modifier = modifier,
     )
 }
 

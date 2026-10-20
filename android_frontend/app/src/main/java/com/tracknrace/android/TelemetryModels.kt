@@ -123,6 +123,9 @@ internal data class DashboardColdState(
     val currentLapMs: Int = 0,
     val lastLapMs: Int = 0,
     val lapInvalid: Boolean = false,
+    /** The sector the car is in, 0 to 2, and how far through it, 0 to 1 (NaN while unknown). */
+    val sector: Int = 0,
+    val sectorFraction: Float = Float.NaN,
     val ersPercent: Int = 0,
     val ersMode: Int = 0,
     val fuelKg: Double = 0.0,

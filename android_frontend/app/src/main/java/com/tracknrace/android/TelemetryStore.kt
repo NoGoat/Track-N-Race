@@ -185,6 +185,9 @@ internal class TelemetryStore {
     private val currentLiveProgress = mutableListOf<LapProgressSample>()
     private var fastestLiveLap: CompletedLap? = null
     private var trackLengthM = 0.0
+    // Where sectors 2 and 3 start on this circuit, learnt from the lap rows
+    // as the car crosses each line; NaN until seen. Main thread only.
+    private val sectorStartM = doubleArrayOf(0.0, Double.NaN, Double.NaN)
     // The next Participants row starts a new roster instead of merging into
     // the current one (a new game session or recording); main thread only.
     private var newParticipantsRoster = true
@@ -419,6 +422,7 @@ internal class TelemetryStore {
                         sector = sector ?: previous.sector,
                         invalid = invalid ?: previous.invalid,
                     )
+                    learnSectorStart(previous, sample)
                     liveLapState = sample
                     for (history in graphHistories.values) {
                         history.acceptLap(
@@ -436,6 +440,8 @@ internal class TelemetryStore {
                         currentLapMs = sample.currentLapMs,
                         lastLapMs = sample.lastLapMs,
                         lapInvalid = sample.invalid,
+                        sector = sample.sector,
+                        sectorFraction = sectorFraction(sample),
                     )
                     if (playbackActive) {
                         updatePlaybackReference(sample)
@@ -699,6 +705,7 @@ internal class TelemetryStore {
                     // Direct mode gets no participants_reset; a new track or
                     // session type is a new grid.
                     if (changedSession) newParticipantsRoster = true
+                    if (trackId >= 0 && cold.trackId != trackId) forgetSectorStarts()
                     if (sessionTrackLengthM > 0.0) trackLengthM = sessionTrackLengthM
                     cold = cold.copy(
                         totalLaps = totalLaps,
@@ -1088,6 +1095,31 @@ internal class TelemetryStore {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
     }
 
+    /** A sector line crossed between two rows of one lap marks where that sector starts. */
+    private fun learnSectorStart(previous: LiveLapSample, sample: LiveLapSample) {
+        if (sample.lapNumber != previous.lapNumber || sample.sector != previous.sector + 1 || sample.sector !in 1..2) return
+        val from = previous.lapDistanceM
+        val to = sample.lapDistanceM
+        // Rows a seek apart cross the line somewhere unknown between them.
+        if (!from.isFinite() || !to.isFinite() || to < from || to - from > 300.0) return
+        sectorStartM[sample.sector] = (from + to) / 2.0
+    }
+
+    private fun forgetSectorStarts() {
+        sectorStartM[1] = Double.NaN
+        sectorStartM[2] = Double.NaN
+    }
+
+    /** How far through its sector the car is, 0 to 1; NaN until that sector's ends are known. */
+    private fun sectorFraction(sample: LiveLapSample): Float {
+        val sector = sample.sector
+        if (sector !in 0..2 || !sample.lapDistanceM.isFinite()) return Float.NaN
+        val start = sectorStartM[sector]
+        val end = if (sector < 2) sectorStartM[sector + 1] else trackLengthM.takeIf { it > 0.0 } ?: Double.NaN
+        if (!start.isFinite() || !end.isFinite() || end <= start) return Float.NaN
+        return ((sample.lapDistanceM - start) / (end - start)).toFloat().coerceIn(0f, 1f)
+    }
+
     private fun publishLapComparison(value: DashboardLapComparisonState) {
         if (lapComparison.get() != value) lapComparison.lazySet(value)
     }
@@ -1114,6 +1146,7 @@ internal class TelemetryStore {
         playbackDeltaCache.clear()
         playbackDeltaUnavailable.clear()
         trackLengthM = 0.0
+        forgetSectorStarts()
         if (playbackCatalog.active) {
             playbackCatalog = PlaybackCatalog(generation = playbackCatalog.generation + 1)
         }
