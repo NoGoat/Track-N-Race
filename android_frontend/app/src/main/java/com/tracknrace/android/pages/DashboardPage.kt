@@ -115,20 +115,22 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 // ── Design ──────────────────────────────────────────────────────────────────
-// Material Design 3, in the app's light or dark theme. Three swipeable tabs:
+// Material Design 3, in the app's light or dark theme. Four swipeable tabs:
 //
-//   DRIVE  the glance screen: shift lights, status, delta / gear / speed,
-//          sector splits, ERS and fuel, gaps (races), tyres, lap times
-//   MAP    the live map of every car, full page
-//   DAMAGE the desktop Damage page: faults and the worst part, the car with
-//          each part's damage, power-unit and gearbox wear
+//   DRIVE    the glance screen: shift lights, status, delta / gear / speed,
+//            sector splits, ERS and fuel, gaps (races), tyres, lap times
+//   MAP      the live map of every car, full page
+//   DAMAGE   the desktop Damage page: faults and the worst part, the car with
+//            each part's damage, power-unit and gearbox wear
+//   STRATEGY the desktop Strategy page (DashboardStrategy.kt): the calls, the
+//            next stop of each plan, both plans' stints, tyres and rivals
 //
-// Landscape keeps all three tabs, with Drive and Damage laid out wide. Every changing number is painted by Readout and
+// Landscape keeps all four tabs, with Drive, Damage and Strategy laid out wide. Every changing number is painted by Readout and
 // read while drawing, so a telemetry tick repaints one small layer and never
 // re-lays out text; cards around them are cached as textures.
 
 /** Race, Race 2 and Race 3 in F1 24, F1 25 and the 2026 Season Pack. */
-private val RaceSessionTypes = setOf(15, 16, 17)
+internal val RaceSessionTypes = setOf(15, 16, 17)
 
 /** Interval under which a neighbour is within attack range, and DRS range. */
 private const val CloseIntervalMs = 1_000
@@ -147,7 +149,7 @@ private const val StatusSettleMs = 2_000L
 // semantic colours, which M3 has no roles for, come in a dark and a light tone.
 
 @Immutable
-private class DashPalette(
+internal class DashPalette(
     val gain: Color,
     val loss: Color,
     val best: Color,
@@ -209,25 +211,26 @@ private fun rememberDashPalette(): DashPalette {
     }
 }
 
-private val LocalDashPalette = staticCompositionLocalOf<DashPalette> { error("No dashboard palette") }
+internal val LocalDashPalette = staticCompositionLocalOf<DashPalette> { error("No dashboard palette") }
 
 private val Numerals = FontFamily.SansSerif
 
 /** The M3 type scale roles used here, in the system face. */
-private val Headline = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Normal, fontSize = 24.sp)
-private val Title = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Medium, fontSize = 20.sp)
-private val Body = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Normal, fontSize = 14.sp)
-private val BodySmall = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Normal, fontSize = 12.sp)
-private val Label = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Medium, fontSize = 12.sp, letterSpacing = 0.4.sp)
+internal val Headline = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Normal, fontSize = 24.sp)
+internal val Title = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Medium, fontSize = 20.sp)
+internal val Body = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Normal, fontSize = 14.sp)
+internal val BodySmall = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Normal, fontSize = 12.sp)
+internal val Label = TextStyle(fontFamily = Numerals, fontWeight = FontWeight.Medium, fontSize = 12.sp, letterSpacing = 0.4.sp)
 
-private val CardShape = RoundedCornerShape(12.dp)
-private val CellShape = RoundedCornerShape(8.dp)
+internal val CardShape = RoundedCornerShape(12.dp)
+internal val CellShape = RoundedCornerShape(8.dp)
 
 /** Which tab, and what it asks the desktop for. */
 private enum class DashboardTab(val title: String, val page: PairedTelemetryPage) {
     DRIVE("Drive", PairedTelemetryPage.DASHBOARD),
     MAP("Map", PairedTelemetryPage.DASHBOARD_MAP),
     DAMAGE("Damage", PairedTelemetryPage.DASHBOARD_DAMAGE),
+    STRATEGY("Strategy", PairedTelemetryPage.DASHBOARD_STRATEGY),
 }
 
 @Composable
@@ -282,6 +285,7 @@ internal fun DashboardScreen(
                             if (landscape) LandscapeDrive(frame, alert, gaps, race) else DriveTab(frame, alert, gaps, race)
                         DashboardTab.MAP -> MapTab(store, active && current == page)
                         DashboardTab.DAMAGE -> DamageTab(store, landscape)
+                        DashboardTab.STRATEGY -> StrategyTab(store, landscape)
                     }
                 }
             }
@@ -303,7 +307,7 @@ private fun KeepScreenOn(enabled: Boolean) {
 private const val TabletZoomFactor = 1.3f
 
 /** The tabs are drawn zoomed, at tablet widths. */
-private val LocalTabletDash = staticCompositionLocalOf { false }
+internal val LocalTabletDash = staticCompositionLocalOf { false }
 
 /**
  * At tablet widths the tabs draw at [TabletZoomFactor] times the density, so
@@ -410,7 +414,7 @@ private fun LandscapeDrive(
  * spills, and a rounded clip costs the GPU on every frame the content redraws.
  */
 @Composable
-private fun DashCard(modifier: Modifier, cached: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
+internal fun DashCard(modifier: Modifier, cached: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
     Column(
         // A card whose values change a few times a lap is cached as a texture:
         // unchanged, it costs the render thread one image instead of replaying
@@ -427,7 +431,7 @@ private fun DashCard(modifier: Modifier, cached: Boolean = false, content: @Comp
 }
 
 @Composable
-private fun CardLabel(text: String, modifier: Modifier = Modifier, color: Color = LocalDashPalette.current.med) {
+internal fun CardLabel(text: String, modifier: Modifier = Modifier, color: Color = LocalDashPalette.current.med) {
     Text(text, modifier, style = Label, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
 }
 
@@ -1999,7 +2003,7 @@ private fun deltaColor(c: DashPalette, seconds: Double): Color = when {
 private fun ersColor(c: DashPalette, percent: Int): Color = if (percent < 20) c.caution else c.cold
 
 /** The desktop Damage page's five tyre bands, 20% each. */
-private fun tyreBandColor(c: DashPalette, percent: Int): Color = c.tyreBands[(percent / 20).coerceIn(0, 4)]
+internal fun tyreBandColor(c: DashPalette, percent: Int): Color = c.tyreBands[(percent / 20).coerceIn(0, 4)]
 
 private fun tyreTemperatureColor(c: DashPalette, value: Int): Color = when {
     value <= 0 -> c.med

@@ -157,6 +157,18 @@ internal class TelemetryController(
         for ((family, history) in store.graphHistories) history.setEnabled(family in page.graphFamilies)
         pairedTelemetry.setPage(page)
         playbackCommand { directTelemetry.setRequirements(page.streamMask, page.v6Types.toIntArray()) }
+        if (!sourceExecutor.isShutdown) sourceExecutor.execute { applyLiveStrategy() }
+    }
+
+    /**
+     * Listening for the game streams a fixed set of rows whatever page is open,
+     * plus the Strategy snapshot while a page shows it. A recording follows the
+     * page's own requirements instead. Runs on the source executor, after any
+     * listener start it was queued behind.
+     */
+    private fun applyLiveStrategy() {
+        if (playback != null) return
+        directTelemetry.setLiveStrategy(activePage.streamMask and DataRow.STRATEGY != 0)
     }
 
     // ── A recording played on the phone ─────────────────────────────────────
@@ -630,6 +642,7 @@ internal class TelemetryController(
             }
             val recording = preferences().getBoolean(RecordingStorage.PREF_RECORDING, false)
             directTelemetry.setRecording(recording && recordingPath.isNotEmpty(), recordingPath)
+            applyLiveStrategy()
             store.updateSource("listening", "UDP $UDP_PORT")
         }
     }

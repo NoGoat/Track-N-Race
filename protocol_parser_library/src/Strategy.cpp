@@ -84,24 +84,36 @@ int tyreLife(const TyreSet& set) {
     return std::max(0, set.usable_life);
 }
 
-RawPlan buildPlan(uint16_t format, int lap, int total, int firstPit,
-                  int curActual, int curVisual, const std::vector<TyreSet>& pool) {
-    RawPlan out;
-    const int clamped = std::min(firstPit, total);
-    out.stints.push_back({tyreName(format,curActual),curActual,curVisual,
-                          std::max(0,clamped-lap),lap,clamped>=total?-1:clamped,-1,clamped>=total});
-    if (clamped >= total) return out;
-    int pit = clamped, remaining = total - pit;
-    for (const auto& set : pool) {
-        if (remaining <= 0) break;
-        const int len = std::min(tyreLife(set), remaining);
-        if (len <= 0) continue;
+// Laps a set can run past its life: the game's life is its estimate of
+// useful laps, not a hard limit, and a few laps over cost far less than the
+// pit loss of another stop.
+int lifeTolerance(const TyreSet& set) { return std::max(3, tyreLife(set) * 15 / 100); }
+
+// Fills the race from `pit` to `total` with sets from `pool`, preferred first.
+// The stint before `pit` must already end there. Whenever a set can last the
+// rest of the race it is taken, the most preferred such set, so no stop is
+// spent on a final stint of a few laps.
+void appendStints(uint16_t format, RawPlan& out, int pit, int total,
+                  const std::vector<TyreSet>& pool) {
+    int remaining = total - pit;
+    std::vector<bool> used(pool.size());
+    while (remaining > 0) {
+        int pick = -1;
+        for (size_t i = 0; i < pool.size() && pick < 0; ++i)
+            if (!used[i] && tyreLife(pool[i]) > 0 &&
+                tyreLife(pool[i]) + lifeTolerance(pool[i]) >= remaining) pick = (int)i;
+        for (size_t i = 0; i < pool.size() && pick < 0; ++i)
+            if (!used[i] && tyreLife(pool[i]) > 0) pick = (int)i;
+        if (pick < 0) break;
+        used[pick] = true;
+        const auto& set = pool[pick];
+        int len = std::min(tyreLife(set), remaining);
+        if (remaining - len <= lifeTolerance(set)) len = remaining;
         const int next = pit + len;
         const bool last = next >= total;
         out.stints.push_back({tyreName(format,set.actual_compound),set.actual_compound,
                               set.visual_compound,len,pit,last?-1:next,set.idx,last});
         remaining -= len; pit = next;
-        if (last) break;
     }
     if (remaining > 0 && !out.stints.empty()) {
         auto& last = out.stints.back();
@@ -110,16 +122,33 @@ RawPlan buildPlan(uint16_t format, int lap, int total, int firstPit,
         out.legalityReason = "insufficient_tyre_life";
     }
     out.stops = std::max(0, (int)out.stints.size() - 1);
+}
+
+RawPlan buildPlan(uint16_t format, int lap, int total, int firstPit,
+                  int curActual, int curVisual, const std::vector<TyreSet>& pool) {
+    RawPlan out;
+    int clamped = std::min(firstPit, total);
+    // Tyres that reach their cliff with a few laps left are run to the flag:
+    // a stop for those laps costs a whole pit loss. Required stops are added
+    // afterwards by enforceMinimumStops.
+    if (total - clamped <= 3) clamped = total;
+    out.stints.push_back({tyreName(format,curActual),curActual,curVisual,
+                          std::max(0,clamped-lap),lap,clamped>=total?-1:clamped,-1,clamped>=total});
+    if (clamped >= total) return out;
+    appendStints(format, out, clamped, total, pool);
     return out;
 }
 
+// Splits the longest stint with another set. A required stop (minimum stops,
+// the compound rule) accepts stints of `minLaps` = 2; an optional one asks for
+// more, as a stop that leaves two or three laps on a set gains nothing.
 RawPlan forceExtra(uint16_t format, RawPlan in, const std::vector<TyreSet>& pool,
                    std::optional<int> requiredDifferentVisual = std::nullopt,
-                   bool includeCurrentStint = false) {
+                   bool includeCurrentStint = false, int minLaps = 2) {
     if (in.stints.empty()) return in;
     size_t longest = includeCurrentStint ? 0 : (in.stints.size() > 1 ? 1 : 0);
     for (size_t i=longest+1;i<in.stints.size();++i) if (in.stints[i].lapCount>in.stints[longest].lapCount) longest=i;
-    RawStint target=in.stints[longest]; if(target.lapCount<4||pool.empty()) return in;
+    RawStint target=in.stints[longest]; if(target.lapCount<std::max(4,minLaps*2)||pool.empty()) return in;
     const int end=target.last?target.startLap+target.lapCount:
         (target.pitLap>=0?target.pitLap:target.startLap+target.lapCount);
     std::set<int> used; for(const auto& s:in.stints) if (s.setIdx >= 0) used.insert(s.setIdx);
@@ -136,9 +165,13 @@ RawPlan forceExtra(uint16_t format, RawPlan in, const std::vector<TyreSet>& pool
         in.legalityReason=requiredDifferentVisual?"no_second_dry_compound":"no_unused_physical_set";
         return in;
     }
-    const int split=std::max(target.startLap+2,
+    const int split=std::max(target.startLap+minLaps,
         std::max(target.startLap+target.lapCount/2,end-tyreLife(*next)));
-    if(split>end-2){in.legal=false;in.legalityReason="insufficient_extra_set_life";return in;}
+    if(split>end-minLaps){
+        // Only a required stop that cannot fit makes the plan illegal.
+        if(minLaps<=2){in.legal=false;in.legalityReason="insufficient_extra_set_life";}
+        return in;
+    }
     RawStint a=target; a.lapCount=split-target.startLap; a.pitLap=split; a.last=false;
     RawStint b{tyreName(format,next->actual_compound),next->actual_compound,next->visual_compound,
                end-split,split,target.pitLap,next->idx,target.last};
@@ -156,6 +189,26 @@ void enforceDryCompoundRule(uint16_t format, RawPlan& plan,
     if (visuals.size() >= 2) return;
     plan.requiresCompoundChange = true;
     int current = visuals.empty() ? 0 : *visuals.begin();
+    // Cheapest first: run a planned stint on the other compound, latest stint
+    // first, if a set of it lasts that stint (a few laps over its life, as
+    // anywhere else). Only when none does is a stop added for it.
+    std::set<int> taken;
+    for (const auto& stint : plan.stints) if (stint.setIdx >= 0) taken.insert(stint.setIdx);
+    for (size_t i = plan.stints.size(); i-- > 1;) {
+        auto& stint = plan.stints[i];
+        const TyreSet* swap = nullptr;
+        for (const auto& set : pool) {
+            if (taken.count(set.idx) || !dryVisual(set.visual_compound) || set.visual_compound == current) continue;
+            if (tyreLife(set) + lifeTolerance(set) < stint.lapCount) continue;
+            if (!swap || tyreLife(set) > tyreLife(*swap)) swap = &set;
+        }
+        if (!swap) continue;
+        stint.name = tyreName(format, swap->actual_compound);
+        stint.actual = swap->actual_compound;
+        stint.visual = swap->visual_compound;
+        stint.setIdx = swap->idx;
+        return;
+    }
     plan = forceExtra(format, std::move(plan), pool, current);
     visuals = alreadyUsed;
     for (const auto& stint : plan.stints) if (dryVisual(stint.visual)) visuals.insert(stint.visual);
@@ -246,8 +299,8 @@ void StrategyProcessor::reset(){
     lap_.reset();session_.reset();status_.reset();damage_.reset();timing_.reset();participants_.reset();tyreSets_.reset();allStatus_.reset();
     lapTimes_.clear();raceHistory_.reset();completedStops_=0;
     currentStintStart_=0;rivalAhead_=rivalBehind_=-1;
-    rivalExperience_.clear();retiredCars_.clear();usedDryVisualCompounds_.clear();
-    wearHistory_.clear();lastWearLap_=-1;
+    rivalExperience_.clear();retiredCars_.clear();usedDryVisualCompounds_.clear();usedWetTyres_=false;
+    wearHistory_.clear();lastWearLap_=-1;conditionHistory_.clear();
     neutralisationStartLap_=0;neutralisationStartTime_=0;
     frozenNeutralCars_.clear();neutralisationRecommendation_.clear();
     decisionHistory_.clear();
@@ -346,6 +399,7 @@ void StrategyProcessor::ingest(const StatusRow&r){
     }
     status_=r;
     if(dryVisual(r.visual_compound))usedDryVisualCompounds_.insert(r.visual_compound);
+    if(wetActual(r.tyre_compound))usedWetTyres_=true;
     observeStint(changed);
 }
 void StrategyProcessor::ingest(const DamageRow&r){damage_=r;}
@@ -365,6 +419,21 @@ void StrategyProcessor::ingest(const TyreSetsRow&r){
     // describe our options. Rows without a car index predate that field.
     if(r.car_idx>=0&&r.car_idx!=playerIndex())return;
     tyreSets_=r;
+    // Deltas are against the fitted set, so they are comparable only while it
+    // is the tyre on the car; right after a stop the packet can lag.
+    const TyreSet* fitted=nullptr;
+    for(const auto&s:r.sets)if(s.fitted){fitted=&s;break;}
+    if(!lap_||lap_->lap_num<=0||!status_||!fitted||fitted->actual_compound!=status_->tyre_compound)return;
+    ConditionSample sample{lap_->lap_num,tyreCategory(fitted->actual_compound),{}};
+    for(const auto&s:r.sets){
+        if(!s.available||s.fitted||tyreLife(s)<=0)continue;
+        auto&best=sample.best_delta_ms[tyreCategory(s.actual_compound)];
+        if(!best||s.lap_delta_ms<*best)best=s.lap_delta_ms;
+    }
+    // One sample per lap: the latest packet of the lap stands for it.
+    if(!conditionHistory_.empty()&&conditionHistory_.back().lap==sample.lap)conditionHistory_.back()=sample;
+    else conditionHistory_.push_back(sample);
+    if(conditionHistory_.size()>6)conditionHistory_.erase(conditionHistory_.begin());
 }
 void StrategyProcessor::ingest(const AllStatusRow&r){
     allStatus_=r;
@@ -670,7 +739,21 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
     int limit=0;double best=1e9;
     for(int i=0;i<4;++i){double left=(cliff-wears[i])/std::max(.01,wearRates[i]);if(left<best){best=left;limit=i;}}
     out.limiting_corner=names[limit];out.limiting_wear=wears[limit];out.limiting_wear_per_lap=std::max(.01,wearRates[limit]);
-    out.laps_until_cliff=std::max(0,(int)std::floor((cliff-out.limiting_wear)/out.limiting_wear_per_lap));out.cliff_lap=out.lap_num+out.laps_until_cliff;
+    out.laps_until_cliff=std::max(0,(int)std::floor((cliff-out.limiting_wear)/out.limiting_wear_per_lap));
+    // The wear cliff is where a tyre is finished, not where a stint should
+    // end, and on new tyres it extrapolates a lap or two of wear to the whole
+    // race. The game's own life for the fitted set is what every planned stint
+    // is sized by, so the current stint is held to it too, counted from when
+    // the set went on.
+    int fittedLife=0;
+    if(tyreSets_)for(const auto&s:tyreSets_->sets){
+        if(!s.fitted||s.actual_compound!=status_->tyre_compound)continue;
+        fittedLife=std::max(s.usable_life,s.life_span);
+        break;
+    }
+    if(fittedLife>0)out.laps_until_cliff=std::min(out.laps_until_cliff,
+        std::max(0,fittedLife-std::max(0,status_->tyre_age_laps)));
+    out.cliff_lap=out.lap_num+out.laps_until_cliff;
     const PitLoss pit=pitLossForTrack(session_->track_id);
     if(pit.estimated)out.confidence=std::clamp(out.confidence-.08,.20,.98);
     const double effectivePitLoss=neutralised?std::max(0.0,pit.total_ms-10000.0):pit.total_ms;
@@ -707,10 +790,133 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
             switchCategory=category;switchSet=set;
         }
     }
+
+    // Without a switch that pays now, schedule the next one, so the plans
+    // carry the stop and the tyres after it instead of running the fitted
+    // type to the flag. The forecast gives the lap conditions change; the
+    // fall of the game's own delta for that tyre type can bring it forward,
+    // as a track dries faster than any forecast says; rivals already on those
+    // tyres bring it to the next lap. Only for a type the player has a set of.
+    const double playerLap=playerPaceMs();
+    // Only this session's forecast: the packet also carries other sessions'
+    // blocks, whose rain would otherwise be called for this race.
+    const std::vector<WeatherSample> forecast=currentSessionForecast(*session_);
+    const int nowCategory=weatherCategory(session_->weather);
+    const double lapDuration=playerLap>0?playerLap:90000.0;
+    // The first sample within the hour whose weather wants neither the fitted
+    // tyre nor the current weather's (the current weather is judged by pace).
+    // Offsets are minutes from the packet; m_weather sets the category, while
+    // m_rainPercentage is only the chance of rain and scales confidence.
+    const WeatherSample* forecastSample=nullptr;int forecastCategory=-1,forecastLap=0;
+    for(const auto&sample:forecast){
+        if(sample.time_offset<=0||sample.time_offset>60)continue;
+        const int target=weatherCategory(sample.weather);
+        if(target==fittedCategory||target==nowCategory)continue;
+        forecastSample=&sample;forecastCategory=target;
+        forecastLap=std::min(out.total_laps,out.lap_num+(int)std::ceil(sample.time_offset*60000.0/lapDuration));
+        break;
+    }
+    // Plans stop only for a change the forecast thinks likely: at least an
+    // even chance of rain to go wetter, at most an even chance to go drier.
+    // A long dry spell otherwise keeps a low-chance shower at the far end of
+    // the hour, and the plans would chase it lap after lap.
+    const WeatherSample* scheduleSample=nullptr;int scheduleLap=0;
+    for(const auto&sample:forecast){
+        if(sample.time_offset<=0||sample.time_offset>60)continue;
+        const int target=weatherCategory(sample.weather);
+        if(target==fittedCategory||target==nowCategory)continue;
+        if(target>fittedCategory?sample.rain_percentage<50:sample.rain_percentage>50)continue;
+        scheduleSample=&sample;
+        scheduleLap=std::min(out.total_laps,out.lap_num+(int)std::ceil(sample.time_offset*60000.0/lapDuration));
+        break;
+    }
+    auto forecastReason=[&](int target){
+        const bool wetter=target>fittedCategory;
+        return fittedCategory==kSlick?"rain_crossover_forecast":
+            target==kSlick?"dry_crossover_forecast":
+            wetter?"heavier_rain_forecast":"lighter_rain_forecast";
+    };
+    // A forecast schedules a stop only if the change lasts: a later sample in
+    // the hour back in the fitted tyre's weather would be one stop for a shower.
+    bool forecastHolds=scheduleSample!=nullptr;
+    if(forecastHolds)for(const auto&sample:forecast)
+        if(sample.time_offset>scheduleSample->time_offset&&sample.time_offset<=60&&
+           weatherCategory(sample.weather)==fittedCategory)forecastHolds=false;
+    // Laps until a type's delta passes the switch threshold at its latest
+    // fall per lap. Drying accelerates, so the last step leads, not the mean.
+    auto trendLaps=[&](int category)->std::optional<int>{
+        std::vector<std::pair<int,int>> points;
+        for(const auto&sample:conditionHistory_)
+            if(sample.fitted_category==fittedCategory&&sample.best_delta_ms[category]&&sample.lap>=out.lap_num-3)
+                points.push_back({sample.lap,*sample.best_delta_ms[category]});
+        if(points.size()<2)return std::nullopt;
+        const auto&prev=points[points.size()-2];const auto&last=points.back();
+        // Already past the threshold: the pace check above owns that call.
+        if(last.second<=-kMinConditionGainMs||last.first<=prev.first)return std::nullopt;
+        const double slope=double(last.second-prev.second)/(last.first-prev.first);
+        if(slope>-100.0)return std::nullopt;
+        const double toGo=(last.second+kMinConditionGainMs)/(-slope);
+        if(toGo>8.0)return std::nullopt;
+        return std::max(1,(int)std::ceil(toGo));
+    };
+    auto hasSetFor=[&](int category){
+        return tyreSets_&&std::any_of(tyreSets_->sets.begin(),tyreSets_->sets.end(),[&](const TyreSet&s){
+            return s.available&&!s.fitted&&tyreLife(s)>0&&tyreCategory(s.actual_compound)==category;});
+    };
+    int scheduledCategory=-1,scheduledLap=0;std::string scheduledReason;
+    if(!switchSet){
+        auto consider=[&](int category,int lap,std::string reason){
+            if(category<0||category==fittedCategory||!hasSetFor(category))return;
+            // The first signal picks the tyre type; later ones may only bring it forward.
+            if(scheduledCategory>=0&&category!=scheduledCategory)return;
+            lap=std::max(lap,out.lap_num+1);
+            // A switch with two laps or fewer to go never repays the stop.
+            if(lap>=out.total_laps-2)return;
+            if(scheduledCategory<0||lap<scheduledLap){
+                scheduledCategory=category;scheduledLap=lap;scheduledReason=std::move(reason);
+            }
+        };
+        if(forecastHolds){
+            const int category=weatherCategory(scheduleSample->weather);
+            consider(category,scheduleLap,forecastReason(category));
+        }
+        for(int category:{kSlick,kInter,kFullWet})
+            if(category!=fittedCategory)if(auto laps=trendLaps(category))
+                consider(category,out.lap_num+*laps,"conditions_trend");
+        // Rivals who have just pitted onto another tyre type have judged the
+        // crossover: three of them, and a sixth of the running field, is the
+        // field moving rather than a gamble. Cars that simply stayed out on
+        // that type have judged nothing.
+        {
+            int running=0;std::array<int,3> switched{};
+            for(const auto&[idx,experience]:rivalExperience_){
+                if(idx==playerIndex()||retiredCars_.count(idx)||experience.tyre_compound<=0)continue;
+                ++running;
+                if(experience.last_pit_lap>=out.lap_num-2&&experience.last_pit_lap>0)
+                    ++switched[tyreCategory(experience.tyre_compound)];
+            }
+            for(int category:{kSlick,kInter,kFullWet})
+                if(category!=fittedCategory&&switched[category]>=3&&switched[category]*6>=running)
+                    consider(category,out.lap_num+1,"rivals_switched");
+        }
+    }
     // Without tyre-set data only the weather label is available.
     const int planCategory=switchSet?switchCategory:fittedCategory;
-    const bool wet=tyreSets_?planCategory!=kSlick:
-        session_->weather>=3||wetActual(status_->tyre_compound);
+    // A race in which wet-weather tyres are used waives the two-dry-compound
+    // rule, so a planned switch onto or off them makes it a wet race.
+    const bool wet=usedWetTyres_||(tyreSets_?planCategory!=kSlick||(scheduledCategory>=0&&scheduledCategory!=kSlick):
+        session_->weather>=3||wetActual(status_->tyre_compound));
+    std::vector<TyreSet> scheduledCons,scheduledAgg;
+    if(scheduledCategory>=0)for(const auto&s:tyreSets_->sets)
+        if(s.available&&!s.fitted&&tyreLife(s)>0&&tyreCategory(s.actual_compound)==scheduledCategory)
+            scheduledCons.push_back(s);
+    scheduledAgg=scheduledCons;
+    std::sort(scheduledCons.begin(),scheduledCons.end(),[](auto&a,auto&b){return tyreLife(a)>tyreLife(b);});
+    std::sort(scheduledAgg.begin(),scheduledAgg.end(),[](auto&a,auto&b){return a.lap_delta_ms<b.lap_delta_ms;});
+    // Until conditions change, the game's deltas for the new type describe
+    // today's track. After the switch the best of them is taken to match
+    // today's pace, and the rest keep their gap to it.
+    const double scheduledBestDelta=scheduledAgg.empty()?0.0:scheduledAgg.front().lap_delta_ms;
     std::vector<TyreSet> base;
     if(tyreSets_)for(const auto&s:tyreSets_->sets)
         if(s.available&&!s.fitted&&tyreLife(s)>0&&tyreCategory(s.actual_compound)==planCategory)
@@ -759,7 +965,6 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
             stints_.size()>1?currentStintStart_:-1);
         return playerLastStop<experience->last_pit_lap;
     };
-    const double playerLap=playerPaceMs();
     const double aheadPace=rivalPaceMs(rivalAhead_);
     const double behindPace=rivalPaceMs(rivalBehind_);
     const double defensivePace=behindPace>0?behindPace:aheadPace;
@@ -767,16 +972,9 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
     if(aheadPace>0&&behindPace>0)attackingPace=std::min(aheadPace,behindPace);
     else attackingPace=std::max(aheadPace,behindPace);
 
-    // A pace-justified switch is called now. Otherwise the forecast gives a
-    // heads-up for conditions that differ from both the fitted tyre and the
-    // current weather (the current weather is already judged by pace). Offsets
-    // are minutes from the packet; m_weather sets the category, while
-    // m_rainPercentage is only the chance of rain and scales confidence.
-    // Only this session's forecast: the packet also carries other sessions'
-    // blocks, whose rain would otherwise be called for this race.
-    const std::vector<WeatherSample> forecast=currentSessionForecast(*session_);
-    if(!forecast.empty()||switchSet){
-        const int nowCategory=weatherCategory(session_->weather);
+    // A pace-justified switch is called now. Otherwise the scheduled switch,
+    // or failing that the forecast, gives the heads-up.
+    if(!forecast.empty()||switchSet||scheduledCategory>=0){
         const int nowRain=forecast.empty()?0:forecast.front().rain_percentage;
         StrategyWeatherDecision weather;
         weather.recommendation=fittedCategory==kSlick?"stay_dry":"stay_wet";
@@ -799,26 +997,32 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
             weather.crossover_lap=out.lap_num;
             describeSet(switchSet);
         }else{
-            for(const auto&sample:forecast){
-                if(sample.time_offset<=0||sample.time_offset>60)continue;
-                const int target=weatherCategory(sample.weather);
-                if(target==fittedCategory||target==nowCategory)continue;
-                weather.forecast_weather=sample.weather;weather.rain_percentage=sample.rain_percentage;
-                weather.minutes_until_change=sample.time_offset;
-                const double lapDuration=playerLap>0?playerLap:90000.0;
-                weather.crossover_lap=std::min(out.total_laps,
-                    out.lap_num+(int)std::ceil(sample.time_offset*60000.0/lapDuration));
+            if(forecastSample){
+                const int target=forecastCategory;
+                weather.forecast_weather=forecastSample->weather;weather.rain_percentage=forecastSample->rain_percentage;
+                weather.minutes_until_change=forecastSample->time_offset;
+                weather.crossover_lap=forecastLap;
                 weather.recommendation=prepare(target);
                 weather.target_compound=categoryCompound(target);
-                const bool wetter=target>fittedCategory;
-                weather.reason=fittedCategory==kSlick?"rain_crossover_forecast":
-                    target==kSlick?"dry_crossover_forecast":
-                    wetter?"heavier_rain_forecast":"lighter_rain_forecast";
-                const double chance=std::clamp(sample.rain_percentage/100.0,0.0,1.0);
-                likelihood=std::max(.35,wetter?chance:1.0-chance);
+                weather.reason=forecastReason(target);
+                const double chance=std::clamp(forecastSample->rain_percentage/100.0,0.0,1.0);
+                likelihood=std::max(.35,target>fittedCategory?chance:1.0-chance);
                 describeSet(representativeSet(target));
                 forecastCall=true;
-                break;
+            }
+            // The plans' scheduled switch leads when it comes from what the
+            // track and the field are doing rather than the forecast alone.
+            if(scheduledCategory>=0&&(!forecastCall||scheduledCategory!=forecastCategory||scheduledLap<forecastLap)){
+                weather.recommendation=prepare(scheduledCategory);
+                weather.target_compound=categoryCompound(scheduledCategory);
+                weather.crossover_lap=scheduledLap;
+                weather.reason=scheduledReason;
+                if(scheduledReason=="conditions_trend"||scheduledReason=="rivals_switched"){
+                    weather.minutes_until_change=std::max(0,(int)std::round((scheduledLap-out.lap_num)*lapDuration/60000.0));
+                    likelihood=scheduledReason=="rivals_switched"?.95:.9;
+                }
+                describeSet(representativeSet(scheduledCategory));
+                forecastCall=true;
             }
             // The weather now suggests other tyres, but pace says stay.
             if(!forecastCall&&nowCategory!=fittedCategory){
@@ -954,21 +1158,75 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
     if(switchSet)first=out.lap_num+1;
     const int completedStops=completedStops_;
     RawPlan cp=buildPlan(format_,out.lap_num,out.total_laps,first,status_->tyre_compound,status_->visual_compound,cons);
-    const auto futureCons=futureWith(cons,cp.stints.front().lapCount);
+    auto futureCons=futureWith(cons,cp.stints.front().lapCount);
     enforceMinimumStops(format_,cp,futureCons,std::max(0,minimumStops_-completedStops));
     const int aggLeft=std::max(0,(int)std::floor((cliff-out.limiting_wear)/(out.limiting_wear_per_lap*1.2)));
-    const int aggCliff=out.lap_num+aggLeft;
-    const int econ=!agg.empty()?std::max(out.lap_num+1,out.total_laps-tyreLife(agg.front())):aggCliff;
+    // Attack pushes, wearing the tyres about a fifth faster: its life too.
+    int aggCliff=std::min(out.cliff_lap,out.lap_num+aggLeft);
+    if(fittedLife>0)aggCliff=std::min(aggCliff,out.lap_num+std::max(0,
+        (int)std::floor(fittedLife/1.2)-std::max(0,status_->tyre_age_laps)));
+    // The economic stop puts the fastest set on for the rest of the race, as
+    // soon as it can last that long; only worth it if that set's gain over the
+    // fitted one, held to the flag, repays the stop.
+    int econ=!agg.empty()?std::max(out.lap_num+1,out.total_laps-tyreLife(agg.front())):aggCliff;
+    if(fresh*(out.total_laps-econ)<effectivePitLoss)econ=aggCliff;
     int aggressiveFirst=std::min(aggCliff,econ);
     if(rivalStartedUnmatchedStop(rivalAhead_)&&out.laps_until_cliff>2)
         aggressiveFirst=std::max(aggressiveFirst,out.lap_num+2);
     if(out.neutralisation&&out.neutralisation->recommendation=="box")aggressiveFirst=out.lap_num+1;
     if(switchSet)aggressiveFirst=out.lap_num+1;
     RawPlan ap=buildPlan(format_,out.lap_num,out.total_laps,aggressiveFirst,status_->tyre_compound,status_->visual_compound,agg);
-    const auto futureAgg=futureWith(agg,ap.stints.front().lapCount);
-    if(ap.stops<=cp.stops)ap=forceExtra(format_,ap,futureAgg);
-    if(minimumStops_>0)enforceMinimumStops(format_,ap,futureAgg,std::max(0,minimumStops_+1-completedStops));
+    auto futureAgg=futureWith(agg,ap.stints.front().lapCount);
+    if(ap.stops<=cp.stops&&!ap.stints.empty()){
+        // An extra stop attacks only if fresh tyres win it back. Their gain
+        // grows with the age of the tyres they replace, at about the rate the
+        // fitted set has lost to a fresh one so far; splitting a stint of L
+        // laps in half then recovers about rate*(L/2)^2. Short stints, and
+        // tyres too new to show a rate, are not worth a stop.
+        const double rate=status_->tyre_age_laps>=3?fresh/status_->tyre_age_laps:0.0;
+        size_t longest=ap.stints.size()>1?1:0;
+        for(size_t i=longest+1;i<ap.stints.size();++i)
+            if(ap.stints[i].lapCount>ap.stints[longest].lapCount)longest=i;
+        const double half=ap.stints[longest].lapCount/2.0;
+        if(rate*half*half>=effectivePitLoss)ap=forceExtra(format_,ap,futureAgg,std::nullopt,false,4);
+    }
+    // The required stops bind Attack as they bind Defend. Its extra stop is
+    // the optional one above, kept only when fresh tyres repay it: demanding
+    // one regardless re-planned a stop two laps ahead on every lap.
+    if(minimumStops_>0)enforceMinimumStops(format_,ap,futureAgg,std::max(0,minimumStops_-completedStops));
     if(!wet&&minimumStops_>0){enforceDryCompoundRule(format_,cp,futureCons,usedDryVisualCompounds_);enforceDryCompoundRule(format_,ap,futureAgg,usedDryVisualCompounds_);}
+
+    // A scheduled switch replaces both plans: the fitted type runs to the
+    // switch lap, stopping before it only if the tyres will not last, and the
+    // new type's sets run from there to the flag. Defend stops on the switch
+    // lap; Attack a lap earlier, to have the new tyres first. Under a Safety
+    // Car or VSC that calls the box, both take the cheap stop for the switch.
+    if(scheduledCategory>=0&&!scheduledCons.empty()){
+        auto scheduledPlan=[&](int switchLap,int cliffLap,const std::vector<TyreSet>&now,const std::vector<TyreSet>&later){
+            // Tyres a few laps short of the switch are run to it, as past their
+            // life anywhere else: a stop for a set that would do only those
+            // laps before the conditions change costs more than they lose.
+            const int tolerance=std::max(3,fittedLife*15/100);
+            const int firstPit=cliffLap<switchLap-tolerance?std::max(out.lap_num+1,cliffLap):switchLap;
+            RawPlan plan=buildPlan(format_,out.lap_num,switchLap,firstPit,
+                                   status_->tyre_compound,status_->visual_compound,now);
+            auto&bridge=plan.stints.back();
+            bridge.last=false;bridge.pitLap=switchLap;
+            appendStints(format_,plan,switchLap,out.total_laps,later);
+            return plan;
+        };
+        const bool boxNow=out.neutralisation&&out.neutralisation->recommendation=="box";
+        const int defendLap=boxNow?out.lap_num+1:scheduledLap;
+        const int attackLap=boxNow?out.lap_num+1:std::max(out.lap_num+1,scheduledLap-1);
+        cp=scheduledPlan(defendLap,out.cliff_lap,cons,scheduledCons);
+        // Before a change of conditions Attack has nothing to push for on the
+        // fitted tyres, so both plans run them to the same limit.
+        ap=scheduledPlan(attackLap,out.cliff_lap,agg,scheduledAgg);
+        enforceMinimumStops(format_,cp,scheduledCons,std::max(0,minimumStops_-completedStops));
+        enforceMinimumStops(format_,ap,scheduledAgg,std::max(0,minimumStops_-completedStops));
+        futureCons.insert(futureCons.end(),scheduledCons.begin(),scheduledCons.end());
+        futureAgg.insert(futureAgg.end(),scheduledAgg.begin(),scheduledAgg.end());
+    }
 
     const auto completedLaps=includeHistory?raceHistory_.laps():
         std::array<const StrategyRaceHistory::Lap*,StrategyRaceHistory::MAX_LAPS+1>{};
@@ -997,7 +1255,9 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
             if(i==0)return std::max(60000.0,(rivalTarget>0?rivalTarget:playerLap)-offset);
             for(const auto&set:availableSets)if((s.setIdx>=0&&set.idx==s.setIdx)||
                                       (s.setIdx<0&&set.actual_compound==s.actual)){
-                double estimate=playerLap+set.lap_delta_ms-fittedDelta-offset;
+                const double reference=scheduledCategory>=0&&
+                    tyreCategory(set.actual_compound)==scheduledCategory?scheduledBestDelta:fittedDelta;
+                double estimate=playerLap+set.lap_delta_ms-reference-offset;
                 if(rivalTarget>0)estimate=std::min(estimate,rivalTarget-offset);
                 return std::max(60000.0,estimate);
             }
@@ -1273,6 +1533,7 @@ StrategyProcessor::MemoryStats StrategyProcessor::memoryStats() const {
         mapCapacity(rivalExperience_) + setCapacity(retiredCars_) +
         setCapacity(usedDryVisualCompounds_) +
         wearHistory_.capacity() * sizeof(WearSample) +
+        conditionHistory_.capacity() * sizeof(ConditionSample) +
         frozenNeutralCars_.capacity() * sizeof(NeutralCarState) +
         decisionHistory_.capacity() * sizeof(StrategyDecisionRecord) +
         stints_.capacity() * sizeof(StintProgress);

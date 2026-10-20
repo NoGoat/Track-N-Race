@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <iterator>
 #include <limits>
 #include <set>
@@ -554,8 +555,21 @@ void Engine::strategyLoop() {
                     teamColors ? *teamColors : TeamColorOverrides{});
 
                 StrategyProcessor rebuilt;
-                (void)playbackReader.strategySnapshotAt(
-                    item.rebuildThrough, &rebuilt, cancelled);
+                // An exception escaping this thread would abort the process
+                // (on a phone, the whole app), so a failed rebuild only drops
+                // this snapshot; the next seek or setting change retries.
+                try {
+                    (void)playbackReader.strategySnapshotAt(
+                        item.rebuildThrough, &rebuilt, cancelled);
+                } catch (const std::exception& error) {
+                    std::fprintf(stderr, "[strategy] playback rebuild failed: %s\n", error.what());
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (playbackStrategyPendingGeneration_ == item.generation) {
+                        playbackStrategyPending_ = false;
+                        playbackStrategyPendingRows_.clear();
+                    }
+                    continue;
+                }
                 if (cancelled()) continue;
 
                 std::string json;

@@ -253,9 +253,10 @@ constexpr int64_t kSendStallMs = 15'000;
 // closes the socket to abort a send that shutdown() did not interrupt.
 constexpr int64_t kWriterExitGraceMs = 2'000;
 constexpr uint8_t kPlaybackStateKeyType = 0xff;
+// Bit 15 is the derived Strategy snapshot, for the dashboard's Strategy tab.
 constexpr uint32_t kAndroidPageMask =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
-    (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13);
+    (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13) | (1u << 15);
 constexpr uint32_t kParticipantsMask = 1u << 8;
 // The reader ignores ids it does not know; this only bounds a phone's list.
 constexpr size_t kMaxV6TypesPerClient = 32;
@@ -583,6 +584,7 @@ uint8_t rowTypeOf(std::string_view json) {
         {"session", 5}, {"race_event", 6}, {"timing", 7},
         {"participants", 8}, {"all_status", 9}, {"tyre_sets", 10},
         {"motion", 11}, {"motion_ex", 12}, {"positions", 13},
+        {"strategy", 15},
     };
     // Indexed recordings add session_time before type for state rows that did
     // not originally carry a timestamp (notably Participants). Inspect only

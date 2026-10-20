@@ -1092,6 +1092,62 @@ Generate combined scenarios. A neutralised stop for a weather transition may
 dominate both ordinary weather timing and ordinary SC timing; it should produce
 one coherent call, not competing cards.
 
+### 17.6 Implemented: scheduled tyre-category switch
+
+The game's per-set `m_lapDeltaTime` describes today's track only, so a plan
+built from it alone keeps the fitted category until the switch already pays,
+and never shows a forecast change. `StrategyProcessor` now schedules the next
+category switch when none pays yet, and both plans carry it: the fitted
+category runs to the switch lap (stopping earlier only if the tyres reach
+their cliff more than three laps before it), and the new category's sets run
+from there. Defend stops on the switch lap, Attack one lap earlier; a Safety
+Car or VSC that calls the box brings both to the next lap. The switch lap is
+the earliest of three signals for one category:
+
+- **forecast**: the first sample within the hour wanting a different
+  category, if the change is likely (at least an even chance of rain to go
+  wetter, at most one to go drier) and no later sample returns to the fitted
+  tyre's weather;
+- **conditions trend**: the latest per-lap fall in the best unfitted set's
+  delta of that category, extrapolated to the switch threshold (a fall of
+  at least 100 ms/lap, crossing within 8 laps);
+- **rivals switched**: three rivals, and a sixth of the running field, who
+  pitted onto that category in the last two laps.
+
+No switch is scheduled with two laps or fewer to go. Planned stints on the new
+category take today's pace for its best set, keeping each set's delta to it.
+A planned switch onto or off wet-weather tyres waives the two-dry-compound
+rule. The weather card follows the scheduled switch when trend or rivals bring
+it forward of the forecast.
+
+Checked against recordings: in the British GP sample (dried at lap 5) the
+plans carried a slick stint from lap 1 at the forecast's lap 8–11, and the
+trend brought it to lap 6 at lap 4; in the São Paulo sample (rain at lap 54)
+the trend called lap 54 at lap 51.
+
+### 17.7 Implemented: stint sizing
+
+Every planned stint is sized by the game's life for its set, so the stint on
+the car is held to it too: the cliff is the earlier of the 80%-wear
+projection and the fitted set's life counted from when it went on (Attack:
+that life over 1.2). On new tyres the wear projection alone extrapolated a lap
+of wear to 40+ laps on softs.
+
+- A set may run `max(3, 15% of its life)` laps past its life rather than add a
+  stop for those laps; a stop with three laps or fewer to go is not planned.
+- When any remaining set can last to the flag, the most preferred such set is
+  taken, so a plan finishes on mediums rather than softs plus a short stint.
+- Before a scheduled condition switch both plans run the fitted tyres to it
+  within that tolerance.
+- The two-dry-compound rule is waived for the rest of a race once
+  intermediates or wets have been fitted; where it applies, a planned stint
+  is moved to the other compound before a stop is added for it.
+- Attack makes the required stops, plus an extra one only when fresh tyres
+  repay it (`rate * (L/2)^2 >= pit loss`, with the rate the fitted set's loss
+  to a fresh one per lap of age). Its economic stop, putting the fastest set
+  on to the flag, likewise needs that set's gain over the remaining laps to
+  repay the stop.
+
 ## 18. Special cases
 
 ### 18.1 Monaco and other difficult-passing tracks

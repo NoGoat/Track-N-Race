@@ -257,6 +257,17 @@ internal class TelemetryStore {
 
     fun latestTransport(): PlaybackTransport = transport.get()
 
+    /** The selected car's Strategy snapshot, null until one arrives; main thread only. */
+    var strategy by mutableStateOf<StrategySnapshot?>(null)
+        private set
+
+    /**
+     * True from a seek until the next snapshot: [strategy] still describes the
+     * old cursor while the engine rebuilds it, which can take most of a minute.
+     */
+    var strategyStale by mutableStateOf(false)
+        private set
+
     /** The selected car's damage; main thread only. */
     var damage by mutableStateOf(CarDamageState())
         private set
@@ -435,6 +446,7 @@ internal class TelemetryStore {
             }
 
             "playback_loaded" -> post {
+                strategy = null
                 resetAllLapComparison()
                 resetGraphHistories()
                 playbackActive = row.optBoolean("ok")
@@ -561,6 +573,7 @@ internal class TelemetryStore {
             }
 
             "playback_close" -> post {
+                strategy = null
                 resetAllLapComparison()
                 resetGraphHistories()
                 newParticipantsRoster = true   // live rows bring their own grid
@@ -692,6 +705,15 @@ internal class TelemetryStore {
                         sessionType = sessionType,
                         trackId = trackId,
                     )
+                }
+            }
+
+            // A whole snapshot each time, so it simply replaces the last.
+            "strategy" -> {
+                val snapshot = parseStrategySnapshot(row)
+                post {
+                    strategy = snapshot
+                    strategyStale = false
                 }
             }
 
@@ -868,6 +890,7 @@ internal class TelemetryStore {
                     resetAllLapComparison()
                     resetGraphHistories()
                     damage = CarDamageState()
+                    strategy = null
                     cold = cold.copy(
                         protocolYear = year,
                         formula = formula,
@@ -895,6 +918,7 @@ internal class TelemetryStore {
             "timeline_reset", "playback_seek_flush" -> {
                 mapPositions.lazySet(MapPositions())
                 post {
+                    if (strategy != null) strategyStale = true
                     resetPlaybackCursorComparison()
                     graphHistories.values.forEach { it.clear() }
                     stint.reset()
@@ -911,6 +935,7 @@ internal class TelemetryStore {
             "participants_reset" -> {
                 setSelectedDriver(-1)
                 post {
+                    strategy = null
                     resetAllLapComparison()
                     resetGraphHistories()
                     newParticipantsRoster = true

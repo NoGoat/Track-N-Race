@@ -14,6 +14,7 @@ internal object DataRow {
     const val MOTION = 1 shl 11
     const val MOTION_EX = 1 shl 12
     const val POSITIONS = 1 shl 13
+    const val STRATEGY = 1 shl 15
 }
 
 /**
@@ -145,4 +146,13 @@ internal enum class DataConsumer(
 
     /** The available and fitted tyre sets. */
     TYRE_SETS(DataRow.TYRE_SETS, listOf(V6Data.TYRE_STATE)),
+
+    /**
+     * The derived Strategy snapshot. Its fields are the ones the engine's
+     * strategy reads from a V6 recording, as the desktop Strategy page asks.
+     */
+    STRATEGY(
+        DataRow.STRATEGY,
+        listOf(V6Data.FUEL, V6Data.TYRE_STATE, V6Data.TYRE_WEAR, V6Data.LAP_TIMING),
+    ),
 }

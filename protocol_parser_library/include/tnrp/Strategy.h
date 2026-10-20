@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -295,6 +296,16 @@ private:
         double fl{}, fr{}, rl{}, rr{};
     };
 
+    // Per lap, the game's lap delta of the best unfitted set of each tyre
+    // category (slick, inter, wet) against the fitted set. How fast that
+    // delta falls is the earliest sign of a crossover: a drying track shows
+    // in the slick delta a lap or two before slicks are actually faster.
+    struct ConditionSample {
+        int lap{};
+        int fitted_category{};
+        std::array<std::optional<int>, 3> best_delta_ms{};
+    };
+
     struct NeutralCarState {
         int idx{-1};
         int position{};
@@ -342,8 +353,12 @@ private:
     std::map<int, RivalExperience> rivalExperience_;
     std::set<int> retiredCars_;
     std::set<int> usedDryVisualCompounds_;
+    // Intermediates or wets fitted at any point of the race: the
+    // two-dry-compound rule is then waived for the rest of it.
+    bool usedWetTyres_{};
     std::vector<WearSample> wearHistory_;
     int lastWearLap_{-1};
+    std::vector<ConditionSample> conditionHistory_;
     int neutralisationStartLap_{};
     float neutralisationStartTime_{};
     std::vector<NeutralCarState> frozenNeutralCars_;

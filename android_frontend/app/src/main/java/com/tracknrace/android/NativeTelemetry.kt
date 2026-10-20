@@ -54,6 +54,9 @@ internal class NativeTelemetry(
     /** The open page's row families and V6 fields; their current values are restated. */
     fun setRequirements(streamMask: Int, v6Types: IntArray) = nativeSetRequirements(streamMask, v6Types)
 
+    /** While listening for the game: whether the Strategy snapshot is streamed. */
+    fun setLiveStrategy(enabled: Boolean) = nativeSetLiveStrategy(enabled)
+
     /** A paired phone's lap_delta data for the open recording, or null. */
     fun lapDelta(currentLap: Int, comparisonLap: Int, sectorDelta: Boolean): String? =
         nativeLapDelta(currentLap, comparisonLap, sectorDelta)
@@ -92,6 +95,8 @@ internal class NativeTelemetry(
     private external fun nativeSetDriver(index: Int)
 
     private external fun nativeSetRequirements(streamMask: Int, v6Types: IntArray)
+
+    private external fun nativeSetLiveStrategy(enabled: Boolean)
 
     private external fun nativeLapDelta(currentLap: Int, comparisonLap: Int, sectorDelta: Boolean): String?
 

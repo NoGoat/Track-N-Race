@@ -1913,14 +1913,6 @@ bool TnrdReader::forEachStrategyRow(
     if (toTime < fromTime) return true;
     if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
         if (hasExactTnrdIndex(loadedFormat_)) {
-            std::vector<detail::V4TimedRow> rows;
-            std::string error;
-            if (!indexedArchive_->rowsForRange(fromTime, toTime,
-                                               kStrategyDependencyMask,
-                                               rows, &error, cancelled)) {
-                if (!cancelled || !cancelled()) lastError_ = std::move(error);
-                return false;
-            }
             // V6 keeps a driver's state as per-field families, not as the
             // composite rows the strategy reducer parses: handing them over raw
             // leaves it without lap, status and damage, so it never leaves its
@@ -1938,9 +1930,13 @@ bool TnrdReader::forEachStrategyRow(
                 for (const auto& record : assembler.take())
                     callback(record.sessionTime, record.json);
             };
-            for (const auto& row : rows) {
-                if (cancelled && cancelled()) return false;
-                if (!includeFrom && row.sessionTime <= fromTime) continue;
+            // Read in bounded slices: one read of a whole late-race range holds
+            // every car's decoded rows at once, which exhausts a phone's memory.
+            // A timestamp falls in exactly one slice, so a timestamp's families
+            // are still assembled together.
+            const bool ok = forEachIndexedRange(fromTime, toTime, kStrategyDependencyMask,
+                [&](const detail::V4TimedRow& row) {
+                if (!includeFrom && row.sessionTime <= fromTime) return true;
                 // Range reads return family rows untagged: only the playback
                 // cursor adds the _v6_type marker. A family row is prefixed with
                 // its driver_idx and its rowType is the V6 family; a shared
@@ -1952,17 +1948,19 @@ bool TnrdReader::forEachStrategyRow(
                     std::vector<std::pair<uint8_t, std::string>> projected;
                     projectV6Row(storedType, row.sessionTime, row.json, projected,
                                  -1, kStrategyDependencyMask);
-                    if (projected.empty()) continue;
+                    if (projected.empty()) return true;
                     if (assembling && row.sessionTime != assembledTime) drain();
                     assembling = true;
                     assembledTime = row.sessionTime;
                     for (auto& [type, json] : projected)
                         assembler.add(type, row.sessionTime, std::move(json));
-                    continue;
+                    return true;
                 }
                 if (assembling) drain();
                 callback(row.sessionTime, row.json);
-            }
+                return true;
+            }, cancelled);
+            if (!ok) return false;
             if (assembling) drain();
             return true;
         }

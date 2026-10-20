@@ -142,13 +142,15 @@ private:
 // packed binary lane is gated by this bit too), status, damage, lap, session,
 // timing, participants, all_status, tyre_sets and positions. Everything else
 // libtnrp can produce -- race_event, motion, session_history_fastest (a full
-// lap/stint history per car in V6), strategy -- would be marshalled through JNI
-// and JSON-parsed on the source thread only to be discarded. Control rows
+// lap/stint history per car in V6) -- would be marshalled through JNI and
+// JSON-parsed on the source thread only to be discarded. Strategy is added
+// only while its tab is open (nativeSetLiveStrategy). Control rows
 // (protocol_*, recording_error, ...) carry no row id and are never masked, and
 // recording ignores the mask, so TNRD files still contain every row.
 constexpr uint32_t kAndroidRowMask =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
     (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13);
+constexpr uint32_t kStrategyRowBit = 1u << 15;
 
 // One engine at a time: listening for the game, or playing a recording. A
 // call takes its own reference, so a slow seek or lap read finishing after
@@ -311,6 +313,18 @@ Java_com_tracknrace_android_NativeTelemetry_nativeSetRequirements(
             if (value > 0 && value < 256) types.push_back(static_cast<uint8_t>(value));
     }
     current->engine->setPhoneRequirements(static_cast<uint32_t>(streamMask), types);
+}
+
+// Live listening keeps kAndroidRowMask whatever page is open; the Strategy
+// snapshot is the one family worth switching off while nothing shows it. Its
+// inputs are always parsed, so turning it on emits a current snapshot at once.
+extern "C" JNIEXPORT void JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeSetLiveStrategy(
+    JNIEnv*, jobject, jboolean enabled) {
+    auto current = session();
+    if (!current) return;
+    current->engine->setDataRequirements(
+        kAndroidRowMask | (enabled ? kStrategyRowBit : 0u), 0, 0.0f);
 }
 
 extern "C" JNIEXPORT jstring JNICALL
