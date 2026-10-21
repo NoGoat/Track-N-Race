@@ -39,6 +39,9 @@ internal object RecordingLibrary {
     private const val PREF_FOLDERS = "recordings.folders"
     private const val EXTENSION = ".tnrd"
     private const val MAX_FOLDER_DEPTH = 8
+    // Each recording's header details, kept across launches: reading them
+    // means opening the file's whole index, slow from a picked folder.
+    private const val DETAILS_FILE = "recording_details.json"
 
     fun folderPickerIntent(): Intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
@@ -79,8 +82,16 @@ internal object RecordingLibrary {
         uri.lastPathSegment.orEmpty()
     }
 
-    /** Every recording found, newest first. Blocking: call off the UI thread. */
-    fun scan(context: Context): List<RecordingFile> {
+    private val scanLock = Any()
+
+    /**
+     * Every recording found, newest first. Blocking: call off the UI thread.
+     * One search at a time: another waits, then reuses what this one read.
+     */
+    fun scan(context: Context): List<RecordingFile> = synchronized(scanLock) { scanOnce(context) }
+
+    private fun scanOnce(context: Context): List<RecordingFile> {
+        loadDetails(context)
         val found = LinkedHashMap<String, RecordingFile>()
         fun add(file: RecordingFile) {
             found.putIfAbsent(file.key, file)
@@ -95,13 +106,68 @@ internal object RecordingLibrary {
         }
         val trees = (folders(context) + listOfNotNull(RecordingStorage.selectedDirectory(context))).distinct()
         for (tree in trees) scanTree(context, tree, ::add)
-        return found.values.map { withDetails(context, it) }.sortedByDescending { it.recordedMs }
+        val known = details.size
+        val listed = found.values.map { withDetails(context, it) }.sortedByDescending { it.recordedMs }
+        if (details.size != known) saveDetails(context, found.keys)
+        return listed
     }
 
     /** Header details by file key; a file's details never change while it keeps its size and time. */
     private val details = ConcurrentHashMap<String, Details>()
 
     private class Details(val title: String, val detail: String, val recordedMs: Long?, val durationSeconds: Double?)
+
+    private var detailsLoaded = false
+
+    /** The details saved by earlier launches, once. */
+    private fun loadDetails(context: Context) {
+        if (detailsLoaded) return
+        detailsLoaded = true
+        val file = File(context.filesDir, DETAILS_FILE)
+        if (!file.isFile) return
+        try {
+            val saved = JSONObject(file.readText())
+            for (key in saved.keys()) {
+                val row = saved.getJSONObject(key)
+                details.putIfAbsent(
+                    key,
+                    Details(
+                        title = row.optString("title"),
+                        detail = row.optString("detail"),
+                        recordedMs = row.optLong("recordedMs").takeIf { it > 0 },
+                        durationSeconds = row.optDouble("duration", 0.0).takeIf { it > 0.0 },
+                    ),
+                )
+            }
+        } catch (_: Exception) {
+            // A damaged file is only a slower first search.
+        }
+    }
+
+    /** Saves the details of the recordings [keys] names, so files no longer found drop out. */
+    private fun saveDetails(context: Context, keys: Collection<String>) {
+        val out = JSONObject()
+        for (key in keys) {
+            val known = details[key] ?: continue
+            out.put(
+                key,
+                JSONObject()
+                    .put("title", known.title)
+                    .put("detail", known.detail)
+                    .put("recordedMs", known.recordedMs ?: 0L)
+                    .put("duration", known.durationSeconds ?: 0.0),
+            )
+        }
+        try {
+            // Written whole, then moved over the old file, so a crash never leaves half a file.
+            val target = File(context.filesDir, DETAILS_FILE)
+            val temporary = File(context.filesDir, "$DETAILS_FILE.tmp")
+            temporary.writeText(out.toString())
+            if (!temporary.renameTo(target)) temporary.delete()
+        } catch (_: Exception) {
+            // Not saved: the next launch reads the files again.
+        }
+    }
 
     /** The file with its header's track, session, game, drivers, date and length, when it has an index. */
     private fun withDetails(context: Context, file: RecordingFile): RecordingFile {

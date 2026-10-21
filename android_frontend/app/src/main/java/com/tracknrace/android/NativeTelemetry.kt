@@ -61,8 +61,13 @@ internal class NativeTelemetry(
     fun lapDelta(currentLap: Int, comparisonLap: Int, sectorDelta: Boolean): String? =
         nativeLapDelta(currentLap, comparisonLap, sectorDelta)
 
-    /** A paired phone's lap_data data for the open recording, or null. */
-    fun lapData(lapNumber: Int, channels: Array<String>): String? = nativeLapData(lapNumber, channels)
+    /**
+     * A paired phone's lap_data data for the open recording, or null. For
+     * Charts, which draw no map, the lap is read from the recording's columns
+     * and carries no positions.
+     */
+    fun lapData(lapNumber: Int, channels: Array<String>, forCharts: Boolean): String? =
+        nativeLapData(lapNumber, channels, forCharts)
 
     @Suppress("unused") // Invoked by JNI on libtnrp worker threads.
     private fun onNativeRow(json: String) {
@@ -100,5 +105,5 @@ internal class NativeTelemetry(
 
     private external fun nativeLapDelta(currentLap: Int, comparisonLap: Int, sectorDelta: Boolean): String?
 
-    private external fun nativeLapData(lapNumber: Int, channels: Array<String>): String?
+    private external fun nativeLapData(lapNumber: Int, channels: Array<String>, forCharts: Boolean): String?
 }

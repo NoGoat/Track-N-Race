@@ -4,7 +4,6 @@ import android.content.res.Configuration
 import android.graphics.Paint
 import android.graphics.RectF
 import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -19,22 +18,27 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Tab
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.PrimaryScrollableTabRow
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PrimaryScrollableTabRow
-import androidx.compose.material3.PrimaryTabRow
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -86,10 +90,9 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.tracknrace.android.GraphWindow
 import com.tracknrace.android.GraphsController
@@ -491,13 +494,13 @@ private fun powerCharts(isDark: Boolean, hasMguh: Boolean, harvestLimit: Double)
             ),
             range = { visibleMax, _ -> expand(0.0, 500.0, visibleMax) },
             tick = { "${it.roundToLong()}kW" },
-            // The total of the lines shown, after a hairline.
+            // The total of the lines shown, set a little apart.
             readout = { values, shown ->
                 val total = (if (shown[0]) values[0].orZero() else 0f) + (if (shown[1]) values[1].orZero() else 0f)
                 listOf(
                     HeaderToken(whole(values[0]), ice, "ICE", key = "ICE"),
                     HeaderToken(whole(values[1]), mguk, "MGU-K", key = "MGU-K"),
-                    HeaderToken(whole(total), Color.Unspecified, "TOTAL", unit = "kW", separated = true),
+                    HeaderToken(whole(total), Color.Unspecified, unit = "kW", separated = true),
                 )
             },
         ),
@@ -1100,16 +1103,13 @@ private fun TrendsTab(store: TelemetryStore, graphs: GraphsController, active: B
             @Composable
             fun Trend(spec: LapTrendSpec, modifier: Modifier) =
                 LapTrendChart(spec, data, windowFor(graphs, spec.id, TREND_WINDOWS), board, { rangePicker = spec }, modifier)
+            // Four charts stacked, each the full width.
             Column(Modifier.fillMaxSize()) {
-                Trend(lapSpecs[0], Modifier.fillMaxWidth().weight(1f))
-                HorizontalDivider(color = divider)
-                Row(Modifier.fillMaxWidth().weight(1f)) {
-                    Trend(lapSpecs[1], Modifier.weight(1f).fillMaxHeight())
-                    VerticalDivider(color = divider)
-                    Trend(lapSpecs[2], Modifier.weight(1f).fillMaxHeight())
+                lapSpecs.forEach { spec ->
+                    Trend(spec, Modifier.fillMaxWidth().weight(1f))
+                    HorizontalDivider(color = divider)
                 }
-                HorizontalDivider(color = divider)
-                chart(0, true, Modifier.fillMaxWidth().weight(1.1f))
+                chart(0, true, Modifier.fillMaxWidth().weight(1f))
             }
         },
     )
@@ -1239,7 +1239,6 @@ private fun DrawScope.drawLapTrend(spec: LapTrendSpec, laps: List<TrendLap>, ins
             val metrics = paint.fontMetrics
             val centre = -(metrics.ascent + metrics.descent) / 2f
             val canvas = drawContext.canvas.nativeCanvas
-            drawFrame(area, style)
             for (value in trendTicks(min, max)) {
                 val y = area.yPx(value)
                 drawLine(style.grid, Offset(area.left, y), Offset(area.right, y), 1f * density)
@@ -1252,8 +1251,6 @@ private fun DrawScope.drawLapTrend(spec: LapTrendSpec, laps: List<TrendLap>, ins
             val baseline = area.bottom + X_AXIS_DP * density - metrics.descent - 2f * density
             for (lap in laps) {
                 if (lap.lap % every != 0 && every > 1) continue
-                val x = xPx(lap.lap.toDouble())
-                drawLine(style.grid, Offset(x, area.top), Offset(x, area.bottom), 1f * density)
                 canvas.drawText("L${lap.lap}", xPx(lap.lap.toDouble()), baseline, paint)
             }
         }
@@ -1361,11 +1358,13 @@ private fun ChartsTab(
     val beat = remember { RasterBeat() }
     LaunchedEffect(active) { if (active) beat.run() }
     val density = LocalDensity.current
-    val valuePx = with(density) { MaterialTheme.typography.titleSmall.fontSize.toPx() }
-    val headerPaints = remember(valuePx, density) { HeaderPaints(valuePx, valuePx * TOKEN_LABEL_SCALE, density.density) }
-    val clock = remember { GraphClock() }
+    val valuePx = with(density) { MaterialTheme.typography.titleMedium.fontSize.toPx() }
+    val headerPaints = remember(valuePx) { HeaderPaints(valuePx, valuePx * TOKEN_LABEL_SCALE) }
+    // At the cursor from the first frame: a clock that starts unknown draws a
+    // tab's laps whole until its first tick.
+    val clock = remember { GraphClock().apply { follow(store, history, System.nanoTime()) } }
     val colors = MaterialTheme.colorScheme
-    val headerColors = HeaderColors(colors.onSurface, colors.onSurfaceVariant, colors.outline, colors.outlineVariant)
+    val headerColors = HeaderColors(colors.onSurface, colors.onSurfaceVariant, colors.outline)
     // Series switched off by tapping their values in a chart's header, by chart and label.
     val hidden = remember { mutableStateMapOf<String, Boolean>() }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -1471,13 +1470,11 @@ private fun ChartsTab(
     }
 }
 
-/** Which of the window sheet's fields has its choices open. */
-private enum class WindowPicker { WINDOW, LAP }
-
 /**
- * A chart's window, in a bottom sheet: a field for the window and, given
- * [laps] and Selected, one for the lap it compares against. Each field opens
- * its choices in a dialog. Nothing changes until Apply.
+ * A chart's window, in a fixed bottom sheet: it cannot be dragged, and closes
+ * with its close button, a tap outside it, or a pick. One tap on a window
+ * applies it. Given [laps], Selected reads "Choose a lap" and opens the
+ * recording's laps; picking one applies both.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1494,129 +1491,148 @@ internal fun GraphWindowSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
-    var window by remember { mutableStateOf(selected) }
-    var lap by remember { mutableIntStateOf(referenceLap) }
-    var picking by remember { mutableStateOf<WindowPicker?>(null) }
-    val catalog = laps?.takeIf { window == GraphWindow.SELECTED }
+    var choosingLap by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
     // Slides the sheet away, then acts.
     fun close(then: () -> Unit) {
         scope.launch { sheetState.hide() }.invokeOnCompletion { then() }
     }
+    fun pick(window: GraphWindow) {
+        if (window == GraphWindow.SELECTED && laps != null) choosingLap = true else close { onSelect(window) }
+    }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
-        Column(
-            Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text(title, style = MaterialTheme.typography.titleLarge)
-            PickerField("Window", window.label) { picking = WindowPicker.WINDOW }
-            if (catalog != null) {
-                val current = catalog.laps.firstOrNull { it.lapNumber == lap }
-                val currentText = if (current == null) {
-                    "Choose a lap"
-                } else {
-                    lapLabel(current, colors.onSurface, colors.surface).text +
-                        if (current.lapNumber == catalog.fastestLap) " · Fastest" else ""
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        sheetGesturesEnabled = false,
+        dragHandle = null,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 24.dp, end = 8.dp, top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                IconButton(onClick = { close(onDismiss) }) {
+                    Icon(painterResource(R.drawable.ic_close), contentDescription = "Close")
                 }
-                PickerField("Reference lap", currentText) { picking = WindowPicker.LAP }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-                TextButton(onClick = { close(onDismiss) }) { Text("Cancel") }
-                Button(
-                    enabled = catalog == null || lap > 0,
-                    onClick = {
-                        close {
-                            // The lap first, so switching to Selected compares against it straight away.
-                            if (catalog != null) onReferenceLap(lap)
-                            onSelect(window)
+            val lapOptions = GraphWindow.LAPS.filter { it in options }
+            if (lapOptions.isNotEmpty()) {
+                Text(
+                    "Laps",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 24.dp, top = 8.dp, bottom = 4.dp),
+                )
+                lapOptions.forEach { option ->
+                    val chooses = option == GraphWindow.SELECTED && laps != null
+                    val isSelected = option == selected
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 52.dp)
+                            .selectable(selected = isSelected, role = Role.RadioButton) { pick(option) }
+                            .padding(horizontal = 24.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (chooses) "Choose a lap" else option.label,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = if (isSelected) colors.primary else colors.onSurface,
+                            )
+                            if (chooses && isSelected && referenceLap > 0) {
+                                Text("Lap $referenceLap", style = MaterialTheme.typography.bodySmall, color = colors.outline)
+                            }
                         }
-                    },
-                ) { Text("Apply") }
+                        when {
+                            chooses -> Icon(
+                                painterResource(R.drawable.ic_chevron_right),
+                                contentDescription = null,
+                                tint = colors.outline,
+                            )
+                            isSelected -> Icon(painterResource(R.drawable.ic_check), contentDescription = null, tint = colors.primary)
+                        }
+                    }
+                }
+            }
+            val timeOptions = GraphWindow.TIMES.filter { it in options }
+            if (timeOptions.isNotEmpty()) {
+                if (lapOptions.isNotEmpty()) {
+                    HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), color = colors.outlineVariant)
+                }
+                Text(
+                    "Last",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 24.dp, top = 4.dp, bottom = 8.dp),
+                )
+                // One row of the time windows, joined like a segmented control.
+                val shape = RoundedCornerShape(20.dp)
+                Row(
+                    Modifier
+                        .padding(horizontal = 24.dp)
+                        .fillMaxWidth()
+                        .height(40.dp)
+                        .clip(shape)
+                        .border(1.dp, colors.outlineVariant, shape)
+                        .selectableGroup(),
+                ) {
+                    timeOptions.forEachIndexed { index, option ->
+                        if (index > 0) VerticalDivider(color = colors.outlineVariant)
+                        val isSelected = option == selected
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .background(if (isSelected) colors.secondaryContainer else Color.Transparent)
+                                .selectable(selected = isSelected, role = Role.RadioButton) { pick(option) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                option.label,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = if (isSelected) colors.onSecondaryContainer else colors.onSurface,
+                            )
+                        }
+                    }
+                }
             }
         }
 
-        when (picking) {
-            WindowPicker.WINDOW -> AlertDialog(
-                onDismissRequest = { picking = null },
-                title = { Text("Window") },
+        if (choosingLap && laps != null) {
+            AlertDialog(
+                onDismissRequest = { choosingLap = false },
+                title = { Text("Choose a lap") },
                 text = {
                     LazyColumn {
-                        listOf("Laps" to GraphWindow.LAPS, "Time" to GraphWindow.TIMES).forEach { (heading, group) ->
-                            val shown = group.filter { it in options }
-                            if (shown.isEmpty()) return@forEach
-                            item(key = heading) {
-                                Text(
-                                    heading,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = colors.primary,
-                                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
-                                )
-                            }
-                            items(shown, key = { it.id }) { option ->
-                                LapRow(AnnotatedString(option.label), fastest = false, selected = option == window) {
-                                    window = option
-                                    picking = null
+                        items(laps.laps, key = { it.lapNumber }) { option ->
+                            LapRow(
+                                lapLabel(option, colors.onSurface, colors.surfaceContainerHigh),
+                                fastest = option.lapNumber == laps.fastestLap,
+                                selected = option.lapNumber == referenceLap,
+                            ) {
+                                choosingLap = false
+                                close {
+                                    // The lap first, so switching to Selected compares against it straight away.
+                                    onReferenceLap(option.lapNumber)
+                                    onSelect(GraphWindow.SELECTED)
                                 }
                             }
                         }
                     }
                 },
-                confirmButton = { TextButton(onClick = { picking = null }) { Text("Cancel") } },
+                confirmButton = { TextButton(onClick = { choosingLap = false }) { Text("Cancel") } },
             )
-            WindowPicker.LAP -> if (catalog != null) {
-                AlertDialog(
-                    onDismissRequest = { picking = null },
-                    title = { Text("Reference lap") },
-                    text = {
-                        LazyColumn {
-                            items(catalog.laps, key = { it.lapNumber }) { option ->
-                                LapRow(
-                                    lapLabel(option, colors.onSurface, colors.surfaceContainerHigh),
-                                    fastest = option.lapNumber == catalog.fastestLap,
-                                    selected = option.lapNumber == lap,
-                                ) {
-                                    lap = option.lapNumber
-                                    picking = null
-                                }
-                            }
-                        }
-                    },
-                    confirmButton = { TextButton(onClick = { picking = null }) { Text("Cancel") } },
-                )
-            }
-            null -> Unit
         }
-    }
-}
-
-/** A field that reads like a dropdown and opens its choices when tapped. */
-@Composable
-private fun PickerField(label: String, value: String, onClick: () -> Unit) {
-    Box {
-        OutlinedTextField(
-            value = value,
-            onValueChange = {},
-            readOnly = true,
-            singleLine = true,
-            label = { Text(label) },
-            trailingIcon = { Icon(painterResource(R.drawable.ic_expand_more), contentDescription = null) },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        // Over the whole field, so a tap opens the choices rather than focusing the read-only text.
-        Box(
-            Modifier
-                .matchParentSize()
-                .clip(MaterialTheme.shapes.extraSmall)
-                .clickable(role = Role.DropdownList, onClickLabel = label, onClick = onClick),
-        )
     }
 }
 
 /** What a lap-mode chart draws this frame: the current lap up to the cursor, and its comparison. */
 private class LapFrame(
     val current: LapTrace?,
-    /** Seconds into the current lap drawn; infinite live, where the trace ends at the newest sample. */
+    /** Seconds into the current lap drawn; infinite live, where the trace ends at the newest sample; minus infinity in playback until the cursor is known. */
     val cutoff: Double,
     val comparison: LapTrace?,
     val trackLength: Double,
@@ -1648,12 +1664,19 @@ private fun lapFrame(
     val current = graphs.lapTrace(family, currentLap)
     val comparisonLap = if (window.hasComparison) graphs.comparisonLap(family, window, chartId) else 0
     val comparison = if (comparisonLap > 0 && comparisonLap != currentLap) graphs.lapTrace(family, comparisonLap) else null
-    val cutoff = if (store.playbackCatalog.active) right - graphs.lapStartTime(currentLap) else Double.POSITIVE_INFINITY
+    val playback = store.playbackCatalog.active
+    val cutoff = if (playback) right - graphs.lapStartTime(currentLap) else Double.POSITIVE_INFINITY
     var trackLength = store.knownTrackLengthM()
     if (trackLength <= 0) {
         trackLength = max(current?.distance?.maxOrNull()?.toDouble() ?: 0.0, comparison?.distance?.maxOrNull()?.toDouble() ?: 0.0)
     }
-    return LapFrame(current, if (cutoff.isNaN()) Double.POSITIVE_INFINITY else cutoff, comparison, max(trackLength, 1.0))
+    // An unknown cursor in playback draws none of the current lap, never all of it.
+    val drawnTo = when {
+        !cutoff.isNaN() -> cutoff
+        playback -> Double.NEGATIVE_INFINITY
+        else -> Double.POSITIVE_INFINITY
+    }
+    return LapFrame(current, drawnTo, comparison, max(trackLength, 1.0))
 }
 
 @Composable
@@ -1992,9 +2015,9 @@ private fun GraphChart(
 }
 
 /**
- * A chart's header: one row that never wraps, so every plot on a tab lines
- * up. Its title, its window as a pill, then its values, painted by the tab's
- * [ReadoutBoard]. Below [NARROW_HEADER_DP] the pill shows the window's short id.
+ * A chart's header: one low row that never wraps, so every plot on a tab
+ * lines up. Its title, small, its window, then its values, painted by the
+ * tab's [ReadoutBoard]. Below [NARROW_HEADER_DP] the window shows its short id.
  */
 @Composable
 private fun ChartHeader(
@@ -2015,13 +2038,13 @@ private fun ChartHeader(
         Row(
             // Kept as a texture: the values over it are painted by the tab's board.
             Modifier.fillMaxWidth().height(HEADER_HEIGHT_DP.dp).staticLayer(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 title,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -2193,7 +2216,6 @@ private fun DrawScope.drawYAxis(spec: ChartSpec, area: PlotArea, style: PlotStyl
     val centre = -(metrics.ascent + metrics.descent) / 2f
     val ticks = yTicks(spec, area.yMin, area.yMax)
     val canvas = drawContext.canvas.nativeCanvas
-    drawFrame(area, style)
     for (value in ticks) {
         val y = area.yPx(value)
         drawLine(style.grid, Offset(area.left, y), Offset(area.right, y), 1f * density)
@@ -2223,19 +2245,9 @@ private fun sparseTicks(ticks: List<Double>): List<Double> {
     return List(MAX_Y_LINES) { first + (last - first) * it / (MAX_Y_LINES - 1) }
 }
 
-/** The plot's outline, closing the grid on all four sides. */
-private fun DrawScope.drawFrame(area: PlotArea, style: PlotStyle) {
-    drawRect(
-        style.grid.copy(alpha = minOf(1f, style.grid.alpha * 2f)),
-        topLeft = Offset(area.left, area.top),
-        size = Size(area.right - area.left, area.bottom - area.top),
-        style = Stroke(width = 1f * density),
-    )
-}
-
 /**
- * A vertical grid line at each [step] from [first] up to [last], labelled
- * beneath when [labels], skipping labels too close to the edges.
+ * A label beneath the plot at each [step] from [first] up to [last], when
+ * [labels], skipping those too close to the edges. The grid is horizontal only.
  */
 private fun DrawScope.drawXGrid(area: PlotArea, first: Double, last: Double, step: Double, xPx: (Double) -> Float, format: (Double) -> String, style: PlotStyle, labels: Boolean) {
     val paint = style.labelPaint
@@ -2244,7 +2256,6 @@ private fun DrawScope.drawXGrid(area: PlotArea, first: Double, last: Double, ste
     var tick = ceil(first / step) * step
     while (tick <= last) {
         val x = xPx(tick)
-        if (x > area.left && x < area.right) drawLine(style.grid, Offset(x, area.top), Offset(x, area.bottom), 1f * density)
         if (labels && x > area.left + 12f * density && x < area.right - 12f * density) {
             drawContext.canvas.nativeCanvas.drawText(format(tick), x, baseline, paint)
         }
@@ -2349,7 +2360,6 @@ private fun DrawScope.drawOverlayAxes(overlay: LapOverlay, laps: List<TrendLap>,
     val centre = -(metrics.ascent + metrics.descent) / 2f
     val canvas = drawContext.canvas.nativeCanvas
     val ranges = overlay.axes.map { it.range(laps) }
-    drawFrame(area, style)
     for (quarter in OVERLAY_TICKS) {
         val y = area.yPx(quarter)
         drawLine(style.grid, Offset(area.left, y), Offset(area.right, y), 1f * density)

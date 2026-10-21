@@ -339,7 +339,7 @@ Java_com_tracknrace_android_NativeTelemetry_nativeLapDelta(
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_tracknrace_android_NativeTelemetry_nativeLapData(
-    JNIEnv* env, jobject, jint lapNum, jobjectArray channels) {
+    JNIEnv* env, jobject, jint lapNum, jobjectArray channels, jboolean forCharts) {
     auto current = session();
     if (!current) return nullptr;
     std::vector<std::string> names;
@@ -352,7 +352,7 @@ Java_com_tracknrace_android_NativeTelemetry_nativeLapData(
             env->DeleteLocalRef(name);
         }
     }
-    const std::string data = current->engine->playerPhoneLapDataJson(lapNum, names);
+    const std::string data = current->engine->playerPhoneLapDataJson(lapNum, names, forCharts == JNI_TRUE);
     return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
 }
 

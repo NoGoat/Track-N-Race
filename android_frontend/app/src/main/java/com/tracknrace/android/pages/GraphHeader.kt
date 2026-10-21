@@ -3,11 +3,13 @@ package com.tracknrace.android.pages
 import android.graphics.Paint
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -16,7 +18,6 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -24,33 +25,30 @@ import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.tracknrace.android.GraphWindow
 import com.tracknrace.android.R
-import kotlin.math.max
 
 /** A chart header's height: one row that never wraps, so every plot on a tab lines up. */
-internal const val HEADER_HEIGHT_DP = 30
-/** Below this width a header's window pill shows the window's short id. */
+internal const val HEADER_HEIGHT_DP = 28
+/** Below this width a header's window selector shows the window's short id. */
 internal const val NARROW_HEADER_DP = 300
-/** A token's name, relative to its value. */
-internal const val TOKEN_LABEL_SCALE = 0.64f
-private const val UNIT_SCALE = 0.7f
-private const val TOKEN_GAP_DP = 10f
-private const val UNIT_GAP_DP = 1.5f
-private const val DETAIL_GAP_DP = 3f
-private const val LINE_GAP_DP = 3.5f
-private const val RULE_INSET_DP = 5f
+/** A token's name and unit, relative to its value. */
+internal const val TOKEN_LABEL_SCALE = 0.69f
+private const val TOKEN_GAP_DP = 12f
+private const val UNIT_GAP_DP = 2f
+private const val PART_GAP_DP = 3f
 private const val LABEL_TRACKING = 0.06f
 private const val HIDDEN_ALPHA = 0.4f
 // Shrinking the tokens this far keeps their names; any further drops them first.
 private const val MIN_TOKEN_SCALE = 0.85f
 
 /**
- * One value in a chart's header: the number in its series' colour, with the
- * series' name in small caps under it. It is the series' legend entry too:
- * tapping it hides the series' line.
+ * One value in a chart's header: the number in its series' colour, then its
+ * unit and the series' name, small, on the same line. It is the series'
+ * legend entry too: tapping it hides the series' line.
  */
 @Immutable
 internal data class HeaderToken(
@@ -67,24 +65,22 @@ internal data class HeaderToken(
     val detailColor: Color = Color.Unspecified,
     /** The series label a tap on this token hides; null for one that hides nothing. */
     val key: String? = null,
-    /** Set apart from the token before it by a hairline, as a total. */
+    /** Set further apart from the token before it, as a total. */
     val separated: Boolean = false,
     val hidden: Boolean = false,
 )
 
 /** The paints a header's tokens are drawn with: made once per text size. */
-internal class HeaderPaints(valuePx: Float, labelPx: Float, density: Float) {
-    val value: Paint = textPaint(valuePx, FontWeight.SemiBold.weight)
-    val unit: Paint = textPaint(valuePx * UNIT_SCALE, FontWeight.Normal.weight)
+internal class HeaderPaints(valuePx: Float, labelPx: Float) {
+    val value: Paint = textPaint(valuePx, FontWeight.Light.weight)
+    val unit: Paint = textPaint(labelPx, FontWeight.Normal.weight)
     val label: Paint = textPaint(labelPx, FontWeight.Medium.weight).apply { letterSpacing = LABEL_TRACKING }
-    val detail: Paint = textPaint(labelPx, FontWeight.SemiBold.weight)
+    val detail: Paint = textPaint(labelPx, FontWeight.Medium.weight)
     val valueCap = capHeight(value)
-    val labelCap = capHeight(label)
-    val lineGap = LINE_GAP_DP * density
 }
 
 /** The theme colours a header's tokens are drawn in. */
-internal class HeaderColors(val text: Color, val unit: Color, val label: Color, val rule: Color)
+internal class HeaderColors(val text: Color, val unit: Color, val label: Color)
 
 private fun capHeight(paint: Paint): Float {
     val bounds = android.graphics.Rect()
@@ -124,16 +120,11 @@ internal class TokenHits {
     }
 }
 
-private fun lineWidth(token: HeaderToken, paints: HeaderPaints, detailGap: Float): Float {
-    val name = token.name?.let { paints.label.measureText(it) } ?: 0f
-    val detail = token.detail?.let { paints.detail.measureText(it) } ?: 0f
-    return name + detail + if (name > 0f && detail > 0f) detailGap else 0f
-}
-
 /**
- * Paints [tokens] into [bounds], against its end, each a value over its name.
- * Too wide, they shrink a little, then drop their names, then shrink again,
- * rather than wrap or spill over the title. Records where each landed in [hits].
+ * Paints [tokens] into [bounds], against its end, each on one line: the value,
+ * its unit, its name, then any detail. Too wide, they shrink a little, then
+ * drop their names, then shrink again, rather than wrap or spill over the
+ * title. Records where each landed in [hits].
  */
 internal fun DrawScope.paintTokens(
     tokens: List<HeaderToken>,
@@ -146,39 +137,42 @@ internal fun DrawScope.paintTokens(
     if (tokens.isEmpty() || bounds.width <= 0f) return
     val gap = TOKEN_GAP_DP * density
     val unitGap = UNIT_GAP_DP * density
-    val detailGap = DETAIL_GAP_DP * density
+    val partGap = PART_GAP_DP * density
     val count = tokens.size
-    val textWidths = FloatArray(count)
     val valueWidths = FloatArray(count)
-    val lineWidths = FloatArray(count)
-    var anyLine = false
+    val unitWidths = FloatArray(count)
+    val nameWidths = FloatArray(count)
+    val detailWidths = FloatArray(count)
     for (i in 0 until count) {
         val token = tokens[i]
-        textWidths[i] = paints.value.measureText(token.value)
-        valueWidths[i] = textWidths[i] + (token.unit?.let { unitGap + paints.unit.measureText(it) } ?: 0f)
-        lineWidths[i] = lineWidth(token, paints, detailGap)
-        if (lineWidths[i] > 0f) anyLine = true
+        valueWidths[i] = paints.value.measureText(token.value)
+        unitWidths[i] = token.unit?.let { paints.unit.measureText(it) } ?: 0f
+        nameWidths[i] = token.name?.let { paints.label.measureText(it) } ?: 0f
+        detailWidths[i] = token.detail?.let { paints.detail.measureText(it) } ?: 0f
     }
-    fun spanOf(lines: Boolean): Float {
+    fun widthOf(i: Int, names: Boolean): Float =
+        valueWidths[i] +
+            (if (unitWidths[i] > 0f) unitGap + unitWidths[i] else 0f) +
+            (if (names && nameWidths[i] > 0f) partGap + nameWidths[i] else 0f) +
+            (if (detailWidths[i] > 0f) partGap + detailWidths[i] else 0f)
+    fun spanOf(names: Boolean): Float {
         var span = 0f
         for (i in 0 until count) {
             if (i > 0) span += if (tokens[i].separated) gap * 2 else gap
-            span += if (lines) max(valueWidths[i], lineWidths[i]) else valueWidths[i]
+            span += widthOf(i, names)
         }
         return span
     }
-    var lines = anyLine
-    var span = spanOf(lines)
-    if (lines && span * MIN_TOKEN_SCALE > bounds.width) {
-        lines = false
+    var names = true
+    var span = spanOf(true)
+    if (span * MIN_TOKEN_SCALE > bounds.width) {
+        names = false
         span = spanOf(false)
     }
     val scale = if (span > bounds.width) bounds.width / span else 1f
 
     val middle = bounds.top + bounds.height / 2f
-    val valueBaseline = middle - (paints.valueCap + paints.lineGap + paints.labelCap) / 2f + paints.valueCap
-    val labelBaseline = valueBaseline + paints.lineGap + paints.labelCap
-    val centredBaseline = middle + paints.valueCap / 2f
+    val baseline = middle + paints.valueCap / 2f
     val pivot = bounds.right
     fun onScreen(x: Float) = pivot + (x - pivot) * scale - bounds.left
 
@@ -193,41 +187,35 @@ internal fun DrawScope.paintTokens(
             val base = if (color.isSpecified) color else fallback
             return base.copy(alpha = base.alpha * alpha).toArgb()
         }
-        val hasLine = lines && lineWidths[i] > 0f
-        val width = if (lines) max(valueWidths[i], lineWidths[i]) else valueWidths[i]
-        val baseline = if (hasLine) valueBaseline else centredBaseline
-
-        var x = right - valueWidths[i]
+        val width = widthOf(i, names)
+        var x = right - width
         paints.value.color = tint(token.color, colors.text)
         canvas.drawText(token.value, x, baseline, paints.value)
+        x += valueWidths[i]
         token.unit?.let { unit ->
-            x += textWidths[i] + unitGap
+            x += unitGap
             paints.unit.color = tint(colors.unit, colors.unit)
             canvas.drawText(unit, x, baseline, paints.unit)
+            x += unitWidths[i]
         }
-        if (hasLine) {
-            var lineX = right - lineWidths[i]
-            token.name?.let { name ->
-                paints.label.color = tint(colors.label, colors.label)
-                paints.label.isStrikeThruText = token.hidden
-                canvas.drawText(name, lineX, labelBaseline, paints.label)
-                paints.label.isStrikeThruText = false
-                lineX += paints.label.measureText(name) + detailGap
-            }
-            token.detail?.let { detail ->
-                paints.detail.color = tint(token.detailColor, colors.label)
-                canvas.drawText(detail, lineX, labelBaseline, paints.detail)
-            }
+        if (names) token.name?.let { name ->
+            x += partGap
+            paints.label.color = tint(colors.label, colors.label)
+            paints.label.isStrikeThruText = token.hidden
+            canvas.drawText(name, x, baseline, paints.label)
+            paints.label.isStrikeThruText = false
+            x += nameWidths[i]
+        }
+        token.detail?.let { detail ->
+            x += partGap
+            paints.detail.color = tint(token.detailColor, colors.label)
+            canvas.drawText(detail, x, baseline, paints.detail)
         }
 
         val start = right - width
         hits.add(onScreen(start - gap / 2f), onScreen(right + gap / 2f), token.key)
         right = start - gap
-        if (token.separated && i > 0) {
-            val inset = RULE_INSET_DP * density
-            drawLine(colors.rule, Offset(right, bounds.top + inset), Offset(right, bounds.bottom - inset), 1f)
-            right -= gap
-        }
+        if (token.separated && i > 0) right -= gap
     }
     canvas.restoreToCount(save)
 }
@@ -238,27 +226,31 @@ internal fun windowPillText(window: GraphWindow, narrow: Boolean, referenceLap: 
     return if (window == GraphWindow.SELECTED && referenceLap > 0) "$name · L$referenceLap" else name
 }
 
-/** A chart's window, as a tonal pill beside its title; tinted when the chart picked its own. */
+/**
+ * A chart's window beside its title: the window's name and a caret in the
+ * accent colour. A chart that picked its own window shows it in the
+ * contrasting tertiary colour, with a dot before it.
+ */
 @Composable
 internal fun WindowPill(text: String, emphasised: Boolean, description: String, onClick: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    val container = if (emphasised) colors.primaryContainer else colors.surfaceContainerHigh
-    val content = if (emphasised) colors.onPrimaryContainer else colors.onSurfaceVariant
+    val accent = if (emphasised) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
     Row(
         Modifier
-            .height(20.dp)
-            .clip(CircleShape)
-            .background(container)
-            .clickable(onClick = onClick)
-            .padding(start = 8.dp, end = 3.dp),
+            .height(HEADER_HEIGHT_DP.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(role = Role.DropdownList, onClick = onClick)
+            .padding(start = 4.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text, style = MaterialTheme.typography.labelMedium, color = content, maxLines = 1)
+        if (emphasised) {
+            Box(Modifier.padding(end = 5.dp).size(4.dp).clip(CircleShape).background(accent))
+        }
+        Text(text, style = MaterialTheme.typography.labelMedium, color = accent, maxLines = 1)
         Icon(
             painterResource(R.drawable.ic_expand_more),
             contentDescription = description,
-            modifier = Modifier.size(16.dp),
-            tint = content,
+            modifier = Modifier.size(14.dp),
+            tint = accent,
         )
     }
 }

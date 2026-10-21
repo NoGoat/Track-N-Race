@@ -246,7 +246,7 @@ internal class TelemetryController(
         if (playback == null) return pairedTelemetry.requestLapData(requestId, lapNumber, channels)
         val names = channels.toTypedArray()
         lapExecutor.execute {
-            val data = directTelemetry.lapData(lapNumber, names)
+            val data = directTelemetry.lapData(lapNumber, names, forCharts = requestId >= GRAPHS_REQUEST_BASE)
             onLapData("{\"type\":\"lap_data\",\"requestId\":$requestId,\"lapNum\":$lapNumber,\"data\":${data ?: "null"}}")
         }
         return true

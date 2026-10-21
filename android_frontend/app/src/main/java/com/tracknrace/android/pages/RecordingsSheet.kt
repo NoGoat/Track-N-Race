@@ -85,6 +85,9 @@ internal fun RecordingsSheet(
     var recordings by remember { mutableStateOf<List<RecordingFile>?>(null) }
     var scanning by remember { mutableStateOf(true) }
     LaunchedEffect(scans, foldersVersion) {
+        // The resume effect counts the sheet's own opening too: wait for it,
+        // so one opening searches once rather than twice at the same time.
+        if (scans == 0) return@LaunchedEffect
         scanning = true
         folders = RecordingLibrary.folders(context)
         recordings = withContext(Dispatchers.IO) { RecordingLibrary.scan(context) }
