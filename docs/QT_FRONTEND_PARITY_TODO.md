@@ -1,5 +1,7 @@
 # Qt Frontend Parity TODO
 
+# OUT OF DATE - QT PARITY IS DONE - QT IS NOW AT 1:1 PARITY WITH ELECTRON
+
 ## Purpose
 
 This document lists user-visible behavior that is implemented and reachable in

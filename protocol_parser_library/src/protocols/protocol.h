@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <array>
 #include <optional>
 #include <string>
@@ -50,12 +51,19 @@ struct HotOut {
     }
 };
 
-// Binary reading helper functions
+// Binary reading helper functions. Packet fields are unaligned, so read via
+// memcpy (compiles to a single load) rather than a pointer cast.
+template <typename T>
+inline T ReadUnaligned(const uint8_t* data, int offset) {
+    T value;
+    std::memcpy(&value, data + offset, sizeof(T));
+    return value;
+}
 inline float ReadFloat(const uint8_t* data, int offset) {
-    return *(const float*)(data + offset);
+    return ReadUnaligned<float>(data, offset);
 }
 inline uint32_t ReadUInt32(const uint8_t* data, int offset) {
-    return *(const uint32_t*)(data + offset);
+    return ReadUnaligned<uint32_t>(data, offset);
 }
 inline uint64_t ReadUInt64(const uint8_t* data, int offset) {
     uint64_t value = 0;
@@ -64,10 +72,10 @@ inline uint64_t ReadUInt64(const uint8_t* data, int offset) {
     return value;
 }
 inline uint16_t ReadUInt16(const uint8_t* data, int offset) {
-    return *(const uint16_t*)(data + offset);
+    return ReadUnaligned<uint16_t>(data, offset);
 }
 inline int16_t ReadInt16(const uint8_t* data, int offset) {
-    return *(const int16_t*)(data + offset);
+    return ReadUnaligned<int16_t>(data, offset);
 }
 inline uint8_t ReadUInt8(const uint8_t* data, int offset) {
     return data[offset];
