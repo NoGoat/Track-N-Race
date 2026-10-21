@@ -1,5 +1,7 @@
 # Qt Frontend — Remaining Gaps vs Electron
 
+# OUT OF DATE - QT PARITY IS DONE - QT IS NOW AT 1:1 PARITY WITH ELECTRON
+
 ## Purpose
 
 This document lists behaviour and presentation that `electron-frontend/` has
