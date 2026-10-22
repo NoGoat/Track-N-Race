@@ -23,7 +23,6 @@ internal class TelemetryController(
 ) : NativeTelemetry.Listener, PairedTelemetryClient.Listener, PairDiscovery.Listener {
     companion object {
         private const val UDP_PORT = 20777
-        private const val PREF_TIMING_ONE_LINE = "timing_one_line"
         private const val PREF_THEME_MODE = "theme_mode"
         private const val PREF_WHEEL_DISPLAY = "wheel_display"
     }
@@ -297,11 +296,6 @@ internal class TelemetryController(
         if (active != enabled) {
             preferences().edit().putBoolean(RecordingStorage.PREF_RECORDING, false).apply()
         }
-        publishSettings()
-    }
-
-    fun setTimingOneLine(enabled: Boolean) {
-        preferences().edit().putBoolean(PREF_TIMING_ONE_LINE, enabled).apply()
         publishSettings()
     }
 
@@ -591,7 +585,6 @@ internal class TelemetryController(
             PairedTelemetryClient.SOURCE_DIRECT,
         ) ?: PairedTelemetryClient.SOURCE_DIRECT,
         recordingEnabled = preferences().getBoolean(RecordingStorage.PREF_RECORDING, false),
-        timingOneLine = preferences().getBoolean(PREF_TIMING_ONE_LINE, false),
         hasSavedDesktop = PairedTelemetryClient.hasSavedDesktop(context),
         desktopName = PairedTelemetryClient.savedDesktopName(context),
         recordingDirectory = RecordingStorage.selectedDirectoryLabel(context),

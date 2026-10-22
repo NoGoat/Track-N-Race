@@ -1,6 +1,9 @@
 #pragma once
 
+#include "tnrp/control_rows.h"
+
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,5 +25,25 @@ uint32_t pairLapDataRowMask(const std::vector<std::string>& channels);
 // Times are seconds from the lap's start. Returns "" when the row is unusable.
 std::string pairLapDataJson(std::string_view playbackLapData,
                             const std::vector<std::string>& channels);
+
+// The same reply built from samples read straight from a recording's columns,
+// with no playback_lap_data row in between. Each family's samples are in row
+// order, their times and values as that row's JSON would read them. Positions
+// are left empty: only a chart lap request, which draws no map, takes this path.
+struct PairLapSample {
+    double sessionTime{};
+    int v6Type{};
+    bool unavailable{};
+    std::vector<std::pair<std::string_view, double>> fields;
+};
+struct PairLapSamples {
+    int lapNum{};
+    float startSessionTime{};
+    float endSessionTime{};
+    std::vector<LapProgressPoint> progress;
+    // By family name: "telemetry", "status", "damage", "motion", "motion_ex".
+    std::map<std::string, std::vector<PairLapSample>, std::less<>> families;
+};
+std::string pairLapDataJson(const PairLapSamples& lap, const std::vector<std::string>& channels);
 
 } // namespace tnrp

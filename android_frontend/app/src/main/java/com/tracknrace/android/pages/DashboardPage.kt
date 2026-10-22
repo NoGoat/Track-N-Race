@@ -821,6 +821,7 @@ private fun LiveMap(store: TelemetryStore, active: Boolean, modifier: Modifier) 
     }
     val trackId by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.cold.trackId } }
     val aeroMode by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.cold.aeroMode } }
+    val slmTrackStatus by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.cold.slmTrackStatus } }
     val roster by remember(store) {
         derivedStateOf(structuralEqualityPolicy()) {
             store.timing.drivers.values.sortedBy { it.index }.map { driver ->
@@ -841,6 +842,7 @@ private fun LiveMap(store: TelemetryStore, active: Boolean, modifier: Modifier) 
         cars = cars,
         trackColor = MaterialTheme.colorScheme.onSurface,
         modifier = modifier,
+        slmTrackStatus = slmTrackStatus,
     )
 }
 

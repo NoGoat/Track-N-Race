@@ -198,6 +198,12 @@ public:
     std::string driverRestrictionMessage(float cursorTime) const;
     std::string getLapDataMessage(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu,
                                   int driverIndex = -1) const;
+    // A V6 recording's lap `lapNum` for the playback driver as a phone's chart
+    // lap reply (PairLapData's format, without positions), read straight from
+    // the columns rather than rendered as a playback_lap_data row and parsed
+    // back. Empty when the column path does not cover this recording or
+    // driver selection; the caller then uses getLapDataMessage.
+    std::string phoneChartLapJson(int lapNum, const std::vector<std::string>& channels) const;
     bool getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
                                 int driverIndex = -1) const;
     // One car's completed laps ending at or before `throughTime`. V6 only;

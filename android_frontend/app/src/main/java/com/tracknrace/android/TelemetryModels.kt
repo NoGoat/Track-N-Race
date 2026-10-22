@@ -144,6 +144,8 @@ internal data class DashboardColdState(
     val trackId: Int = -1,
     val tyreSets: List<TyreSetEntry> = emptyList(),
     val aeroMode: String = "drs",
+    /** 2026 SLM track status: 0 full grip (dry zones), 1 partial (wet zones), -1 unknown. */
+    val slmTrackStatus: Int = -1,
     val protocolYear: Int? = null,
     /** The format the desktop presents (2026 after the Formula gate), for its limits. */
     val presentationYear: Int? = null,
@@ -357,7 +359,6 @@ internal fun TimingTowerState.needsParticipantsRefresh(): Boolean =
 internal data class AndroidSettings(
     val source: String = PairedTelemetryClient.SOURCE_DIRECT,
     val recordingEnabled: Boolean = false,
-    val timingOneLine: Boolean = false,
     val hasSavedDesktop: Boolean = false,
     val desktopName: String = "",
     val recordingDirectory: String = "",

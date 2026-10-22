@@ -1,6 +1,9 @@
 #include "tnrp/TnrdReader.h"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -20,6 +23,7 @@
 
 #include "tnrp/BinaryRows.h"
 #include "tnrp/TyreStints.h"
+#include "PairLapData.h"
 #include "TnrdCodec.h"
 #include "tnrd/TNRD_V1.h"
 #include "tnrd/TNRD_V2.h"
@@ -2268,6 +2272,110 @@ void TnrdReader::projectV6Row(
         if (selected && wants(4)) out.emplace_back(4, wrap("lap", driver, false));
         if (wants(7)) out.emplace_back(7, wrap("timing", driver, true));
     }
+}
+
+std::string TnrdReader::phoneChartLapJson(int lapNum, const std::vector<std::string>& channels) const {
+    // The sparse V6 rows of the recorded driver's laps: what the phone plays
+    // until another car is chosen.
+    if (loadedFormat_ != TnrdFormat::ChunkedV6 || !sparseV6Playback_ ||
+        (playbackDriverIndex_ >= 0 && playbackDriverIndex_ != recordedDriverIndex_)) return {};
+    auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+    if (!v6) return {};
+    const auto block = lapBlocks_.find(lapNum);
+    if (block == lapBlocks_.end()) return {};
+    const LapBlock& b = block->second;
+    // The families asked for and lap progress; never positions.
+    const uint32_t rowMask = pairLapDataRowMask(channels) & ~detail::v4TypeBit(13);
+    const auto wants = [&](uint8_t type) { return (rowMask & detail::v4TypeBit(type)) != 0; };
+    detail::V6LapFields rows;
+    std::string error;
+    if (!v6->lapFields(static_cast<uint32_t>(lapNum), v6TypesForRowMask(rowMask),
+                       b.startSessionTime, b.endSessionTime, rows, &error)) return {};
+
+    // Each family's asked-for fields, by the lap's field name index.
+    constexpr std::string_view kFamilies[] = {"telemetry", "status", "damage", "motion", "motion_ex"};
+    constexpr size_t kFamilyCount = std::size(kFamilies);
+    std::vector<uint8_t> askedBy(rows.names.size(), 0);  // bit f: family f asks for it
+    for (const auto& channel : channels) {
+        const size_t dot = channel.find('.');
+        if (dot == std::string::npos) continue;
+        const std::string_view family(channel.data(), dot);
+        const std::string_view field(channel.data() + dot + 1, channel.size() - dot - 1);
+        for (size_t f = 0; f < kFamilyCount; ++f) {
+            if (kFamilies[f] != family) continue;
+            for (size_t n = 0; n < rows.names.size(); ++n)
+                if (rows.names[n] == field) askedBy[n] |= static_cast<uint8_t>(1u << f);
+        }
+    }
+    const auto nameId = [&](std::string_view name) {
+        for (size_t n = 0; n < rows.names.size(); ++n) if (rows.names[n] == name) return static_cast<int>(n);
+        return -1;
+    };
+    const int drsAllowed = nameId("drs_allowed");
+    const int currentLapMs = nameId("current_lap_ms"), lapDistance = nameId("lap_distance_m"),
+              sector = nameId("sector"), s1 = nameId("s1_ms"), s2 = nameId("s2_ms");
+
+    // getLapDataMessage() renders reals with "%.9g" and the reply reads them
+    // back; reading them the same way keeps both replies identical.
+    const auto asRead = [](double value) {
+        char text[32];
+        const auto written = std::to_chars(text, text + sizeof(text) - 1, value, std::chars_format::general, 9);
+        *written.ptr = '\0';
+        return std::strtod(text, nullptr);
+    };
+    // Rows of several types share a time: read each time once.
+    float lastTime = std::numeric_limits<float>::quiet_NaN();
+    double lastTimeRead = 0.0;
+    PairLapSamples lap;
+    lap.lapNum = b.lapNum;
+    lap.startSessionTime = b.startSessionTime;
+    lap.endSessionTime = b.endSessionTime;
+    std::array<std::vector<PairLapSample>*, kFamilyCount> samples{};
+    for (const auto& row : rows.rows) {
+        const auto first = rows.fields.begin() + row.first;
+        const auto last = first + row.count;
+        // projectV6Row()'s routing for the selected driver.
+        const uint8_t type = row.type;
+        int family = -1;
+        if (type == 7 && drsAllowed >= 0 &&
+            std::any_of(first, last, [&](const auto& field) { return static_cast<int>(field.name) == drsAllowed; })) {
+            if (wants(2)) family = 1;
+        }
+        else if (type <= 11) { if (wants(1)) family = 0; }
+        else if (type == 12 || type == 14) { if (wants(3)) family = 2; }
+        else if (type == 13 && row.sets) {}
+        else if (type == 13 || (type >= 15 && type <= 20)) { if (wants(2)) family = 1; }
+        else if (type == 21) { if (wants(11)) family = 3; }
+        else if (type == 22) { if (wants(12)) family = 4; }
+        else if (type == 24 && wants(4)) {
+            LapProgressPoint point{row.time};
+            for (auto field = first; field != last; ++field) {
+                const int name = static_cast<int>(field->name);
+                if (name == currentLapMs) point.current_lap_ms = static_cast<int>(field->value);
+                else if (name == lapDistance) point.lap_distance_m = static_cast<float>(field->value);
+                else if (name == sector) point.sector = static_cast<int>(field->value);
+                else if (name == s1) point.s1_ms = static_cast<int>(field->value);
+                else if (name == s2) point.s2_ms = static_cast<int>(field->value);
+            }
+            lap.progress.push_back(point);
+        }
+        // A non-finite real makes the rendered row unreadable, so the reply skips it.
+        if (family < 0 || !row.finite) continue;
+        // Every row of a family counts for its times; only asked-for fields are kept.
+        if (row.time != lastTime) {
+            lastTime = row.time;
+            lastTimeRead = asRead(row.time);
+        }
+        PairLapSample sample{lastTimeRead, type, row.unavailable, {}};
+        const uint8_t bit = static_cast<uint8_t>(1u << family);
+        for (auto field = first; field != last; ++field)
+            if (askedBy[field->name] & bit)
+                sample.fields.emplace_back(rows.names[field->name], field->real ? asRead(field->value) : field->value);
+        auto*& list = samples[static_cast<size_t>(family)];
+        if (!list) list = &lap.families[std::string(kFamilies[family])];
+        list->push_back(std::move(sample));
+    }
+    return pairLapDataJson(lap, channels);
 }
 
 bool TnrdReader::currentLapAt(float t, float& startOut, int& numOut) const {

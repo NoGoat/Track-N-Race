@@ -108,6 +108,29 @@ using V6ControlSummary = V4ControlSummary;
 using V6TimedRow = V4TimedRow;
 using V6RowTypeMask = V4RowTypeMask;
 
+// One lap's samples as numeric fields (TnrdV6Archive::lapFields). A row's
+// fields are fields[first, first + count), each a name index and a value:
+// Int and Bool columns as integers (true is 1), real columns as stored.
+struct V6LapFields {
+    struct Field {
+        uint32_t name{};
+        bool real{};  // a real column, which JSON renders with "%.9g"
+        double value{};
+    };
+    struct Row {
+        float time{};
+        uint8_t type{};
+        bool sets{};         // carries tyre sets (a Json column)
+        bool unavailable{};  // an {"available":false} sample
+        bool finite{true};   // every real field is finite
+        uint32_t first{};
+        uint32_t count{};
+    };
+    std::vector<std::string> names;
+    std::vector<Row> rows;
+    std::vector<Field> fields;
+};
+
 // A live session held in memory by a TnrdV6Writer (openMemory) at one moment,
 // laid out as a V6 file's index would describe it. Each chunk's
 // V6ChunkInfo::offset indexes `payloads`: a committed chunk's zstd frame,
@@ -276,6 +299,12 @@ public:
     bool columnarHistory(uint8_t driver, const std::vector<uint8_t>& types, uint32_t v4Mask,
                          float from, float to, bool seed, std::vector<uint8_t>& out,
                          std::string* errorOut, const IndexedCancelCheck& cancelled = {});
+    // One lap's samples of `types` for the playback driver within [from, to],
+    // as the numeric fields each carries, in the order rowsForLap() returns
+    // them: what a phone's chart lap request reads, with no row rendered as
+    // JSON. Json columns are not carried; a row holding tyre sets is flagged.
+    bool lapFields(uint32_t lap, const std::vector<uint8_t>& types, float from, float to,
+                   V6LapFields& out, std::string* errorOut);
     // True when this recording was opened by rebuilding its index from the
     // chunk stream, because the writer was interrupted before writing one.
     // Callers should surface this: the final lap of each driver may be absent.

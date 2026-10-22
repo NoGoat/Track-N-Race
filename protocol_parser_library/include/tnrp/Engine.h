@@ -260,7 +260,10 @@ public:
     // request_lap_data: the JSON a paired phone receives as their "data".
     // Empty when nothing is playing or a lap is unknown.
     std::string playerLapDeltaJson(int currentLap, int comparisonLap, bool sectorDelta);
-    std::string playerPhoneLapDataJson(int lapNum, const std::vector<std::string>& channels);
+    // forCharts: the request draws no map, so a V6 recording's lap is read
+    // straight from its columns (no positions) instead of rendered and filtered.
+    std::string playerPhoneLapDataJson(int lapNum, const std::vector<std::string>& channels,
+                                       bool forCharts = false);
     void playerGetAllLapsData(uint64_t requestId = 0, uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerGetWindowData(float windowSeconds, uint64_t requestId = 0,
                              uint32_t rowTypeMask = 0xFFFFFFFFu);

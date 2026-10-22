@@ -8,23 +8,21 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -34,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -55,13 +54,16 @@ import com.tracknrace.android.PlaybackCatalog
 import com.tracknrace.android.PlaybackLapInfo
 import com.tracknrace.android.formatLapTimeMs
 
-/** Which lap the picker is choosing. */
-internal enum class LapTarget { COMPARE, LAP_A, LAP_B }
+/** Which lap a sheet chooses: the first (current, or Lap A) or the second (comparison, or Lap B). */
+internal enum class LapTarget { LAP_A, LAP_B }
 
 /**
- * Picks the compared laps: following the desktop's lap against a chosen one,
- * or two fixed laps. Rows read like the desktop's lap selector: compound in
- * its tyre colour, lap number and time, and FL on the fastest lap.
+ * One lap's sheet, opened from its button in the lap row. Its colour and name
+ * come first, as the chart, map and headers show them. The first lap follows
+ * playback or is fixed to a chosen lap; the second has quick picks for the
+ * fastest and previous laps, then every lap. Rows read like the desktop's lap
+ * selector: compound in its tyre colour, lap number and time, and FL on the
+ * fastest lap.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,124 +71,130 @@ internal fun AnalysisLapSheet(
     analysis: AnalysisController,
     catalog: PlaybackCatalog,
     playbackLap: Int,
-    initialTarget: LapTarget,
+    target: LapTarget,
     lapAColor: Color,
     lapBColor: Color,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var target by remember {
-        mutableStateOf(if (analysis.fixedMode) initialTarget.takeIf { it != LapTarget.COMPARE } ?: LapTarget.LAP_A else LapTarget.COMPARE)
-    }
-    // The lap whose colour is being picked: Lap A for the first, Lap B for the second.
-    var colorTarget by remember { mutableStateOf<LapTarget?>(null) }
+    var colorOpen by remember { mutableStateOf(false) }
     val fixed = analysis.fixedMode
-    val selected = when (target) {
-        LapTarget.COMPARE -> analysis.compareLap
-        LapTarget.LAP_A -> analysis.lapA
-        LapTarget.LAP_B -> analysis.lapB
-    }
+    val first = target == LapTarget.LAP_A
+    val config = analysis.config
+    val lapA = if (fixed) analysis.lapA else playbackLap
+    val lapB = if (fixed) analysis.lapB else analysis.compareLap
 
-    fun select(lap: Int) {
-        when (target) {
-            LapTarget.COMPARE -> analysis.selectCompareLap(lap)
-            LapTarget.LAP_A -> analysis.selectLapA(lap)
-            LapTarget.LAP_B -> analysis.selectLapB(lap)
+    // Fixing the first lap carries the comparison over as the second.
+    fun fixLapA(lap: Int) {
+        if (!fixed) {
+            analysis.selectLapB(analysis.compareLap)
+            analysis.useFixedLaps(true)
         }
-        // Choosing Lap A with no Lap B yet moves straight on to Lap B.
-        if (target == LapTarget.LAP_A && analysis.lapB <= 0) target = LapTarget.LAP_B else onDismiss()
+        analysis.selectLapA(lap)
+        onDismiss()
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    fun follow(enabled: Boolean) {
+        if (enabled == !fixed) return
+        if (enabled) {
+            if (analysis.lapB > 0) analysis.selectCompareLap(analysis.lapB)
+            analysis.useFixedLaps(false)
+        } else {
+            // Start from what is on screen now.
+            if (playbackLap > 0) analysis.selectLapA(playbackLap)
+            analysis.selectLapB(analysis.compareLap)
+            analysis.useFixedLaps(true)
+        }
+    }
+
+    fun selectLapB(lap: Int) {
+        if (fixed) analysis.selectLapB(lap) else analysis.selectCompareLap(lap)
+        onDismiss()
+    }
+
+    val colorTitle = when {
+        fixed && first -> "Lap A colour"
+        fixed -> "Lap B colour"
+        first -> "Current lap colour"
+        else -> "Comparison lap colour"
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        sheetGesturesEnabled = false,
+        dragHandle = null,
+    ) {
         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
             item {
-                Text(
-                    "Compare",
-                    modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 12.dp),
-                    style = MaterialTheme.typography.titleLarge,
-                )
-            }
-            item {
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                    SegmentedButton(
-                        selected = !fixed,
-                        onClick = {
-                            analysis.useFixedLaps(false)
-                            target = LapTarget.COMPARE
+                Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 12.dp)) {
+                    Text(if (first) "Current lap" else "Comparison lap", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        if (first) {
+                            if (fixed) "Lap A" else "Lap A · follows playback"
+                        } else {
+                            "Lap B" + if (lapA > 0) " · compared with Lap $lapA" else ""
                         },
-                        shape = SegmentedButtonDefaults.itemShape(0, 2),
-                        enabled = catalog.active,
-                    ) { Text("Follow playback") }
-                    SegmentedButton(
-                        selected = fixed,
-                        onClick = {
-                            if (!fixed) {
-                                // Start from what is on screen now.
-                                if (analysis.lapA <= 0 && playbackLap > 0) analysis.selectLapA(playbackLap)
-                                if (analysis.lapB <= 0 && analysis.compareLap > 0) analysis.selectLapB(analysis.compareLap)
-                                analysis.useFixedLaps(true)
-                            }
-                            target = if (analysis.lapA <= 0) LapTarget.LAP_A else LapTarget.LAP_B
-                        },
-                        shape = SegmentedButtonDefaults.itemShape(1, 2),
-                        enabled = catalog.active,
-                    ) { Text("Two laps") }
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
-            if (fixed) {
-                item {
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
-                        listOf(LapTarget.LAP_A to analysis.lapA, LapTarget.LAP_B to analysis.lapB).forEachIndexed { index, (option, lap) ->
-                            SegmentedButton(
-                                selected = target == option,
-                                onClick = { target = option },
-                                shape = SegmentedButtonDefaults.itemShape(index, 2),
-                                icon = {
-                                    Box(Modifier.requiredSize(10.dp).background(if (index == 0) lapAColor else lapBColor, CircleShape))
-                                },
-                            ) {
-                                Text("${if (index == 0) "Lap A" else "Lap B"} · ${if (lap > 0) "L$lap" else "—"}")
-                            }
-                        }
-                    }
-                }
-            }
-            // The two laps' names and colours, as the chart, map and headers show them.
+            // This lap's name and colour.
             item {
-                val config = analysis.config
-                Column(Modifier.padding(top = 8.dp)) {
+                if (first) {
                     if (fixed) {
-                        LapAppearanceRow(lapAColor, "Lap A colour", config.lapALabel, DEFAULT_LAP_A_LABEL, { colorTarget = LapTarget.LAP_A }) { value ->
+                        LapAppearanceRow(lapAColor, colorTitle, config.lapALabel, DEFAULT_LAP_A_LABEL, { colorOpen = true }) { value ->
                             analysis.updateConfig { it.copy(lapALabel = value) }
                         }
-                        LapAppearanceRow(lapBColor, "Lap B colour", config.lapBLabel, DEFAULT_LAP_B_LABEL, { colorTarget = LapTarget.LAP_B }) { value ->
-                            analysis.updateConfig { it.copy(lapBLabel = value) }
-                        }
                     } else {
-                        LapAppearanceRow(lapAColor, "Current lap colour", config.currentLabel, DEFAULT_CURRENT_LABEL, { colorTarget = LapTarget.LAP_A }) { value ->
+                        LapAppearanceRow(lapAColor, colorTitle, config.currentLabel, DEFAULT_CURRENT_LABEL, { colorOpen = true }) { value ->
                             analysis.updateConfig { it.copy(currentLabel = value) }
                         }
-                        LapAppearanceRow(lapBColor, "Comparison lap colour", config.compareLabel, DEFAULT_COMPARE_LABEL, { colorTarget = LapTarget.LAP_B }) { value ->
-                            analysis.updateConfig { it.copy(compareLabel = value) }
-                        }
+                    }
+                } else if (fixed) {
+                    LapAppearanceRow(lapBColor, colorTitle, config.lapBLabel, DEFAULT_LAP_B_LABEL, { colorOpen = true }) { value ->
+                        analysis.updateConfig { it.copy(lapBLabel = value) }
+                    }
+                } else {
+                    LapAppearanceRow(lapBColor, colorTitle, config.compareLabel, DEFAULT_COMPARE_LABEL, { colorOpen = true }) { value ->
+                        analysis.updateConfig { it.copy(compareLabel = value) }
                     }
                 }
             }
-            item {
-                Text(
-                    when (target) {
-                        LapTarget.COMPARE -> "Comparison lap"
-                        LapTarget.LAP_A -> "Lap A"
-                        LapTarget.LAP_B -> "Lap B"
-                    },
-                    modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 4.dp),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            if (target == LapTarget.COMPARE) {
+            item { HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant) }
+            if (first) {
                 item {
-                    LapRow(AnnotatedString("None"), fastest = false, selected = selected <= 0) { select(0) }
+                    ListItem(
+                        headlineContent = { Text("Follow playback") },
+                        supportingContent = { Text("Lap A is always the lap being played") },
+                        trailingContent = { Switch(checked = !fixed, onCheckedChange = null, enabled = catalog.active) },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        modifier = Modifier.toggleable(value = !fixed, enabled = catalog.active, role = Role.Switch, onValueChange = ::follow),
+                    )
+                }
+                item { SheetHeading("Or fix lap A to") }
+            } else {
+                val fastest = catalog.laps.firstOrNull { it.lapNumber == catalog.fastestLap }
+                val previous = catalog.laps.firstOrNull { it.lapNumber == lapA - 1 }
+                if (fastest != null || previous != null) {
+                    item { SheetHeading("Quick pick") }
+                    fastest?.let { lap ->
+                        item(key = "fastest") {
+                            QuickPickRow("Fastest lap", lap, lapB == lap.lapNumber, enabled = lap.lapNumber != lapA) { selectLapB(lap.lapNumber) }
+                        }
+                    }
+                    previous?.let { lap ->
+                        item(key = "previous") {
+                            QuickPickRow("Previous lap", lap, lapB == lap.lapNumber) { selectLapB(lap.lapNumber) }
+                        }
+                    }
+                }
+                item { SheetHeading("Any lap") }
+                if (!fixed) {
+                    item {
+                        LapRow(AnnotatedString("None"), fastest = false, selected = lapB <= 0) { selectLapB(0) }
+                    }
                 }
             }
             if (catalog.laps.isEmpty()) {
@@ -200,34 +208,62 @@ internal fun AnalysisLapSheet(
                 }
             }
             items(catalog.laps, key = { it.lapNumber }) { lap ->
+                val number = lap.lapNumber
+                // The other lap is not a choice; the lap playing is marked while following it.
+                val other = if (first) lapB else lapA
                 LapRow(
                     lapLabel(lap, MaterialTheme.colorScheme.onSurface, MaterialTheme.colorScheme.surface),
-                    fastest = lap.lapNumber == catalog.fastestLap,
-                    selected = lap.lapNumber == selected,
-                ) { select(lap.lapNumber) }
+                    fastest = number == catalog.fastestLap,
+                    selected = if (first) fixed && number == lapA else number == lapB,
+                    enabled = number != other,
+                    note = when {
+                        number == other -> if (first) "lap B" else "lap A"
+                        first && !fixed && number == playbackLap -> "playing"
+                        else -> null
+                    },
+                ) { if (first) fixLapA(number) else selectLapB(number) }
             }
         }
     }
 
-    colorTarget?.let { lap ->
-        val first = lap == LapTarget.LAP_A
-        val config = analysis.config
+    if (colorOpen) {
         ColorPickerDialog(
-            title = when {
-                fixed && first -> "Lap A colour"
-                fixed -> "Lap B colour"
-                first -> "Current lap colour"
-                else -> "Comparison lap colour"
-            },
+            title = colorTitle,
             initial = if (first) config.mapCurrentColor else config.mapComparisonColor,
             default = if (first) DEFAULT_MAP_CURRENT_COLOR else DEFAULT_MAP_COMPARISON_COLOR,
             onPick = { color ->
                 analysis.updateConfig { if (first) it.copy(mapCurrentColor = color) else it.copy(mapComparisonColor = color) }
-                colorTarget = null
+                colorOpen = false
             },
-            onDismiss = { colorTarget = null },
+            onDismiss = { colorOpen = false },
         )
     }
+}
+
+@Composable
+private fun SheetHeading(text: String) {
+    Text(
+        text,
+        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 4.dp),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+    )
+}
+
+/** A named shortcut to a lap: "Fastest lap", with the lap and its time beneath. */
+@Composable
+private fun QuickPickRow(title: String, lap: PlaybackLapInfo, selected: Boolean, enabled: Boolean = true, onClick: () -> Unit) {
+    ListItem(
+        headlineContent = { Text(title, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal) },
+        supportingContent = { Text(lapLabel(lap, MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.surface)) },
+        leadingContent = { RadioButton(selected = selected, onClick = null, enabled = enabled) },
+        colors = ListItemDefaults.colors(
+            containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f) else Color.Transparent,
+        ),
+        modifier = Modifier
+            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
+            .alpha(if (enabled) 1f else 0.38f),
+    )
 }
 
 /** One radio row of a picker: a lap, or any choice, with FL on the fastest lap. */
@@ -263,10 +299,18 @@ private fun LapAppearanceRow(
 }
 
 @Composable
-internal fun LapRow(label: AnnotatedString, fastest: Boolean, selected: Boolean, onClick: () -> Unit) {
+internal fun LapRow(
+    label: AnnotatedString,
+    fastest: Boolean,
+    selected: Boolean,
+    enabled: Boolean = true,
+    note: String? = null,
+    onClick: () -> Unit,
+) {
     ListItem(
         headlineContent = { Text(label, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal) },
-        leadingContent = { RadioButton(selected = selected, onClick = null) },
+        supportingContent = note?.let { { Text(it) } },
+        leadingContent = { RadioButton(selected = selected, onClick = null, enabled = enabled) },
         trailingContent = if (fastest) {
             { FastestLapChip() }
         } else {
@@ -275,7 +319,9 @@ internal fun LapRow(label: AnnotatedString, fastest: Boolean, selected: Boolean,
         colors = ListItemDefaults.colors(
             containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f) else Color.Transparent,
         ),
-        modifier = Modifier.selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
+        modifier = Modifier
+            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
+            .alpha(if (enabled) 1f else 0.38f),
     )
 }
 

@@ -10,14 +10,13 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.semantics.Role
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
-import androidx.compose.material3.FilledIconButton
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -55,6 +54,7 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ImageBitmap
@@ -73,9 +73,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.tracknrace.android.AnalysisLap
@@ -94,36 +97,37 @@ import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 private val PlaybackSpeeds = listOf(0.5f, 1f, 2f, 4f)
 
-// The desktop map's palette (TrackMap.tsx), dark and light variants. The
-// sector colours are the broadcast S1/S2/S3 colours; the rest mark the aids.
+// The map's palette, dark and light variants: each sector a tint of the app's
+// accent, light to deep, and one colour for each overtaking aid.
 private class MapPalette(
     val sectors: List<Color>,
     val drs: Color,
-    val slm: Color,
+    val slmDry: Color,
+    val slmWet: Color,
     val speedTrap: Color,
     val overtake: Color,
-    val startFinish: Color,
 )
 
 private val DarkMapPalette = MapPalette(
-    sectors = listOf(Color(0xffE8002D), Color(0xff0090D0), Color(0xffFFD700)),
-    drs = Color(0xff39B54A),
-    slm = Color(0xff46E396),
+    sectors = listOf(Color(0xffE3E8F8), Color(0xffB8C6EA), Color(0xff7286BB)),
+    drs = Color(0xff7ADCA7),
+    slmDry = Color(0xffF4A3C4),
+    slmWet = Color(0xff6FD3E6),
     speedTrap = Color(0xff8881DE),
-    overtake = Color(0xff95E7F0),
-    startFinish = Color(0xffE8002D),
+    overtake = Color(0xffF1D25D),
 )
 
 private val LightMapPalette = MapPalette(
-    sectors = listOf(Color(0xffB3132B), Color(0xff0D47A1), Color(0xff765900)),
-    drs = Color(0xff237A32),
-    slm = Color(0xff16804A),
+    sectors = listOf(Color(0xff7F92C4), Color(0xff4E63A3), Color(0xff2B3A6B)),
+    drs = Color(0xff1F8A5A),
+    slmDry = Color(0xffB8457A),
+    slmWet = Color(0xff0F7D92),
     speedTrap = Color(0xff5B54B4),
-    overtake = Color(0xff397F88),
-    startFinish = Color(0xffE8002D),
+    overtake = Color(0xff8A6D00),
 )
 
 private typealias Point = Offset
@@ -144,20 +148,28 @@ private class TrackOutline(
     private val rotation: MapRotation,
     val sectors: List<Pair<Int, List<Point>>>,
     val junctions: List<TrackTick>,
+    /** The whole lap as one loop, for keeping the sector names clear of the track. */
+    val centerline: List<Point>,
     val startFinish: TrackTick?,
     val drsZones: List<OffsetZone>,
-    val slmZones: List<OffsetZone>,
+    val slmDryZones: List<OffsetZone>,
+    val slmWetZones: List<OffsetZone>,
     val speedTraps: List<Point>,
     val overtakeDetection: Point?,
     val overtakeActivation: TrackTick?,
 ) {
-    val boundsMinX = sectors.minOf { (_, points) -> points.minOf { it.x } }
-    val boundsMaxX = sectors.maxOf { (_, points) -> points.maxOf { it.x } }
-    val boundsMinY = sectors.minOf { (_, points) -> points.minOf { it.y } }
-    val boundsMaxY = sectors.maxOf { (_, points) -> points.maxOf { it.y } }
+    /** The drawn circuit's convex hull: all a turned fit needs to size it. */
+    val hull: List<Point> = convexHull(sectors.flatMap { it.second })
 
     /** Car world coordinates to rotated map units. */
     fun mapPosition(x: Double, z: Double): Point = rotation.apply(transform.apply(x, z))
+
+    /** The overtaking zones in force: DRS, or the SLM zones for full or partial grip. */
+    fun aeroZones(slm: Boolean, slmTrackStatus: Int): List<OffsetZone> = when {
+        !slm -> drsZones
+        slmTrackStatus == 1 -> slmWetZones
+        else -> slmDryZones
+    }
 }
 
 private class MapTransform(
@@ -243,19 +255,24 @@ internal class AnalysisMapClock {
 
 internal class MapLap(val lap: AnalysisLap, val color: Color, val label: String)
 
-private val TrackWidth = 4.dp
-private val ZoneWidth = 4.dp
-private val ZoneOffset = 9.dp
-private val ZoneDash = 3.dp
+private val TrackWidth = 3.dp
+private val ZoneWidth = 1.75.dp
+private val ZoneOffset = 8.dp
 private val TickHalf = 7.dp
-private val StartFinishHalf = 9.dp
-private val PointRadius = 5.dp
+private val StartFinishHalf = 7.dp
+private val PointRadius = 4.dp
+/** Radius of the gap left in the track where one sector meets the next. */
+private val JunctionGap = 4.dp
+/** Distance of a sector's name from the centreline, past its zone line. */
+private val SectorLabelOffset = 20.dp
 
 /**
  * The circuit with each compared car where it was [elapsed] seconds into its
- * lap, drawn like the desktop map: sector boundaries, start/finish, speed
+ * lap: each sector in its own tint and named beside it, start/finish, speed
  * traps, and the overtaking aids of the car's era (DRS zones, or the 2026 SLM
- * zones with the overtake detection and activation points).
+ * zones for the track's grip with the overtake detection and activation
+ * points). With [focusSector] (0 for S1) the other sectors fade, matching the
+ * sector the graph is zoomed to.
  */
 @Composable
 internal fun AnalysisMap(
@@ -264,6 +281,8 @@ internal fun AnalysisMap(
     elapsed: State<Double>,
     aeroMode: String,
     modifier: Modifier = Modifier,
+    focusSector: Int? = null,
+    slmTrackStatus: Int = -1,
 ) {
     val context = LocalContext.current.applicationContext
     val outline by produceState<TrackOutline?>(null, context, trackId) {
@@ -273,10 +292,9 @@ internal fun AnalysisMap(
     val colors = MaterialTheme.colorScheme
     val palette = if (colors.surface.luminance() < 0.5f) DarkMapPalette else LightMapPalette
     val trackColor = colors.onSurface
-    val pillColor = colors.inverseSurface
-    val pillText = colors.inverseOnSurface
     val markerOutline = colors.surface
     val labelStyle = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+    val carLabelStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
     val messageStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurfaceVariant)
     val measurer = rememberTextMeasurer()
     val slm = aeroMode == "slm"
@@ -285,11 +303,12 @@ internal fun AnalysisMap(
         val density = LocalDensity.current
         val width = constraints.maxWidth.toFloat()
         val height = constraints.maxHeight.toFloat()
+        val lastTurn = remember(outline) { MapTurnMemory() }
         val fit = remember(outline, width, height, density) {
             outline?.let { track ->
                 // Room outside the centreline for the offset zones and the labels.
-                val pad = with(density) { (ZoneOffset + ZoneWidth + 16.dp).toPx() }
-                fitTrack(track, width, height, pad)
+                val pad = with(density) { (SectorLabelOffset + 10.dp).toPx() }
+                fitTrack(track, width, height, pad, MapTurnPolicy.Analysis, lastTurn)
             }
         }
         // Marker positions, recomputed as the map clock moves every frame.
@@ -326,54 +345,58 @@ internal fun AnalysisMap(
                     // bitmap covering its bounding box, then each frame only
                     // blits it and places the cars.
                     val pad = (ZoneOffset + ZoneWidth + 6.dp).toPx()
-                    val originX = floor(track.boundsMinX * fit.scale + fit.offsetX - pad).coerceAtLeast(0f)
-                    val originY = floor(track.boundsMinY * fit.scale + fit.offsetY - pad).coerceAtLeast(0f)
-                    val boxWidth = (ceil(track.boundsMaxX * fit.scale + fit.offsetX + pad) - originX).coerceIn(1f, size.width - originX)
-                    val boxHeight = (ceil(track.boundsMaxY * fit.scale + fit.offsetY + pad) - originY).coerceIn(1f, size.height - originY)
+                    val originX = floor(fit.left - pad).coerceAtLeast(0f)
+                    val originY = floor(fit.top - pad).coerceAtLeast(0f)
+                    val boxWidth = (ceil(fit.right + pad) - originX).coerceIn(1f, size.width - originX)
+                    val boxHeight = (ceil(fit.bottom + pad) - originY).coerceIn(1f, size.height - originY)
                     val circuit = ImageBitmap(boxWidth.toInt().coerceAtLeast(1), boxHeight.toInt().coerceAtLeast(1))
                     val origin = Offset(originX, originY)
                     CanvasDrawScope().draw(this, layoutDirection, androidx.compose.ui.graphics.Canvas(circuit), Size(boxWidth, boxHeight)) {
-                        drawCircuit(track, fit, origin, palette, trackColor, slm)
+                        drawCircuit(track, fit, origin, palette, trackColor, slm, slmTrackStatus, focusSector)
                     }
                     val circuitTexture = circuit.asAndroidBitmap().copy(android.graphics.Bitmap.Config.HARDWARE, false)
                         ?.asImageBitmap() ?: circuit
+                    val sectorNames = measureSectorLabels(track, palette, trackColor, labelStyle, focusSector) { text, style -> measurer.measure(text, style) }
+                    val sectorPlaces = sectorLabelPlaces(track, fit, sectorNames, track.aeroZones(slm, slmTrackStatus), size.width, size.height)
 
-                    // Label pills, measured once: a lap-colour edge, then the name.
-                    val labels = laps.map { measurer.measure(it.label, labelStyle.copy(color = pillText)) }
-                    val dotRadius = 6.dp.toPx()
+                    // Each car's name, small, in its lap colour on a dark tag.
+                    val labels = laps.map { measurer.measure(it.label, carLabelStyle.copy(color = it.color)) }
+                    val dotRadius = 5.dp.toPx()
                     val dotOutline = 1.5.dp.toPx()
-                    val accent = 3.dp.toPx()
-                    val padX = 6.dp.toPx()
-                    val padY = 2.dp.toPx()
-                    val gap = 4.dp.toPx()
-                    val corner = CornerRadius(4.dp.toPx())
+                    val halo = 10.dp.toPx()
+                    val gap = 2.dp.toPx()
+                    val padX = 4.dp.toPx()
+                    val padY = 1.dp.toPx()
+                    val corner = CornerRadius(3.dp.toPx())
+                    val tag = markerOutline.copy(alpha = 0.85f)
 
                     onDrawBehind {
                         drawImage(circuitTexture, topLeft = origin)
+                        drawSectorLabels(sectorNames, sectorPlaces)
                         val positions = markers.value
                         // The comparison car first, so the current car sits on top.
                         for (index in positions.indices.reversed()) {
                             val position = positions[index] ?: continue
+                            val color = laps[index].color
+                            drawCircle(color.copy(alpha = 0.22f), halo, position)
                             drawCircle(markerOutline, dotRadius + dotOutline, position)
-                            drawCircle(laps[index].color, dotRadius, position)
+                            drawCircle(color, dotRadius, position)
                         }
-                        // Pills centred over the current car and under the
-                        // comparison car, so two cars side by side stay readable.
+                        // Names over the current car and under the comparison
+                        // car, so two cars side by side stay readable.
                         for (index in positions.indices) {
                             val position = positions[index] ?: continue
                             val text = labels[index]
-                            val pillWidth = accent + padX * 2 + text.size.width
-                            val pillHeight = text.size.height + padY * 2
-                            val left = (position.x - pillWidth / 2f).coerceIn(0f, max(0f, size.width - pillWidth))
+                            val tagWidth = text.size.width + padX * 2
+                            val tagHeight = text.size.height + padY * 2
+                            val left = (position.x - tagWidth / 2f).coerceIn(0f, max(0f, size.width - tagWidth))
                             val top = if (index == 0) {
-                                position.y - dotRadius - gap - pillHeight
+                                position.y - halo - gap - tagHeight
                             } else {
-                                position.y + dotRadius + gap
-                            }.coerceIn(0f, max(0f, size.height - pillHeight))
-                            drawRoundRect(pillColor, Offset(left, top), Size(pillWidth, pillHeight), corner)
-                            drawRoundRect(laps[index].color, Offset(left, top), Size(accent * 2, pillHeight), corner)
-                            drawRect(pillColor, Offset(left + accent, top), Size(accent, pillHeight))
-                            drawText(text, topLeft = Offset(left + accent + padX, top + padY))
+                                position.y + halo + gap
+                            }.coerceIn(0f, max(0f, size.height - tagHeight))
+                            drawRoundRect(tag, Offset(left, top), Size(tagWidth, tagHeight), corner)
+                            drawText(text, topLeft = Offset(left + padX, top + padY))
                         }
                     }
                 },
@@ -388,43 +411,138 @@ private fun DrawScope.drawCircuit(
     palette: MapPalette,
     trackColor: Color,
     slm: Boolean,
+    slmTrackStatus: Int,
+    focusSector: Int? = null,
 ) {
     fun screen(point: Point) = fit.toScreen(point) - origin
     val trackWidth = TrackWidth.toPx()
     val trackStroke = Stroke(trackWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
-    for ((_, points) in track.sectors) drawPath(polyline(points.map(::screen)), trackColor, style = trackStroke)
+    // The map numbers its sectors from 1; each is drawn in its own tint.
+    for ((index, points) in track.sectors) {
+        val color = palette.sectors.getOrElse(index - 1) { trackColor }
+        val faded = focusSector != null && index != focusSector + 1
+        drawPath(polyline(points.map(::screen)), if (faded) color.copy(alpha = 0.25f) else color, style = trackStroke)
+    }
+    // A small gap where one sector meets the next, and where the lap starts.
+    val gap = max(JunctionGap.toPx(), trackWidth)
+    val seams = track.junctions.map { it.point } + listOfNotNull(track.sectors.first().second.firstOrNull())
+    for (seam in seams) drawCircle(Color.Black, gap, screen(seam), blendMode = BlendMode.Clear)
 
     fun tick(tick: TrackTick, half: Float, color: Color, width: Float) {
         val centre = screen(tick.point)
-        drawLine(color, centre - tick.normal * half, centre + tick.normal * half, width, StrokeCap.Round)
+        val normal = fit.turn(tick.normal)
+        drawLine(color, centre - normal * half, centre + normal * half, width, StrokeCap.Round)
     }
-    // Where S1 ends a tick in the S2 colour, and where S2 ends one in the S3 colour.
     val tickHalf = max(TickHalf.toPx(), trackWidth / 2 + 4.dp.toPx())
-    for (junction in track.junctions) {
-        tick(junction, tickHalf, palette.sectors.getOrElse(junction.sector) { trackColor }, 3.dp.toPx())
-    }
 
-    // Overtaking aids: DRS zones, or on the 2026 cars the SLM zones and the
-    // overtake detection and activation points that belong to them.
-    val zoneOffset = max(ZoneOffset.toPx(), trackWidth / 2 + 6.dp.toPx())
-    val dash = PathEffect.dashPathEffect(floatArrayOf(ZoneDash.toPx(), ZoneDash.toPx()))
-    val zoneStroke = Stroke(ZoneWidth.toPx(), cap = StrokeCap.Butt, join = StrokeJoin.Miter, pathEffect = dash)
-    val zones = if (slm) track.slmZones else track.drsZones
-    val zoneColor = if (slm) palette.slm else palette.drs
+    // Overtaking aids: DRS zones, or on the 2026 cars the SLM zones for the
+    // track's grip and the overtake detection and activation points.
+    val zoneOffset = max(ZoneOffset.toPx(), trackWidth / 2 + 5.dp.toPx())
+    val zoneStroke = Stroke(ZoneWidth.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+    val zones = track.aeroZones(slm, slmTrackStatus)
+    val zoneColor = when {
+        !slm -> palette.drs
+        slmTrackStatus == 1 -> palette.slmWet
+        else -> palette.slmDry
+    }
     for (zone in zones) {
         val points = zone.points.mapIndexed { index, point ->
-            screen(point) + perpendicular(zone.points, index) * (zoneOffset * zone.outwardSign)
+            screen(point) + fit.turn(perpendicular(zone.points, index)) * (zoneOffset * zone.outwardSign)
         }
         drawPath(polyline(points), zoneColor, style = zoneStroke)
     }
+    // The points that belong to the zones are small and in the zones' colour:
+    // a ring where the gap is measured, a short tick where the aid opens.
+    val markStroke = Stroke(1.5.dp.toPx())
     if (slm) {
-        track.overtakeDetection?.let { drawCircle(palette.overtake, PointRadius.toPx(), screen(it)) }
-        track.overtakeActivation?.let { tick(it, tickHalf, palette.overtake, 3.dp.toPx()) }
+        track.overtakeDetection?.let { drawCircle(zoneColor, PointRadius.toPx(), screen(it), style = markStroke) }
+        track.overtakeActivation?.let { tick(it, tickHalf - 2.dp.toPx(), zoneColor, 1.5.dp.toPx()) }
     }
 
-    for (trap in track.speedTraps) drawCircle(palette.speedTrap, PointRadius.toPx(), screen(trap))
+    for (trap in track.speedTraps) drawCircle(trackColor.copy(alpha = 0.55f), PointRadius.toPx(), screen(trap), style = markStroke)
     track.startFinish?.let {
-        tick(it, max(StartFinishHalf.toPx(), trackWidth / 2 + 4.dp.toPx()), palette.startFinish, 2.5.dp.toPx())
+        tick(it, max(StartFinishHalf.toPx(), trackWidth / 2 + 4.dp.toPx()), trackColor, 2.dp.toPx())
+    }
+}
+
+/** Each sector's name in its tint, faded like its sector, measured once. */
+private fun measureSectorLabels(
+    track: TrackOutline,
+    palette: MapPalette,
+    trackColor: Color,
+    style: TextStyle,
+    focusSector: Int?,
+    measure: (String, TextStyle) -> TextLayoutResult,
+): List<TextLayoutResult> = track.sectors.map { (sector, _) ->
+    val color = palette.sectors.getOrElse(sector - 1) { trackColor }
+    val faded = focusSector != null && sector != focusSector + 1
+    measure("S$sector", style.copy(color = if (faded) color.copy(alpha = 0.35f) else color))
+}
+
+/**
+ * Where each sector's name goes: beside its own sector, on whichever side and
+ * at whichever point along it leaves the most room from every part of the
+ * track and the zone lines, preferring the sector's middle, on screen and
+ * clear of the other names. Null for a name with nowhere to go.
+ */
+private fun Density.sectorLabelPlaces(
+    track: TrackOutline,
+    fit: TrackFit,
+    names: List<TextLayoutResult>,
+    zones: List<OffsetZone>,
+    width: Float,
+    height: Float,
+): List<Offset?> {
+    val offset = SectorLabelOffset.toPx()
+    val wanted = 10.dp.toPx()
+    val edge = 8.dp.toPx()
+    val zoneOffset = max(ZoneOffset.toPx(), TrackWidth.toPx() / 2 + 5.dp.toPx())
+    // Everything a name must keep clear of, in screen units.
+    val obstacles = ArrayList<Point>()
+    for (point in track.centerline) obstacles += fit.toScreen(point)
+    for (zone in zones) zone.points.forEachIndexed { index, point ->
+        obstacles += fit.toScreen(point) + fit.turn(perpendicular(zone.points, index)) * (zoneOffset * zone.outwardSign)
+    }
+    val placed = ArrayList<androidx.compose.ui.geometry.Rect>()
+    val samples = 24
+    return track.sectors.mapIndexed { slot, (_, points) ->
+        val text = names.getOrNull(slot) ?: return@mapIndexed null
+        if (points.size < 3) return@mapIndexed null
+        val halfW = text.size.width / 2f
+        val halfH = text.size.height / 2f
+        var best: Offset? = null
+        var bestScore = Float.NEGATIVE_INFINITY
+        for (step in 1 until samples) {
+            val index = points.size * step / samples
+            val at = fit.toScreen(points[index])
+            val normal = fit.turn(perpendicular(points, index))
+            for (side in intArrayOf(1, -1)) {
+                val centre = at + normal * (offset * side)
+                if (centre.x - halfW < edge || centre.x + halfW > width - edge || centre.y - halfH < edge || centre.y + halfH > height - edge) continue
+                val box = androidx.compose.ui.geometry.Rect(centre.x - halfW, centre.y - halfH, centre.x + halfW, centre.y + halfH)
+                if (placed.any { it.overlaps(box.inflate(4.dp.toPx())) }) continue
+                var room = Float.POSITIVE_INFINITY
+                for (point in obstacles) {
+                    val dx = max(abs(point.x - centre.x) - halfW, 0f)
+                    val dy = max(abs(point.y - centre.y) - halfH, 0f)
+                    room = min(room, hypot(dx, dy))
+                }
+                val score = min(room, wanted) - abs(step - samples / 2f) * 0.25f
+                if (score > bestScore) {
+                    bestScore = score
+                    best = centre
+                }
+            }
+        }
+        best?.also { placed += androidx.compose.ui.geometry.Rect(it.x - halfW, it.y - halfH, it.x + halfW, it.y + halfH) }
+    }
+}
+
+/** The sector names at the places [sectorLabelPlaces] found. */
+private fun DrawScope.drawSectorLabels(names: List<TextLayoutResult>, places: List<Offset?>) {
+    names.forEachIndexed { index, text ->
+        val centre = places.getOrNull(index) ?: return@forEachIndexed
+        drawText(text, topLeft = Offset(centre.x - text.size.width / 2f, centre.y - text.size.height / 2f))
     }
 }
 
@@ -433,25 +551,208 @@ private fun polyline(points: List<Point>) = Path().apply {
     for (index in 1 until points.size) lineTo(points[index].x, points[index].y)
 }
 
-/** Scale and offset that fit the circuit into an area, centred. */
-private class TrackFit(val scale: Float, val offsetX: Float, val offsetY: Float) {
-    fun toScreen(point: Point) = Offset(point.x * scale + offsetX, point.y * scale + offsetY)
-}
+/**
+ * Turn, scale and offset that fit the circuit into an area, centred: map units
+ * are turned by [degrees] about the map origin, scaled, then moved. [left],
+ * [top], [right] and [bottom] are the turned circuit's bounds on screen.
+ */
+private class TrackFit(
+    val degrees: Float,
+    val scale: Float,
+    val offsetX: Float,
+    val offsetY: Float,
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float,
+) {
+    private val cos = kotlin.math.cos(Math.toRadians(degrees.toDouble())).toFloat()
+    private val sin = kotlin.math.sin(Math.toRadians(degrees.toDouble())).toFloat()
 
-private fun fitTrack(track: TrackOutline, width: Float, height: Float, pad: Float): TrackFit {
-    val boundsWidth = (track.boundsMaxX - track.boundsMinX).coerceAtLeast(1f)
-    val boundsHeight = (track.boundsMaxY - track.boundsMinY).coerceAtLeast(1f)
-    val scale = min((width - 2 * pad) / boundsWidth, (height - 2 * pad) / boundsHeight).coerceAtLeast(1e-3f)
-    return TrackFit(
-        scale,
-        (width - boundsWidth * scale) / 2f - track.boundsMinX * scale,
-        (height - boundsHeight * scale) / 2f - track.boundsMinY * scale,
+    fun toScreen(point: Point) = Offset(
+        (cos * point.x - sin * point.y) * scale + offsetX,
+        (sin * point.x + cos * point.y) * scale + offsetY,
     )
+
+    /** A direction in map units (a normal) as it points on screen. */
+    fun turn(vector: Point) = Offset(cos * vector.x - sin * vector.y, sin * vector.x + cos * vector.y)
 }
 
 /**
- * Play, scrub and speed for a fixed comparison's own map clock: one row with
- * the elapsed time, a scrubber marked at the sector splits, and the lap length.
+ * How freely a map may turn away from the desktop's orientation to fill its
+ * area. A turn is taken only when it makes the circuit at least [minGain]
+ * larger than the orientation it would replace, so near ties keep the
+ * familiar shape, and a resize keeps the last turn unless the new best beats
+ * it by the same margin.
+ */
+private enum class MapTurnPolicy(val minGain: Float, val quarterTurnsOnly: Boolean) {
+    /** The Map tab: the whole screen is the map, so any angle that fills it more. */
+    Live(minGain = 0.04f, quarterTurnsOnly = false),
+
+    /**
+     * The Analysis map shares the screen and is read against the desktop's
+     * sector table and the graphs: only quarter turns, so straights stay
+     * straight across the screen, and only for a clear gain.
+     */
+    Analysis(minGain = 0.08f, quarterTurnsOnly = true),
+}
+
+/** The turn a map last chose, kept across resizes of the same circuit. */
+private class MapTurnMemory {
+    var degrees: Float? = null
+}
+
+private fun fitTrack(
+    track: TrackOutline,
+    width: Float,
+    height: Float,
+    pad: Float,
+    policy: MapTurnPolicy,
+    memory: MapTurnMemory,
+): TrackFit {
+    val degrees = chooseTurn(track.hull, width - 2 * pad, height - 2 * pad, policy, memory.degrees)
+    memory.degrees = degrees
+    return fitAt(track.hull, degrees, width, height, pad)
+}
+
+private fun fitAt(hull: List<Point>, degrees: Float, width: Float, height: Float, pad: Float): TrackFit {
+    val extent = turnedExtent(hull, degrees)
+    val boundsWidth = (extent.right - extent.left).coerceAtLeast(1f)
+    val boundsHeight = (extent.bottom - extent.top).coerceAtLeast(1f)
+    val scale = min((width - 2 * pad) / boundsWidth, (height - 2 * pad) / boundsHeight).coerceAtLeast(1e-3f)
+    val offsetX = (width - boundsWidth * scale) / 2f - extent.left * scale
+    val offsetY = (height - boundsHeight * scale) / 2f - extent.top * scale
+    return TrackFit(
+        degrees, scale, offsetX, offsetY,
+        left = extent.left * scale + offsetX,
+        top = extent.top * scale + offsetY,
+        right = extent.right * scale + offsetX,
+        bottom = extent.bottom * scale + offsetY,
+    )
+}
+
+/** The circuit's bounding box, in map units, after turning it by [degrees]. */
+private fun turnedExtent(hull: List<Point>, degrees: Float): androidx.compose.ui.geometry.Rect {
+    val radians = Math.toRadians(degrees.toDouble())
+    val cos = cos(radians).toFloat()
+    val sin = sin(radians).toFloat()
+    var minX = Float.POSITIVE_INFINITY
+    var maxX = Float.NEGATIVE_INFINITY
+    var minY = Float.POSITIVE_INFINITY
+    var maxY = Float.NEGATIVE_INFINITY
+    for (point in hull) {
+        val x = cos * point.x - sin * point.y
+        val y = sin * point.x + cos * point.y
+        minX = min(minX, x)
+        maxX = max(maxX, x)
+        minY = min(minY, y)
+        maxY = max(maxY, y)
+    }
+    return androidx.compose.ui.geometry.Rect(minX, minY, maxX, maxY)
+}
+
+/** How large the circuit is drawn at [degrees] in an area of [width] by [height]: the fit's scale. */
+private fun scaleAt(hull: List<Point>, degrees: Float, width: Float, height: Float): Float {
+    val extent = turnedExtent(hull, degrees)
+    return min(width / extent.width.coerceAtLeast(1f), height / extent.height.coerceAtLeast(1f))
+}
+
+/**
+ * The turn, in degrees, that draws the circuit largest in an area of [width]
+ * by [height], within [policy].
+ *
+ * A turn and the same turn plus 180° need the same box, so only −90° to 90°
+ * are tried: the circuit is never shown upside down. Quarter-turn policies try
+ * −90°, 0° and 90°. Free policies sweep every 2°, then narrow the best step
+ * down to a tenth of a degree, and snap to a quarter turn within 2° of it if
+ * that costs under half a percent, so straights line up with the screen when
+ * they nearly do. Among near ties the smaller turn wins.
+ *
+ * The result then has to beat what it would replace by [MapTurnPolicy.minGain]:
+ * the last turn when the area is resized, else the desktop's orientation (0°).
+ */
+private fun chooseTurn(hull: List<Point>, width: Float, height: Float, policy: MapTurnPolicy, previous: Float?): Float {
+    if (hull.size < 3 || width <= 0f || height <= 0f) return 0f
+    fun size(degrees: Float) = scaleAt(hull, degrees, width, height)
+
+    var best = 0f
+    var bestSize = size(0f)
+    fun consider(degrees: Float) {
+        val at = size(degrees)
+        // A clearly larger fit wins; a near tie goes to the smaller turn.
+        if (at > bestSize * 1.005f || (at > bestSize * 0.995f && abs(degrees) < abs(best))) {
+            best = degrees
+            bestSize = at
+        }
+    }
+    if (policy.quarterTurnsOnly) {
+        consider(90f)
+        consider(-90f)
+    } else {
+        var degrees = -88f
+        while (degrees < 90f) {
+            consider(degrees)
+            degrees += 2f
+        }
+        // Narrow the best step: the fit's size is smooth between steps.
+        var low = best - 2f
+        var high = best + 2f
+        while (high - low > 0.1f) {
+            val a = low + (high - low) / 3f
+            val b = high - (high - low) / 3f
+            if (size(a) < size(b)) low = a else high = b
+        }
+        val refined = (low + high) / 2f
+        if (size(refined) > bestSize) {
+            best = refined
+            bestSize = size(refined)
+        }
+        // Keep the turn within −90° to 90°.
+        if (best >= 90f) best -= 180f
+        if (best < -90f) best += 180f
+        val quarter = (best / 90f).roundToInt() * 90f
+        if (abs(best - quarter) <= 2f && size(quarter) >= bestSize * 0.995f) {
+            best = if (quarter >= 90f) -90f else quarter
+            bestSize = size(best)
+        }
+    }
+
+    // Keep the turn already shown, or the desktop's, unless the best clearly beats it.
+    val incumbent = previous?.takeIf { !policy.quarterTurnsOnly || it % 90f == 0f } ?: 0f
+    val incumbentSize = size(incumbent)
+    return when {
+        size(0f) * (1 + policy.minGain) >= bestSize -> 0f
+        incumbentSize * (1 + policy.minGain) >= bestSize -> incumbent
+        else -> best
+    }
+}
+
+/** The convex hull of [points], counter-clockwise (Andrew's monotone chain). */
+private fun convexHull(points: List<Point>): List<Point> {
+    val sorted = points.distinct().sortedWith(compareBy({ it.x }, { it.y }))
+    if (sorted.size < 3) return sorted
+    fun cross(o: Point, a: Point, b: Point) = (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    val hull = ArrayList<Point>(sorted.size * 2)
+    for (point in sorted) {
+        while (hull.size >= 2 && cross(hull[hull.size - 2], hull[hull.size - 1], point) <= 0f) hull.removeAt(hull.lastIndex)
+        hull += point
+    }
+    val lowerSize = hull.size + 1
+    for (index in sorted.indices.reversed()) {
+        val point = sorted[index]
+        while (hull.size >= lowerSize && cross(hull[hull.size - 2], hull[hull.size - 1], point) <= 0f) hull.removeAt(hull.lastIndex)
+        hull += point
+    }
+    hull.removeAt(hull.lastIndex)
+    return hull
+}
+
+/** Height of [AnalysisPlaybackBar], and of each of its touch targets. */
+private val BarHeight = 36.dp
+
+/**
+ * Play, scrub and speed for a fixed comparison's own map clock: one slim row
+ * with the elapsed time and a scrubber marked at the sector splits.
  */
 @Composable
 internal fun AnalysisPlaybackBar(
@@ -463,60 +764,48 @@ internal fun AnalysisPlaybackBar(
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
-    val timeStyle = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum")
+    val timeStyle = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum")
     // Tenths of a second, as the label shows them: the clock moves every
     // frame, but the label needs to recompose only ten times a second.
     val tenths by remember { derivedStateOf(structuralEqualityPolicy()) { (elapsed.value * 10).roundToInt() } }
     // Wide enough for "0:00.0" at this size, so the scrubber never shifts.
     val timeWidth = with(LocalDensity.current) { (timeStyle.fontSize.toPx() * 3.4f).toDp() }
     var speedOpen by remember { mutableStateOf(false) }
+    // One slim line under the map: play, time, scrubber and speed, no chrome.
     Row(
-        modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
+        modifier.fillMaxWidth().height(BarHeight).padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FilledIconButton(onClick = clock::toggle) {
+        Box(
+            Modifier
+                .size(BarHeight)
+                .clip(CircleShape)
+                .clickable(onClickLabel = if (clock.playing) "Pause" else "Play", onClick = clock::toggle),
+            contentAlignment = Alignment.Center,
+        ) {
             Icon(
                 painterResource(if (clock.playing) R.drawable.ic_pause else R.drawable.ic_play),
                 contentDescription = if (clock.playing) "Pause" else "Play",
+                modifier = Modifier.size(20.dp),
+                tint = colors.primary,
             )
         }
         // Drawn, not composed: it changes ten times a second while playing.
         Readout(
-            runs = { listOf(ReadoutRun(formatElapsed(tenths / 10.0, 0.1), colors.onSurface, bold = false)) },
+            runs = { listOf(ReadoutRun(formatElapsed(tenths / 10.0, 0.1), colors.onSurfaceVariant, bold = false)) },
             style = timeStyle,
-            modifier = Modifier.padding(start = 8.dp).width(timeWidth),
+            modifier = Modifier.padding(start = 2.dp).width(timeWidth),
         )
-        Scrubber(clock, elapsed, total, sectorMarks, Modifier.weight(1f).padding(horizontal = 4.dp))
-        Text(
-            formatElapsed(total, 0.1),
-            style = timeStyle,
-            color = colors.onSurfaceVariant,
-            maxLines = 1,
-        )
-        // A 48 dp target around a compact outlined label that opens the choices.
+        Scrubber(clock, elapsed, total, sectorMarks, Modifier.weight(1f))
         Box(
             Modifier
-                .padding(start = 4.dp)
-                .height(48.dp)
-                .widthIn(min = 48.dp)
+                .height(BarHeight)
+                .widthIn(min = BarHeight)
                 .clip(MaterialTheme.shapes.small)
                 .clickable(onClickLabel = "Change speed") { speedOpen = true },
             contentAlignment = Alignment.Center,
         ) {
-            Row(
-                Modifier
-                    .border(1.dp, colors.outlineVariant, MaterialTheme.shapes.small)
-                    .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(speedLabel(clock.speed), style = timeStyle, color = colors.primary, maxLines = 1)
-                Icon(
-                    painterResource(R.drawable.ic_expand_more),
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                    tint = colors.primary,
-                )
-            }
+            Text(speedLabel(clock.speed), style = timeStyle, color = colors.primary, maxLines = 1)
         }
     }
     if (speedOpen) {
@@ -589,7 +878,7 @@ private fun Scrubber(
     fun fraction(): Float = if (total > 0) (elapsed.value / total).toFloat().coerceIn(0f, 1f) else 0f
     Spacer(
         modifier
-            .height(48.dp)
+            .height(BarHeight)
             .graphicsLayer()
             .semantics {
                 contentDescription = "Lap position"
@@ -622,7 +911,7 @@ private fun Scrubber(
                 val edge = inset.toPx()
                 val span = size.width - 2 * edge
                 val y = size.height / 2
-                val track = 4.dp.toPx()
+                val track = 3.dp.toPx()
                 val corner = CornerRadius(track / 2)
                 val at = edge + span * fraction()
                 drawRoundRect(colors.surfaceContainerHighest, Offset(edge, y - track / 2), Size(span, track), corner)
@@ -631,9 +920,9 @@ private fun Scrubber(
                 if (total > 0) for (mark in marks) {
                     if (mark <= 0 || mark >= total) continue
                     val x = edge + span * (mark / total).toFloat()
-                    drawLine(colors.onSurfaceVariant, Offset(x, y - 6.dp.toPx()), Offset(x, y + 6.dp.toPx()), 1.5.dp.toPx())
+                    drawLine(colors.onSurfaceVariant, Offset(x, y - 5.dp.toPx()), Offset(x, y + 5.dp.toPx()), 1.dp.toPx())
                 }
-                drawCircle(colors.primary, (if (dragging) 10.dp else 7.dp).toPx(), Offset(at, y))
+                drawCircle(colors.primary, (if (dragging) 8.dp else 5.dp).toPx(), Offset(at, y))
             },
     )
 }
@@ -756,6 +1045,7 @@ internal fun LiveTrackMap(
     cars: List<LiveMapCar>,
     trackColor: Color,
     modifier: Modifier = Modifier,
+    slmTrackStatus: Int = -1,
 ) {
     val context = LocalContext.current.applicationContext
     val outline by produceState<TrackOutline?>(null, context, trackId) {
@@ -774,15 +1064,17 @@ internal fun LiveTrackMap(
     val messageStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = trackColor.copy(alpha = 0.6f))
     val slm = aeroMode == "slm"
     val palette = if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) DarkMapPalette else LightMapPalette
+    val sectorStyle = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
     val glides = remember { CarGlides() }
     BoxWithConstraints(modifier.clipToBounds()) {
         val density = LocalDensity.current
         val width = constraints.maxWidth.toFloat()
         val height = constraints.maxHeight.toFloat()
+        val lastTurn = remember(outline) { MapTurnMemory() }
         val fit = remember(outline, width, height, density) {
             outline?.let { track ->
-                val pad = with(density) { (ZoneOffset + ZoneWidth + 8.dp).toPx() }
-                fitTrack(track, width, height, pad)
+                val pad = with(density) { (SectorLabelOffset + 8.dp).toPx() }
+                fitTrack(track, width, height, pad, MapTurnPolicy.Live, lastTurn)
             }
         }
         Spacer(
@@ -802,17 +1094,19 @@ internal fun LiveTrackMap(
                         }
                     }
                     val pad = (ZoneOffset + ZoneWidth + 6.dp).toPx()
-                    val originX = floor(track.boundsMinX * fit.scale + fit.offsetX - pad).coerceAtLeast(0f)
-                    val originY = floor(track.boundsMinY * fit.scale + fit.offsetY - pad).coerceAtLeast(0f)
-                    val boxWidth = (ceil(track.boundsMaxX * fit.scale + fit.offsetX + pad) - originX).coerceIn(1f, size.width - originX)
-                    val boxHeight = (ceil(track.boundsMaxY * fit.scale + fit.offsetY + pad) - originY).coerceIn(1f, size.height - originY)
+                    val originX = floor(fit.left - pad).coerceAtLeast(0f)
+                    val originY = floor(fit.top - pad).coerceAtLeast(0f)
+                    val boxWidth = (ceil(fit.right + pad) - originX).coerceIn(1f, size.width - originX)
+                    val boxHeight = (ceil(fit.bottom + pad) - originY).coerceIn(1f, size.height - originY)
                     val circuit = ImageBitmap(boxWidth.toInt().coerceAtLeast(1), boxHeight.toInt().coerceAtLeast(1))
                     val origin = Offset(originX, originY)
                     CanvasDrawScope().draw(this, layoutDirection, androidx.compose.ui.graphics.Canvas(circuit), Size(boxWidth, boxHeight)) {
-                        drawCircuit(track, fit, origin, palette, trackColor, slm)
+                        drawCircuit(track, fit, origin, palette, trackColor, slm, slmTrackStatus)
                     }
                     val circuitTexture = circuit.asAndroidBitmap().copy(android.graphics.Bitmap.Config.HARDWARE, false)
                         ?.asImageBitmap() ?: circuit
+                    val sectorNames = measureSectorLabels(track, palette, trackColor, sectorStyle, null) { text, style -> measurer.measure(text, style) }
+                    val sectorPlaces = sectorLabelPlaces(track, fit, sectorNames, track.aeroZones(slm, slmTrackStatus), size.width, size.height)
 
                     // The desktop label: a pill with the livery colour down its
                     // left edge and the three-letter code, drawn once.
@@ -840,6 +1134,7 @@ internal fun LiveTrackMap(
                     onDrawBehind {
                         val frame = frameTick.value
                         drawImage(circuitTexture, topLeft = origin)
+                        drawSectorLabels(sectorNames, sectorPlaces)
                         val now = positions()
                         cars.forEachIndexed { slot, car ->
                             val index = car.index
@@ -927,9 +1222,11 @@ private fun loadTrackOutline(context: Context, trackId: Int): TrackOutline? = ru
         rotation = rotation,
         sectors = sectors,
         junctions = junctions,
+        centerline = rotatedCenterline,
         startFinish = startFinish,
         drsZones = zones("drs_zones"),
-        slmZones = zones("slm_dry"),
+        slmDryZones = zones("slm_dry"),
+        slmWetZones = zones("slm_wet"),
         speedTraps = if (traps == null) emptyList() else List(traps.length()) { point(traps.optJSONArray(it)) }
             .mapNotNull { it?.let(rotation::apply) },
         overtakeDetection = point(root.optJSONArray("overtake_detection_point"))?.let(rotation::apply),

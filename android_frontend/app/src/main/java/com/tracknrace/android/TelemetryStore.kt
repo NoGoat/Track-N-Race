@@ -696,6 +696,7 @@ internal class TelemetryStore {
                 val totalLaps = row.optInt("total_laps")
                 val trackId = row.optInt("track_id", -1)
                 val sessionTrackLengthM = row.optDouble("track_length_m")
+                val slmTrackStatus = row.optionalInt("active_aero_track_status") ?: -1
                 post {
                     val changedSession =
                         (cold.trackId >= 0 && trackId >= 0 && cold.trackId != trackId) ||
@@ -711,6 +712,7 @@ internal class TelemetryStore {
                         totalLaps = totalLaps,
                         sessionType = sessionType,
                         trackId = trackId,
+                        slmTrackStatus = slmTrackStatus,
                     )
                 }
             }

@@ -1261,13 +1261,18 @@ std::string Engine::playerLapDeltaJson(int currentLap, int comparisonLap, bool s
     return response;
 }
 
-std::string Engine::playerPhoneLapDataJson(int lapNum, const std::vector<std::string>& channels) {
+std::string Engine::playerPhoneLapDataJson(int lapNum, const std::vector<std::string>& channels,
+                                           bool forCharts) {
     // The selected driver's indexed lap, read without moving the shared
     // playback cursor; the phone only chooses which columns.
     std::string lapData;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!inPlayback_.load()) return std::string{};
+        if (forCharts) {
+            std::string columns = reader_.phoneChartLapJson(lapNum, channels);
+            if (!columns.empty()) return columns;
+        }
         lapData = reader_.getLapDataMessage(lapNum, pairLapDataRowMask(channels));
     }
     return pairLapDataJson(lapData, channels);

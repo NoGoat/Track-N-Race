@@ -47,7 +47,6 @@ internal fun SettingsScreen(
     onSource: (String) -> Unit,
     onPairing: () -> Unit,
     onRecording: (Boolean) -> Unit,
-    onTimingOneLine: (Boolean) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
     onWheelDisplay: (Boolean) -> Unit,
     onChooseDirectory: () -> Unit,
@@ -70,13 +69,6 @@ internal fun SettingsScreen(
                     options = listOf("System", "Light", "Dark"),
                     selected = settings.themeMode.ordinal,
                     onSelect = { onThemeMode(ThemeMode.entries[it]) },
-                )
-                GroupDivider()
-                SwitchRow(
-                    title = "One-line timing rows",
-                    supporting = if (settings.timingOneLine) "Compact single-line layout" else "Detailed two-line layout",
-                    checked = settings.timingOneLine,
-                    onCheckedChange = onTimingOneLine,
                 )
                 GroupDivider()
                 val wheel = wheelDisplay(settings.wheelDisplay, LocalConfiguration.current)

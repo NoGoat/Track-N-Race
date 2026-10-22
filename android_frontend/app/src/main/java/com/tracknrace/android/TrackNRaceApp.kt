@@ -228,6 +228,12 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     val rosterMissing by remember(store) {
         derivedStateOf(structuralEqualityPolicy()) { store.timing.needsParticipantsRefresh() }
     }
+    // The Timing title's car count: changes only when a car joins or drops out.
+    val timingCars by remember(store) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            store.timing.cars.count { it.position > 0 && it.resultStatus >= 1 }
+        }
+    }
     // The Timing page retries a missing roster itself. Dashboard, Tyres and
     // Analysis and Graphs share the same subscription bit now, so give them the same retry.
     LaunchedEffect(paired, rosterMissing, screen) {
@@ -264,6 +270,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                     graphReferenceLap = telemetry.graphs.globalLap(),
                     onGraphWindow = { graphWindowOpen = true },
                     onMenu = { menuOpen = true },
+                    timingCars = { timingCars },
                 )
             }
         },
@@ -346,9 +353,6 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             // this whole switcher on every timing row.
                             state = { store.timing },
                             labels = rememberCurrentWhileActive(destinationActive) { coldLabels },
-                            oneLine = rememberCurrentWhileActive(destinationActive) {
-                                store.settings.timingOneLine
-                            },
                             active = destinationActive,
                             onRequestParticipants = telemetry::requestParticipants,
                         )
@@ -378,7 +382,6 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             onSource = telemetry::setSource,
                             onPairing = { screen = AppScreen.PAIRING },
                             onRecording = telemetry::setRecording,
-                            onTimingOneLine = telemetry::setTimingOneLine,
                             onThemeMode = telemetry::setThemeMode,
                             onWheelDisplay = telemetry::setWheelDisplay,
                             onChooseDirectory = { directoryLauncher.launch(telemetry.recordingDirectoryIntent()) },
@@ -468,6 +471,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                         graphReferenceLap = telemetry.graphs.globalLap(),
                         onGraphWindow = { graphWindowOpen = true },
                         onMenu = { menuOpen = true },
+                        timingCars = { timingCars },
                     )
                 }
                 AnimatedVisibility(
@@ -640,6 +644,8 @@ private fun AppTopBar(
     onGraphWindow: () -> Unit,
     /** Opens the app's menu sheet: the source, the driver, recordings and settings. */
     onMenu: () -> Unit,
+    /** The cars in the running order, shown beside the Timing page's menu. Read only there. */
+    timingCars: () -> Int,
 ) {
     val primary = screen.isPrimary
     val title = when (screen) {
@@ -689,11 +695,21 @@ private fun AppTopBar(
                 }
                 if (screen == AppScreen.ANALYSIS) {
                     IconButton(onClick = onAnalysisSettings) {
-                        Icon(painterResource(R.drawable.ic_tune), contentDescription = "Chart settings")
+                        Icon(painterResource(R.drawable.ic_settings), contentDescription = "Chart settings")
+                    }
+                }
+                if (screen == AppScreen.TIMING) {
+                    val cars = timingCars()
+                    if (cars > 0) {
+                        Text(
+                            "$cars cars",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
                     }
                 }
                 IconButton(onClick = onMenu) {
-                    Icon(painterResource(R.drawable.ic_more), contentDescription = "Menu")
+                    Icon(painterResource(R.drawable.ic_more_vert), contentDescription = "Menu")
                 }
             }
         },

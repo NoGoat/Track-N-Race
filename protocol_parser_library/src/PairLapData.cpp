@@ -3,6 +3,8 @@
 #include "tnrp/control_rows.h"
 
 #include <algorithm>
+#include <charconv>
+#include <cstring>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -73,14 +75,19 @@ bool splitChannel(std::string_view channel, std::string_view& family, std::strin
     return familyOf(family) != nullptr;
 }
 
+// `format` is "%.Nf" or "%.Ng"; std::to_chars writes the same digits as
+// snprintf would for those, without parsing a format string per number.
 void appendNumber(std::string& out, double value, const char* format) {
     if (!std::isfinite(value)) {
         out += "null";
         return;
     }
-    char buffer[32];
-    const int length = std::snprintf(buffer, sizeof(buffer), format, value);
-    if (length > 0) out.append(buffer, static_cast<size_t>(length));
+    const size_t length = std::strlen(format);
+    const int precision = format[2] - '0';
+    const auto style = format[length - 1] == 'f' ? std::chars_format::fixed : std::chars_format::general;
+    char buffer[64];
+    const auto written = std::to_chars(buffer, buffer + sizeof(buffer), value, style, precision);
+    if (written.ec == std::errc{}) out.append(buffer, written.ptr);
     else out += "null";
 }
 
@@ -165,24 +172,43 @@ FamilyColumns collectFamily(const std::vector<glz::raw_json>& rows,
     return out;
 }
 
-} // namespace
-
-uint32_t pairLapDataRowMask(const std::vector<std::string>& channels) {
-    uint32_t mask = (1u << kLapRowType) | (1u << kPositionsRowType);
-    for (const auto& channel : channels) {
-        std::string_view family;
-        std::string_view field;
-        if (splitChannel(channel, family, field)) mask |= 1u << familyOf(family)->rowType;
+// collectFamily() over samples already read as numbers.
+FamilyColumns collectSamples(const std::vector<PairLapSample>& rows,
+                             std::vector<std::string> fields, double origin) {
+    FamilyColumns out;
+    out.fields = std::move(fields);
+    out.values.resize(out.fields.size());
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> state(out.fields.size(), kNaN);
+    std::vector<int> owner(out.fields.size(), 0);
+    for (const auto& row : rows) {
+        for (size_t index = 0; index < out.fields.size(); ++index) {
+            if (row.unavailable) {
+                if (row.v6Type == 0 || owner[index] == row.v6Type) state[index] = kNaN;
+                continue;
+            }
+            const auto field = std::find_if(row.fields.begin(), row.fields.end(),
+                [&](const auto& item) { return item.first == out.fields[index]; });
+            if (field != row.fields.end()) {
+                state[index] = field->second;
+                if (row.v6Type != 0) owner[index] = row.v6Type;
+            } else if (row.v6Type == 0) {
+                state[index] = kNaN;
+            }
+        }
+        const double relative = row.sessionTime - origin;
+        if (!out.times.empty() && out.times.back() == relative) {
+            for (size_t index = 0; index < state.size(); ++index) out.values[index].back() = state[index];
+            continue;
+        }
+        if (!out.times.empty() && relative < out.times.back()) continue;
+        out.times.push_back(relative);
+        for (size_t index = 0; index < state.size(); ++index) out.values[index].push_back(state[index]);
     }
-    return mask;
+    return out;
 }
 
-std::string pairLapDataJson(std::string_view playbackLapData,
-                            const std::vector<std::string>& channels) {
-    PairLapSource source;
-    if (playbackLapData.empty() || glz::read<kPartialRead>(source, playbackLapData)) return {};
-    const double origin = source.startSessionTime;
-
+std::map<std::string_view, std::vector<std::string>> fieldsByFamilyOf(const std::vector<std::string>& channels) {
     std::map<std::string_view, std::vector<std::string>> fieldsByFamily;
     for (const auto& channel : channels) {
         std::string_view family;
@@ -191,50 +217,60 @@ std::string pairLapDataJson(std::string_view playbackLapData,
         auto& fields = fieldsByFamily[family];
         if (std::find(fields.begin(), fields.end(), field) == fields.end()) fields.emplace_back(field);
     }
+    return fieldsByFamily;
+}
 
+// The reply both entry points write: the lap, its progress and positions,
+// then each asked-for family's columns from `collect`.
+template <class Collect>
+std::string writeReply(int lapNum, float startSessionTime, float endSessionTime,
+                       const std::vector<LapProgressPoint>& progress,
+                       const std::vector<PlayerPositionPoint>& positions,
+                       const std::vector<std::string>& channels, Collect collect) {
+    const double origin = startSessionTime;
     std::string out;
     out.reserve(256 * 1024);
-    out += "{\"lapNum\":" + std::to_string(source.lapNum);
+    out += "{\"lapNum\":" + std::to_string(lapNum);
     out += ",\"startSessionTime\":";
-    appendNumber(out, source.startSessionTime, "%.3f");
+    appendNumber(out, startSessionTime, "%.3f");
     out += ",\"endSessionTime\":";
-    appendNumber(out, source.endSessionTime, "%.3f");
+    appendNumber(out, endSessionTime, "%.3f");
 
     out += ",\"progress\":{";
-    appendArray(out, "t", source.lapProgress, "%.3f",
+    appendArray(out, "t", progress, "%.3f",
         [&](const LapProgressPoint& point) { return point.session_time - origin; });
     out += ',';
-    appendArray(out, "distance", source.lapProgress, "%.2f",
+    appendArray(out, "distance", progress, "%.2f",
         [](const LapProgressPoint& point) { return point.lap_distance_m; });
     out += ',';
-    appendArray(out, "elapsedMs", source.lapProgress, "%.0f",
+    appendArray(out, "elapsedMs", progress, "%.0f",
         [](const LapProgressPoint& point) { return point.current_lap_ms; });
     out += ',';
-    appendArray(out, "sector", source.lapProgress, "%.0f",
+    appendArray(out, "sector", progress, "%.0f",
         [](const LapProgressPoint& point) { return point.sector; });
     out += ',';
-    appendArray(out, "s1Ms", source.lapProgress, "%.0f",
+    appendArray(out, "s1Ms", progress, "%.0f",
         [](const LapProgressPoint& point) { return point.s1_ms; });
     out += ',';
-    appendArray(out, "s2Ms", source.lapProgress, "%.0f",
+    appendArray(out, "s2Ms", progress, "%.0f",
         [](const LapProgressPoint& point) { return point.s2_ms; });
     out += '}';
 
     out += ",\"positions\":{";
-    appendArray(out, "t", source.playerPositions, "%.3f",
+    appendArray(out, "t", positions, "%.3f",
         [&](const PlayerPositionPoint& point) { return point.session_time - origin; });
     out += ',';
-    appendArray(out, "x", source.playerPositions, "%.2f",
+    appendArray(out, "x", positions, "%.2f",
         [](const PlayerPositionPoint& point) { return point.x; });
     out += ',';
-    appendArray(out, "z", source.playerPositions, "%.2f",
+    appendArray(out, "z", positions, "%.2f",
         [](const PlayerPositionPoint& point) { return point.z; });
     out += '}';
 
     out += ",\"families\":{";
     bool firstFamily = true;
-    for (auto& [family, fields] : fieldsByFamily) {
-        const FamilyColumns columns = collectFamily(rowsOf(source, family), std::move(fields), origin);
+    for (auto& [family, fields] : fieldsByFamilyOf(channels)) {
+        const FamilyColumns columns = collect(family, std::move(fields), origin);
         if (!firstFamily) out += ',';
         firstFamily = false;
         out += '"';
@@ -251,6 +287,39 @@ std::string pairLapDataJson(std::string_view playbackLapData,
     }
     out += "}}";
     return out;
+}
+
+} // namespace
+
+uint32_t pairLapDataRowMask(const std::vector<std::string>& channels) {
+    uint32_t mask = (1u << kLapRowType) | (1u << kPositionsRowType);
+    for (const auto& channel : channels) {
+        std::string_view family;
+        std::string_view field;
+        if (splitChannel(channel, family, field)) mask |= 1u << familyOf(family)->rowType;
+    }
+    return mask;
+}
+
+std::string pairLapDataJson(std::string_view playbackLapData,
+                            const std::vector<std::string>& channels) {
+    PairLapSource source;
+    if (playbackLapData.empty() || glz::read<kPartialRead>(source, playbackLapData)) return {};
+    return writeReply(source.lapNum, source.startSessionTime, source.endSessionTime,
+                      source.lapProgress, source.playerPositions, channels,
+        [&](std::string_view family, std::vector<std::string> fields, double origin) {
+            return collectFamily(rowsOf(source, family), std::move(fields), origin);
+        });
+}
+
+std::string pairLapDataJson(const PairLapSamples& lap, const std::vector<std::string>& channels) {
+    static const std::vector<PairLapSample> none;
+    static const std::vector<PlayerPositionPoint> noPositions;
+    return writeReply(lap.lapNum, lap.startSessionTime, lap.endSessionTime, lap.progress, noPositions, channels,
+        [&](std::string_view family, std::vector<std::string> fields, double origin) {
+            const auto found = lap.families.find(family);
+            return collectSamples(found == lap.families.end() ? none : found->second, std::move(fields), origin);
+        });
 }
 
 } // namespace tnrp

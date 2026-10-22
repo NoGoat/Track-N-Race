@@ -109,10 +109,15 @@ internal fun AnalysisConfigSheet(
     fun updateSeries(transform: (List<AnalysisSeries>) -> List<AnalysisSeries>) =
         update { it.copy(series = transform(it.series)) }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        sheetGesturesEnabled = false,
+        dragHandle = null,
+    ) {
         Text(
             "Chart",
-            modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp),
+            modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 8.dp),
             style = MaterialTheme.typography.titleLarge,
         )
         PrimaryTabRow(selectedTabIndex = tab, containerColor = Color.Transparent) {

@@ -1,7 +1,11 @@
 package com.tracknrace.android.pages
 
 import android.content.res.Configuration
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,8 +21,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.AssistChip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedAssistChip
@@ -26,8 +32,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
@@ -35,21 +43,35 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.tracknrace.android.AnalysisCatalog
 import com.tracknrace.android.AnalysisConfig
@@ -85,6 +107,9 @@ private const val LAP_SYNC_INTERVAL_MS = 1_000L
 private const val CURSOR_MAX_LEAD_SECONDS = 0.5
 private const val CURSOR_CORRECTION_SECONDS = 0.15
 private const val CURSOR_SNAP_SECONDS = 1.0
+// The sector strip's last cell: the whole lap, after S1 to S3.
+private const val WHOLE_LAP = 3
+private val LANDSCAPE_RAIL_WIDTH = 232.dp
 
 /**
  * The desktop's playback cursor as a smooth clock. Its position arrives a few
@@ -145,6 +170,7 @@ internal fun AnalysisScreen(
     // fuel) changes several times a second and would recompose this screen.
     val trackId by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.cold.trackId } }
     val aeroMode by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.cold.aeroMode } }
+    val slmTrackStatus by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.cold.slmTrackStatus } }
     val catalog = store.playbackCatalog
     val config = analysis.config
     val fixed = analysis.fixedMode
@@ -222,186 +248,277 @@ internal fun AnalysisScreen(
 
     val chartState = remember { AnalysisChartState() }
     var lapPicker by remember { mutableStateOf<LapTarget?>(null) }
+    // Portrait shows the laps as one slim strip; tapping it opens the full
+    // lap row over the page, as the player opens from its strip.
+    var lapsExpanded by rememberSaveable { mutableStateOf(false) }
+    var tabsHeight by remember { mutableIntStateOf(0) }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    BackHandler(enabled = lapsExpanded && !landscape) { lapsExpanded = false }
     val onView: (AnalysisView) -> Unit = { view ->
         // Choosing a view drops a point opened from the graph, as on the desktop.
         mapFocus = null
         analysis.updateConfig { it.copy(view = view) }
     }
-    val lapBar: @Composable (Modifier) -> Unit = { modifier ->
-        LapBar(
+
+    // The sector the graph is zoomed to, from the sector strip: its range
+    // follows the laps shown. A pinch zoom of two fixed laps is kept until
+    // they are left; following playback has no zoom but a sector's.
+    var sectorFocus by remember { mutableStateOf<Int?>(null) }
+    val sectors = remember(current, comparison, distanceMode, catalog.trackLengthM) {
+        sectorDomains(current, comparison, distanceMode, catalog.trackLengthM)
+    }
+    LaunchedEffect(fixed, sectorFocus, sectors) {
+        val range = sectorFocus?.let { sectors.getOrNull(it) }
+        if (range != null) chartState.zoom = range else if (!fixed) chartState.resetZoom()
+    }
+    // The strip's selection: a sector, the whole lap, or none for a pinch zoom.
+    val zoom = chartState.zoom
+    val stripSelection = when {
+        zoom == null -> WHOLE_LAP
+        sectorFocus != null && sectors.getOrNull(sectorFocus!!) == zoom -> sectorFocus
+        else -> null
+    }
+    val onSector: (Int) -> Unit = { index ->
+        if (index == WHOLE_LAP || index == stripSelection) {
+            sectorFocus = null
+            chartState.resetZoom()
+        } else {
+            sectorFocus = index
+        }
+    }
+    val swapLaps: () -> Unit = {
+        val first = currentLapNumber
+        val second = comparisonLapNumber
+        analysis.selectLapA(second)
+        analysis.selectLapB(first)
+        analysis.useFixedLaps(true)
+    }
+    val lapDelta = if (comparisonSelected && delta != null) summary else null
+    val lapRow: @Composable (Boolean) -> Unit = { stacked ->
+        LapSelectorRow(
             catalog = catalog,
             fixed = fixed,
-            primaryLap = currentLapNumber,
-            primaryColor = currentColor,
-            comparisonLap = comparisonLapNumber,
-            comparisonColor = comparisonColor,
-            lapDelta = if (comparisonSelected && delta != null) summary else null,
-            positiveColor = positiveColor,
-            negativeColor = negativeColor,
+            lapA = currentLapNumber,
+            lapB = comparisonLapNumber,
+            colorA = currentColor,
+            colorB = comparisonColor,
+            stacked = stacked,
             onPick = { lapPicker = it },
-            modifier = modifier,
+            onSwap = swapLaps,
         )
     }
+    val sectorStrip: @Composable (Boolean) -> Unit = { stacked ->
+        if (sectors.isNotEmpty()) {
+            SectorStrip(
+                summary = lapDelta,
+                selected = stripSelection,
+                stacked = stacked,
+                positiveColor = positiveColor,
+                negativeColor = negativeColor,
+                onSelect = onSector,
+            )
+        }
+    }
 
-    Column(Modifier.fillMaxSize()) {
-        if (landscape) {
-            // One bar: the lap chips share the tabs' container colour.
-            Row(
-                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                lapBar(Modifier.weight(1f))
-                ViewTabs(config.view, onView, Modifier.width(320.dp))
-            }
-        } else {
-            ViewTabs(config.view, onView, Modifier.fillMaxWidth())
-            lapBar(Modifier.fillMaxWidth())
-        }
-        // Without sector boundaries the x axis has no room for sector deltas.
-        if (!config.sectorBoundaries && comparisonSelected && delta != null && config.view != AnalysisView.MAP) {
-            SectorDeltaLine(summary, positiveColor, negativeColor)
-        }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-        val empty = when {
-            !local && !paired -> EmptyState(
-                "No recording open",
-                "Analysis reads a recording's laps. Open one from the menu, or pair a desktop and play one there.",
-            )
-            !catalog.active && local -> EmptyState("Opening the recording", "Reading its laps.", loading = true)
-            !catalog.active -> EmptyState("No recording playing", "Open a recording on the desktop, or one on this phone from the menu.")
-            !local && analysis.lapDataUnavailable -> EmptyState(
-                "Desktop update needed",
-                "This desktop cannot send laps yet. Update Track N Race on the desktop.",
-            )
-            currentLapNumber <= 0 && fixed -> EmptyState(
-                "Choose two laps",
-                "Pick Lap A and Lap B to compare.",
-                action = "Choose laps",
-            )
-            currentLapNumber <= 0 -> EmptyState("Waiting for a lap", "Playback has not reached a lap yet.", loading = true)
-            current == null -> EmptyState(
-                "Loading lap $currentLapNumber",
-                if (local) "Reading it from the recording." else "Fetching it from the desktop.",
-                loading = true,
-            )
-            else -> null
-        }
-        Box(Modifier.fillMaxWidth().weight(1f)) {
-            if (empty != null) {
-                AnalysisEmptyState(empty, onAction = { lapPicker = LapTarget.LAP_A }, modifier = Modifier.align(Alignment.Center))
-                return@Box
-            }
-            val chartInput = AnalysisChartInput(
-                current = current,
-                comparison = comparison,
-                series = config.series,
-                distanceMode = distanceMode,
-                trackLengthM = catalog.trackLengthM,
-                delta = delta,
-                showDelta = showDelta,
-                stacked = config.individualGraphs,
-                sectorBoundaries = config.sectorBoundaries,
-                realtime = !fixed,
-                zoomEnabled = fixed,
-                deltaPositive = positiveColor,
-                deltaNegative = negativeColor,
-                mapCursorColors = if (config.view == AnalysisView.SPLIT && fixed) listOf(currentColor, comparisonColor) else null,
-            )
-            val mapLaps = listOfNotNull(
-                current?.let { MapLap(it, currentColor, primaryLabel) },
-                comparison?.let { MapLap(it, comparisonColor, comparisonLabel) },
-            )
-            // Reading the graph moves the cars on the map: the fixed laps'
-            // own clock, or a held point instead of the desktop's cursor.
-            val scrub: (Double) -> Unit = { elapsed ->
-                if (fixed) clock.seek(elapsed) else mapFocus = elapsed
-            }
-            val backToLive = !fixed && (mapFocus != null || chartState.crosshair != null)
-            val chips: @Composable (Modifier) -> Unit = { modifier ->
-                ChartChips(
-                    zoomed = chartState.zoomed,
-                    onWholeLap = chartState::resetZoom,
-                    backToLive = backToLive,
-                    onBackToLive = {
-                        mapFocus = null
-                        chartState.crosshair = null
-                    },
-                    modifier = modifier,
-                )
-            }
-            val chart: @Composable (Modifier) -> Unit = { modifier ->
-                Box(modifier) {
-                    AnalysisChart(
-                        input = chartInput,
-                        state = chartState,
-                        cursorOffset = cursorOffset,
-                        mapElapsed = if (config.view == AnalysisView.SPLIT || fixed) mapElapsed else null,
-                        sectorDeltas = if (comparisonSelected && delta != null) summary else null,
-                        onScrub = scrub,
-                        onDoubleTap = {
-                            if (config.view == AnalysisView.GRAPH) analysis.updateConfig { it.copy(view = AnalysisView.SPLIT) }
-                        },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    // In Split the chips sit on the map instead.
-                    if (config.view == AnalysisView.GRAPH) chips(Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 26.dp))
-                }
-            }
-            val map: @Composable (Modifier) -> Unit = { modifier ->
-                Column(modifier) {
-                    Box(Modifier.fillMaxWidth().weight(1f)) {
-                        AnalysisMap(trackId, mapLaps, mapElapsed, aeroMode, Modifier.fillMaxSize())
-                        chips(Modifier.align(Alignment.BottomEnd).padding(8.dp))
-                    }
-                    if (fixed) AnalysisPlaybackBar(clock, mapElapsed, mapTotal, current?.sectorSplits?.map { it.elapsedSeconds }.orEmpty())
-                }
-            }
-            val sectorTable: @Composable (Modifier) -> Unit = { modifier ->
-                SectorTable(
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            ViewTabs(config.view, onView, Modifier.fillMaxWidth().onSizeChanged { tabsHeight = it.height })
+            if (landscape) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            } else {
+                // Stays in place while the full row is open over it, so the page
+                // below does not move.
+                LapSummaryBar(
                     catalog = catalog,
-                    current = current,
-                    comparison = comparison,
-                    primaryLabel = "L$currentLapNumber",
-                    comparisonLabel = if (comparisonLapNumber > 0) "L$comparisonLapNumber" else null,
-                    primaryColor = currentColor,
-                    comparisonColor = comparisonColor,
-                    visibleDistance = visibleDistance,
-                    summary = if (comparisonSelected && delta != null) summary else null,
-                    positiveColor = positiveColor,
-                    negativeColor = negativeColor,
-                    modifier = modifier,
+                    fixed = fixed,
+                    lapA = currentLapNumber,
+                    lapB = comparisonLapNumber,
+                    colorA = currentColor,
+                    colorB = comparisonColor,
+                    onExpand = { lapsExpanded = true },
                 )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                sectorStrip(false)
+                if (sectors.isNotEmpty()) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
-            when (config.view) {
-                AnalysisView.GRAPH -> chart(Modifier.fillMaxSize())
-                AnalysisView.MAP -> if (landscape) {
-                    Row(Modifier.fillMaxSize()) {
-                        map(Modifier.weight(1f).fillMaxHeight())
-                        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        sectorTable(Modifier.width(300.dp).fillMaxHeight())
-                    }
-                } else {
-                    Column(Modifier.fillMaxSize()) {
-                        map(Modifier.fillMaxWidth().weight(1f))
+
+            val empty = when {
+                !local && !paired -> EmptyState(
+                    "No recording open",
+                    "Analysis reads a recording's laps. Open one from the menu, or pair a desktop and play one there.",
+                )
+                !catalog.active && local -> EmptyState("Opening the recording", "Reading its laps.", loading = true)
+                !catalog.active -> EmptyState("No recording playing", "Open a recording on the desktop, or one on this phone from the menu.")
+                !local && analysis.lapDataUnavailable -> EmptyState(
+                    "Desktop update needed",
+                    "This desktop cannot send laps yet. Update Track N Race on the desktop.",
+                )
+                currentLapNumber <= 0 && fixed -> EmptyState(
+                    "Choose two laps",
+                    "Pick Lap A and Lap B to compare.",
+                    action = "Choose laps",
+                )
+                currentLapNumber <= 0 -> EmptyState("Waiting for a lap", "Playback has not reached a lap yet.", loading = true)
+                current == null -> EmptyState(
+                    "Loading lap $currentLapNumber",
+                    if (local) "Reading it from the recording." else "Fetching it from the desktop.",
+                    loading = true,
+                )
+                else -> null
+            }
+            // Landscape: the laps and sectors in a column beside the content.
+            Row(Modifier.fillMaxWidth().weight(1f)) {
+                if (landscape) {
+                    Column(Modifier.width(LANDSCAPE_RAIL_WIDTH).fillMaxHeight()) {
+                        lapRow(true)
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        sectorTable(Modifier.fillMaxWidth())
+                        sectorStrip(true)
+                    }
+                    VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    if (empty != null) {
+                        AnalysisEmptyState(empty, onAction = { lapPicker = LapTarget.LAP_A }, modifier = Modifier.align(Alignment.Center))
+                        return@Box
+                    }
+                    val chartInput = AnalysisChartInput(
+                        current = current,
+                        comparison = comparison,
+                        series = config.series,
+                        distanceMode = distanceMode,
+                        trackLengthM = catalog.trackLengthM,
+                        delta = delta,
+                        showDelta = showDelta,
+                        stacked = config.individualGraphs,
+                        sectorBoundaries = config.sectorBoundaries,
+                        realtime = !fixed,
+                        zoomEnabled = fixed,
+                        deltaPositive = positiveColor,
+                        deltaNegative = negativeColor,
+                        mapCursorColors = if (config.view == AnalysisView.SPLIT && fixed) listOf(currentColor, comparisonColor) else null,
+                        lapColors = listOf(currentColor, comparisonColor),
+                    )
+                    val mapLaps = listOfNotNull(
+                        current?.let { MapLap(it, currentColor, primaryLabel) },
+                        comparison?.let { MapLap(it, comparisonColor, comparisonLabel) },
+                    )
+                    // Reading the graph moves the cars on the map: the fixed laps'
+                    // own clock, or a held point instead of the desktop's cursor.
+                    val scrub: (Double) -> Unit = { elapsed ->
+                        if (fixed) clock.seek(elapsed) else mapFocus = elapsed
+                    }
+                    val backToLive = !fixed && (mapFocus != null || chartState.crosshair != null)
+                    val chips: @Composable (Modifier) -> Unit = { modifier ->
+                        ChartChips(
+                            // A sector's zoom is undone from the sector strip.
+                            zoomed = chartState.zoomed && stripSelection == null,
+                            onWholeLap = chartState::resetZoom,
+                            backToLive = backToLive,
+                            onBackToLive = {
+                                mapFocus = null
+                                chartState.crosshair = null
+                            },
+                            modifier = modifier,
+                        )
+                    }
+                    val chart: @Composable (Modifier) -> Unit = { modifier ->
+                        Box(modifier) {
+                            AnalysisChart(
+                                input = chartInput,
+                                state = chartState,
+                                cursorOffset = cursorOffset,
+                                mapElapsed = if (config.view == AnalysisView.SPLIT || fixed) mapElapsed else null,
+                                sectorDeltas = if (comparisonSelected && delta != null) summary else null,
+                                onScrub = scrub,
+                                onDoubleTap = {
+                                    if (config.view == AnalysisView.GRAPH) analysis.updateConfig { it.copy(view = AnalysisView.SPLIT) }
+                                },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            // In Split the chips sit on the map instead.
+                            if (config.view == AnalysisView.GRAPH) chips(Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 26.dp))
+                        }
+                    }
+                    val map: @Composable (Modifier) -> Unit = { modifier ->
+                        Column(modifier) {
+                            Box(Modifier.fillMaxWidth().weight(1f)) {
+                                AnalysisMap(trackId, mapLaps, mapElapsed, aeroMode, Modifier.fillMaxSize(), focusSector = stripSelection?.takeIf { it != WHOLE_LAP }, slmTrackStatus = slmTrackStatus)
+                                chips(Modifier.align(Alignment.BottomEnd).padding(8.dp))
+                            }
+                            if (fixed) AnalysisPlaybackBar(clock, mapElapsed, mapTotal, current?.sectorSplits?.map { it.elapsedSeconds }.orEmpty())
+                        }
+                    }
+                    val sectorTable: @Composable (Modifier) -> Unit = { modifier ->
+                        SectorTable(
+                            catalog = catalog,
+                            current = current,
+                            comparison = comparison,
+                            primaryLabel = "L$currentLapNumber",
+                            comparisonLabel = if (comparisonLapNumber > 0) "L$comparisonLapNumber" else null,
+                            primaryColor = currentColor,
+                            comparisonColor = comparisonColor,
+                            visibleDistance = visibleDistance,
+                            summary = if (comparisonSelected && delta != null) summary else null,
+                            positiveColor = positiveColor,
+                            negativeColor = negativeColor,
+                            modifier = modifier,
+                        )
+                    }
+                    when (config.view) {
+                        AnalysisView.GRAPH -> chart(Modifier.fillMaxSize())
+                        AnalysisView.MAP -> if (landscape) {
+                            Row(Modifier.fillMaxSize()) {
+                                map(Modifier.weight(1f).fillMaxHeight())
+                                VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                sectorTable(Modifier.width(300.dp).fillMaxHeight())
+                            }
+                        } else {
+                            Column(Modifier.fillMaxSize()) {
+                                map(Modifier.fillMaxWidth().weight(1f))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                sectorTable(Modifier.fillMaxWidth())
+                            }
+                        }
+                        AnalysisView.SPLIT -> if (landscape) {
+                            Row(Modifier.fillMaxSize()) {
+                                chart(Modifier.weight(1f).fillMaxHeight())
+                                VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                map(Modifier.weight(1f).fillMaxHeight())
+                            }
+                        } else {
+                            Column(Modifier.fillMaxSize()) {
+                                map(Modifier.fillMaxWidth().weight(0.85f))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                chart(Modifier.fillMaxWidth().weight(1.15f))
+                            }
+                        }
                     }
                 }
-                AnalysisView.SPLIT -> if (landscape) {
-                    Row(Modifier.fillMaxSize()) {
-                        chart(Modifier.weight(1f).fillMaxHeight())
-                        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        map(Modifier.weight(1f).fillMaxHeight())
-                    }
-                } else {
-                    Column(Modifier.fillMaxSize()) {
-                        map(Modifier.fillMaxWidth().weight(0.85f))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        chart(Modifier.fillMaxWidth().weight(1.15f))
-                    }
-                }
+            }
+        }
+        if (lapsExpanded && !landscape) {
+            // Over the page: a tap outside it hides it, and is not passed on.
+            Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { lapsExpanded = false } })
+            Surface(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = with(LocalDensity.current) { tabsHeight.toDp() })
+                    .pointerInput(Unit) {
+                        // A swipe up hides it.
+                        var travel = 0f
+                        detectVerticalDragGestures(
+                            onDragStart = { travel = 0f },
+                            onDragEnd = { if (travel < -32.dp.toPx()) lapsExpanded = false },
+                        ) { change, amount ->
+                            travel += amount
+                            change.consume()
+                        }
+                    },
+                shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                shadowElevation = 6.dp,
+            ) {
+                lapRow(false)
             }
         }
     }
@@ -411,7 +528,7 @@ internal fun AnalysisScreen(
             analysis = analysis,
             catalog = catalog,
             playbackLap = store.playbackSelectedLap,
-            initialTarget = target,
+            target = target,
             lapAColor = currentColor,
             lapBColor = comparisonColor,
             onDismiss = { lapPicker = null },
@@ -484,74 +601,129 @@ private fun ViewTabs(view: AnalysisView, onView: (AnalysisView) -> Unit, modifie
     }
 }
 
-/** The compared laps as chips that open the lap picker, and the lap delta. */
+/**
+ * The compared laps, one button each: its colour, number, role and time.
+ * Each opens that lap's sheet; between them, a swap fixes the two laps the
+ * other way round. [stacked] puts them one above the other, for the
+ * landscape column.
+ */
 @Composable
-private fun LapBar(
+private fun LapSelectorRow(
     catalog: PlaybackCatalog,
     fixed: Boolean,
-    primaryLap: Int,
-    primaryColor: Color,
-    comparisonLap: Int,
-    comparisonColor: Color,
-    lapDelta: State<AnalysisDeltaSummary>?,
-    positiveColor: Color,
-    negativeColor: Color,
+    lapA: Int,
+    lapB: Int,
+    colorA: Color,
+    colorB: Color,
+    stacked: Boolean,
     onPick: (LapTarget) -> Unit,
-    modifier: Modifier = Modifier,
+    onSwap: () -> Unit,
+) {
+    val first: @Composable (Modifier) -> Unit = { modifier ->
+        LapButton(
+            lap = lapA,
+            color = colorA,
+            placeholder = if (fixed) "Lap A" else "Waiting",
+            role = if (fixed) "fixed" else "following",
+            roleColor = null,
+            time = lapTime(catalog, lapA),
+            onClick = { onPick(LapTarget.LAP_A) },
+            modifier = modifier,
+        )
+    }
+    val second: @Composable (Modifier) -> Unit = { modifier ->
+        val fastest = lapB > 0 && lapB == catalog.fastestLap
+        LapButton(
+            lap = lapB,
+            color = colorB,
+            placeholder = if (fixed) "Lap B" else "Compare",
+            role = when {
+                lapB <= 0 -> "none chosen"
+                fastest -> "fastest"
+                else -> null
+            },
+            roleColor = if (fastest) FastestLapColor else null,
+            time = lapTime(catalog, lapB),
+            onClick = { onPick(LapTarget.LAP_B) },
+            modifier = modifier,
+        )
+    }
+    val swap: @Composable () -> Unit = {
+        IconButton(onClick = onSwap, enabled = lapA > 0 && lapB > 0) {
+            Icon(painterResource(R.drawable.ic_swap_horiz), contentDescription = "Swap laps", modifier = Modifier.size(20.dp))
+        }
+    }
+    if (stacked) {
+        Row(Modifier.fillMaxWidth().padding(start = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                first(Modifier.fillMaxWidth())
+                second(Modifier.fillMaxWidth())
+            }
+            swap()
+        }
+    } else {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            first(Modifier.weight(1f))
+            swap()
+            second(Modifier.weight(1f))
+        }
+    }
+}
+
+/**
+ * The compared laps folded to one slim strip, like the player's: each lap's
+ * colour, number and time. Tapping it opens [LapSelectorRow] over the page.
+ */
+@Composable
+private fun LapSummaryBar(
+    catalog: PlaybackCatalog,
+    fixed: Boolean,
+    lapA: Int,
+    lapB: Int,
+    colorA: Color,
+    colorB: Color,
+    onExpand: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    Row(
-        modifier.heightIn(min = 52.dp).padding(start = 12.dp, end = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        // The chips are cached as one texture; the live delta beside them is
-        // not, or every change of it would re-render the chips too.
-        Row(
-            Modifier.staticLayer(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            LapChip(
-                lap = primaryLap,
-                color = primaryColor,
-                time = null,
-                live = !fixed && primaryLap > 0,
-                placeholder = if (fixed) "Lap A" else "—",
-                onClick = { onPick(if (fixed) LapTarget.LAP_A else LapTarget.COMPARE) },
+    val timeStyle = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum")
+    // Each lap fills half the strip, under its button in the open row.
+    val lap: @Composable RowScope.(Int, Color, String) -> Unit = { number, color, placeholder ->
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(width = 3.dp, height = 14.dp).background(if (number > 0) color else color.copy(alpha = 0.35f), RoundedCornerShape(1.5.dp)))
+            Text(
+                if (number > 0) "L$number" else placeholder,
+                modifier = Modifier.padding(start = 6.dp),
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
             )
-            Text("vs", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-            LapChip(
-                lap = comparisonLap,
-                color = comparisonColor,
-                // Two laps leave the delta no room for both times; the picker and
-                // the Map table show them.
-                time = if (fixed) null else lapTime(catalog, comparisonLap),
-                live = false,
-                placeholder = if (fixed) "Lap B" else "Compare",
-                onClick = { onPick(if (fixed) LapTarget.LAP_B else LapTarget.COMPARE) },
-            )
-        }
-        // The delta takes what the chips leave; the chips keep their full labels.
-        Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
-            if (lapDelta != null) {
-                // Read while drawing: the delta changes ten times a second.
-                Readout(
-                    runs = {
-                        val value = lapDelta.value.lap
-                        listOf(ReadoutRun(formatDelta(value), deltaColor(value, colors.onSurfaceVariant, positiveColor, negativeColor)))
-                    },
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
-                    modifier = Modifier.fillMaxWidth(),
-                    alignEnd = true,
-                )
-                Text(
-                    "LAP Δ",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.onSurfaceVariant,
-                )
+            val time = if (number > 0) lapTime(catalog, number) else null
+            if (time != null) {
+                Text(time, modifier = Modifier.padding(start = 6.dp), style = timeStyle, color = colors.onSurfaceVariant, maxLines = 1)
             }
         }
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(32.dp)
+            .background(colors.surfaceContainer)
+            .clickable(onClickLabel = "Show laps", onClick = onExpand)
+            .padding(start = 14.dp, end = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        lap(lapA, colorA, if (fixed) "Lap A" else "Waiting")
+        // As wide as the open row's swap button, so the halves line up.
+        Text("vs", modifier = Modifier.width(48.dp), style = timeStyle, color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
+        lap(lapB, colorB, if (fixed) "Lap B" else "Compare")
+        Icon(
+            painterResource(R.drawable.ic_expand_more),
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = colors.onSurfaceVariant,
+        )
     }
 }
 
@@ -559,75 +731,146 @@ private fun lapTime(catalog: PlaybackCatalog, lap: Int): String? =
     catalog.laps.firstOrNull { it.lapNumber == lap }?.let { formatLapTimeMs(it.lapTimeMs) }
 
 @Composable
-private fun LapChip(
+private fun LapButton(
     lap: Int,
     color: Color,
-    time: String?,
-    live: Boolean,
     placeholder: String,
+    role: String?,
+    roleColor: Color?,
+    time: String?,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
-    AssistChip(
-        onClick = onClick,
-        leadingIcon = {
-            Box(Modifier.size(10.dp).background(if (lap > 0) color else color.copy(alpha = 0.35f), CircleShape))
-        },
-        trailingIcon = {
-            Icon(painterResource(R.drawable.ic_expand_more), contentDescription = null, modifier = Modifier.size(AssistChipDefaults.IconSize))
-        },
-        label = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+    val detail = buildAnnotatedString {
+        if (role != null) {
+            withStyle(SpanStyle(color = roleColor ?: colors.onSurfaceVariant)) { append(role) }
+        }
+        if (lap > 0 && time != null) {
+            if (role != null) append(" · ")
+            append(time)
+        }
+    }
+    Row(
+        modifier
+            .heightIn(min = 52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClickLabel = "Change lap", onClick = onClick)
+            .padding(start = 10.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(Modifier.size(width = 4.dp, height = 32.dp).background(if (lap > 0) color else color.copy(alpha = 0.35f), RoundedCornerShape(2.dp)))
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (lap > 0) "Lap $lap" else placeholder,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+            )
+            if (detail.isNotEmpty()) {
                 Text(
-                    if (lap > 0) "L$lap" else placeholder,
-                    fontWeight = FontWeight.SemiBold,
+                    detail,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                    color = colors.onSurfaceVariant,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                if (live) {
-                    Text(
-                        "LIVE",
-                        modifier = Modifier
-                            .padding(start = 6.dp)
-                            .background(colors.primary, MaterialTheme.shapes.extraSmall)
-                            .padding(horizontal = 4.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = colors.onPrimary,
-                        maxLines = 1,
-                    )
-                }
-                if (lap > 0 && time != null) {
-                    Text(
-                        " $time",
-                        style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
-                        color = colors.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
             }
-        },
-    )
+        }
+        Icon(
+            painterResource(R.drawable.ic_expand_more),
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = colors.onSurfaceVariant,
+        )
+    }
 }
 
-/** S1 S2 S3 deltas on one line, for when the x axis is not split into sectors. */
+/**
+ * S1, S2, S3 and the lap, each with its delta while comparing. Tapping a
+ * sector zooms the graph to it and fades the rest of the map; the lap, or the
+ * selected sector again, shows the whole lap. [stacked] lists them one per
+ * row, for the landscape column.
+ */
 @Composable
-private fun SectorDeltaLine(summary: State<AnalysisDeltaSummary>, positiveColor: Color, negativeColor: Color) {
+private fun SectorStrip(
+    summary: State<AnalysisDeltaSummary>?,
+    selected: Int?,
+    stacked: Boolean,
+    positiveColor: Color,
+    negativeColor: Color,
+    onSelect: (Int) -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
-    val sectors = summary.value.sectors
-    Row(
-        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(20.dp),
-    ) {
-        sectors.forEachIndexed { index, value ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("S${index + 1}", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-                Text(
-                    " ${if (value == null) "—" else formatDelta(value)}",
-                    style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
-                    fontWeight = FontWeight.SemiBold,
-                    color = deltaColor(value, colors.onSurfaceVariant, positiveColor, negativeColor),
-                )
+    val names = listOf("S1", "S2", "S3", "Lap")
+    // The deltas change ten times a second: painted, read while drawing.
+    val value: @Composable (Int, TextStyle, Modifier, Boolean) -> Unit = { index, valueStyle, modifier, alignEnd ->
+        Readout(
+            runs = {
+                val summed = summary?.value
+                val delta = if (index == WHOLE_LAP) summed?.lap else summed?.sectors?.getOrNull(index)
+                listOf(ReadoutRun(if (delta == null) "—" else formatDelta(delta), deltaColor(delta, colors.onSurfaceVariant, positiveColor, negativeColor)))
+            },
+            style = valueStyle,
+            modifier = modifier,
+            alignEnd = alignEnd,
+            center = !alignEnd,
+        )
+    }
+    if (stacked) {
+        Column(Modifier.fillMaxWidth().selectableGroup()) {
+            names.forEachIndexed { index, name ->
+                val on = selected == index
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .selectable(selected = on, role = Role.Tab, onClick = { onSelect(index) })
+                        .background(if (on) colors.secondaryContainer.copy(alpha = 0.45f) else Color.Transparent)
+                        .drawBehind { if (on) drawRect(colors.primary, size = Size(3.dp.toPx(), size.height)) }
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        name,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (on) colors.primary else colors.onSurfaceVariant,
+                    )
+                    value(index, MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold), Modifier.width(80.dp), true)
+                }
+            }
+        }
+    } else {
+        // One slim line: each cell's name and delta side by side.
+        val compactStyle = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+        // Wide enough for "+0.000" at this size; a wider delta shrinks to fit.
+        val deltaWidth = with(LocalDensity.current) { (compactStyle.fontSize.toPx() * 3.6f).toDp() }
+        Row(Modifier.fillMaxWidth().height(32.dp).selectableGroup()) {
+            names.forEachIndexed { index, name ->
+                val on = selected == index
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .selectable(selected = on, role = Role.Tab, onClick = { onSelect(index) })
+                        .drawBehind {
+                            if (on) {
+                                val bar = 2.dp.toPx()
+                                drawRect(colors.primary, Offset(0f, size.height - bar), Size(size.width, bar))
+                            }
+                        },
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        name,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (on) colors.primary else colors.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                    value(index, compactStyle, Modifier.padding(start = 4.dp).width(deltaWidth), false)
+                }
             }
         }
     }
@@ -737,7 +980,34 @@ private fun SectorTable(
                 )
             }
         }
+        // The better of the two laps in each sector, once both have all three.
+        val best = if (comparisonLabel == null) null else bestOfBoth(currentTimes, comparisonTimes)
+        if (best != null) {
+            HorizontalDivider(color = colors.outlineVariant)
+            Row(Modifier.fillMaxWidth().height(36.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Best of both, by sector",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(formatSeconds(best, true), style = numberStyle, color = FastestLapColor, fontWeight = FontWeight.SemiBold)
+            }
+        }
     }
+}
+
+/** The sum of the faster of each lap's S1, S2 and S3, or null while any is missing. */
+private fun bestOfBoth(first: List<Double?>, second: List<Double?>): Double? {
+    var total = 0.0
+    for (sector in 0 until 3) {
+        val a = first.getOrNull(sector) ?: return null
+        val b = second.getOrNull(sector) ?: return null
+        total += min(a, b)
+    }
+    return total
 }
 
 /** S1, S2, S3 and lap seconds of [lap], each null until [visible] metres have passed its end. */

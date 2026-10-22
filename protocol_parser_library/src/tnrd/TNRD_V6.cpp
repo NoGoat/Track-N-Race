@@ -3753,6 +3753,77 @@ bool TnrdV6Archive::rowsForLapRange(uint32_t lap, float from, float to, V6RowTyp
         return std::tie(a.sessionTime, a.sequence, a.sourceOffset) < std::tie(b.sessionTime, b.sequence, b.sourceOffset);
     }); return true;
 }
+bool TnrdV6Archive::lapFields(uint32_t lap, const std::vector<uint8_t>& types, float from, float to,
+                              V6LapFields& out, std::string* errorOut) {
+    out = {};
+    const std::set<uint8_t> wanted(types.begin(), types.end());
+    // The chunks rowsForLap() reads for this lap, kept to these types.
+    std::vector<std::shared_ptr<const ChunkData>> held;
+    std::vector<const V6ChunkInfo*> infos;
+    for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
+        const auto& chunk = impl_->v6Chunks[i];
+        const auto found = impl_->lapById.find(chunk.lapId);
+        if (!wanted.contains(chunk.typeId) || chunk.driverIndex != impl_->playback ||
+            found == impl_->lapById.end() ||
+            impl_->lapSummaries[found->second].phase != impl_->exposed ||
+            impl_->lapSummaries[found->second].lapNumber != lap) continue;
+        std::shared_ptr<const ChunkData> data;
+        if (!impl_->load(i, data, errorOut)) return false;
+        held.push_back(std::move(data));
+        infos.push_back(&chunk);
+    }
+    struct Order { float time; uint64_t sequence; uint32_t row; size_t index; };
+    std::vector<Order> order;
+    std::unordered_map<std::string_view, uint32_t> nameIds;
+    for (size_t c = 0; c < held.size(); ++c) {
+        const auto& table = held[c]->table;
+        const auto& chunk = *infos[c];
+        std::vector<uint32_t> columnName(table.columns.size());
+        for (size_t k = 0; k < table.columns.size(); ++k) {
+            const auto [it, inserted] = nameIds.try_emplace(table.columns[k].name, static_cast<uint32_t>(out.names.size()));
+            if (inserted) out.names.push_back(table.columns[k].name);
+            columnName[k] = it->second;
+        }
+        for (uint32_t row = 0; row < table.time.size(); ++row) {
+            const float time = table.time[row];
+            if (time < from || time > to) continue;
+            V6LapFields::Row entry{time, chunk.typeId, false, false, true,
+                                   static_cast<uint32_t>(out.fields.size()), 0};
+            for (size_t k = 0; k < table.columns.size(); ++k) {
+                const auto& column = table.columns[k];
+                if (!column.has(row)) continue;
+                switch (column.kind) {
+                    case ColumnKind::Json:
+                        if (column.name == "sets") entry.sets = true;
+                        continue;
+                    case ColumnKind::Bool:
+                        if (column.name == "available" && column.ints[row] == 0) entry.unavailable = true;
+                        out.fields.push_back({columnName[k], false, column.ints[row] ? 1.0 : 0.0});
+                        break;
+                    case ColumnKind::Int:
+                        out.fields.push_back({columnName[k], false, static_cast<double>(column.ints[row])});
+                        break;
+                    case ColumnKind::Float32: case ColumnKind::Float64: case ColumnKind::Decimal:
+                        if (!std::isfinite(column.reals[row])) entry.finite = false;
+                        out.fields.push_back({columnName[k], true, column.reals[row]});
+                        break;
+                }
+                ++entry.count;
+            }
+            order.push_back({time, chunk.sequence, row, out.rows.size()});
+            out.rows.push_back(entry);
+        }
+    }
+    // rowsForLap()'s order: by time, then chunk sequence, then row.
+    std::stable_sort(order.begin(), order.end(), [](const Order& a, const Order& b) {
+        return std::tie(a.time, a.sequence, a.row) < std::tie(b.time, b.sequence, b.row);
+    });
+    std::vector<V6LapFields::Row> sorted;
+    sorted.reserve(order.size());
+    for (const auto& item : order) sorted.push_back(out.rows[item.index]);
+    out.rows = std::move(sorted);
+    return true;
+}
 bool TnrdV6Archive::rowsForRange(float from, float to, V6RowTypeMask mask, std::vector<V6TimedRow>& out,
                                  std::string* errorOut, const IndexedCancelCheck& cancelled) {
     out.clear();

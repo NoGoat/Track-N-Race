@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -44,6 +45,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -100,13 +102,13 @@ private const val MIN_ZOOM_SECONDS = 0.5
 private const val MIN_ZOOM_METRES = 25.0
 private const val DOUBLE_TAP_MS = 320L
 private const val RASTER_SETTLE_MS = 48L
-private const val HEADER_DP = 20f
+private const val HEADER_DP = 22f
 private const val PANEL_GAP_DP = 6f
 private const val X_AXIS_DP = 20f
 // Below this a stacked panel's trace is too flat to read; past it the graph
 // scrolls. A landscape phone is too short for that, so it settles for less.
-private const val MIN_PANEL_DP = 88f
-private const val MIN_PANEL_SHORT_DP = 52f
+private const val MIN_PANEL_DP = 72f
+private const val MIN_PANEL_SHORT_DP = 36f
 private const val SHORT_VIEWPORT_DP = 420f
 private val YTicks = floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f)
 // A stacked panel's Y axis: at least min, middle and max, and up to five
@@ -134,19 +136,37 @@ internal data class AnalysisChartInput(
     val deltaNegative: Color,
     /** Split view in fixed mode: mark where each lap's car is on the map. */
     val mapCursorColors: List<Color>?,
+    /** The current and comparison laps' colours, for their values in the headers. */
+    val lapColors: List<Color> = emptyList(),
 ) {
     /** Full x extent: the track length or longest lap in metres, else the longest lap in seconds. */
     val fullRange: Double
-        get() = if (distanceMode) {
-            if (trackLengthM > 0) trackLengthM else max(current?.lastDistance ?: 0.0, comparison?.lastDistance ?: 0.0)
-        } else {
-            max(current?.duration ?: 0.0, comparison?.duration ?: 0.0)
-        }.coerceAtLeast(1.0)
+        get() = chartFullRange(current, comparison, distanceMode, trackLengthM)
 
     fun panelItems(): List<AnalysisSeries> = series.filter {
         it.visible && AnalysisCatalog.hasLines(it) &&
             (it.metricId != AnalysisCatalog.DELTA_ID || showDelta)
     }
+}
+
+internal fun chartFullRange(current: AnalysisLap?, comparison: AnalysisLap?, distanceMode: Boolean, trackLengthM: Double): Double =
+    if (distanceMode) {
+        if (trackLengthM > 0) trackLengthM else max(current?.lastDistance ?: 0.0, comparison?.lastDistance ?: 0.0)
+    } else {
+        max(current?.duration ?: 0.0, comparison?.duration ?: 0.0)
+    }.coerceAtLeast(1.0)
+
+/** Each sector's x range in chart units, S1 first; empty until both splits are known. */
+internal fun sectorDomains(
+    current: AnalysisLap?,
+    comparison: AnalysisLap?,
+    distanceMode: Boolean,
+    trackLengthM: Double,
+): List<Pair<Double, Double>> {
+    val splits = resolvedSectorSplits(current, comparison).map { if (distanceMode) it.distance else it.elapsedSeconds }
+    if (splits.size < 2) return emptyList()
+    val bounds = listOf(0.0) + splits + chartFullRange(current, comparison, distanceMode, trackLengthM)
+    return bounds.zipWithNext().takeIf { ranges -> ranges.all { it.second > it.first } }.orEmpty()
 }
 
 /** Zoom and the inspected position, kept by the page across recompositions. */
@@ -244,6 +264,7 @@ internal fun AnalysisChart(
     val gridColor = colors.outlineVariant.copy(alpha = 0.35f)
     val axisColor = colors.onSurfaceVariant
     val crosshairColor = colors.outline
+    val dividerColor = colors.outlineVariant.copy(alpha = 0.5f)
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer(cacheSize = 96)
     // Material type scale, with tabular figures so axis numbers line up.
@@ -261,8 +282,9 @@ internal fun AnalysisChart(
     val latestScrub by rememberUpdatedState(onScrub)
     val latestDoubleTap by rememberUpdatedState(onDoubleTap)
 
-    LaunchedEffect(input.zoomEnabled, input.fullRange, input.distanceMode) {
-        if (!input.zoomEnabled) state.resetZoom()
+    // Leaving a fixed comparison drops a pinch zoom; the page does that, so a
+    // sector it zoomed to stays across a change of tab.
+    LaunchedEffect(input.fullRange, input.distanceMode) {
         state.zoom?.let { (min, max) ->
             if (max > input.fullRange) state.resetZoom()
             else if (max - min <= 0) state.resetZoom()
@@ -421,6 +443,13 @@ internal fun AnalysisChart(
                     Modifier.matchParentSize().graphicsLayer().drawBehind {
                         val geometry = layout.geometry
                         val dp = density.density
+                        // A full-width rule between stacked panels, as between the Charts page's charts.
+                        if (input.stacked) {
+                            geometry.panels.drop(1).forEach { panel ->
+                                val y = panel.headerTop - PANEL_GAP_DP * dp / 2f
+                                drawLine(dividerColor, Offset(0f, y), Offset(size.width, y), 1f * dp)
+                            }
+                        }
                         val cutoffPx = cutoff.value
                         raster.value?.let { traces ->
                             val settled = traces.domainMin == geometry.domainMin && traces.domainMax == geometry.domainMax
@@ -544,7 +573,10 @@ private fun buildDecor(
 
     fun axisValues(item: AnalysisSeries): (Float) -> String =
         if (item.metricId == AnalysisCatalog.DELTA_ID) {
-            { t -> String.format(Locale.US, "%+.1f", (t - 0.5) * 2 * deltaRange) }
+            { t ->
+                val seconds = (t - 0.5) * 2 * deltaRange
+                if (abs(seconds) < 0.05) "0" else String.format(Locale.US, "%+.1f", seconds)
+            }
         } else {
             val metric = AnalysisCatalog.scaleMetric(item.metricId)
             if (metric == null) { _ -> "" } else { t ->
@@ -583,22 +615,23 @@ private fun buildDecor(
         }
     }
 
-    // X axis: sector names between the splits, otherwise distance or time ticks.
+    // X axis: with Sector Boundaries on, as the desktop draws it, each
+    // sector's name where it ends (S1 at the first split, the last at the
+    // lap's end); otherwise distance or time ticks, as on the Charts page.
     val splits = if (input.sectorBoundaries) {
         resolvedSectorSplits(input.current, input.comparison).map { if (input.distanceMode) it.distance else it.elapsedSeconds }
     } else {
         emptyList()
     }
-    val sectorCentres = mutableListOf<Pair<Int, Float>>()
+    val sectorCentres = emptyList<Pair<Int, Float>>()
     val xTicks = mutableListOf<Double>()
     val axisY = height - X_AXIS_DP * dp + 3f * dp
     if (input.sectorBoundaries) {
-        val bounds = listOf(0.0) + splits + full
-        for (sector in 0 until bounds.size - 1) {
-            val from = max(bounds[sector], domainMin)
-            val to = min(bounds[sector + 1], domainMax)
-            if (to <= from) continue
-            sectorCentres += sector to geometry.xToPx((from + to) / 2)
+        (splits + full).forEachIndexed { sector, end ->
+            if (end <= domainMin + 1e-6 || end > domainMax + 1e-6) return@forEachIndexed
+            val text = measure("S${sector + 1}", null)
+            val x = geometry.xToPx(end) - text.size.width / 2f
+            labels += LabelAt(text, Offset(x.clampTo(0f, width - text.size.width), axisY))
         }
     } else {
         val span = domainMax - domainMin
@@ -629,15 +662,15 @@ private fun DrawScope.drawGrid(
             drawLine(gridColor, Offset(geometry.left, y), Offset(geometry.right, y), 1f)
         }
     }
-    for (tick in decor.xTicks) {
-        val x = geometry.xToPx(tick)
-        drawLine(gridColor, Offset(x, geometry.top), Offset(x, geometry.bottom), 1f)
-    }
+    // Sector splits (only with Sector Boundaries on, see buildDecor): dashed,
+    // in the grid's colour, inside each plot and never across a header.
     val dash = PathEffect.dashPathEffect(floatArrayOf(4f * dp, 4f * dp))
     for (split in decor.splits) {
         if (split <= geometry.domainMin || split >= geometry.domainMax) continue
         val x = geometry.xToPx(split)
-        drawLine(axisColor.copy(alpha = 0.6f), Offset(x, geometry.top), Offset(x, geometry.bottom), 1f * dp, pathEffect = dash)
+        for (panel in geometry.panels) {
+            drawLine(gridColor, Offset(x, panel.top), Offset(x, panel.bottom), 1f * dp, pathEffect = dash)
+        }
     }
 }
 
@@ -647,9 +680,9 @@ internal fun deltaColor(value: Double?, neutral: Color, positive: Color, negativ
     else -> negative
 }
 
-/** One run of a panel header's value text. */
+/** One run of a panel header's value text; [lap] 0 or 1 sets it in that lap's colour. */
 @Immutable
-private data class HeaderRun(val text: String, val color: Color?, val muted: Boolean = false)
+private data class HeaderRun(val text: String, val color: Color?, val muted: Boolean = false, val lap: Int = -1)
 
 /**
  * Each panel's title row: a colour dot, the metric's name, and its values
@@ -676,6 +709,18 @@ private fun PanelHeaders(
         }
     }
     val labelStyle = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum")
+    // Stacked panels read like the Charts page's headers, a size smaller.
+    val valuePx = with(density) { MaterialTheme.typography.titleSmall.fontSize.toPx() }
+    val headerPaints = remember(valuePx) { HeaderPaints(valuePx, valuePx * TOKEN_LABEL_SCALE) }
+    val headerColors = HeaderColors(colors.onSurface, colors.onSurfaceVariant, colors.outline)
+    val hits = remember { TokenHits() }
+    fun runColor(run: HeaderRun): Color = when {
+        // Lifted a little towards the text colour so a dark lap colour stays legible.
+        run.lap >= 0 -> input.lapColors.getOrNull(run.lap)?.let { lerp(it, colors.onSurface, 0.15f) } ?: colors.onSurface
+        run.color != null -> run.color
+        run.muted -> colors.onSurfaceVariant
+        else -> colors.onSurface
+    }
     @Composable
     fun Title(item: AnalysisSeries) {
         val color = if (item.metricId == AnalysisCatalog.DELTA_ID) input.deltaPositive else Color(item.color)
@@ -699,7 +744,7 @@ private fun PanelHeaders(
                 for (run in runs) {
                     withStyle(
                         SpanStyle(
-                            color = run.color ?: if (run.muted) colors.onSurfaceVariant else colors.onSurface,
+                            color = runColor(run),
                             fontWeight = if (run.muted) FontWeight.Normal else FontWeight.SemiBold,
                         ),
                     ) { append(run.text) }
@@ -721,24 +766,22 @@ private fun PanelHeaders(
                     .offset { IntOffset(0, panel.headerTop.roundToInt()) }
                     .fillMaxWidth()
                     .height(headerHeight)
-                    .padding(horizontal = 8.dp),
+                    .padding(start = 12.dp, end = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Title(item)
+                Text(
+                    AnalysisCatalog.labelOf(item),
+                    modifier = Modifier.staticLayer(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                )
                 // Read while drawing: a new value repaints this line only.
-                Readout(
-                    runs = {
-                        values[item.metricId].orEmpty().map { run ->
-                            ReadoutRun(
-                                run.text,
-                                run.color ?: if (run.muted) colors.onSurfaceVariant else colors.onSurface,
-                                bold = !run.muted,
-                            )
-                        }
+                Spacer(
+                    Modifier.weight(1f).fillMaxHeight().padding(start = 12.dp).graphicsLayer().drawBehind {
+                        val tokens = values[item.metricId].orEmpty().map { run -> run.toToken(runColor(run)) }
+                        paintTokens(tokens, headerPaints, headerColors, Rect(Offset.Zero, size), hits)
                     },
-                    style = labelStyle,
-                    modifier = Modifier.weight(1f).padding(start = 12.dp),
-                    alignEnd = true,
                 )
             }
         }
@@ -762,6 +805,14 @@ private fun PanelHeaders(
             }
         }
     }
+}
+
+/** A header run as a Charts-page token: the number, then its unit set small. */
+private fun HeaderRun.toToken(color: Color): HeaderToken {
+    val trimmed = text.trim()
+    val split = trimmed.lastIndexOf(' ')
+    val unit = if (split > 0) trimmed.substring(split + 1).takeIf { part -> part.none(Char::isDigit) } else null
+    return HeaderToken(value = if (unit != null) trimmed.substring(0, split) else trimmed, color = color, unit = unit)
 }
 
 /** Chart x the headers read: the crosshair, else the map clock or desktop cursor. */
@@ -814,8 +865,8 @@ private fun headerRuns(input: AnalysisChartInput, item: AnalysisSeries, x: Doubl
         val current = valueOf(currentLap, members[0])
         val comparison = valueOf(input.comparison, members[0])
         return buildList {
-            add(HeaderRun(current?.let(metric.format) ?: "—", null))
-            if (input.comparison != null) add(HeaderRun("  ·  ${comparison?.let(metric.format) ?: "—"}", null, muted = true))
+            add(HeaderRun(current?.let(metric.format) ?: "—", null, lap = 0))
+            if (input.comparison != null) add(HeaderRun("   ${comparison?.let(metric.format) ?: "—"}", null, lap = 1))
         }
     }
     // A combined tyre card: each corner of the current lap, in its line colour.
@@ -896,8 +947,7 @@ private fun layoutChart(
             val plotTop = slotTop + header
             val plotBottom = slotTop + slot
             val count = ((plotBottom - plotTop) / (Y_TICK_SPACING_DP * dp)).toInt() + 1
-            val ticks = count.coerceIn(MIN_Y_TICKS, MAX_Y_TICKS).let { n -> FloatArray(n) { it / (n - 1f) } }
-            ChartPanel(item, slotTop, plotTop, plotBottom, ticks)
+            ChartPanel(item, slotTop, plotTop, plotBottom, roundTicks(input, item, count.coerceIn(MIN_Y_TICKS, MAX_Y_TICKS)))
         }
     } else {
         listOf(ChartPanel(null, 0f, header + 4f * dp, bottom))
@@ -907,6 +957,39 @@ private fun layoutChart(
         items,
         axisItems,
     )
+}
+
+/**
+ * A stacked panel's Y axis at round values (0, 150, 300 rather than thirds of
+ * the scale), as fractions of its height; even fractions when none fit.
+ */
+private fun roundTicks(input: AnalysisChartInput, item: AnalysisSeries, count: Int): FloatArray {
+    val even = FloatArray(count) { it / (count - 1f) }
+    val (low, high) = if (item.metricId == AnalysisCatalog.DELTA_ID) {
+        val range = input.delta?.range ?: 0.5
+        -range to range
+    } else {
+        val metric = AnalysisCatalog.scaleMetric(item.metricId) ?: return even
+        metric.min to metric.max
+    }
+    val span = high - low
+    if (!span.isFinite() || span <= 0) return even
+    // The finest round step (1, 2, 2.5 or 5 times a power of ten) that gives
+    // at least two and at most [count] values.
+    val magnitude = 10.0.pow(floor(log10(span / (count - 1))) - 1)
+    val step = (0..3).asSequence()
+        .flatMap { exponent -> sequenceOf(1.0, 2.0, 2.5, 5.0).map { it * magnitude * 10.0.pow(exponent) } }
+        .firstOrNull { candidate ->
+            val n = floor(high / candidate + 1e-9) - ceil(low / candidate - 1e-9) + 1
+            n in 2.0..count.toDouble()
+        } ?: return even
+    val ticks = mutableListOf<Float>()
+    var value = ceil(low / step - 1e-9) * step
+    while (value <= high + step * 1e-6) {
+        ticks += ((value - low) / span).toFloat().coerceIn(0f, 1f)
+        value += step
+    }
+    return if (ticks.size >= 2) ticks.toFloatArray() else even
 }
 
 /**
@@ -983,8 +1066,9 @@ private suspend fun rasterizeTraces(
                 val metric = AnalysisCatalog.metricById[memberId] ?: continue
                 val color = Color(AnalysisCatalog.lineColor(item, memberId))
                 if (pass == 0) input.comparison?.plot(metric, input.distanceMode)?.let { plot ->
+                    // The line's own colour, see-through, so it reads as the same metric.
                     paint.strokeWidth = 1.25f * dp
-                    paint.color = lerp(background, color, 0.42f).toArgb()
+                    paint.color = color.copy(alpha = 0.45f).toArgb()
                     comparisonCanvas.drawPath(tracePath(plot.x, plot.y, metric.step, geometry, panel), paint)
                 }
                 ensureActive()
