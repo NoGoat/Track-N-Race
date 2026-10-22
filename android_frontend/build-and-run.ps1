@@ -222,14 +222,14 @@ foreach ($serial in $ResolvedDeviceSerials) {
         # idle-and-charging dexopt job compiles it, which can be a day later.
         # On a low-end phone that is a 20-30% slower UI; compile it now.
         Write-Host "Compiling Track N Race ahead of time on $serial..." -ForegroundColor Cyan
-        & $Adb @AdbArgs shell cmd package compile -m speed -f com.tracknrace.android | Out-Null
+        & $Adb @AdbArgs shell cmd package compile -m speed -f com.nogoat.tracknrace | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "Ahead-of-time compilation failed on $serial; the app will still run, but slower until Android compiles it."
         }
     }
 
-    & $Adb @AdbArgs shell am force-stop com.tracknrace.android | Out-Null
-    & $Adb @AdbArgs shell am start -n com.tracknrace.android/.MainActivity
+    & $Adb @AdbArgs shell am force-stop com.nogoat.tracknrace | Out-Null
+    & $Adb @AdbArgs shell am start -n com.nogoat.tracknrace/.MainActivity
     if ($LASTEXITCODE -ne 0) {
         $deviceFailures += "$serial (launch exit code $LASTEXITCODE)"
         Write-Warning "Launch failed on $serial; continuing with the remaining devices."

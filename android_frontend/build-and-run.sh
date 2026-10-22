@@ -285,13 +285,13 @@ for serial in "${RESOLVED_DEVICE_SERIALS[@]}"; do
         # idle-and-charging dexopt job compiles it, which can be a day later.
         # On a low-end phone that is a 20-30% slower UI; compile it now.
         cyan "Compiling Track N Race ahead of time on $serial..."
-        if ! "$ADB" "${ADB_ARGS[@]}" shell cmd package compile -m speed -f com.tracknrace.android >/dev/null; then
+        if ! "$ADB" "${ADB_ARGS[@]}" shell cmd package compile -m speed -f com.nogoat.tracknrace >/dev/null; then
             warn "Ahead-of-time compilation failed on $serial; the app will still run, but slower until Android compiles it."
         fi
     fi
 
-    "$ADB" "${ADB_ARGS[@]}" shell am force-stop com.tracknrace.android >/dev/null || true
-    if ! "$ADB" "${ADB_ARGS[@]}" shell am start -n com.tracknrace.android/.MainActivity; then
+    "$ADB" "${ADB_ARGS[@]}" shell am force-stop com.nogoat.tracknrace >/dev/null || true
+    if ! "$ADB" "${ADB_ARGS[@]}" shell am start -n com.nogoat.tracknrace/.MainActivity; then
         DEVICE_FAILURES+=("$serial (launch failed)")
         warn "Launch failed on $serial; continuing with the remaining devices."
         continue

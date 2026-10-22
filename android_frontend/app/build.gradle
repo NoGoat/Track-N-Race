@@ -8,12 +8,12 @@ plugins {
 // AGP 9's DSL: properties are assigned, and collection options are added to
 // rather than called as methods.
 android {
-    namespace = "com.tracknrace.android"
+    namespace = "com.nogoat.tracknrace"
     compileSdk = 37
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "com.tracknrace.android"
+        applicationId = "com.nogoat.tracknrace"
         minSdk = 26
         // API 37 blocks local network traffic until the user grants
         // ACCESS_LOCAL_NETWORK; TelemetryController gates every LAN use on it.

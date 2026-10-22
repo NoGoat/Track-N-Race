@@ -1019,7 +1019,7 @@ features unsafe by construction.
   - persist opaque native state and adapt public state/native controls to IPC.
 - `electron-frontend/src/preload/index.ts` and renderer Settings
   - narrow device-management APIs and pairing/status UI.
-- `android_frontend/.../java/com/tracknrace/android/`
+- `android_frontend/.../java/com/nogoat/tracknrace/`
   - Compose UI, binary runtime, source abstraction, discovery, pair client,
     credentials, subscription lifecycle, snapshot installation, and stale-state
     handling.

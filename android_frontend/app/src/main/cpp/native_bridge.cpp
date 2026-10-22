@@ -197,7 +197,7 @@ extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeStart(
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeStart(
     JNIEnv* env, jobject receiver, jint port) {
     std::lock_guard lock(gMutex);
     stopLocked();
@@ -218,13 +218,13 @@ Java_com_tracknrace_android_NativeTelemetry_nativeStart(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeStop(JNIEnv*, jobject) {
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeStop(JNIEnv*, jobject) {
     std::lock_guard lock(gMutex);
     stopLocked();
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeSetRecording(
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeSetRecording(
     JNIEnv* env, jobject, jboolean enabled, jstring outputDirectory) {
     std::lock_guard lock(gMutex);
     if (!gSession) return;
@@ -246,7 +246,7 @@ Java_com_tracknrace_android_NativeTelemetry_nativeSetRecording(
 // with no UDP listener. Its rows reach the store exactly as live rows do.
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeOpenRecording(
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeOpenRecording(
     JNIEnv* env, jobject receiver, jstring path) {
     const std::string file = utf8(env, path);
     auto next = std::make_shared<Session>();
@@ -267,22 +267,22 @@ Java_com_tracknrace_android_NativeTelemetry_nativeOpenRecording(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativePlay(JNIEnv*, jobject) {
+Java_com_nogoat_tracknrace_NativeTelemetry_nativePlay(JNIEnv*, jobject) {
     if (auto current = session()) current->engine->playerPlay();
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativePause(JNIEnv*, jobject) {
+Java_com_nogoat_tracknrace_NativeTelemetry_nativePause(JNIEnv*, jobject) {
     if (auto current = session()) current->engine->playerPause();
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeRequestSeek(JNIEnv*, jobject, jlong requestId) {
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeRequestSeek(JNIEnv*, jobject, jlong requestId) {
     if (auto current = session()) current->engine->playerRequestSeek(static_cast<uint64_t>(requestId));
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeSeek(
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeSeek(
     JNIEnv*, jobject, jfloat fraction, jlong requestId) {
     if (auto current = session())
         // State at the cursor only: the phone's history comes from lap reads.
@@ -290,17 +290,17 @@ Java_com_tracknrace_android_NativeTelemetry_nativeSeek(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeSetSpeed(JNIEnv*, jobject, jfloat speed) {
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeSetSpeed(JNIEnv*, jobject, jfloat speed) {
     if (auto current = session()) current->engine->playerSetSpeed(speed);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeSetDriver(JNIEnv*, jobject, jint driver) {
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeSetDriver(JNIEnv*, jobject, jint driver) {
     if (auto current = session()) current->engine->playerSetDriver(driver);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeSetRequirements(
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeSetRequirements(
     JNIEnv* env, jobject, jint streamMask, jintArray v6Types) {
     auto current = session();
     if (!current) return;
@@ -319,7 +319,7 @@ Java_com_tracknrace_android_NativeTelemetry_nativeSetRequirements(
 // snapshot is the one family worth switching off while nothing shows it. Its
 // inputs are always parsed, so turning it on emits a current snapshot at once.
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeSetLiveStrategy(
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeSetLiveStrategy(
     JNIEnv*, jobject, jboolean enabled) {
     auto current = session();
     if (!current) return;
@@ -328,7 +328,7 @@ Java_com_tracknrace_android_NativeTelemetry_nativeSetLiveStrategy(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeLapDelta(
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeLapDelta(
     JNIEnv* env, jobject, jint currentLap, jint comparisonLap, jboolean sectorDelta) {
     auto current = session();
     if (!current) return nullptr;
@@ -338,7 +338,7 @@ Java_com_tracknrace_android_NativeTelemetry_nativeLapDelta(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeLapData(
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeLapData(
     JNIEnv* env, jobject, jint lapNum, jobjectArray channels, jboolean forCharts) {
     auto current = session();
     if (!current) return nullptr;
@@ -374,7 +374,7 @@ std::string jsonString(const std::string& value) {
 // loading it: {"protocol","trackName","sessionName","sessionType",
 // "startTime" (ms since the epoch),"duration" (s),"drivers"}, or null.
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_NativeTelemetry_nativeSummarize(JNIEnv* env, jclass, jstring path) {
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeSummarize(JNIEnv* env, jclass, jstring path) {
     tnrp::TnrdReader::Summary summary;
     if (!tnrp::TnrdReader::summarize(utf8(env, path), summary)) return nullptr;
     const auto& header = summary.header;
@@ -426,17 +426,17 @@ jbyteArray javaBytes(JNIEnv* env, const std::vector<uint8_t>& value) {
 } // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_tracknrace_android_PairChannel_nativeNew(JNIEnv*, jobject) {
+Java_com_nogoat_tracknrace_PairChannel_nativeNew(JNIEnv*, jobject) {
     return static_cast<jlong>(reinterpret_cast<intptr_t>(new PairChannelHandle()));
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_tracknrace_android_PairChannel_nativeFree(JNIEnv*, jobject, jlong handle) {
+Java_com_nogoat_tracknrace_PairChannel_nativeFree(JNIEnv*, jobject, jlong handle) {
     delete channelOf(handle);
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_PairChannel_nativeBegin(
+Java_com_nogoat_tracknrace_PairChannel_nativeBegin(
     JNIEnv* env, jobject, jlong handle, jint mode, jstring serverId,
     jstring identityKey, jstring code) {
     auto* channel = channelOf(handle);
@@ -450,13 +450,13 @@ Java_com_tracknrace_android_PairChannel_nativeBegin(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_PairChannel_nativeHello(JNIEnv* env, jobject, jlong handle) {
+Java_com_nogoat_tracknrace_PairChannel_nativeHello(JNIEnv* env, jobject, jlong handle) {
     auto* channel = channelOf(handle);
     return javaString(env, channel ? channel->handshake.helloJson() : std::string{});
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_PairChannel_nativeAccept(
+Java_com_nogoat_tracknrace_PairChannel_nativeAccept(
     JNIEnv* env, jobject, jlong handle, jstring serverHello) {
     auto* channel = channelOf(handle);
     if (!channel) return javaString(env, "invalid_server_hello");
@@ -466,25 +466,25 @@ Java_com_tracknrace_android_PairChannel_nativeAccept(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_PairChannel_nativeIdentityKey(JNIEnv* env, jobject, jlong handle) {
+Java_com_nogoat_tracknrace_PairChannel_nativeIdentityKey(JNIEnv* env, jobject, jlong handle) {
     auto* channel = channelOf(handle);
     return javaString(env, channel ? channel->handshake.identityKey() : std::string{});
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_PairChannel_nativeServerId(JNIEnv* env, jobject, jlong handle) {
+Java_com_nogoat_tracknrace_PairChannel_nativeServerId(JNIEnv* env, jobject, jlong handle) {
     auto* channel = channelOf(handle);
     return javaString(env, channel ? channel->handshake.serverId() : std::string{});
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_tracknrace_android_PairChannel_nativeConfirmation(JNIEnv* env, jobject, jlong handle) {
+Java_com_nogoat_tracknrace_PairChannel_nativeConfirmation(JNIEnv* env, jobject, jlong handle) {
     auto* channel = channelOf(handle);
     return javaString(env, channel ? channel->handshake.confirmation() : std::string{});
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_tracknrace_android_PairChannel_nativeSeal(
+Java_com_nogoat_tracknrace_PairChannel_nativeSeal(
     JNIEnv* env, jobject, jlong handle, jbyteArray text) {
     auto* channel = channelOf(handle);
     if (!channel || !text || !channel->handshake.sender().ready()) return nullptr;
@@ -499,7 +499,7 @@ Java_com_tracknrace_android_PairChannel_nativeSeal(
 // Returns the payload and writes its kind (1 text, 2 binary) to kindOut[0];
 // null when the frame fails authentication.
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_tracknrace_android_PairChannel_nativeOpen(
+Java_com_nogoat_tracknrace_PairChannel_nativeOpen(
     JNIEnv* env, jobject, jlong handle, jbyteArray frame, jintArray kindOut) {
     auto* channel = channelOf(handle);
     if (!channel || !frame) return nullptr;

@@ -1,0 +1,1626 @@
+package com.nogoat.tracknrace
+
+import android.os.Handler
+import android.os.Looper
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.roundToInt
+
+private const val MAX_LIVE_LAP_PROGRESS_SAMPLES = 20_000
+private const val MAX_PLAYBACK_DELTA_CURVES = 8
+
+/** Analysis numbers its desktop requests from here, apart from the dashboard's. */
+internal const val ANALYSIS_REQUEST_BASE = 1L shl 40
+
+// Car indices are 0..21 on the wire (24-slot arrays); anything above is the
+// game's 255 "no such car" marker, e.g. a spectator's player index.
+private const val MAX_CARS = 24
+
+// The row families that arrive as binary records.
+private val HOT_ROWS = listOf(RowFamily.TELEMETRY, RowFamily.MOTION, RowFamily.MOTION_EX)
+
+private data class LiveLapSample(
+    val sessionTime: Double,
+    val lapNumber: Int,
+    val lastLapMs: Int,
+    val currentLapMs: Int,
+    val lapDistanceM: Double,
+    val sector1Ms: Int,
+    val sector2Ms: Int,
+    val sector: Int,
+    val invalid: Boolean,
+)
+
+private val BLANK_LIVE_LAP = LiveLapSample(
+    sessionTime = Double.NaN,
+    lapNumber = 0,
+    lastLapMs = 0,
+    currentLapMs = 0,
+    lapDistanceM = Double.NaN,
+    sector1Ms = 0,
+    sector2Ms = 0,
+    sector = 0,
+    invalid = false,
+)
+
+/** One car's timing fields as a patch row carried them; null means unchanged. */
+private class TimingCarPatch(
+    val index: Int,
+    val position: Int?,
+    val lapNumber: Int?,
+    val currentLapMs: Int?,
+    val lastLapMs: Int?,
+    val gapMs: Int?,
+    val pitStatus: Int?,
+    val lapInvalid: Boolean?,
+    val penaltiesSeconds: Int?,
+    val driveThroughPenalties: Int?,
+    val stopGoPenalties: Int?,
+    val resultStatus: Int?,
+)
+
+private class TyreStatusPatch(
+    val index: Int,
+    val actualCompound: Int?,
+    val visualCompound: Int?,
+    val ageLaps: Int?,
+    /** False when that car's tyre state stopped being readable. */
+    val available: Boolean?,
+)
+
+private fun mergeTimingCars(
+    current: List<TimingCarEntry>,
+    patches: List<TimingCarPatch>,
+): List<TimingCarEntry> {
+    val merged = LinkedHashMap<Int, TimingCarEntry>()
+    for (car in current) merged[car.index] = car
+    for (patch in patches) {
+        val base = merged[patch.index] ?: TimingCarEntry(
+            index = patch.index,
+            position = 0,
+            lapNumber = 0,
+            currentLapMs = 0,
+            lastLapMs = 0,
+            gapMs = 0,
+            pitStatus = 0,
+            lapInvalid = false,
+            penaltiesSeconds = 0,
+            driveThroughPenalties = 0,
+            stopGoPenalties = 0,
+            resultStatus = 0,
+        )
+        merged[patch.index] = base.copy(
+            position = patch.position ?: base.position,
+            lapNumber = patch.lapNumber ?: base.lapNumber,
+            currentLapMs = patch.currentLapMs ?: base.currentLapMs,
+            lastLapMs = patch.lastLapMs ?: base.lastLapMs,
+            gapMs = patch.gapMs ?: base.gapMs,
+            pitStatus = patch.pitStatus ?: base.pitStatus,
+            lapInvalid = patch.lapInvalid ?: base.lapInvalid,
+            penaltiesSeconds = patch.penaltiesSeconds ?: base.penaltiesSeconds,
+            driveThroughPenalties = patch.driveThroughPenalties ?: base.driveThroughPenalties,
+            stopGoPenalties = patch.stopGoPenalties ?: base.stopGoPenalties,
+            resultStatus = patch.resultStatus ?: base.resultStatus,
+        )
+    }
+    return merged.values.toList()
+}
+
+private data class LapProgressSample(
+    val elapsedMs: Int,
+    val distanceM: Double,
+)
+
+private data class CompletedLap(
+    val lapMs: Int,
+    val sector1Ms: Int,
+    val sector2Ms: Int,
+    val progress: List<LapProgressSample>,
+)
+
+private data class PlaybackLapMeta(
+    val lapNumber: Int,
+    val lapTimeMs: Int,
+    val startSessionTime: Double,
+    val endSessionTime: Double,
+    val tyreCompound: Int,
+    val visualCompound: Int,
+)
+
+private data class DeltaSample(
+    val distanceM: Double,
+    val deltaSeconds: Double,
+)
+
+private data class LapDeltaCurve(
+    val currentLap: Int,
+    val comparisonLap: Int,
+    val sectors: List<List<DeltaSample>>,
+    val progress: List<PlaybackProgressSample>,
+)
+
+private data class PlaybackProgressSample(
+    val sessionTime: Double,
+    val elapsedMs: Int,
+    val distanceM: Double,
+)
+
+private data class LapDeltaSummary(
+    val lapSeconds: Double?,
+    val sector1Seconds: Double?,
+    val sector2Seconds: Double?,
+    val sector3Seconds: Double?,
+)
+
+/**
+ * Thread boundary between libtnrp/OkHttp and Compose.
+ *
+ * Hot rows never touch Compose state. Worker threads decode a whole native
+ * batch to its latest telemetry sample and publish one immutable atomic value.
+ * The dashboard samples hot telemetry and lap comparison values on the display
+ * frame clock. Other cold rows are parsed off the UI thread and applied to
+ * snapshot state on the main thread.
+ */
+internal class TelemetryStore {
+    private val main = Handler(Looper.getMainLooper())
+    private val hot = AtomicReference(HotTelemetry())
+    private val mapPositions = AtomicReference(MapPositions())
+    private val hotRows = AtomicLong()
+    private val malformedReported = AtomicBoolean()
+    private val messageIds = AtomicLong()
+
+    // Written by whichever source thread is delivering rows (libtnrp or OkHttp).
+    @Volatile private var playerIndex = -1
+    // Merge base for lap rows; main thread only, like the comparison state.
+    private var liveLapState = BLANK_LIVE_LAP
+    private var previousLiveLap: LiveLapSample? = null
+    private var currentLiveLapNumber = 0
+    private val currentLiveProgress = mutableListOf<LapProgressSample>()
+    private var fastestLiveLap: CompletedLap? = null
+    private var trackLengthM = 0.0
+    // Where sectors 2 and 3 start on this circuit, learnt from the lap rows
+    // as the car crosses each line; NaN until seen. Main thread only.
+    private val sectorStartM = doubleArrayOf(0.0, Double.NaN, Double.NaN)
+    // The next Participants row starts a new roster instead of merging into
+    // the current one (a new game session or recording); main thread only.
+    private var newParticipantsRoster = true
+    private var playbackActive = false
+    private var playbackFastestLap = 0
+    private var playbackDeltaAvailable = false
+    private var playbackLaps: List<PlaybackLapMeta> = emptyList()
+    private var playbackCursorSessionTime = Double.NaN
+    private var playbackCursorSample: LiveLapSample? = null
+    private var playbackRequestId = 0L
+    private var activePlaybackRequest: PlaybackLapDeltaRequest? = null
+    private val playbackDeltaCache = mutableMapOf<Pair<Int, Int>, LapDeltaCurve>()
+    private val playbackDeltaUnavailable = mutableSetOf<Pair<Int, Int>>()
+    private var lapDeltaRequester: ((PlaybackLapDeltaRequest) -> Boolean)? = null
+    // Analysis issues its own lap-delta requests, numbered from
+    // ANALYSIS_REQUEST_BASE; their replies go to it rather than the dashboard.
+    @Volatile private var analysisDeltaSink: ((Long, JSONObject?) -> Unit)? = null
+
+    /** The laps of the recording the desktop is playing, for Analysis. */
+    var playbackCatalog by mutableStateOf(PlaybackCatalog())
+        private set
+
+    /** The lap under the desktop's playback cursor, 0 between laps. */
+    var playbackSelectedLap by mutableIntStateOf(0)
+        private set
+
+    // Written on the main thread, read by Analysis in its draw phase.
+    @Volatile private var playbackCursorPublished = Double.NaN
+
+    var cold by mutableStateOf(DashboardColdState())
+        private set
+
+    /** Each graph tab's samples, collected while it is subscribed; main thread only. */
+    val graphHistories: Map<GraphFamily, SampleHistory> = GraphFamily.entries.associateWith { SampleHistory(it) }
+
+    /** The Power graphs' status samples. */
+    val statusHistory: SampleHistory get() = graphHistories.getValue(GraphFamily.STATUS)
+
+    /** The histories timed by [row] rows; read on the socket thread for [SampleHistory.enabled] only. */
+    private val historiesByRow: Map<RowFamily, List<SampleHistory>> =
+        RowFamily.entries.associateWith { row -> graphHistories.values.filter { it.family.row == row } }
+
+    // Fields a history holds from another row family, by that family.
+    private val heldByRow: Map<RowFamily, List<GraphField>> =
+        RowFamily.entries.associateWith { row -> GraphField.entries.filter { it.source == row && it.family.row != row } }
+
+    /** Where the current tyre stint began, for Stint Laps outside the status charts; main thread only. */
+    val stint = StintTracker()
+
+    private fun resetGraphHistories() {
+        graphHistories.values.forEach { it.reset() }
+        stint.reset()
+    }
+    /** The recording playing on the phone itself, or null; main thread only. */
+    var localRecording by mutableStateOf<String?>(null)
+        private set
+
+    // The player's position, as the engine states it about once a frame while
+    // playing. Read by the player bar on the frame clock, so it never
+    // recomposes anything.
+    private val transport = AtomicReference(PlaybackTransport())
+
+    /** Whether playback runs, and its speed and length; changes only on change. */
+    var transportPlaying by mutableStateOf(false)
+        private set
+    var transportSpeed by mutableStateOf(1f)
+        private set
+    var transportTotal by mutableStateOf(0.0)
+        private set
+
+    fun latestTransport(): PlaybackTransport = transport.get()
+
+    /** The selected car's Strategy snapshot, null until one arrives; main thread only. */
+    var strategy by mutableStateOf<StrategySnapshot?>(null)
+        private set
+
+    /**
+     * True from a seek until the next snapshot: [strategy] still describes the
+     * old cursor while the engine rebuilds it, which can take most of a minute.
+     */
+    var strategyStale by mutableStateOf(false)
+        private set
+
+    /** The selected car's damage; main thread only. */
+    var damage by mutableStateOf(CarDamageState())
+        private set
+    private val lapComparison = AtomicReference(DashboardLapComparisonState())
+    var timing by mutableStateOf(TimingTowerState())
+        private set
+    var settings by mutableStateOf(AndroidSettings())
+        private set
+    var sourceStatus by mutableStateOf(SourceStatus())
+        private set
+    var pairingBusy by mutableStateOf(false)
+        private set
+    var pairingSuccessId by mutableStateOf(0L)
+        private set
+    var message by mutableStateOf<UiMessage?>(null)
+        private set
+    val discoveredDesktops = mutableStateListOf<DiscoveredDesktop>()
+
+    /**
+     * Car index whose data the stream currently describes: the player live, or
+     * the driver chosen on the desktop while a V6 recording is playing back.
+     * libtnrp stamps that choice into `player_idx` on every projected row.
+     */
+    var selectedDriverIndex by mutableIntStateOf(-1)
+        private set
+
+    /** Roster name for [selectedDriverIndex]; null until Participants arrives. */
+    val selectedDriverName: String?
+        get() = timing.drivers[selectedDriverIndex]?.name
+
+    // What the desktop last stated, and the driver it stated it for. During V6
+    // playback the roster cannot answer this: a rival's restriction is an
+    // absence of chunks, and the participants row replays the recorded setting
+    // rather than the one in force at the cursor.
+    private var statedRestriction by mutableStateOf<Boolean?>(null)
+    private var statedRestrictionDriver by mutableIntStateOf(-1)
+    // Set once a V6 recording is playing on the desktop, which is the only
+    // situation where a stated restriction is required.
+    private var v6PlaybackActive by mutableStateOf(false)
+
+    /**
+     * Whether the displayed driver's private telemetry is withheld, or null
+     * while that is genuinely unknown. Null must be shown as "unknown", never
+     * collapsed into "public".
+     */
+    val selectedDriverRestricted: Boolean?
+        get() {
+            if (statedRestrictionDriver >= 0 && statedRestrictionDriver == selectedDriverIndex) {
+                return statedRestriction
+            }
+            // Playback owes a stated value; until it arrives this is unknown.
+            if (v6PlaybackActive) return null
+            // Live (direct or paired): the roster's setting is the current one,
+            // exactly as on the desktop. timing.playerIndex is only populated on
+            // pages that subscribe to the timing row, but live every row
+            // describes the receiving player, so the selected driver is them.
+            val player = if (timing.playerIndex >= 0) timing.playerIndex else selectedDriverIndex
+            return timing.restrictionOf(selectedDriverIndex, player)
+        }
+
+    /**
+     * True when the desktop owes a `driver_restriction` the app has not
+     * received, so the caller should ask again.
+     */
+    fun needsDriverRestrictionRefresh(): Boolean =
+        v6PlaybackActive && selectedDriverIndex >= 0 &&
+            statedRestrictionDriver != selectedDriverIndex
+
+    fun latestHot(): HotTelemetry = hot.get()
+
+    /** The circuit's length in metres from the session or recording, 0 while unknown; main thread. */
+    fun knownTrackLengthM(): Double = trackLengthM
+    fun latestMapPositions(): MapPositions = mapPositions.get()
+    fun latestLapComparison(): DashboardLapComparisonState = lapComparison.get()
+
+    /** The desktop's playback cursor as a session time, NaN when unknown. */
+    fun latestPlaybackCursorTime(): Double = playbackCursorPublished
+    fun totalHotRows(): Long = hotRows.get()
+
+    fun acceptBinary(bytes: ByteArray) {
+        // Graph tabs keep every hot sample, not only the newest.
+        val listening = HOT_ROWS.flatMap { row -> historiesByRow.getValue(row).filter { it.enabled } }
+        val samples = if (listening.isEmpty()) null else BinarySamples(
+            telemetry = listening.any { it.family.row == RowFamily.TELEMETRY },
+            motion = listening.any { it.family.row == RowFamily.MOTION },
+            motionEx = listening.any { it.family.row == RowFamily.MOTION_EX },
+        )
+        val result = BinaryTelemetryDecoder.decodeLatest(bytes, samples)
+        if (samples != null) post {
+            for (history in listening) {
+                val rows = samples.of(history.family.row) ?: continue
+                if (rows.count > 0) history.acceptBatch(rows.times, rows.columnsFor(history.family), rows.count)
+            }
+        }
+        result.latest?.let(hot::lazySet)
+        result.latestPositions?.let(mapPositions::lazySet)
+        if (result.telemetryRows > 0) hotRows.addAndGet(result.telemetryRows.toLong())
+        if (result.malformed && malformedReported.compareAndSet(false, true)) {
+            showMessage("A malformed native telemetry batch was discarded")
+        }
+    }
+
+    fun acceptColdRow(json: String) {
+        val row = try {
+            JSONObject(json)
+        } catch (_: Exception) {
+            return
+        }
+
+        // Most V6 rows name the player's car index; the player-scoped rows the
+        // dashboard shows (tyre sets) are matched against it below.
+        row.optionalInt("player_idx")?.takeIf { it in 0 until MAX_CARS }?.let { setSelectedDriver(it) }
+
+        when (row.optString("type")) {
+            // A V6 recording arrives as one field group per row, so the hot sample
+            // merges them. Live and paired-live telemetry stay on the binary path.
+            "telemetry" -> {
+                if (row.optionalBoolean("available") == false) {
+                    hot.set(HotTelemetry())
+                    post { historiesByRow.getValue(RowFamily.TELEMETRY).forEach { it.markUnavailable() } }
+                } else {
+                    hot.updateAndGet { it.withPatch(row) }
+                    acceptGraphRow(row, RowFamily.TELEMETRY)
+                }
+            }
+
+            "lap" -> {
+                val sessionTime = row.optionalDouble("session_time")
+                val lapNumber = row.optionalInt("lap_num")
+                val lastLapMs = row.optionalInt("last_lap_ms")
+                val currentLapMs = row.optionalInt("current_lap_ms")
+                val lapDistanceM = row.optionalDouble("lap_distance_m")
+                val sector1Ms = row.optionalInt("s1_ms")
+                val sector2Ms = row.optionalInt("s2_ms")
+                val sector = row.optionalInt("sector")
+                val invalid = row.optionalBoolean("lap_invalid")
+                val position = row.optionalInt("position")
+                post {
+                    // Merge into the last sample: a patch omits what did not change.
+                    val previous = liveLapState
+                    val sample = LiveLapSample(
+                        sessionTime = sessionTime ?: previous.sessionTime,
+                        lapNumber = lapNumber ?: previous.lapNumber,
+                        lastLapMs = lastLapMs ?: previous.lastLapMs,
+                        currentLapMs = currentLapMs ?: previous.currentLapMs,
+                        lapDistanceM = lapDistanceM ?: previous.lapDistanceM,
+                        sector1Ms = sector1Ms ?: previous.sector1Ms,
+                        sector2Ms = sector2Ms ?: previous.sector2Ms,
+                        sector = sector ?: previous.sector,
+                        invalid = invalid ?: previous.invalid,
+                    )
+                    learnSectorStart(previous, sample)
+                    liveLapState = sample
+                    for (history in graphHistories.values) {
+                        history.acceptLap(
+                            sample.sessionTime,
+                            sample.lapNumber,
+                            sample.currentLapMs,
+                            sample.lapDistanceM,
+                            sample.invalid,
+                            sample.lastLapMs,
+                        )
+                    }
+                    cold = cold.copy(
+                        position = position ?: cold.position,
+                        lapNumber = sample.lapNumber,
+                        currentLapMs = sample.currentLapMs,
+                        lastLapMs = sample.lastLapMs,
+                        lapInvalid = sample.invalid,
+                        sector = sample.sector,
+                        sectorFraction = sectorFraction(sample),
+                    )
+                    if (playbackActive) {
+                        updatePlaybackReference(sample)
+                    } else {
+                        updateLiveLapComparison(sample)
+                    }
+                }
+            }
+
+            "playback_loaded" -> post {
+                strategy = null
+                resetAllLapComparison()
+                resetGraphHistories()
+                playbackActive = row.optBoolean("ok")
+                newParticipantsRoster = true   // the recording brings its own grid
+            }
+
+            "playback_lap_blocks" -> {
+                // Sent again whenever the desktop switches driver, and before
+                // that driver's first projected row, so tyre sets and the top
+                // bar follow the switch immediately.
+                // A driver index here means a V6 recording, the only case where
+                // the desktop owes an explicit restriction.
+                val playbackDriver = row.optionalInt("playbackDriverIndex")
+                    ?.takeIf { it in 0 until MAX_CARS }
+                playbackDriver?.let { setSelectedDriver(it) }
+                post { v6PlaybackActive = playbackDriver != null }
+                val lapTimes = buildMap {
+                    val laps = row.optJSONArray("laps")
+                    if (laps != null) repeat(laps.length()) { index ->
+                        val lap = laps.optJSONObject(index) ?: return@repeat
+                        val lapNumber = lap.optInt("lapNum")
+                        val lapTimeMs = lap.optInt("lapTimeMs")
+                        if (lapNumber > 0 && lapTimeMs > 0) put(lapNumber, lapTimeMs)
+                    }
+                }
+                val laps = buildList {
+                    val blocks = row.optJSONArray("blocks")
+                    if (blocks != null) repeat(blocks.length()) { index ->
+                        val block = blocks.optJSONObject(index) ?: return@repeat
+                        val lapNumber = block.optInt("lapNum")
+                        if (lapNumber <= 0) return@repeat
+                        add(
+                            PlaybackLapMeta(
+                                lapNumber = lapNumber,
+                                lapTimeMs = lapTimes[lapNumber] ?: 0,
+                                startSessionTime = block.optDouble(
+                                    "startSessionTime",
+                                    Double.NaN,
+                                ),
+                                endSessionTime = block.optDouble(
+                                    "endSessionTime",
+                                    Double.NaN,
+                                ),
+                                tyreCompound = block.optInt("tyreCompound"),
+                                visualCompound = block.optInt("visualCompound"),
+                            ),
+                        )
+                    }
+                }
+                val fastestLap = row.optInt("fastestLapNum")
+                val deltaAvailable = row.optBoolean("deltaAvailable")
+                val playbackTrackLengthM = row.optDouble("trackLengthM")
+                post {
+                    installPlaybackMetadata(
+                        laps,
+                        fastestLap,
+                        deltaAvailable,
+                        playbackTrackLengthM,
+                        playbackDriver ?: -1,
+                    )
+                }
+            }
+
+            "lap_delta" -> {
+                val requestId = row.optLong("requestId")
+                val data = row.optJSONObject("data")
+                if (requestId >= ANALYSIS_REQUEST_BASE) {
+                    analysisDeltaSink?.invoke(requestId, data)
+                    return
+                }
+                val currentLap = data?.optInt("currentLapNum") ?: 0
+                val comparisonLap = data?.optInt("comparisonLapNum") ?: 0
+                val curve = data?.let(::readLapDeltaCurve)
+                post {
+                    acceptPlaybackDelta(
+                        requestId,
+                        currentLap,
+                        comparisonLap,
+                        curve,
+                    )
+                }
+            }
+
+            "playback_state" -> {
+                val startTime = row.optDouble("start_time", Double.NaN)
+                val currentTime = row.optDouble("current_time", Double.NaN)
+                if (startTime.isFinite() && currentTime.isFinite()) {
+                    post { updatePlaybackCursor(startTime + currentTime) }
+                }
+                val next = PlaybackTransport(
+                    playing = row.optBoolean("playing"),
+                    currentTime = currentTime.takeIf { it.isFinite() } ?: 0.0,
+                    totalTime = row.optDouble("total_time", 0.0),
+                    speed = row.optDouble("speed", 1.0).toFloat(),
+                    startTime = startTime.takeIf { it.isFinite() } ?: 0.0,
+                )
+                val previous = transport.getAndSet(next)
+                if (previous.playing != next.playing || previous.speed != next.speed || previous.totalTime != next.totalTime) {
+                    post {
+                        transportPlaying = next.playing
+                        transportSpeed = next.speed
+                        transportTotal = next.totalTime
+                    }
+                }
+            }
+
+            // The desktop states this per selected driver, because restricted
+            // data arrives as missing rows rather than as a value. driverIndex
+            // -1 is the reply to a request made while nothing is playing.
+            "driver_restriction" -> {
+                val driver = row.optionalInt("driverIndex") ?: -1
+                val restricted = row.optionalBoolean("restricted")
+                val known = row.optionalBoolean("known") ?: false
+                post {
+                    if (driver < 0) {
+                        statedRestriction = null
+                        statedRestrictionDriver = -1
+                        v6PlaybackActive = false
+                    } else {
+                        statedRestriction = if (known) restricted else null
+                        statedRestrictionDriver = driver
+                    }
+                }
+            }
+
+            "playback_close" -> post {
+                strategy = null
+                resetAllLapComparison()
+                resetGraphHistories()
+                newParticipantsRoster = true   // live rows bring their own grid
+                statedRestriction = null
+                statedRestrictionDriver = -1
+                v6PlaybackActive = false
+            }
+
+            "status" -> {
+                // Restricted telemetry is an explicit {"available":false}, not an
+                // omission: it must clear the values, not leave the last ones up.
+                val unavailable = row.optionalBoolean("available") == false
+                val ersPercent = row.optionalDouble("ers_pct")?.roundToInt()
+                val ersMode = row.optionalInt("ers_mode")
+                val fuelKg = row.optionalDouble("fuel_kg")
+                val fuelLaps = row.optionalDouble("fuel_laps")
+                val brakeBias = row.optionalInt("front_brake_bias")
+                val tyreCompound = row.optionalInt("visual_compound")
+                val tyreActualCompound = row.optionalInt("tyre_compound")
+                val tyreAgeLaps = row.optionalInt("tyre_age_laps")
+                val carriesFields = ersPercent != null || ersMode != null || fuelKg != null ||
+                    fuelLaps != null || brakeBias != null || tyreCompound != null ||
+                    tyreActualCompound != null || tyreAgeLaps != null
+                val sessionTime = row.optionalDouble("session_time") ?: Double.NaN
+                if (unavailable) {
+                    post { historiesByRow.getValue(RowFamily.STATUS).forEach { it.markUnavailable() } }
+                } else {
+                    acceptGraphRow(row, RowFamily.STATUS)
+                }
+                post {
+                    if (!unavailable) stint.accept(sessionTime, tyreActualCompound, tyreCompound, tyreAgeLaps)
+                    cold = when {
+                        unavailable -> cold.copy(statusAvailable = false)
+                        !carriesFields -> cold
+                        else -> cold.copy(
+                            statusAvailable = true,
+                            ersPercent = ersPercent ?: cold.ersPercent,
+                            ersMode = ersMode ?: cold.ersMode,
+                            fuelKg = fuelKg ?: cold.fuelKg,
+                            fuelLaps = fuelLaps ?: cold.fuelLaps,
+                            brakeBias = brakeBias ?: cold.brakeBias,
+                            tyreCompound = tyreCompound ?: cold.tyreCompound,
+                            tyreActualCompound = tyreActualCompound ?: cold.tyreActualCompound,
+                            tyreAgeLaps = tyreAgeLaps ?: cold.tyreAgeLaps,
+                        )
+                    }
+                }
+            }
+
+            "damage" -> {
+                val unavailable = row.optionalBoolean("available") == false
+                val wearFl = row.optionalDouble("tyre_wear_fl")?.toFloat()
+                val wearFr = row.optionalDouble("tyre_wear_fr")?.toFloat()
+                val wearRl = row.optionalDouble("tyre_wear_rl")?.toFloat()
+                val wearRr = row.optionalDouble("tyre_wear_rr")?.toFloat()
+                val carriesWear = wearFl != null || wearFr != null || wearRl != null ||
+                    wearRr != null
+                val carriesDamage = CarDamageState.carriesDamage(row)
+                if (unavailable) {
+                    post { historiesByRow.getValue(RowFamily.DAMAGE).forEach { it.markUnavailable() } }
+                } else {
+                    acceptGraphRow(row, RowFamily.DAMAGE)
+                }
+                post {
+                    if (unavailable) damage = CarDamageState()
+                    else if (carriesDamage) damage = damage.withPatch(row)
+                    cold = when {
+                        unavailable -> cold.copy(tyreWearAvailable = false)
+                        !carriesWear -> cold
+                        else -> cold.copy(
+                            tyreWearFl = wearFl ?: cold.tyreWearFl,
+                            tyreWearFr = wearFr ?: cold.tyreWearFr,
+                            tyreWearRl = wearRl ?: cold.tyreWearRl,
+                            tyreWearRr = wearRr ?: cold.tyreWearRr,
+                            tyreWearAvailable = true,
+                        )
+                    }
+                }
+            }
+
+            // Indexed/legacy TNRD playback keeps Positions as JSON rather than
+            // placing it in the packed telemetry lanes. Live direct/paired
+            // positions still arrive through acceptBinary().
+            // V6 playback sends the motion families as rows, live as binary.
+            "motion" -> acceptGraphRow(row, RowFamily.MOTION)
+            "motion_ex" -> acceptGraphRow(row, RowFamily.MOTION_EX)
+
+            "positions" -> {
+                // A V6 recording sends one car per row; a live session all of
+                // them. Either way, merge into the cars already known.
+                val cars = row.optJSONArray("cars") ?: return
+                val previous = mapPositions.get()
+                val xByCar = DoubleArray(MAX_CARS) { if (previous.hasPosition(it)) previous.xAt(it) else Double.NaN }
+                val zByCar = DoubleArray(MAX_CARS) { if (previous.hasPosition(it)) previous.zAt(it) else Double.NaN }
+                repeat(cars.length()) { arrayIndex ->
+                    val car = cars.optJSONObject(arrayIndex) ?: return@repeat
+                    val carIndex = car.optInt("idx", arrayIndex)
+                    if (carIndex in 0 until MAX_CARS) {
+                        xByCar[carIndex] = car.optDouble("x", Double.NaN)
+                        zByCar[carIndex] = car.optDouble("z", Double.NaN)
+                    }
+                }
+                mapPositions.lazySet(
+                    MapPositions(
+                        playerIndex = row.optInt("player_idx", previous.playerIndex),
+                        xByCar = xByCar,
+                        zByCar = zByCar,
+                    ),
+                )
+            }
+
+            "session" -> {
+                val sessionType = row.optionalInt("session_type")
+                val totalLaps = row.optInt("total_laps")
+                val trackId = row.optInt("track_id", -1)
+                val sessionTrackLengthM = row.optDouble("track_length_m")
+                val slmTrackStatus = row.optionalInt("active_aero_track_status") ?: -1
+                post {
+                    val changedSession =
+                        (cold.trackId >= 0 && trackId >= 0 && cold.trackId != trackId) ||
+                            (cold.sessionType != null && sessionType != null &&
+                                cold.sessionType != sessionType)
+                    if (changedSession && !playbackActive) resetLiveLapComparison()
+                    // Direct mode gets no participants_reset; a new track or
+                    // session type is a new grid.
+                    if (changedSession) newParticipantsRoster = true
+                    if (trackId >= 0 && cold.trackId != trackId) forgetSectorStarts()
+                    if (sessionTrackLengthM > 0.0) trackLengthM = sessionTrackLengthM
+                    cold = cold.copy(
+                        totalLaps = totalLaps,
+                        sessionType = sessionType,
+                        trackId = trackId,
+                        slmTrackStatus = slmTrackStatus,
+                    )
+                }
+            }
+
+            // A whole snapshot each time, so it simply replaces the last.
+            "strategy" -> {
+                val snapshot = parseStrategySnapshot(row)
+                post {
+                    strategy = snapshot
+                    strategyStale = false
+                }
+            }
+
+            "tyre_sets" -> {
+                val carIdx = row.optionalInt("car_idx")
+                // Rows projected from a V6 recording are scoped to the driver the
+                // desktop selected, and say so before any row names the player.
+                val v6Projected = row.has("_v6_type")
+                if (!ownsTyreSets(carIdx, playerIndex, v6Projected)) return
+                if (v6Projected && carIdx != null && carIdx in 0 until MAX_CARS) {
+                    setSelectedDriver(carIdx)
+                }
+                // The desktop rebroadcasts this type when the driver's access
+                // changes. A withdrawal carries no "sets", and the sets it last
+                // sent are no longer readable, so drop them.
+                if (row.optionalBoolean("available") == false) {
+                    post { cold = cold.copy(tyreSets = emptyList()) }
+                    return
+                }
+                if (row.optJSONArray("sets") == null) return
+                val sets = row.optJSONArray("sets")?.let { array ->
+                    List(array.length()) { index ->
+                        val set = array.optJSONObject(index) ?: JSONObject()
+                        TyreSetEntry(
+                            index = set.optInt("idx", index),
+                            actualCompound = set.optInt("actual_compound"),
+                            visualCompound = set.optInt("visual_compound"),
+                            wear = set.optDouble("wear").toFloat(),
+                            available = set.optBoolean("available"),
+                            recommendedSession = set.optInt("recommended_session"),
+                            lifeSpan = set.optInt("life_span"),
+                            usableLife = set.optInt("usable_life"),
+                            lapDeltaMs = set.optInt("lap_delta_ms"),
+                            fitted = set.optBoolean("fitted"),
+                            avgWearPerLap = if (set.isNull("avg_wear_per_lap")) null
+                                else set.optDouble("avg_wear_per_lap").toFloat(),
+                        )
+                    }
+                }.orEmpty()
+                post { cold = cold.copy(tyreSets = sets) }
+            }
+
+            "timing" -> {
+                val patches = row.optJSONArray("cars")?.let { array ->
+                    List(array.length()) { arrayIndex ->
+                        val car = array.optJSONObject(arrayIndex) ?: JSONObject()
+                        TimingCarPatch(
+                            index = car.optInt("idx", arrayIndex),
+                            position = car.optionalInt("position"),
+                            lapNumber = car.optionalInt("lap_num"),
+                            currentLapMs = car.optionalInt("current_lap_ms"),
+                            lastLapMs = car.optionalInt("last_lap_ms"),
+                            gapMs = car.optionalInt("gap_ms"),
+                            pitStatus = car.optionalInt("pit_status"),
+                            lapInvalid = car.optionalBoolean("lap_invalid"),
+                            penaltiesSeconds = car.optionalInt("penalties_s"),
+                            driveThroughPenalties = car.optionalInt("num_dt_pens"),
+                            stopGoPenalties = car.optionalInt("num_sg_pens"),
+                            resultStatus = car.optionalInt("result_status"),
+                        )
+                    }
+                }.orEmpty()
+                val rowPlayer = row.optionalInt("player_idx")?.takeIf { it >= 0 }
+                // A V6 patch names one car and merges into the tower; a complete
+                // row is the whole grid and replaces it.
+                val partial = row.has("_v6_type")
+                post {
+                    timing = timing.copy(
+                        playerIndex = rowPlayer ?: timing.playerIndex,
+                        cars = mergeTimingCars(if (partial) timing.cars else emptyList(), patches),
+                    )
+                }
+            }
+
+            "participants" -> {
+                val drivers = row.optJSONArray("drivers")?.let { array ->
+                    buildMap {
+                        repeat(array.length()) { arrayIndex ->
+                            val driver = when (val value = array.opt(arrayIndex)) {
+                                is JSONObject -> value
+                                is String -> runCatching { JSONObject(value) }.getOrNull()
+                                else -> null
+                            } ?: return@repeat
+                            val index = driver.optInt("idx", arrayIndex)
+                            val name = driver.optString("name").trim()
+                            if (name.isEmpty()) return@repeat
+                            put(
+                                index,
+                                TimingDriver(
+                                    index = index,
+                                    name = name,
+                                    raceNumber = driver.optInt("race_number"),
+                                    teamColor = driver.optString("livery_color", "#8e8e8e"),
+                                    yourTelemetry = driver.optionalInt("your_telemetry"),
+                                ),
+                            )
+                        }
+                    }
+                }.orEmpty()
+                post {
+                    // A malformed/empty roster is not a successful Participants
+                    // update. Keep a valid roster if one is already displayed and
+                    // leave the missing flag set so paired mode retries after 3 s.
+                    if (drivers.isNotEmpty()) {
+                        // Participants can list fewer active slots than timing
+                        // still shows (a recording replays every roster it
+                        // stored). Keep known drivers by car index and apply the
+                        // incoming ones instead of replacing the whole roster.
+                        val roster = if (newParticipantsRoster) drivers else timing.drivers + drivers
+                        newParticipantsRoster = false
+                        timing = timing.copy(drivers = roster, hasParticipants = true)
+                    } else if (timing.drivers.isEmpty()) {
+                        timing = timing.copy(hasParticipants = false)
+                    }
+                }
+            }
+
+            "all_status" -> {
+                val patches = row.optJSONArray("cars")?.let { array ->
+                    List(array.length()) { arrayIndex ->
+                        val car = array.optJSONObject(arrayIndex) ?: JSONObject()
+                        TyreStatusPatch(
+                            index = car.optInt("idx", arrayIndex),
+                            actualCompound = car.optionalInt("tyre_compound"),
+                            visualCompound = car.optionalInt("visual_compound"),
+                            ageLaps = car.optionalInt("tyre_age_laps"),
+                            available = car.optionalBoolean("available"),
+                        )
+                    }
+                }.orEmpty()
+                val partial = row.has("_v6_type")
+                post {
+                    val merged: MutableMap<Int, TimingTyreStatus> = if (partial) {
+                        timing.tyreStatuses.toMutableMap()
+                    } else {
+                        mutableMapOf()
+                    }
+                    for (patch in patches) {
+                        // The desktop rebroadcasts the type when a driver's
+                        // access changes, so the tower drops the compound and
+                        // age it last saw rather than showing them as current.
+                        if (patch.available == false) {
+                            merged.remove(patch.index)
+                            continue
+                        }
+                        // Other all-car status fields (DRS, fuel, ...) are not shown
+                        // here; a patch without tyre fields is not a tyre status.
+                        if (patch.actualCompound == null && patch.visualCompound == null &&
+                            patch.ageLaps == null
+                        ) continue
+                        val base = merged[patch.index] ?: TimingTyreStatus(0, 0, 0)
+                        merged[patch.index] = base.copy(
+                            actualCompound = patch.actualCompound ?: base.actualCompound,
+                            visualCompound = patch.visualCompound ?: base.visualCompound,
+                            ageLaps = patch.ageLaps ?: base.ageLaps,
+                        )
+                    }
+                    timing = timing.copy(tyreStatuses = merged)
+                }
+            }
+
+            "protocol_context" -> {
+                setSelectedDriver(-1)
+                post {
+                    statedRestriction = null
+                    statedRestrictionDriver = -1
+                    v6PlaybackActive = false
+                }
+                mapPositions.lazySet(MapPositions())
+                val year = row.optionalInt("protocol_year")
+                val formula = row.optionalInt("formula")
+                val regulations2026 = row.optionalBoolean("regulations_2026")
+                post {
+                    resetAllLapComparison()
+                    resetGraphHistories()
+                    damage = CarDamageState()
+                    strategy = null
+                    cold = cold.copy(
+                        protocolYear = year,
+                        formula = formula,
+                        aeroMode = resolveAeroMode(year, regulations2026, formula, null),
+                        labels = emptyMap(),
+                        trackId = -1,
+                        sessionType = null,
+                        tyreSets = emptyList(),
+                        statusAvailable = false,
+                        tyreWearFl = 0f,
+                        tyreWearFr = 0f,
+                        tyreWearRl = 0f,
+                        tyreWearRr = 0f,
+                        tyreWearAvailable = false,
+                    )
+                    timing = TimingTowerState(
+                        drivers = timing.drivers,
+                        hasParticipants = timing.hasParticipants,
+                    )
+                }
+            }
+
+            // A seek in a recording played on the phone: what follows is the
+            // state at the new cursor, as after a paired desktop's reset.
+            "timeline_reset", "playback_seek_flush" -> {
+                mapPositions.lazySet(MapPositions())
+                post {
+                    if (strategy != null) strategyStale = true
+                    resetPlaybackCursorComparison()
+                    graphHistories.values.forEach { it.clear() }
+                    stint.reset()
+                    // A seek/reset may be delivered after its reconstructed
+                    // Participants row. Keep that roster; a real game-session
+                    // change has its own participants_reset signal.
+                    timing = TimingTowerState(
+                        drivers = timing.drivers,
+                        hasParticipants = timing.hasParticipants,
+                    )
+                }
+            }
+
+            "participants_reset" -> {
+                setSelectedDriver(-1)
+                post {
+                    strategy = null
+                    resetAllLapComparison()
+                    resetGraphHistories()
+                    newParticipantsRoster = true
+                    timing = timing.copy(drivers = emptyMap(), hasParticipants = false)
+                }
+            }
+
+            "protocol_status" -> {
+                val year = row.optionalInt("active_format") ?: row.optionalInt("detected_format")
+                val formula = row.optionalInt("formula")
+                val regulations2026 = row.optionalBoolean("regulations_2026")
+                val fallbackAero = row.optString("aero_mode").takeIf { it.isNotEmpty() }
+                val presentationYear = row.optionalInt("presentation_format") ?: year
+                val hasMguh = row.optJSONObject("capabilities")?.optionalBoolean("hasMguh") ?: false
+                val labelsObject = row.optJSONObject("labels")
+                val labels = buildMap {
+                    if (labelsObject != null) {
+                        for (key in labelsObject.keys()) {
+                            val value = labelsObject.opt(key)
+                            if (value is String) put(key, value)
+                        }
+                    }
+                }
+                post {
+                    cold = cold.copy(
+                        protocolYear = year,
+                        presentationYear = presentationYear,
+                        hasMguh = hasMguh,
+                        formula = formula,
+                        aeroMode = resolveAeroMode(year, regulations2026, formula, fallbackAero),
+                        labels = labels,
+                    )
+                }
+            }
+
+            "recording_error" -> {
+                val operation = row.optString("operation", "save")
+                val detail = row.optString("message", "Unknown error")
+                updateSource("error", "Recording $operation failed: $detail")
+                showMessage("Recording $operation failed: $detail")
+            }
+        }
+    }
+
+    private fun setSelectedDriver(index: Int) {
+        if (playerIndex == index) return
+        playerIndex = index
+        // What is on screen belongs to the previous driver, and a patch stream
+        // only carries changes, so start the new driver from blank. The desktop
+        // re-sends this driver's current state right after switching.
+        hot.set(HotTelemetry())
+        post {
+            selectedDriverIndex = index
+            liveLapState = BLANK_LIVE_LAP
+            resetGraphHistories()
+            damage = CarDamageState()
+            cold = cold.copy(
+                statusAvailable = false,
+                tyreWearAvailable = false,
+                tyreSets = emptyList(),
+            )
+        }
+    }
+
+    /**
+     * A recording is about to play on the phone: forget the previous source's
+     * session, roster and laps, as a new protocol context does.
+     */
+    fun beginLocalPlayback(title: String) {
+        transport.set(PlaybackTransport())
+        acceptColdRow("{\"type\":\"protocol_context\"}")
+        acceptColdRow("{\"type\":\"participants_reset\"}")
+        post {
+            localRecording = title
+            transportPlaying = false
+            transportSpeed = 1f
+            transportTotal = 0.0
+        }
+    }
+
+    /** The phone's recording closed; the previous source comes back next. */
+    fun endLocalPlayback() {
+        transport.set(PlaybackTransport())
+        acceptColdRow("{\"type\":\"playback_close\"}")
+        acceptColdRow("{\"type\":\"protocol_context\"}")
+        acceptColdRow("{\"type\":\"participants_reset\"}")
+        post {
+            localRecording = null
+            transportPlaying = false
+        }
+    }
+
+    fun updateSettings(value: AndroidSettings) = post { settings = value }
+
+    fun updateSource(state: String, detail: String? = null) = post {
+        sourceStatus = SourceStatus(state, detail)
+    }
+
+    fun updatePairingBusy(value: Boolean) = post { pairingBusy = value }
+
+    fun setLapDeltaRequester(requester: ((PlaybackLapDeltaRequest) -> Boolean)?) {
+        lapDeltaRequester = requester
+    }
+
+    /** Receives replies to lap-delta requests numbered from [ANALYSIS_REQUEST_BASE]. */
+    fun setAnalysisDeltaSink(sink: ((Long, JSONObject?) -> Unit)?) {
+        analysisDeltaSink = sink
+    }
+
+    fun resetLapComparison() = post { resetAllLapComparison() }
+
+    fun notifyPairingSucceeded() = post { pairingSuccessId++ }
+
+    fun clearDiscovery() = post { discoveredDesktops.clear() }
+
+    fun discovered(value: DiscoveredDesktop) = post {
+        val index = discoveredDesktops.indexOfFirst { it.serverId == value.serverId }
+        if (index >= 0) discoveredDesktops[index] = value else discoveredDesktops.add(value)
+    }
+
+    fun showMessage(text: String) = post {
+        message = UiMessage(messageIds.incrementAndGet(), text)
+    }
+
+    /**
+     * A [row] row for the graph histories: a sample for each enabled history
+     * timed by that family, and the newest value of fields others hold from it.
+     */
+    private fun acceptGraphRow(row: JSONObject, family: RowFamily) {
+        val samples = historiesByRow.getValue(family).filter { it.enabled }
+        val held = heldByRow.getValue(family).filter { graphHistories.getValue(it.family).enabled }
+        if (samples.isEmpty() && held.isEmpty()) return
+        val sessionTime = row.optionalDouble("session_time") ?: Double.NaN
+        val patches = samples.map { it to graphPatch(row, it.family) }
+        val values = held.map { it to (row.optionalDouble(it.key)?.toFloat() ?: Float.NaN) }
+        post {
+            for ((field, value) in values) graphHistories.getValue(field.family).hold(field, value)
+            for ((history, patch) in patches) history.accept(sessionTime, patch)
+        }
+    }
+
+    /** A row's values of [family]'s own fields by slot, NaN where the patch left one out. */
+    private fun graphPatch(row: JSONObject, family: GraphFamily): FloatArray =
+        FloatArray(family.fields.size) { slot ->
+            val field = family.fields[slot]
+            if (field.source != family.row) Float.NaN else row.optionalDouble(field.key)?.toFloat() ?: Float.NaN
+        }
+
+    private fun post(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
+    }
+
+    /** A sector line crossed between two rows of one lap marks where that sector starts. */
+    private fun learnSectorStart(previous: LiveLapSample, sample: LiveLapSample) {
+        if (sample.lapNumber != previous.lapNumber || sample.sector != previous.sector + 1 || sample.sector !in 1..2) return
+        val from = previous.lapDistanceM
+        val to = sample.lapDistanceM
+        // Rows a seek apart cross the line somewhere unknown between them.
+        if (!from.isFinite() || !to.isFinite() || to < from || to - from > 300.0) return
+        sectorStartM[sample.sector] = (from + to) / 2.0
+    }
+
+    private fun forgetSectorStarts() {
+        sectorStartM[1] = Double.NaN
+        sectorStartM[2] = Double.NaN
+    }
+
+    /** How far through its sector the car is, 0 to 1; NaN until that sector's ends are known. */
+    private fun sectorFraction(sample: LiveLapSample): Float {
+        val sector = sample.sector
+        if (sector !in 0..2 || !sample.lapDistanceM.isFinite()) return Float.NaN
+        val start = sectorStartM[sector]
+        val end = if (sector < 2) sectorStartM[sector + 1] else trackLengthM.takeIf { it > 0.0 } ?: Double.NaN
+        if (!start.isFinite() || !end.isFinite() || end <= start) return Float.NaN
+        return ((sample.lapDistanceM - start) / (end - start)).toFloat().coerceIn(0f, 1f)
+    }
+
+    private fun publishLapComparison(value: DashboardLapComparisonState) {
+        if (lapComparison.get() != value) lapComparison.lazySet(value)
+    }
+
+    private fun resetLiveLapComparison() {
+        liveLapState = BLANK_LIVE_LAP
+        previousLiveLap = null
+        currentLiveLapNumber = 0
+        currentLiveProgress.clear()
+        fastestLiveLap = null
+        publishLapComparison(DashboardLapComparisonState())
+    }
+
+    private fun resetAllLapComparison() {
+        resetLiveLapComparison()
+        playbackActive = false
+        playbackFastestLap = 0
+        playbackDeltaAvailable = false
+        playbackLaps = emptyList()
+        playbackSelectedLap = 0
+        setPlaybackCursor(Double.NaN)
+        playbackCursorSample = null
+        activePlaybackRequest = null
+        playbackDeltaCache.clear()
+        playbackDeltaUnavailable.clear()
+        trackLengthM = 0.0
+        forgetSectorStarts()
+        if (playbackCatalog.active) {
+            playbackCatalog = PlaybackCatalog(generation = playbackCatalog.generation + 1)
+        }
+    }
+
+    private fun setPlaybackCursor(sessionTime: Double) {
+        playbackCursorSessionTime = sessionTime
+        playbackCursorPublished = sessionTime
+    }
+
+    private fun resetPlaybackCursorComparison() {
+        previousLiveLap = null
+        activePlaybackRequest = null
+        playbackSelectedLap = 0
+        setPlaybackCursor(Double.NaN)
+        playbackCursorSample = null
+        if (playbackActive) {
+            val fastestTime = playbackLaps.firstOrNull {
+                it.lapNumber == playbackFastestLap
+            }?.lapTimeMs ?: 0
+            publishLapComparison(DashboardLapComparisonState(fastestLapMs = fastestTime))
+        } else {
+            resetLiveLapComparison()
+        }
+    }
+
+    private fun updateLiveLapComparison(sample: LiveLapSample) {
+        var previous = previousLiveLap
+        if (currentLiveLapNumber > 0 && sample.lapNumber < currentLiveLapNumber) {
+            resetLiveLapComparison()
+            previous = null
+        }
+
+        if (currentLiveLapNumber == 0 || sample.lapNumber != currentLiveLapNumber) {
+            if (previous != null && sample.lapNumber == currentLiveLapNumber + 1 &&
+                !previous.invalid && previous.sector1Ms > 0 && previous.sector2Ms > 0 &&
+                sample.lastLapMs > previous.sector1Ms + previous.sector2Ms &&
+                sample.lastLapMs < 300_000) {
+                val completed = CompletedLap(
+                    lapMs = sample.lastLapMs,
+                    sector1Ms = previous.sector1Ms,
+                    sector2Ms = previous.sector2Ms,
+                    progress = buildCompletedProgress(currentLiveProgress, sample.lastLapMs),
+                )
+                if (fastestLiveLap == null || completed.lapMs < fastestLiveLap!!.lapMs) {
+                    fastestLiveLap = completed
+                }
+            }
+            currentLiveLapNumber = sample.lapNumber
+            currentLiveProgress.clear()
+        }
+
+        appendLiveProgress(sample)
+        previousLiveLap = sample
+        publishLiveLapComparison(sample)
+    }
+
+    private fun appendLiveProgress(sample: LiveLapSample) {
+        if (sample.currentLapMs < 0 || !sample.lapDistanceM.isFinite() ||
+            currentLiveProgress.size >= MAX_LIVE_LAP_PROGRESS_SAMPLES) return
+        currentLiveProgress.add(
+            LapProgressSample(
+                elapsedMs = sample.currentLapMs,
+                distanceM = sample.lapDistanceM,
+            ),
+        )
+    }
+
+    private fun publishLiveLapComparison(sample: LiveLapSample) {
+        val fastest = fastestLiveLap
+        if (fastest == null) {
+            publishLapComparison(DashboardLapComparisonState())
+            return
+        }
+        val comparisonElapsed = interpolateElapsed(fastest.progress, sample.lapDistanceM)
+        if (comparisonElapsed == null || sample.currentLapMs < 0) {
+            publishLapComparison(DashboardLapComparisonState(fastestLapMs = fastest.lapMs))
+            return
+        }
+
+        val lapDelta = sample.currentLapMs / 1000.0 - comparisonElapsed
+        var sector1Delta: Double? = null
+        var sector2Delta: Double? = null
+        var sector3Delta: Double? = null
+        when (sample.sector) {
+            0 -> sector1Delta = lapDelta
+            1 -> {
+                sector1Delta = deltaSeconds(sample.sector1Ms, fastest.sector1Ms)
+                sector2Delta = sector1Delta?.let { lapDelta - it }
+            }
+            2 -> {
+                sector1Delta = deltaSeconds(sample.sector1Ms, fastest.sector1Ms)
+                sector2Delta = deltaSeconds(sample.sector2Ms, fastest.sector2Ms)
+                if (sector1Delta != null && sector2Delta != null) {
+                    sector3Delta = lapDelta - sector1Delta - sector2Delta
+                }
+            }
+        }
+        publishLapComparison(DashboardLapComparisonState(
+            fastestLapMs = fastest.lapMs,
+            lapDeltaSeconds = lapDelta,
+            sector1DeltaSeconds = sector1Delta,
+            sector2DeltaSeconds = sector2Delta,
+            sector3DeltaSeconds = sector3Delta,
+        ))
+    }
+
+    private fun installPlaybackMetadata(
+        laps: List<PlaybackLapMeta>,
+        fastestLap: Int,
+        deltaAvailable: Boolean,
+        playbackTrackLengthM: Double,
+        playbackDriver: Int,
+    ) {
+        val previousCatalog = playbackCatalog
+        resetAllLapComparison()
+        playbackActive = true
+        playbackLaps = laps
+        playbackFastestLap = fastestLap
+        playbackDeltaAvailable = deltaAvailable
+        trackLengthM = playbackTrackLengthM.takeIf { it.isFinite() && it > 0.0 } ?: 0.0
+        val fastestTime = playbackLaps.firstOrNull {
+            it.lapNumber == fastestLap
+        }?.lapTimeMs ?: 0
+        publishLapComparison(DashboardLapComparisonState(fastestLapMs = fastestTime))
+
+        // Every subscription snapshot repeats this row. Only a different
+        // recording or driver is a new catalogue, so Analysis keeps its laps
+        // across page changes.
+        val catalog = PlaybackCatalog(
+            generation = previousCatalog.generation,
+            active = true,
+            driverIndex = playbackDriver,
+            laps = laps.map {
+                PlaybackLapInfo(
+                    it.lapNumber,
+                    it.lapTimeMs,
+                    it.startSessionTime,
+                    it.endSessionTime,
+                    it.tyreCompound,
+                    it.visualCompound,
+                )
+            },
+            fastestLap = fastestLap,
+            deltaAvailable = deltaAvailable,
+            trackLengthM = trackLengthM,
+        )
+        playbackCatalog = if (catalog == previousCatalog) {
+            previousCatalog
+        } else {
+            catalog.copy(generation = maxOf(previousCatalog.generation, playbackCatalog.generation) + 1)
+        }
+    }
+
+    private fun updatePlaybackReference(sample: LiveLapSample) {
+        if (!playbackActive || sample.lapNumber <= 0 || !sample.lapDistanceM.isFinite()) return
+        if (sample.sessionTime.isFinite()) setPlaybackCursor(sample.sessionTime)
+        playbackSelectedLap = sample.lapNumber
+        playbackCursorSample = sample
+        publishPlaybackAtCursor(
+            playbackLaps.firstOrNull { it.lapNumber == sample.lapNumber },
+        )
+    }
+
+    private fun updatePlaybackCursor(sessionTime: Double) {
+        if (!playbackActive || !sessionTime.isFinite()) return
+        setPlaybackCursor(sessionTime)
+        val current = playbackLaps.asSequence()
+            .filter {
+                it.startSessionTime.isFinite() && it.endSessionTime.isFinite() &&
+                    sessionTime >= it.startSessionTime && sessionTime <= it.endSessionTime
+            }
+            .maxByOrNull { it.startSessionTime }
+        if (current == null) {
+            playbackSelectedLap = 0
+            playbackCursorSample = null
+        } else if (playbackSelectedLap != current.lapNumber) {
+            playbackSelectedLap = current.lapNumber
+            playbackCursorSample = null
+        }
+        publishPlaybackAtCursor(current)
+    }
+
+    private fun publishPlaybackAtCursor(current: PlaybackLapMeta?) {
+        val fastest = playbackLaps.firstOrNull { it.lapNumber == playbackFastestLap }
+        if (fastest == null || current == null) {
+            publishLapComparison(
+                DashboardLapComparisonState(fastestLapMs = fastest?.lapTimeMs ?: 0),
+            )
+            return
+        }
+
+        val key = current.lapNumber to fastest.lapNumber
+        val cached = playbackDeltaCache[key]
+        if (cached != null) {
+            val cursorDistance = interpolateDistanceAtSessionTime(
+                cached.progress,
+                playbackCursorSessionTime,
+            ) ?: playbackCursorSample
+                ?.takeIf { it.lapNumber == current.lapNumber }
+                ?.lapDistanceM
+            if (cursorDistance != null && cursorDistance.isFinite()) {
+                applyPlaybackDelta(fastest.lapTimeMs, cached, cursorDistance)
+            } else {
+                publishLapComparison(DashboardLapComparisonState(fastestLapMs = fastest.lapTimeMs))
+            }
+            return
+        }
+
+        publishLapComparison(DashboardLapComparisonState(fastestLapMs = fastest.lapTimeMs))
+        if (!playbackDeltaAvailable || key in playbackDeltaUnavailable) return
+        val requester = lapDeltaRequester ?: return
+        if (activePlaybackRequest?.let {
+                it.currentLap == current.lapNumber && it.comparisonLap == fastest.lapNumber
+            } == true) return
+        val request = PlaybackLapDeltaRequest(
+            requestId = ++playbackRequestId,
+            currentLap = current.lapNumber,
+            comparisonLap = fastest.lapNumber,
+        )
+        activePlaybackRequest = request
+        if (!requester(request)) activePlaybackRequest = null
+    }
+
+    private fun acceptPlaybackDelta(
+        requestId: Long,
+        currentLap: Int,
+        comparisonLap: Int,
+        curve: LapDeltaCurve?,
+    ) {
+        val active = activePlaybackRequest
+        if (active == null || active.requestId != requestId) return
+        activePlaybackRequest = null
+        if (!playbackActive) return
+        if (curve == null) {
+            playbackDeltaUnavailable += active.currentLap to active.comparisonLap
+            return
+        }
+        if (currentLap <= 0 || comparisonLap <= 0) return
+        if (active.currentLap != currentLap || active.comparisonLap != comparisonLap) return
+        if (curve.currentLap != currentLap || curve.comparisonLap != comparisonLap) return
+        val key = currentLap to comparisonLap
+        playbackDeltaCache.remove(key)
+        playbackDeltaCache[key] = curve
+        while (playbackDeltaCache.size > MAX_PLAYBACK_DELTA_CURVES) {
+            playbackDeltaCache.remove(playbackDeltaCache.keys.first())
+        }
+        if (playbackSelectedLap == currentLap && playbackFastestLap == comparisonLap) {
+            publishPlaybackAtCursor(
+                playbackLaps.firstOrNull { it.lapNumber == currentLap },
+            )
+        }
+    }
+
+    private fun applyPlaybackDelta(
+        fastestLapMs: Int,
+        curve: LapDeltaCurve,
+        cursorDistanceM: Double,
+    ) {
+        val summary = summarizeDelta(curve, cursorDistanceM)
+        publishLapComparison(DashboardLapComparisonState(
+            fastestLapMs = fastestLapMs,
+            lapDeltaSeconds = summary.lapSeconds,
+            sector1DeltaSeconds = summary.sector1Seconds,
+            sector2DeltaSeconds = summary.sector2Seconds,
+            sector3DeltaSeconds = summary.sector3Seconds,
+        ))
+    }
+
+    private fun readLapDeltaCurve(data: JSONObject): LapDeltaCurve? {
+        val sectors = mutableListOf(mutableListOf<DeltaSample>())
+        val samples = data.optJSONArray("samples")
+        if (samples != null) repeat(samples.length()) { index ->
+            val sample = samples.optJSONObject(index) ?: return@repeat
+            if (!sample.optBoolean("valid", true)) {
+                if (sectors.last().isNotEmpty()) sectors.add(mutableListOf())
+                return@repeat
+            }
+            val delta = sample.optDouble("delta_seconds", Double.NaN)
+            val distance = sample.optDouble("lap_distance_m", Double.NaN)
+            if (delta.isFinite() && distance.isFinite()) {
+                sectors.last().add(DeltaSample(distance, delta))
+            }
+        }
+        val values = sectors.filter { it.isNotEmpty() }
+        if (values.isEmpty()) return null
+        val startSessionTime = data.optDouble("currentStartSessionTime", Double.NaN)
+        val endSessionTime = data.optDouble("currentEndSessionTime", Double.NaN)
+        val rawProgress = buildList {
+            val samples = data.optJSONArray("currentProgress")
+            if (samples != null) repeat(samples.length()) { index ->
+                val sample = samples.optJSONObject(index) ?: return@repeat
+                add(
+                    PlaybackProgressSample(
+                        sessionTime = sample.optDouble("session_time", Double.NaN),
+                        elapsedMs = sample.optInt("current_lap_ms", -1),
+                        distanceM = sample.optDouble("lap_distance_m", Double.NaN),
+                    ),
+                )
+            }
+        }
+        return LapDeltaCurve(
+            currentLap = data.optInt("currentLapNum"),
+            comparisonLap = data.optInt("comparisonLapNum"),
+            sectors = values,
+            progress = buildPlaybackProgress(
+                rawProgress,
+                startSessionTime,
+                endSessionTime,
+            ),
+        )
+    }
+
+    private fun buildPlaybackProgress(
+        raw: List<PlaybackProgressSample>,
+        startSessionTime: Double,
+        endSessionTime: Double,
+    ): List<PlaybackProgressSample> {
+        if (raw.isEmpty() || !startSessionTime.isFinite() || !endSessionTime.isFinite()) {
+            return emptyList()
+        }
+        var originDistance = Double.POSITIVE_INFINITY
+        for (point in raw) {
+            if (point.sessionTime > endSessionTime) break
+            if (point.sessionTime < startSessionTime || point.elapsedMs != 0 ||
+                !point.distanceM.isFinite() || point.distanceM < 0.0) continue
+            originDistance = minOf(originDistance, point.distanceM)
+        }
+        if (!originDistance.isFinite()) originDistance = 0.0
+        val points = mutableListOf(
+            PlaybackProgressSample(startSessionTime, 0, originDistance),
+        )
+        var lastTime = startSessionTime
+        var lastDistance = originDistance
+        for (point in raw) {
+            if (point.sessionTime > endSessionTime) break
+            if (!point.sessionTime.isFinite() || !point.distanceM.isFinite() ||
+                point.sessionTime < lastTime || point.distanceM < lastDistance ||
+                point.elapsedMs < 0) continue
+            if (point.sessionTime == startSessionTime) continue
+            if (points.size == 1) {
+                if (point.distanceM == originDistance) continue
+                points.add(point)
+            } else if (point.distanceM == lastDistance) {
+                continue
+            } else if (point.sessionTime == lastTime) {
+                points[points.lastIndex] = point
+            } else {
+                points.add(point)
+            }
+            lastTime = point.sessionTime
+            lastDistance = point.distanceM
+        }
+        return points.takeIf { it.size >= 2 } ?: emptyList()
+    }
+
+    private fun interpolateDistanceAtSessionTime(
+        points: List<PlaybackProgressSample>,
+        sessionTime: Double,
+    ): Double? {
+        if (points.size < 2 || !sessionTime.isFinite() ||
+            sessionTime < points.first().sessionTime ||
+            sessionTime > points.last().sessionTime) return null
+        var low = 1
+        var high = points.size
+        while (low < high) {
+            val middle = (low + high) ushr 1
+            if (points[middle].sessionTime < sessionTime) low = middle + 1 else high = middle
+        }
+        if (low >= points.size) return points.last().distanceM
+        val before = points[low - 1]
+        val after = points[low]
+        val span = after.sessionTime - before.sessionTime
+        val ratio = if (span > 0.0) (sessionTime - before.sessionTime) / span else 1.0
+        return before.distanceM + (after.distanceM - before.distanceM) * ratio
+    }
+
+    private fun summarizeDelta(curve: LapDeltaCurve, cursorDistanceM: Double): LapDeltaSummary {
+        val sectorValues = (0..2).map { index ->
+            val samples = curve.sectors.getOrNull(index)
+            if (samples.isNullOrEmpty() || cursorDistanceM < samples.first().distanceM) {
+                null
+            } else {
+                interpolateDelta(samples, cursorDistanceM.coerceAtMost(samples.last().distanceM))
+            }
+        }
+        val visible = sectorValues.filterNotNull()
+        return LapDeltaSummary(
+            lapSeconds = visible.takeIf { it.isNotEmpty() }?.sum(),
+            sector1Seconds = sectorValues[0],
+            sector2Seconds = sectorValues[1],
+            sector3Seconds = sectorValues[2],
+        )
+    }
+
+    private fun interpolateDelta(samples: List<DeltaSample>, distanceM: Double): Double? {
+        if (distanceM < samples.first().distanceM || distanceM > samples.last().distanceM) return null
+        var low = 1
+        var high = samples.size
+        while (low < high) {
+            val middle = (low + high) ushr 1
+            if (samples[middle].distanceM < distanceM) low = middle + 1 else high = middle
+        }
+        if (low >= samples.size) return samples.last().deltaSeconds
+        val before = samples[low - 1]
+        val after = samples[low]
+        val span = after.distanceM - before.distanceM
+        if (span <= 0.0) return after.deltaSeconds
+        val ratio = (distanceM - before.distanceM) / span
+        return before.deltaSeconds + (after.deltaSeconds - before.deltaSeconds) * ratio
+    }
+
+    private fun buildCompletedProgress(
+        raw: List<LapProgressSample>,
+        lapTimeMs: Int,
+    ): List<LapProgressSample> {
+        if (raw.isEmpty()) return emptyList()
+        val originDistance = raw.asSequence()
+            .filter { it.elapsedMs == 0 && it.distanceM.isFinite() && it.distanceM >= 0.0 }
+            .minOfOrNull { it.distanceM } ?: 0.0
+        val points = mutableListOf(LapProgressSample(0, originDistance))
+        var lastElapsed = 0
+        var lastDistance = originDistance
+        for (point in raw) {
+            if (point.elapsedMs < lastElapsed || !point.distanceM.isFinite() ||
+                point.distanceM < lastDistance || point.elapsedMs < 0) continue
+            if (point.elapsedMs == 0 || point.distanceM == lastDistance) continue
+            points.add(point)
+            lastElapsed = point.elapsedMs
+            lastDistance = point.distanceM
+        }
+        if (trackLengthM > lastDistance && lapTimeMs > lastElapsed) {
+            points.add(LapProgressSample(lapTimeMs, trackLengthM))
+        }
+        return points.takeIf { it.size >= 2 } ?: emptyList()
+    }
+
+    private fun interpolateElapsed(
+        points: List<LapProgressSample>,
+        distanceM: Double,
+    ): Double? {
+        if (points.size < 2 || !distanceM.isFinite() ||
+            distanceM < points.first().distanceM || distanceM > points.last().distanceM) return null
+        var low = 1
+        var high = points.size
+        while (low < high) {
+            val middle = (low + high) ushr 1
+            if (points[middle].distanceM < distanceM) low = middle + 1 else high = middle
+        }
+        if (low >= points.size) return points.last().elapsedMs / 1000.0
+        val before = points[low - 1]
+        val after = points[low]
+        val span = after.distanceM - before.distanceM
+        val ratio = if (span > 0.0) (distanceM - before.distanceM) / span else 1.0
+        return (before.elapsedMs + (after.elapsedMs - before.elapsedMs) * ratio) / 1000.0
+    }
+
+    private fun deltaSeconds(currentMs: Int?, comparisonMs: Int?): Double? =
+        if (currentMs != null && comparisonMs != null && currentMs > 0 && comparisonMs > 0) {
+            (currentMs - comparisonMs) / 1000.0
+        } else {
+            null
+        }
+
+    // Mirrors tnrp::presentationFormat: on the 2026 protocol the cars' regulations
+    // decide (Car Telemetry 2 m_2026Regulations), then Formula (13 = F1 26), then
+    // the protocol alone.
+    private fun resolveAeroMode(year: Int?, regulations2026: Boolean?, formula: Int?, fallback: String?): String = when {
+        year == 2026 && regulations2026 != null -> if (regulations2026) "slm" else "drs"
+        year == 2026 && (formula == null || formula == 13) -> "slm"
+        year != null -> "drs"
+        fallback == "slm" -> "slm"
+        else -> "drs"
+    }
+}
