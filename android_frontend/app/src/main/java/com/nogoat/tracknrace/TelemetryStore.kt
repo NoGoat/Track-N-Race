@@ -210,6 +210,10 @@ internal class TelemetryStore {
     var playbackCatalog by mutableStateOf(PlaybackCatalog())
         private set
 
+    /** The streamed driver's ERS and fuel use on each completed lap, by lap, as the engine measured it. */
+    var lapMeasures by mutableStateOf<Map<Int, LapMeasure>>(emptyMap())
+        private set
+
     /** The lap under the desktop's playback cursor, 0 between laps. */
     var playbackSelectedLap by mutableIntStateOf(0)
         private set
@@ -452,6 +456,7 @@ internal class TelemetryStore {
             }
 
             "playback_loaded" -> post {
+                lapMeasures = emptyMap()
                 strategy = null
                 resetAllLapComparison()
                 resetGraphHistories()
@@ -578,7 +583,24 @@ internal class TelemetryStore {
                 }
             }
 
+            // Restated whenever a lap completes, the cursor moves or the driver changes.
+            "lap_measures" -> {
+                val laps = row.optJSONArray("laps")
+                val measures = HashMap<Int, LapMeasure>()
+                if (laps != null) for (index in 0 until laps.length()) {
+                    val lap = laps.optJSONObject(index) ?: continue
+                    val number = lap.optionalInt("lap_num") ?: continue
+                    measures[number] = LapMeasure(
+                        deployedMj = lap.optionalDouble("ers_deployed_mj"),
+                        harvestedMj = lap.optionalDouble("ers_harvested_mj"),
+                        fuelUsedKg = lap.optionalDouble("fuel_used_kg"),
+                    )
+                }
+                post { lapMeasures = measures }
+            }
+
             "playback_close" -> post {
+                lapMeasures = emptyMap()
                 strategy = null
                 resetAllLapComparison()
                 resetGraphHistories()

@@ -357,6 +357,23 @@ export interface DriverLapHistory {
   overall_best_s3_ms: number
 }
 
+// The streamed driver's ERS and fuel use on each completed lap (the player
+// live, the selected driver in playback, up to the cursor), measured by the
+// engine. An absent value was not measured.
+export interface LapMeasure {
+  lap_num: number
+  ers_deployed_mj?: number
+  // MGU-K, plus MGU-H under regulations that have one.
+  ers_harvested_mj?: number
+  fuel_used_kg?: number
+}
+
+export interface LapMeasuresMsg {
+  type: 'lap_measures'
+  car_idx: number
+  laps: LapMeasure[]
+}
+
 export interface RaceEventMsg {
   type: 'race_event'
   ts: string
@@ -474,6 +491,11 @@ export interface AnalysisDriverLapCatalog {
   driverIndex: number
   driverName: string
   isPlayer: boolean
+  // V6 recordings: the car's identity (-1 = not recorded) and whether only its
+  // public telemetry was recorded.
+  raceNumber?: number
+  teamId?: number
+  restricted?: boolean
   blocks: Array<{
     lapNum: number
     startSessionTime: number
@@ -610,6 +632,7 @@ export type GatewayMsg =
   | FastestLapMsg
   | SessionHistoryFastestMsg
   | DriverLapHistory
+  | LapMeasuresMsg
   | RaceEventMsg
   | SessionMsg
   | TyreSetsMsg

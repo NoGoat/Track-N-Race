@@ -44,6 +44,9 @@ let lastStatus: { override: ProtocolOverride; detected: number | null; active: n
 // mount, or when it notices it's running on default/fallback labels). See
 // requestStatus() below.
 let lastStatusRow: Record<string, unknown> | null = null
+// The engine pushes lap_measures only when a lap completes or the cursor or
+// driver moves, so one sent while the window was hidden is restated on show.
+let lastLapMeasuresRow: Record<string, unknown> | null = null
 
 // Whether the renderer is currently visible (driven by the renderer's
 // document.visibilityState via the page-visibility IPC). When it's
@@ -827,6 +830,7 @@ export function startBridge(): BridgeStartResult {
       if (batch.includes('"type":"protocol_status"') ||
           batch.includes('"type":"playback_state"') ||
           batch.includes('"type":"playback_close"') ||
+          batch.includes('"type":"lap_measures"') ||
           batch.includes('"type":"recording_error"') ||
           batch.includes('"type":"recording_finished"')) {
         let start = 0
@@ -837,6 +841,8 @@ export function startBridge(): BridgeStartResult {
             const rowStr = batch.slice(start, end)
             if (rowStr.includes('"type":"protocol_status"')) {
               handleRow(JSON.parse(rowStr))
+            } else if (rowStr.startsWith('{"type":"lap_measures"')) {
+              try { lastLapMeasuresRow = JSON.parse(rowStr) } catch { /* malformed row: skip it */ }
             } else if (rowStr.includes('"type":"recording_error"')) {
               try { handleRecordingError(JSON.parse(rowStr)) } catch (e) {
                 console.error('[recording] Failed to parse native writer error:', e, rowStr)
@@ -847,6 +853,7 @@ export function startBridge(): BridgeStartResult {
               }
             } else if (rowStr.includes('"type":"playback_state"') ||
                        rowStr.includes('"type":"playback_close"')) {
+              if (rowStr.includes('"type":"playback_close"')) lastLapMeasuresRow = null
               try { handlePlaybackRow(JSON.parse(rowStr)) } catch { /* malformed row: skip it */ }
             }
           }
@@ -1301,6 +1308,7 @@ export function setRendererVisible(visible: boolean): void {
   // reach the renderer and the restore covers everything older.
   engine?.setHostVisible?.(visible, ++hostVisibilitySequence)
   if (visible && lastStatusRow) broadcast(lastStatusRow)
+  if (visible && lastLapMeasuresRow) broadcast(lastLapMeasuresRow)
 }
 
 export function isRendererVisible(): boolean { return rendererVisible }

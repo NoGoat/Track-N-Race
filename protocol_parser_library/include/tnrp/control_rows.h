@@ -417,6 +417,11 @@ struct AnalysisDriverLapCatalog {
     int                       driverIndex{-1};
     std::string               driverName;
     bool                      isPlayer{};
+    // The car's identity for driver pickers (-1 = not recorded), and whether
+    // only its public telemetry was recorded by the end of the session.
+    int                       raceNumber{-1};
+    int                       teamId{-1};
+    bool                      restricted{};
     std::vector<LapBlockMeta> blocks;
     std::vector<LapMeta>      laps;
     int                       fastestLapNum{};

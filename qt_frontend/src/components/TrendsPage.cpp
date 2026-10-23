@@ -577,6 +577,7 @@ void TrendsPage::setDriver(int carIdx) {
     if (driver_ == carIdx) return;
     driver_ = carIdx;
     history_.reset();
+    measures_.reset();
     requestRefresh();
 }
 
@@ -586,8 +587,15 @@ void TrendsPage::setLapHistory(const tnrp::DriverLapHistoryRow& history) {
     requestRefresh();
 }
 
+void TrendsPage::setLapMeasures(const tnrp::LapMeasuresRow& measures) {
+    if (measures.car_idx != driver_) return;
+    measures_ = measures;
+    requestRefresh();
+}
+
 void TrendsPage::clearLapHistory() {
     history_.reset();
+    measures_.reset();
     requestRefresh();
 }
 
@@ -596,12 +604,6 @@ void TrendsPage::update(const StatusRow* status, const tnrp::TyreSetsRow* tyreSe
     if (tyreSets) tyreSets_ = *tyreSets; else tyreSets_.reset();
     if (lap && lap->lap_num != kPlaybackMissingInt) currentLap_ = lap->lap_num;
     else currentLap_.reset();
-    requestRefresh();
-}
-
-void TrendsPage::setHasMguh(bool hasMguh) {
-    if (hasMguh_ == hasMguh) return;
-    hasMguh_ = hasMguh;
     requestRefresh();
 }
 
@@ -673,20 +675,14 @@ void TrendsPage::refresh() {
     QVector<Lap> allLaps;
     if (haveHistory) allLaps = QVector<Lap>(history_->laps.cbegin(), history_->laps.cend());
     QVector<Lap> stintLaps;
-    QVector<int> lapNums;
-    for (const Lap& lap : allLaps) {
-        lapNums.push_back(lap.lap_num);
+    for (const Lap& lap : allLaps)
         if (lap.lap_num >= stintStart) stintLaps.push_back(lap);
-    }
     const auto lapsFor = [&](QComboBox* select) -> const QVector<Lap>& {
         return select && select->currentData().toString() == QLatin1String("all") ? allLaps : stintLaps;
     };
 
-    // The status history grows in place; the scan reads only what is new and
-    // starts again when held rows were rewritten.
-    const SampleRange<StsSample> status = data.sts();
-    const StintStatusScan& scan = scanner_.scanFor(status, model_->playbackDataRevision());
-    const QHash<int, TrendLapMeasure> measures = measureTrendLaps(scan, status, boundaries, lapNums, hasMguh_);
+    const QHash<int, TrendLapMeasure> measures =
+        measures_ ? trendLapMeasures(*measures_) : QHash<int, TrendLapMeasure>{};
     const SampleRange<DamageSample> damage = data.damage();
     refreshCards(stintLaps, haveHistory ? stintStart : -1, measures);
 

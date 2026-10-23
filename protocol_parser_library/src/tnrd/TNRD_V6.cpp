@@ -2872,6 +2872,7 @@ struct TnrdV6Archive::Impl {
         out = std::move(data); return true;
     }
     bool repairLegacyOutLaps(std::string* errorOut);
+    bool repairMissingLapTimes(std::string* errorOut);
     void rebuildCompatibility() {
         // Match V5's active race branch: formation remains in the archive but
         // is not exposed through the application playback timeline. (A live
@@ -3090,6 +3091,110 @@ bool TnrdV6Archive::Impl::repairLegacyOutLaps(std::string* errorOut) {
         holds.push_back(hold);
     }
     lapSummaries.insert(lapSummaries.end(), holds.begin(), holds.end());
+    return true;
+}
+
+// A recording can close a lap the car completed without its time: the game
+// reports a lap's time one lap late, when the lap number advances, and the
+// final lap's never does (the car is classified instead, and the recording
+// usually stops at the flag). Read-side only: the file is never changed. A lap
+// gets a time only when its own samples show the car reached the line, from
+// the best evidence they hold:
+//   1. the game's last_lap_ms in the sample where the car is classified as
+//      finished, when it is not still the previous lap's time;
+//   2. the lap timer's last reading plus the time from it to the line;
+//   3. the lap's start-to-end interval.
+// Sectors 1 and 2 are the lap's own last splits; sector 3 is the remainder.
+bool TnrdV6Archive::Impl::repairMissingLapTimes(std::string* errorOut) {
+    std::map<uint32_t, std::vector<size_t>> timingByLap;
+    for (size_t i = 0; i < v6Chunks.size(); ++i)
+        if (v6Chunks[i].typeId == static_cast<uint8_t>(V6DataType::LapTiming))
+            timingByLap[v6Chunks[i].lapId].push_back(i);
+    // Each driver's laps by number, for the lap before and the lap after.
+    std::map<std::tuple<uint8_t, V6Phase, uint32_t>, size_t> byNumber;
+    for (size_t i = 0; i < lapSummaries.size(); ++i)
+        if (lapSummaries[i].lapNumber != 0)
+            byNumber[{lapSummaries[i].driverIndex, lapSummaries[i].phase, lapSummaries[i].lapNumber}] = i;
+    const auto intAt = [](const ColumnarChunk::Column* column, uint32_t row) -> std::optional<int64_t> {
+        if (!column || !column->has(row)) return std::nullopt;
+        if (column->kind == ColumnKind::Int) return column->ints[row];
+        if (column->kind == ColumnKind::Json || column->kind == ColumnKind::Bool) return std::nullopt;
+        return static_cast<int64_t>(std::llround(column->reals[row]));
+    };
+    for (auto& lap : lapSummaries) {
+        if (lap.lapNumber == 0 || lap.lapTimeMs != 0) continue;
+        const auto previous = byNumber.find({lap.driverIndex, lap.phase, lap.lapNumber - 1});
+        const uint32_t previousMs = previous != byNumber.end() ? lapSummaries[previous->second].lapTimeMs : 0;
+        // A later numbered lap starting where this one ended means the car
+        // crossed the line there.
+        const auto next = byNumber.upper_bound({lap.driverIndex, lap.phase, lap.lapNumber});
+        const bool continued = next != byNumber.end() &&
+            std::get<0>(next->first) == lap.driverIndex && std::get<1>(next->first) == lap.phase &&
+            lapSummaries[next->second].startSessionTime <= lap.endSessionTime + 0.001f;
+
+        std::optional<float> finishedAt;
+        int64_t finishedLastMs = 0;
+        std::optional<float> timerAt;
+        int64_t timerMs = 0;
+        int64_t s1 = 0, s2 = 0;
+        if (const auto found = timingByLap.find(lap.lapId); found != timingByLap.end()) {
+            auto indices = found->second;
+            std::sort(indices.begin(), indices.end(), [this](size_t a, size_t b) {
+                return std::tie(v6Chunks[a].firstTime, v6Chunks[a].sequence) <
+                       std::tie(v6Chunks[b].firstTime, v6Chunks[b].sequence);
+            });
+            for (size_t index : indices) {
+                std::shared_ptr<const ChunkData> data;
+                if (!load(index, data, errorOut)) return false;
+                const auto& table = data->table;
+                const ColumnarChunk::Column *lapNum = nullptr, *status = nullptr, *elapsed = nullptr,
+                    *lastLap = nullptr, *sector1 = nullptr, *sector2 = nullptr;
+                for (const auto& column : table.columns) {
+                    if (column.name == "lap_num") lapNum = &column;
+                    else if (column.name == "result_status") status = &column;
+                    else if (column.name == "current_lap_ms") elapsed = &column;
+                    else if (column.name == "last_lap_ms") lastLap = &column;
+                    else if (column.name == "s1_ms") sector1 = &column;
+                    else if (column.name == "s2_ms") sector2 = &column;
+                }
+                for (uint32_t row = 0; row < table.time.size() && !finishedAt; ++row) {
+                    const float time = table.time[row];
+                    if (time < lap.startSessionTime || time > lap.endSessionTime) continue;
+                    if (intAt(status, row).value_or(0) == 3) {
+                        finishedAt = time;
+                        finishedLastMs = intAt(lastLap, row).value_or(0);
+                        break;
+                    }
+                    // Only samples still on this lap carry its timer and splits.
+                    if (intAt(lapNum, row).value_or(lap.lapNumber) != static_cast<int64_t>(lap.lapNumber))
+                        continue;
+                    if (const auto ms = intAt(elapsed, row); ms && *ms > 0) { timerAt = time; timerMs = *ms; }
+                    if (const auto ms = intAt(sector1, row); ms && *ms > 0) s1 = *ms;
+                    if (const auto ms = intAt(sector2, row); ms && *ms > 0) s2 = *ms;
+                }
+                if (finishedAt) break;
+            }
+        }
+        if (!finishedAt && !continued) continue;   // never shown to reach the line
+
+        const float line = finishedAt ? *finishedAt : lap.endSessionTime;
+        int64_t total = 0;
+        if (finishedAt && finishedLastMs > 0 && finishedLastMs != static_cast<int64_t>(previousMs))
+            total = finishedLastMs;
+        else if (timerAt && line >= *timerAt)
+            total = timerMs + static_cast<int64_t>(std::llround((line - *timerAt) * 1000.0));
+        else if (line > lap.startSessionTime)
+            total = static_cast<int64_t>(std::llround((line - lap.startSessionTime) * 1000.0));
+        if (total <= 0 || total > std::numeric_limits<uint32_t>::max()) continue;
+
+        lap.lapTimeMs = static_cast<uint32_t>(total);
+        const bool splits = s1 > 0 && s2 > 0 && total > s1 + s2;
+        lap.s1Ms = splits ? static_cast<uint32_t>(s1) : 0;
+        lap.s2Ms = splits ? static_cast<uint32_t>(s2) : 0;
+        lap.s3Ms = splits ? static_cast<uint32_t>(total - s1 - s2) : 0;
+        lap.isCompleted = true;
+        lap.isPartial = false;
+    }
     return true;
 }
 
@@ -3319,6 +3424,7 @@ bool TnrdV6Archive::open(const std::string& path, HeaderRow& headerOut, std::str
     }
     impl_->playback = impl_->player.value_or(impl_->drivers.empty() ? 0 : impl_->drivers.front().vehicleIndex);
     if (!impl_->repairLegacyOutLaps(errorOut)) { close(); return false; }
+    if (!impl_->repairMissingLapTimes(errorOut)) { close(); return false; }
     impl_->rebuildCompatibility(); headerOut = impl_->session; return true;
 }
 
@@ -3648,6 +3754,7 @@ bool TnrdV6Archive::recoverByScan(HeaderRow& headerOut, std::string* errorOut) {
     impl_->session.compression = "zstd";
     impl_->recovered = true;
     if (!impl_->repairLegacyOutLaps(errorOut)) { close(); return false; }
+    if (!impl_->repairMissingLapTimes(errorOut)) { close(); return false; }
     impl_->rebuildCompatibility();
     headerOut = impl_->session;
     if (errorOut) errorOut->clear();

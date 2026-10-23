@@ -606,6 +606,7 @@ bool allowedControlRow(std::string_view json) {
         json.starts_with("{\"type\":\"playback_loaded\"") ||
         json.starts_with("{\"type\":\"playback_lap_blocks\"") ||
         json.starts_with("{\"type\":\"driver_restriction\"") ||
+        json.starts_with("{\"type\":\"lap_measures\"") ||
         json.starts_with("{\"type\":\"playback_close\"");
 }
 
@@ -798,6 +799,9 @@ struct PairServer::Impl {
     // the stream. Cached for the snapshot and for request_latest re-requests
     // after a reconnect or a dropped frame.
     std::string latestDriverRestriction;
+    // The streamed driver's per-lap ERS and fuel use; pushed only when a lap
+    // completes, so a phone joining between laps needs the cached one.
+    std::string latestLapMeasures;
     std::array<std::string, 16> latestRows;
     // V6 playback sends one field group per row, so the newest row of a type
     // says nothing about the other groups. Each group (and car) is cached
@@ -1094,6 +1098,7 @@ struct PairServer::Impl {
             if (!latestProtocolStatus.empty()) rows.push_back(latestProtocolStatus);
             if (!latestPlaybackLapBlocks.empty()) rows.push_back(latestPlaybackLapBlocks);
             if (!latestDriverRestriction.empty()) rows.push_back(latestDriverRestriction);
+            if (!latestLapMeasures.empty()) rows.push_back(latestLapMeasures);
             for (size_t type = 1; type < latestRows.size(); ++type) {
                 if ((client->streamMask & (1u << type)) == 0 || latestRows[type].empty())
                     continue;
@@ -2133,10 +2138,13 @@ void PairServer::publishRow(const std::string& source) {
             json.starts_with("{\"type\":\"playback_close\"")) {
             impl_->latestPlaybackLapBlocks.clear();
             impl_->latestDriverRestriction.clear();
+            impl_->latestLapMeasures.clear();
         } else if (json.starts_with("{\"type\":\"playback_lap_blocks\"")) {
             impl_->latestPlaybackLapBlocks = json;
         } else if (json.starts_with("{\"type\":\"driver_restriction\"")) {
             impl_->latestDriverRestriction = json;
+        } else if (json.starts_with("{\"type\":\"lap_measures\"")) {
+            impl_->latestLapMeasures = json;
         }
         if (type > 0 && type < impl_->latestRows.size()) {
             if (type == 8 && impl_->latestRows[type] != json) {

@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
 import { createPortal, flushSync } from 'react-dom'
-import { type GroupBase, type SingleValue } from 'react-select'
+import { type FormatOptionLabelMeta, type GroupBase, type SingleValue } from 'react-select'
 import Select from '../lib/AnimatedSelect'
 import { AlertTriangle, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Eye, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, SeparatorVertical, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
@@ -35,6 +35,7 @@ import AnalyzeMetricPicker from './AnalyzeMetricPicker'
 import AnalysisSplitHandle from './AnalysisSplitHandle'
 import SyncedTooltipIcon from '../app/components/SyncedTooltipIcon'
 import ColorPicker from './ColorPicker'
+import { DRIVER_MENU_WIDTH, DriverOptionRow, useTeamCatalog, type DriverRowFields } from './DriverSelect'
 
 interface Props {
   isDark: boolean
@@ -94,10 +95,10 @@ export interface SecondaryFileData {
   deltaAvailable: boolean
   analysisDrivers: AnalysisDriverLapCatalog[]
 }
-interface AnalysisDriverOption extends AnalysisDriverSelection {
+interface AnalysisDriverOption extends AnalysisDriverSelection, DriverRowFields {
   value: string
-  label: string
 }
+const FALLBACK_TEAM_COLOR = '#8e8e8e'
 const analysisDriverKey = (selection: AnalysisDriverSelection) =>
   `${selection.source}:${selection.driverIndex}`
 const analysisLapKey = (selection: AnalysisDriverSelection, lapNum: number) =>
@@ -497,12 +498,20 @@ const AnalyzeDriverField = memo(function AnalyzeDriverField({
   displayOnly?: boolean
   isDisabled?: boolean
 }) {
+  const { names: teamNames } = useTeamCatalog()
+  // The menu shows each file's drivers as the title bar's driver picker does;
+  // the control shows the name alone.
+  const formatOptionLabel = useCallback((option: AnalysisDriverOption,
+    { context, selectValue }: FormatOptionLabelMeta<AnalysisDriverOption>) => context === 'value'
+    ? option.label
+    : <DriverOptionRow option={option} selected={selectValue[0]?.value === option.value} teamNames={teamNames} />,
+  [teamNames])
   return <div className="flex items-center">
     <label htmlFor={id} className="mr-2 w-11 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Driver</label>
     <div className="min-w-0 flex-1">
       <Select<AnalysisDriverOption, false, GroupBase<AnalysisDriverOption>>
         inputId={id} value={value} options={options} placeholder="Select driver…"
-        onChange={onChange} styles={styles}
+        onChange={onChange} styles={styles} formatOptionLabel={formatOptionLabel}
         components={displayOnly ? displayOnlySelectComponents : selectComponents}
         isSearchable={false} isClearable={false} isDisabled={isDisabled || displayOnly}
         menuPortalTarget={document.body}
@@ -933,6 +942,15 @@ export default function AnalyzeScreen({
     labelStyleGroupHeadings: true,
     menuWidth: 'calc(100% + 50px)',
   }), [isDark])
+  // Driver rows carry the race number, name and team, so their menu is as
+  // wide as the title bar's driver picker.
+  const driverSelectStyles = useMemo(() => buildSelectStyles(isDark, {
+    solidBg: true,
+    controlHeight: 32,
+    labelStyleGroupHeadings: true,
+    menuWidth: `max(${DRIVER_MENU_WIDTH}, calc(100% + 50px))`,
+  }), [isDark])
+  const teamCatalog = useTeamCatalog()
 
   const save = useCallback((next: AnalyzeConfig) => setRawConfig(next), [setRawConfig])
   useEffect(() => {
@@ -1085,26 +1103,37 @@ export default function AnalyzeScreen({
       fastestLapNum: secondaryFile.fastestLapNum ?? 0,
     }]
   }, [secondaryFile])
-  const driverOptionGroups = useMemo<GroupBase<AnalysisDriverOption>[]>(() => [
-    {
-      label: 'Primary File',
-      options: primaryDriverCatalogs.map(driver => ({
-        value: `file1:${driver.driverIndex}`,
+  const driverOptionGroups = useMemo<GroupBase<AnalysisDriverOption>[]>(() => {
+    // The primary file is the one playing, so its roster's livery colours match
+    // the title bar's picker; the secondary file's cars take their team's colour.
+    const roster = new Map((participants?.drivers ?? []).map(driver => [driver.idx, driver]))
+    const option = (source: AnalysisFileSource, driver: AnalysisDriverLapCatalog): AnalysisDriverOption => {
+      const entry = source === 'file1' ? roster.get(driver.driverIndex) : undefined
+      const teamId = driver.teamId ?? entry?.team_id ?? -1
+      return {
+        value: `${source}:${driver.driverIndex}`,
         label: driver.driverName || `Car ${driver.driverIndex}`,
-        source: 'file1' as const,
+        source,
         driverIndex: driver.driverIndex,
-      })),
-    },
-    ...(secondaryFile ? [{
-      label: 'Secondary File',
-      options: secondaryDriverCatalogs.map(driver => ({
-        value: `file2:${driver.driverIndex}`,
-        label: driver.driverName || `Car ${driver.driverIndex}`,
-        source: 'file2' as const,
-        driverIndex: driver.driverIndex,
-      })),
-    }] : []),
-  ], [primaryDriverCatalogs, secondaryDriverCatalogs, secondaryFile])
+        raceNumber: driver.raceNumber ?? entry?.race_number ?? -1,
+        teamId,
+        teamColor: entry?.livery_color || teamCatalog.colors.get(teamId) || FALLBACK_TEAM_COLOR,
+        restricted: driver.restricted ?? false,
+      }
+    }
+    // By race number within each file, as the title bar orders its picker; a
+    // car without one goes last.
+    const byNumber = (a: AnalysisDriverOption, b: AnalysisDriverOption) =>
+      (a.raceNumber < 0 ? 1 : 0) - (b.raceNumber < 0 ? 1 : 0) ||
+      a.raceNumber - b.raceNumber || a.driverIndex - b.driverIndex
+    return [
+      { label: 'Primary File', options: primaryDriverCatalogs.map(driver => option('file1', driver)).sort(byNumber) },
+      ...(secondaryFile ? [{
+        label: 'Secondary File',
+        options: secondaryDriverCatalogs.map(driver => option('file2', driver)).sort(byNumber),
+      }] : []),
+    ]
+  }, [participants?.drivers, primaryDriverCatalogs, secondaryDriverCatalogs, secondaryFile, teamCatalog])
   const flatDriverOptions = useMemo(
     () => driverOptionGroups.flatMap(group => group.options),
     [driverOptionGroups],
@@ -1786,14 +1815,14 @@ export default function AnalyzeScreen({
                     title="Lap A" showColorPicker={mapVisible}
                     driverValue={lapADriverValue} lapValue={lapAValue} driverOptions={driverOptionGroups}
                     onDriverChange={handleLapADriverSelect}
-                    driverStyles={lapSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
+                    driverStyles={driverSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
                     colorPicker={lapAColorPicker}
                   >{lapAFields}</AnalyzeComparisonGroup>
                   <AnalyzeComparisonGroup
                     title="Lap B" showColorPicker={mapVisible}
                     driverValue={lapBDriverValue} lapValue={lapBValue} driverOptions={driverOptionGroups}
                     onDriverChange={handleLapBDriverSelect}
-                    driverStyles={lapSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
+                    driverStyles={driverSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
                     colorPicker={lapBColorPicker}
                   >{lapBFields}</AnalyzeComparisonGroup>
                 </div>
@@ -1805,14 +1834,14 @@ export default function AnalyzeScreen({
                   <AnalyzeComparisonGroup
                     title="Current" showColorPicker={mapVisible} driverDisplayOnly
                     driverValue={currentDriverValue} lapValue={currentLapValue} driverOptions={driverOptionGroups}
-                    onDriverChange={noop} driverStyles={lapSelectStyles}
+                    onDriverChange={noop} driverStyles={driverSelectStyles}
                     colorPicker={currentColorPicker}
                   >{currentFields}</AnalyzeComparisonGroup>
                   <AnalyzeComparisonGroup
                     title="Compare" showColorPicker={mapVisible}
                     driverValue={compareDriverValue} lapValue={compareValue} driverOptions={driverOptionGroups}
                     onDriverChange={handleCompareDriverSelect}
-                    driverStyles={lapSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
+                    driverStyles={driverSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
                     colorPicker={compareColorPicker}
                   >{compareFields}</AnalyzeComparisonGroup>
                 </div>

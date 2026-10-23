@@ -123,12 +123,6 @@ internal enum class DataConsumer(
     /** Front and rear ride height for the Misc graphs. */
     RIDE_HEIGHT_HISTORY(DataRow.MOTION_EX, listOf(V6Data.RIDE_HEIGHT)),
 
-    /** ERS deployed and harvested this lap, and the fitted tyre, for the Trends graphs. */
-    LAP_ENERGY(
-        DataRow.STATUS,
-        listOf(V6Data.ERS_DEPLOYMENT, V6Data.ERS_HARVEST, V6Data.TYRE_STATE),
-    ),
-
     /** Every car's world position, for the dashboard's live map. */
     CAR_POSITIONS(DataRow.POSITIONS, listOf(V6Data.POSITION)),
 

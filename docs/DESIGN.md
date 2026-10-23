@@ -1,6 +1,6 @@
 # Track N Race — Architecture & Design
 
-_Last updated: 2026-08-06._
+_Last updated: 2026-10-21._
 
 Track N Race is an F1 24/25/26 telemetry suite consisting of five components in
 one repository:
@@ -11,10 +11,11 @@ one repository:
 | Node addon | `electron-frontend/node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `electron-frontend/src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Qt frontend | `qt_frontend/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
-| Android frontend | `android_frontend/` | Kotlin, Jetpack Compose Material 3, JNI | Physical-device steering-wheel dashboard with native TNRD recording and desktop pairing |
+| Android frontend | `android_frontend/` | Kotlin, Jetpack Compose Material 3, JNI | Phone/tablet dashboard, timing, charts, tyres and analysis; direct UDP, encrypted desktop pairing, on-device TNRD recording and playback |
 
 The two desktop apps have feature parity and read/write the same `.tnrd` files.
-The Android host provides a focused live dashboard and recording subset.
+The Android host runs either on its own (game UDP or a recording on the phone)
+or paired to a desktop as a second screen that follows the desktop's playback.
 
 ## 1. The shared engine (libtnrp)
 
@@ -34,7 +35,10 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   │                 duplicate rejection + dispatch to protocols/f1_24|25|26.cpp
   ├── TnrdWriter    .tnrd V6 recording (own disk thread)
   ├── TnrdReader    V1–V6 playback (index, per-lap blocks, binary stores)
-  ├── PairServer    discovery + WebSocket/auth/subscriptions/latest-state cache
+  ├── PairServer    WebSocket/approval/subscriptions/latest-state cache
+  │                 (+ PairDiscovery: DNS-SD `_tracknrace-pair._tcp`;
+  │                    PairCrypto: X25519/Ed25519/CPace + ChaCha20-Poly1305,
+  │                    shared with the Android client)
   └── Sink*         host seam (onRow/onBinary/onSeekFlush/onPairState)
 ```
 
@@ -77,16 +81,18 @@ Hot rows are only serialised to JSON when they must be recorded
 (`wantHotJson = recording || hotRowsAsJson` in `Engine::onDatagram`); with
 logging off the JSON form is never built at all.
 
-Three decoders exist and **must stay in lockstep** with the single C++ encoder:
+Four decoders exist and **must stay in lockstep** with the single C++ encoder:
 
 | Decoder | Used by |
 |---|---|
 | `tnrp::bin::decodeBatch` (BinaryRows.h) | Qt recorder (typed structs, in-process) |
 | `electron-frontend/src/main/binaryRows.ts` | Electron main (record lengths used by hidden-window history filtering) |
 | `electron-frontend/src/renderer/src/lib/decodeBinaryBatch.ts` | Electron renderer (full decode to row objects) |
+| `android_frontend/.../BinaryTelemetryDecoder.kt` | Android (direct JNI and paired WebSocket batches) |
 
 A schema drift here is silent corruption; treat any field change in
-`BinaryRows.h` as a three-file change.
+`BinaryRows.h` as a four-file change. The paired handshake checks
+`kBinaryRowsVersion` (PairCrypto.h); bump it with any layout change.
 
 ### 1.3 Parser: detection, override, duplicate rejection
 
@@ -284,6 +290,7 @@ overlay flows.
 | Electron main | single JS thread + libuv pool (XLSX export, player load) | No TS playback tick or hot-row pacing timer — the engine drives playback and addon-coalesced binary batches are forwarded directly. |
 | Electron renderer | store ingest outside React; rAF loops per chart | Zustand slices re-render only subscribed leaves; All Laps charts append directly from stable full-session arrays. |
 | Qt recorder | GUI thread + engine threads + playback load thread + export thread | `EngineSink` marshals rows to the GUI thread via queued signals. |
+| Android | main thread + engine threads (JNI) or OkHttp socket thread + source/playback/lap executors + raster workers | Hot rows decode on the producing thread into atomic slots; cold rows post to the main thread (§5.3). |
 
 ## 2. File format & shared conventions
 
@@ -631,39 +638,179 @@ only the panels. While in playback, live engine rows are dropped at
 
 ## 5. Android frontend (`android_frontend/`)
 
-The Android activity is a native Kotlin/Jetpack Compose Material 3 host. The
-existing Kotlin discovery, WebSocket pairing, scoped-storage, QR and JNI
-implementations remain native. Direct mode links `protocol_parser_library`,
-configures `tnrp::Engine` with `hotRowsAsJson=false`, and binds UDP to
-`0.0.0.0:20777`.
+A single-activity Kotlin/Jetpack Compose Material 3 app (`MainActivity` →
+`TrackNRaceApp`). It has no WebView or JavaScript runtime. Native code is limited
+to libtnrp behind one JNI library (`libtracknrace_android`,
+`cpp/native_bridge.cpp`). Discovery, QR scanning, scoped storage and preferences
+are plain Android code. Paired-mode protocol, security and product decisions
+are specified in `docs/ANDROID_PAIRED_MODE_DESIGN.md`; this section covers the
+host.
 
-Hot rows have no UI-thread queue or platform bridge. JNI and paired WebSocket
-callbacks decode their existing `BinaryRows.h` batches on the producing worker
-thread, retain only the latest immutable telemetry sample in an atomic slot,
-and never mutate Compose state. The visible dashboard samples that slot on the
-Compose display frame clock; equal values do not invalidate composition. Direct
-JNI delivery filters unused motion, positions and motion_ex records in C++.
-Cold rows are parsed off-thread and posted to Compose snapshot state on the main
-thread at their native low cadence. This separates ingest rate from display
-refresh and gives back-pressure constant memory.
+### 5.1 Sources
 
-The Compose frontend provides the responsive steering-wheel dashboard, tyre
-allocation, recording settings, direct/paired source selection, desktop
-discovery, QR/manual-code pairing, and open-source notices. Material You dynamic
-color is used on Android 12+ with light/dark Material 3 fallback schemes.
+`TelemetryController` owns the active source and switches between three of them.
+Only one runs at a time:
 
-The JNI bridge also exposes `Engine::setLogging`, so the full-page Settings
-screen can control the shared asynchronous TNRD V6 writer without
-reimplementing recording in Java. Recording is disabled by default; opt-in
-intent is persisted and sessions are staged under the app's external Documents
-directory (`Track N Race/`), which the Android host creates and verifies before
-enabling the native writer. An optional Storage Access Framework tree URI is
-persisted when the user chooses another folder; after libtnrp finalizes a file,
-a serial background worker moves it to that tree. Native `recording_error` rows
-are surfaced in the UI.
-`build-and-run.ps1` builds the Kotlin/Compose UI and NDK library with Gradle,
-assembles the debug APK, installs it through ADB, and launches the activity on
-a physical device.
+| Source | How rows arrive |
+|---|---|
+| **Direct** | `NativeTelemetry` → JNI → an in-process `tnrp::Engine` bound to `0.0.0.0:20777` (`hotRowsAsJson=false`, `binaryPlayback`, `sparseV6Playback`, `columnarV6History`, the desktop's engine mode). |
+| **Paired** | `PairedTelemetryClient` → OkHttp WebSocket to a desktop `PairServer`, through the encrypted `PairChannel`. |
+| **Recording on the phone** | The same JNI engine with no UDP listener: `openRecording(path)`, then play/pause/seek/speed/driver commands. It temporarily replaces the direct or paired source, which resumes on close. |
+
+- **JNI bridge.** One `Session` (sink + engine) exists at a time. Every call
+  takes its own `shared_ptr`, so a slow seek or lap read that finishes after
+  `stop()` still has a live engine. `AndroidSink` forwards only the packed
+  families the Kotlin decoder reads (telemetry, motion, motion_ex, positions).
+  It shrinks `playback_lap_blocks` to the paired-phone form
+  (`pairPhoneLapBlocks`) and turns a seek flush into `playback_seek_flush` plus
+  its rows. A V6 columnar (`V6H1`) history block is skipped, because the phone
+  reads history one lap at a time. While listening for the game, the engine row
+  mask is fixed (`kAndroidRowMask`), and Strategy is added only while the
+  Strategy tab is open (`nativeSetLiveStrategy`). Recording ignores the mask.
+- **Threads.** These are `tnrp-native-source` (start/stop, source switches),
+  `tnrp-playback` (ordered player commands; a newer seek id overtakes a running
+  seek through `nativeRequestSeek`) and `tnrp-playback-laps` (Analysis/Graphs lap
+  reads, kept off the player queue). Lap data and lap delta are served from the
+  phone's recording when one is open and from the desktop otherwise, through the
+  same `lap_data` / `lap_delta` reply shapes. A low-latency Wi-Fi lock is held
+  while the app is in the foreground.
+- **Lifecycle.** `onHostStop` suspends the source, or pauses a phone recording
+  where it is. `onHostStart` restarts it. The QR scanner's activity hand-off is
+  excluded, so pairing never races a restart. On Android 17+ the
+  `ACCESS_LOCAL_NETWORK` permission is requested at launch, on return and before
+  pairing. Without it, nothing listens or connects.
+
+### 5.2 Data requirements
+
+Each page states exactly the data it shows, and nothing else is loaded or sent
+(`DataRequirements.kt`):
+
+- `DataConsumer` is one piece of UI with a row-family mask (`DataRow`, libtnrp's
+  logical ids) and the V6 fields it needs (`V6Data`, libtnrp's `V6DataType`).
+- `PairedTelemetryPage` is the union of the consumers on one page or tab (the
+  four dashboard tabs, timing, tyres, each Graphs tab in a time variant and a
+  `*_LAPS` variant that adds lap progress, analysis, none). It also names the
+  `GraphFamily` histories kept while that page is subscribed.
+- `setActivePage` sends that union to whichever source is active: a paired
+  subscription, `nativeSetRequirements` for a phone recording, or live Strategy
+  for direct mode. It also enables or disables the graph histories. Pager tabs
+  call it as they settle, so swiping the dashboard to Map subscribes to car
+  positions only then.
+
+The table is hand-written for Android and deliberately not shared with
+Electron's `historyDependencies.ts`.
+
+In paired mode, the phone follows the desktop. During V6 playback it shows the
+driver chosen on the desktop (stamped as `player_idx` on projected rows) and that
+driver's `driver_restriction`, with null meaning *unknown*, never *public*. The
+app bar names that driver. A missing roster or restriction is re-requested every
+3 s, because the desktop caches both. Only a recording on the phone lets the
+phone pick the driver (the menu sheet's driver picker).
+
+### 5.3 Ingest and state (`TelemetryStore`)
+
+`TelemetryStore` is the thread boundary between libtnrp/OkHttp workers and
+Compose:
+
+- **Hot rows** never touch Compose state. `BinaryTelemetryDecoder` (a fourth
+  `BinaryRows.h` decoder, see §1.2) decodes a whole batch on the producing thread
+  and publishes the newest telemetry and all-car positions into `AtomicReference`
+  slots (`hot`, `mapPositions`). The playback transport and the dashboard lap
+  comparison also use atomic slots. Visible composables read them on the display
+  frame clock, so playing or receiving recomposes nothing beyond the values that
+  changed.
+- **Graph samples.** When a Graphs or Tyres-charts tab is subscribed, the same
+  decode also fills `RowSamples` for every hot record, not only the newest.
+  These are handed whole to the main thread and appended to that family's
+  `SampleHistory` (columnar, session-time ordered).
+- **Cold rows** are parsed off the UI thread and applied to snapshot state on
+  the main thread at their native cadence. V6 playback arrives as field patches:
+  hot samples and timing/tyre-status rows merge into the last known value, while
+  a complete row replaces it. A driver switch blanks the driver-scoped state
+  before the desktop restates it. `participants_reset` and a local seek reset
+  the session, but a reconstructed roster sent just before a reset is kept.
+  Strategy rows are whole snapshots. After a seek, the previous snapshot stays
+  dimmed until the rebuilt one arrives.
+- Derived state that is shown at several places, such as the selected driver's
+  name, restriction, cold labels and the tyre display, is read through
+  `derivedStateOf(structuralEqualityPolicy())`. This keeps the app root from
+  recomposing on every timing row.
+
+### 5.4 Screens
+
+Bottom navigation has five destinations: **Dashboard**, **Timing**, **Charts**,
+**Tyres** and **Analysis**. Settings, Pairing and Licenses are secondary screens
+reached from the app-bar menu sheet (`AppMenuSheet`, which shows the current
+source and driver and the action that fits). Pages are hosted in an
+`AnimatedContent` fade-through. An outgoing page freezes its state and stops its
+work as soon as it becomes inactive.
+
+- **Dashboard** is a pager with four tabs:
+  - *Drive*: speed/gear/RPM lights, pedals, tyre temperatures and wear, ERS and
+    fuel, lap progress and gaps.
+  - *Map*: live all-car track map on the shared track outlines.
+  - *Damage*: the shared `assets/car/f1-car-wireframe.svg`, parsed into zoned
+    paths by `CarWireframe.kt`.
+  - *Strategy* (`DashboardStrategy.kt`): a Defend/Attack plan picker, both plans
+    as race-distance rails, the current stint's pace against the plan, and
+    position/gap stats. It fits on one screen in either orientation.
+- **Timing**: the timing tower with tyre compound and age, with a one-line row
+  option.
+- **Charts** (`GraphsPage.kt`): Power, Inputs, Speed, Misc and Trends tabs that
+  mirror the desktop graphs. The window selector uses the desktop's values: last
+  N seconds, a lap by distance with an optional faded comparison lap, stint, or
+  all laps. One global window applies, with optional per-chart overrides.
+  `GraphsController` backfills recorded laps behind the playback cursor with
+  `request_lap_data`, a few requests in flight at a time so the newest laps
+  arrive first. Trends computes per-lap ERS totals from the counters the game
+  resets at the line.
+- **Tyres**: *Allocation* (the available and fitted sets) and *Charts* (tyre
+  temperature, brake temperature and wear history, on the same chart machinery).
+- **Analysis**: *Graph*, *Split* and *Map* views of the lap under the playback
+  cursor, or a fixed Lap A / Lap B pair, against a chosen lap. These are
+  configured from a bottom sheet. Each lap is fetched once with only the channels
+  drawn, and lap delta is the library's `LapDelta`.
+- **Settings**: Appearance (theme, one-line timing, Wheel display), Telemetry
+  (source, pairing, forget desktop), Recording (record sessions, folder), and
+  About (licenses, rendered per component from `res/raw`).
+
+**Charts render without decimation.** `GraphRaster.kt` draws each chart's lines
+on `Dispatchers.Default` into a pair of bitmaps, and the bitmap on screen is
+never drawn over. New samples extend the off-screen bitmap, copying only the
+strip that changed since that bitmap was last current. Equal render requests
+reuse the existing raster. Analysis charts and the Analysis map draw from
+complete lap columns in the same way.
+
+**Layout.** Material 3 width classes (`ui/WindowWidth.kt`) drive the layout. A
+device whose shorter side is at least 600 dp counts as a tablet. In landscape on
+a phone, the screen becomes a steering-wheel display by default: the app bars
+hide until a tap and fade again after 3 s, and the dashboard rearranges into
+columns. On a tablet, landscape keeps its bars unless the *Wheel display*
+setting is on. Material You dynamic colour is used on Android 12+, with light
+and dark fallback schemes.
+
+### 5.5 Recording and recordings
+
+- **Writing.** The JNI bridge exposes `Engine::setLogging`, so the shared
+  asynchronous TNRD V6 writer records direct sessions; nothing is reimplemented
+  in Kotlin. Recording is off by default. Files are staged in the app's external
+  Documents directory (`Track N Race/`). When a Storage Access Framework tree is
+  chosen, a serial worker moves each finalised file there. `recording_error`
+  rows appear in the UI.
+- **Library and player.** `RecordingLibrary` scans the staging folder, the
+  chosen recording tree and any extra folders added through the system picker,
+  with persisted read grants. Duplicates are removed by name, size and time.
+  `nativeSummarize` reads each file's index header (track, session, protocol,
+  start time, duration, drivers) without loading the file. `RecordingsSheet`
+  lists recordings by day, newest first. A content-URI file is handed to the
+  engine as `/proc/self/fd/N` while its descriptor is held open. Older V2–V5
+  files need a temp directory, so `TMPDIR` is set to the app cache.
+- **Player** (`PlayerBar.kt`). While closed, the player is a strip on the
+  navigation bar (or along the screen edge in landscape) with a progress line
+  and play/pause. Opened, it adds the lap picker, the clock, a scrubber with
+  thinned lap ticks (one seek on release, not one per frame), the desktop's
+  speeds, ±5 s skip and close. The clock is sampled on the frame clock and drawn
+  rather than composed.
 
 ## 6. Build & packaging
 
@@ -680,11 +827,15 @@ a physical device.
 - **Native recorder**: standalone CMake project; Qt 6 preferred (enables
   QCustomPlot OpenGL), Qt 5 fallback (software rendering); Release + LTO/IPO
   by default, optional `-march=native`; `TNRP_USE_QT=ON`.
-- **Android**: Kotlin/Jetpack Compose Material 3 Gradle/AGP application with an
-  NDK CMake build; arm64 debug APK installed and launched on a physical device by
-  `android_frontend/build-and-run.ps1`.
+- **Android**: Kotlin/Jetpack Compose Material 3 Gradle (wrapper checked in)
+  application with an NDK 27 CMake build. It uses compileSdk/targetSdk 37,
+  minSdk 26 and arm64-v8a, and release builds are minified.
+  `build-and-run.ps1` / `.sh` installs and launches the debug APK on a physical
+  device. `build-and-run-release.ps1` / `.sh` does the same for the release
+  build type, signed with the debug key for local install only.
 - **Library dependencies** are FetchContent-pinned (glaze v7.8.3, zlib v1.3.2,
-  Zstandard v1.5.7, libxlsxwriter v1.2.4) with parent-project reuse guards (`if(NOT TARGET …)`);
+  Zstandard v1.5.7, libxlsxwriter v1.2.4, libsodium 1.0.20 via libsodium-cmake,
+  plus CPace for pairing) with parent-project reuse guards (`if(NOT TARGET …)`);
   a shadowed `FindZLIB.cmake` points libxlsxwriter at the fetched zlib.
 - **Release driver**: root `build.ps1` bumps the version
   (minor/major/overhaul), builds the native recorder, then

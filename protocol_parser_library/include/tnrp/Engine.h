@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "tnrp/Config.h"
+#include "tnrp/LapMeasures.h"
 #include "tnrp/Parser.h"
 #include "tnrp/PairServer.h"
 #include "tnrp/Sink.h"
@@ -366,6 +367,17 @@ private:
     // The row when `force` or when it differs from the last one sent; empty
     // when no car is subscribed.
     std::string lapHistoryRowLocked(bool force);
+    // The streamed driver's per-lap ERS and fuel use (tnrp/LapMeasures.h): the
+    // player's from live status and lap rows, the selected driver's from the
+    // recording in playback.
+    LiveLapMeasures   liveLapMeasures_;
+    uint64_t          sentLiveLapMeasuresRevision_ = 0;
+    bool              sentLiveLapMeasuresMguh_ = false;
+    bool              playbackHasMguh_ = false;
+    std::string       lastLapMeasuresJson_;
+    float             nextLapMeasuresCheck_ = std::numeric_limits<float>::infinity();
+    // The row when `force` or when it differs from the last one sent.
+    std::string lapMeasuresRowLocked(bool force);
     std::string lastStrategyJson_;
     struct LiveJsonHistoryRow {
         float sessionTime{};

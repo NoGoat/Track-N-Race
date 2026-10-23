@@ -62,5 +62,8 @@ for i in "${!ARTIFACTS[@]}"; do
     cp "${ARTIFACTS[$i]}" "$RELEASE_DIR/${ARTIFACT_NAMES[$i]}"
 done
 
+# Electron also ships zipped, beside the DMG.
+(cd "$RELEASE_DIR" && zip -q "Track-N-Race-Electron-MacOS.zip" "Track-N-Race-Electron-MacOS.dmg")
+
 echo
 echo "macOS release complete: $RELEASE_DIR"

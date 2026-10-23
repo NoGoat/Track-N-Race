@@ -29,8 +29,8 @@ class TrendTyreChart;
 //
 // Completed laps and the stint start come from the engine's driver lap
 // history push (MainWindow claims the car while the page is shown); per-lap
-// ERS and fuel from the model's status history; tyre wear from its damage
-// history. MainWindow feeds the latest status, tyre-set and lap rows.
+// ERS and fuel from the engine's lap_measures push; tyre wear from the model's
+// damage history. MainWindow feeds the latest status, tyre-set and lap rows.
 class TrendsPage : public QWidget {
     Q_OBJECT
 
@@ -42,12 +42,12 @@ public:
     int driver() const { return driver_; }
     // A pushed lap history; one for another car is ignored.
     void setLapHistory(const tnrp::DriverLapHistoryRow& history);
-    // A new claim's row may still describe another car or cursor.
+    // The engine's per-lap ERS and fuel; one for another car is ignored.
+    void setLapMeasures(const tnrp::LapMeasuresRow& measures);
+    // A new claim's rows may still describe another car or cursor.
     void clearLapHistory();
     // Latest rows (nullptr = none yet).
     void update(const StatusRow* status, const tnrp::TyreSetsRow* tyreSets, const LapRow* lap);
-    // Recharge is MGU-K plus MGU-H only where the regulations have an MGU-H.
-    void setHasMguh(bool hasMguh);
     void setTyreLifeMode(bool life);
 
     void setPlaybackMode(bool on, float currentTime = 0.0f);
@@ -82,7 +82,6 @@ private:
     TrendsLayout layout_;
     TrendsChartLayout chartLayout_ = TrendsChartLayout::Separate;
     bool life_ = true;
-    bool hasMguh_ = true;
     bool playback_ = false;
     float currentTime_ = 0.0f;
     bool dirty_ = false;
@@ -92,7 +91,7 @@ private:
     std::optional<StatusRow> status_;
     std::optional<tnrp::TyreSetsRow> tyreSets_;
     std::optional<int> currentLap_;
-    StintStatusScanner scanner_;
+    std::optional<tnrp::LapMeasuresRow> measures_;
 
     QWidget* cardsBar_ = nullptr;
     QFrame* cardsDivider_ = nullptr;

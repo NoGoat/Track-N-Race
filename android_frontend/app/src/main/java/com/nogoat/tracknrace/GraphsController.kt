@@ -306,25 +306,18 @@ internal class GraphsController(
     }
 
     /**
-     * The Trends page's completed laps: from the recording's lap list and
-     * each lap's recorded ERS counters in playback, from the lap rows and
-     * held status samples live. Validity is known live only.
+     * The Trends page's completed laps: from the recording's lap list in
+     * playback, from the lap rows live; each lap's ERS use as the engine
+     * measured it. Validity is known live only.
      */
     fun trendData(): TrendData {
         val catalog = store.playbackCatalog
         // Read so a caller deriving state from this follows each lap's end.
         store.playbackSelectedLap
         lapsVersion
-        val hasMguh = store.cold.hasMguh
+        val measures = store.lapMeasures
         val stintStart = store.stint.start
-        return if (catalog.active) playbackTrends(catalog, hasMguh, stintStart) else liveTrends(hasMguh, stintStart)
-    }
-
-    /** The completed recorded laps the Trends page reads ERS counters from, oldest first; all stay held. */
-    fun trendLaps(): List<Int> {
-        val catalog = store.playbackCatalog
-        if (!catalog.active) return emptyList()
-        return completedLaps(catalog).map { it.lapNumber }
+        return if (catalog.active) playbackTrends(catalog, measures, stintStart) else liveTrends(measures, stintStart)
     }
 
     private fun completedLaps(catalog: PlaybackCatalog): List<PlaybackLapInfo> {
@@ -337,20 +330,17 @@ internal class GraphsController(
             .sortedBy { it.startSessionTime }
     }
 
-    private fun playbackTrends(catalog: PlaybackCatalog, hasMguh: Boolean, stintStart: Double): TrendData {
-        val energy = families.getValue(GraphFamily.TREND_ENERGY).laps
+    private fun playbackTrends(catalog: PlaybackCatalog, measures: Map<Int, LapMeasure>, stintStart: Double): TrendData {
         val laps = completedLaps(catalog).map { lap ->
-            val trace = energy[lap.lapNumber]
-            val harvestK = trace?.let { lapTotal(it, GraphField.TREND_HARVEST_MGUK_J) }
-            val harvestH = if (hasMguh) trace?.let { lapTotal(it, GraphField.TREND_HARVEST_MGUH_J) } else 0.0
+            val measure = measures[lap.lapNumber]
             TrendLap(
                 lap = lap.lapNumber,
                 startTime = lap.startSessionTime,
                 endTime = lap.endSessionTime,
                 lapTimeMs = lap.lapTimeMs,
                 valid = null,
-                deployedMj = trace?.let { lapTotal(it, GraphField.ERS_DEPLOYED_J) }?.div(1e6),
-                harvestedMj = if (harvestK != null && harvestH != null) (harvestK + harvestH) / 1e6 else null,
+                deployedMj = measure?.deployedMj,
+                harvestedMj = measure?.harvestedMj,
             )
         }
         // The stint by the fitted compound, then by the fitting itself: from the
@@ -366,36 +356,26 @@ internal class GraphsController(
         return TrendData(laps, stintLap, catalog.fastestLap)
     }
 
-    private fun liveTrends(hasMguh: Boolean, stintStart: Double): TrendData {
-        val history = store.graphHistories.getValue(GraphFamily.TREND_ENERGY)
-        history.version
-        val tracks = history.liveLaps().sortedBy { it.startTime }
+    private fun liveTrends(measures: Map<Int, LapMeasure>, stintStart: Double): TrendData {
+        // The tyre wear history the page holds also follows the lap rows.
+        val wear = history(GraphFamily.TYRE_WEAR)
+        wear.version
+        val tracks = wear.liveLaps().sortedBy { it.startTime }
         val laps = ArrayList<TrendLap>()
         for (index in 0 until tracks.size - 1) {
             val track = tracks[index]
             if (track.lapMs <= 0) continue
-            val end = tracks[index + 1].startTime
-            val from = history.indexAtOrBefore(track.startTime) + 1
-            val until = history.indexAtOrBefore(end - 1e-6) + 1
-            fun total(field: GraphField): Double? {
-                if (until <= from) return null
-                val times = DoubleArray(until - from) { history.time(from + it) }
-                val values = FloatArray(until - from) { history.value(field, from + it) }
-                return lapTotal(times, values, 0, times.size, track.startTime, end)
-            }
-            val harvestK = total(GraphField.TREND_HARVEST_MGUK_J)
-            val harvestH = if (hasMguh) total(GraphField.TREND_HARVEST_MGUH_J) else 0.0
+            val measure = measures[track.lapNumber]
             laps += TrendLap(
                 lap = track.lapNumber,
                 startTime = track.startTime,
-                endTime = end,
+                endTime = tracks[index + 1].startTime,
                 lapTimeMs = track.lapMs,
                 valid = !track.invalid,
-                deployedMj = total(GraphField.ERS_DEPLOYED_J)?.div(1e6),
-                harvestedMj = if (harvestK != null && harvestH != null) (harvestK + harvestH) / 1e6 else null,
+                deployedMj = measure?.deployedMj,
+                harvestedMj = measure?.harvestedMj,
             )
         }
-        val wear = history(GraphFamily.TYRE_WEAR)
         val fitted = listOf(stintStart, if (wear.size > 0) spanStart(GraphWindow.STINT, wear) else Double.NaN)
             .filter { it.isFinite() }.maxOrNull()
         val stintLap = if (fitted != null) {

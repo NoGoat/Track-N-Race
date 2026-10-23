@@ -150,27 +150,36 @@ Reuse the existing pipelines; the page adds no transport of its own.
   with `stint_start_lap`. The engine pushes it when Session History changes
   (live), and on load, seek and each lap end (playback). The page claims the
   lap-history car through `lib/lapHistoryCar.ts`, shared with the laps dialog.
-- **Per-lap ERS and fuel:** `lib/trendMeasures.ts`, an incremental scan of the
-  full-session status history (the existing All Laps history pipeline) against
-  the store's lap boundaries. A counter drop closes the lap whose line is
-  nearest; MGU-K and MGU-H are tracked separately and summed per lap. Fuel is
-  the difference at the two lap lines, discarded if fuel rises in between. The
-  same code runs live and in playback.
+- **Per-lap ERS and fuel:** the engine's `lap_measures` push
+  (`tnrp/LapMeasures.h`), one row for the streamed driver with every completed
+  lap's ERS used, ERS recharged and fuel used. Each lap is read at its own two
+  lines, from the samples within 2 s of each: the counter's value before its
+  largest fall there is the lap's total, so a dip elsewhere in the lap (a
+  flashback's restored state can sit a few kJ below the last sample before its
+  target) never stands for the lap. Recharge is
+  MGU-K plus MGU-H where the regulations have an MGU-H. Fuel is the mass at the
+  start line less the mass at the finish line; a negative difference is not a
+  measurement. Live, the engine reads the player's status and lap rows and
+  keeps only the few seconds of samples a pending line needs; a flashback
+  rewinds it. In V6 playback it reads each driver's samples around their lap
+  lines from the recording on first use. The row is pushed when a lap
+  completes, on load, seek and driver change, and on a lap-history claim.
+  Electron, Qt and Android only look laps up in it.
 - **Wear/Lap, tyre, damage:** current `tyreSets`, `status` and `damage` rows.
 - **Tyre graph:** the Tyres page wear chart over the store's damage history,
   cropped by Stint Laps / All Laps with the Session History stint start.
 
-AppShell requests full-session status and damage history while the page is
-open, regardless of the title-bar chart window.
+AppShell requests full-session damage history while the page is open,
+regardless of the title-bar chart window. The page needs no status history.
 
 ### 6.1 Qt port
 
 `TrendsPage` mirrors `TrendPanel.tsx`: the same summary cards, the Separate,
 Combined, Combined (without Recharge) and Bars chart layouts
 (`pageLayouts/trends`, Settings ▸ Layout ▸ Trends), each graph's Stint Laps /
-All Laps selector, and Edit Layout (`trendsLayout/*`). `TrendMeasures` is a
-port of `lib/trendMeasures.ts` over the model's status history, whose
-samples now carry `ers_deployed_j`. `TrendChart` is the Qt `TrendChart`
+All Laps selector, and Edit Layout (`trendsLayout/*`). `TrendMeasures` holds
+the lap boundaries and looks laps up in the engine's `lap_measures` row.
+`TrendChart` is the Qt `TrendChart`
 (per-lap lines with round lap dots, one scale per unit, stacked bars) and
 `TrendTyreChart` the Tyres page wear chart scoped by the Session History
 stint. MainWindow claims the streamed driver's lap history while the page is

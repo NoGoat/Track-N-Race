@@ -15,6 +15,7 @@
 
 #include "tnrp/control_rows.h"
 #include "tnrp/LapDelta.h"
+#include "tnrp/LapMeasures.h"
 #include "tnrp/Strategy.h"
 #include "tnrp/TnrdFormat.h"
 
@@ -209,6 +210,9 @@ public:
     // One car's completed laps ending at or before `throughTime`. V6 only;
     // other formats return no laps.
     DriverLapHistoryRow driverLapHistory(int driver, float throughTime) const;
+    // That car's ERS and fuel use on each of the same laps (tnrp/LapMeasures.h).
+    // V6 only; other formats return no laps.
+    LapMeasuresRow lapMeasures(int driver, float throughTime, bool hasMguh) const;
     // V6 recordings keep no fastest_lap rows. The holder at `t` is derived
     // from the lap summaries: the fastest valid completed lap by then. Returns
     // false for other formats, whose recorded rows already carry it; car_idx
@@ -309,6 +313,10 @@ private:
     struct V6FastestLapChange { float time; int car; int lapMs; };
     mutable std::optional<std::vector<V6FastestLapChange>> v6FastestLapChanges_;
     mutable std::optional<std::vector<float>> v6LapEnds_;
+    // Each car's measured laps, read from the samples around its lap lines on
+    // first use: lap number -> totals, with the lap's logical end time.
+    struct V6MeasuredLap { float logicalEnd; LapTotals totals; };
+    mutable std::array<std::optional<std::map<int, V6MeasuredLap>>, 24> v6LapMeasures_{};
     bool v6FocusStatusRows(float t, std::vector<detail::V4TimedRow>& out);
     FileOffset  tempFileSize_ = 0;
     float       startTime_   = 0.0f;

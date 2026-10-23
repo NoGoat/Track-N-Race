@@ -40,9 +40,6 @@ internal enum class GraphFamily(val row: RowFamily) {
 
     /** Misc: front and rear ride height. */
     RIDE_HEIGHT(RowFamily.MOTION_EX),
-
-    /** Trends: the per-lap ERS deployed and harvested counters. */
-    TREND_ENERGY(RowFamily.STATUS),
     ;
 
     /** This family's fields, in column order. */
@@ -92,9 +89,6 @@ internal enum class GraphField(val family: GraphFamily, val key: String, val sou
     G_LONG(GraphFamily.G_FORCE, "g_long"),
     FRONT_HEIGHT(GraphFamily.RIDE_HEIGHT, "front_aero_height_mm"),
     REAR_HEIGHT(GraphFamily.RIDE_HEIGHT, "rear_aero_height_mm"),
-    ERS_DEPLOYED_J(GraphFamily.TREND_ENERGY, "ers_deployed_j"),
-    TREND_HARVEST_MGUK_J(GraphFamily.TREND_ENERGY, "ers_harvested_mguk_j"),
-    TREND_HARVEST_MGUH_J(GraphFamily.TREND_ENERGY, "ers_harvested_mguh_j"),
     ;
 
     /** This field's column within its family. */

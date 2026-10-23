@@ -1102,6 +1102,7 @@ void TnrdReader::close() {
     for (auto& first : v6FirstTyreSets_) first.reset();
     v6FastestLapChanges_.reset();
     v6LapEnds_.reset();
+    for (auto& measures : v6LapMeasures_) measures.reset();
     playbackRowMask_ = playbackOutputRowMask_;
     std::fprintf(stderr, "[close-trace] resetting indexed archive\n");
     std::fflush(stderr);
@@ -2182,6 +2183,71 @@ DriverLapHistoryRow TnrdReader::driverLapHistory(int driver, float throughTime) 
     return out;
 }
 
+namespace {
+// A number field of a V6 row, NaN when the row does not carry it.
+double v6RowNumber(const std::string& json, std::string_view key) {
+    const size_t at = json.find(key);
+    if (at == std::string::npos) return std::numeric_limits<double>::quiet_NaN();
+    const char* value = json.c_str() + at + key.size();
+    char* end = nullptr;
+    const double parsed = std::strtod(value, &end);
+    return end == value ? std::numeric_limits<double>::quiet_NaN() : parsed;
+}
+} // namespace
+
+LapMeasuresRow TnrdReader::lapMeasures(int driver, float throughTime, bool hasMguh) const {
+    LapMeasuresRow out;
+    out.car_idx = driver;
+    auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+    if (!v6 || driver < 0 || driver >= 24) return out;
+    auto& measured = v6LapMeasures_[static_cast<size_t>(driver)];
+    if (!measured) {
+        measured.emplace();
+        // The laps driverLapHistory lists; a reused lap number keeps its latest attempt.
+        std::map<uint32_t, detail::V6LapSummary> byLap;
+        for (const auto& lap : v6->driverLapSummaries(static_cast<uint8_t>(driver)))
+            if (lap.phase == detail::V6Phase::Race && lap.isCompleted && lap.lapTimeMs != 0 &&
+                lap.lapNumber != 0)
+                byLap[lap.lapNumber] = lap;
+        // Each line is read once: a lap usually starts where the one before ended.
+        std::map<float, LapLineReading> lines;
+        for (const auto& [_, lap] : byLap) {
+            lines[lap.startSessionTime];
+            lines[lap.endSessionTime];
+        }
+        static const std::vector<uint8_t> types{
+            static_cast<uint8_t>(detail::V6DataType::Fuel),
+            static_cast<uint8_t>(detail::V6DataType::ERSHarvest),
+            static_cast<uint8_t>(detail::V6DataType::ERSDeployment)};
+        std::vector<detail::V6TimedRow> rows;
+        std::vector<LapLineSample> samples;
+        std::string ignored;
+        for (auto& [line, reading] : lines) {
+            if (!v6->readDriverRangeTypes(static_cast<uint8_t>(driver), line - kLapLineWindowS,
+                                          line + kLapLineWindowS, types, rows, &ignored))
+                continue;
+            // Each type is its own patch: a row fills only its own fields.
+            samples.clear();
+            samples.reserve(rows.size());
+            for (const auto& row : rows)
+                samples.push_back({row.sessionTime,
+                                   v6RowNumber(row.json, "\"ers_deployed_j\":"),
+                                   v6RowNumber(row.json, "\"ers_harvested_mguk_j\":"),
+                                   v6RowNumber(row.json, "\"ers_harvested_mguh_j\":"),
+                                   v6RowNumber(row.json, "\"fuel_kg\":")});
+            reading = readLapLine(samples, line);
+        }
+        for (const auto& [lapNumber, lap] : byLap)
+            (*measured)[static_cast<int>(lapNumber)] = {
+                v6->logicalTime(lap.phase, lap.endSessionTime),
+                lapTotals(lap.startSessionTime, lap.endSessionTime,
+                          lines[lap.startSessionTime], lines[lap.endSessionTime])};
+    }
+    for (const auto& [lapNumber, lap] : *measured)
+        if (lap.logicalEnd <= throughTime) out.laps.push_back(lapMeasure(lapNumber, lap.totals, hasMguh));
+    return out;
+}
+
 void TnrdReader::projectV6Row(
     uint8_t sourceType, float sessionTime, std::string_view json,
     std::vector<std::pair<uint8_t, std::string>>& out,
@@ -2485,6 +2551,11 @@ std::string TnrdReader::lapBlocksMessage() const {
                 catalog.driverIndex = driver.vehicleIndex;
                 catalog.driverName = driver.driverName;
                 catalog.isPlayer = driver.isPlayer;
+                catalog.raceNumber = driver.raceNumber;
+                catalog.teamId = driver.teamId;
+                catalog.restricted = !driver.isPlayer &&
+                    v6->telemetrySettingAt(driver.vehicleIndex, std::numeric_limits<float>::max()) !=
+                        detail::TelemetrySetting::Public;
                 std::map<int, detail::V6LapSummary> lapsByNumber;
                 for (const auto& lap : v6->driverLapSummaries(driver.vehicleIndex)) {
                     if (lap.phase != detail::V6Phase::Race || lap.lapNumber == 0) continue;

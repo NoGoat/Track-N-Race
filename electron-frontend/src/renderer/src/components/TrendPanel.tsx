@@ -10,7 +10,6 @@ import { ChartCoordinatesProvider, lapStartSessionTime, useLapBoundaries } from 
 import { ChartCursorSyncProvider } from '../lib/chartCursorSync'
 import { DATA_ROW } from '../lib/historyDependencies'
 import { claimLapHistoryCar } from '../lib/lapHistoryCar'
-import { StintStatusScanner, measureLaps } from '../lib/trendMeasures'
 import Select from '../lib/AnimatedSelect'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
@@ -19,7 +18,7 @@ import { StatCard } from './LiveStats'
 import type { DensityMode, YAxisBehavior } from '../lib/graphSections'
 import type { TrendsLayout, TrendsPageLayout } from '../app/appConfig'
 import type { ColumnView } from '../lib/columnStore'
-import type { DamageRow } from '../types'
+import type { DamageRow, LapMeasure } from '../types'
 
 const missing = '—'
 const lapX = (value: number) => `L${Math.round(value)}`
@@ -115,11 +114,10 @@ export default memo(function TrendPanel({ isDark, compact, layout, visible, wear
   const currentLap = useTelemetryStore(s => s.lap?.lap_num ?? null)
   const status = useTelemetryStore(s => s.status)
   const tyreSets = useTelemetryStore(s => s.tyreSets)
-  const statusHistory = useTelemetryStore(s => s.statusHistory)
-  // Bumped when a backfill rewrites rows already held, such as V6 ERS fields
-  // filled into earlier timestamps after a seek.
+  const pushedMeasures = useTelemetryStore(s => s.lapMeasures)
+  // Bumped when a backfill rewrites rows already held, such as V6 damage
+  // fields filled into earlier timestamps after a seek.
   const historyRevision = useTelemetryStore(s => s.analyzeLapRevision)
-  const hasMguh = useTelemetryStore(s => s.protocolStatus?.capabilities.hasMguh ?? false)
   const boundaries = useLapBoundaries(true)
   const [lapRange, setLapRange] = useAppConfig<LapRange>('trendsLapTimeRange', 'stint')
   const [deploymentRange, setDeploymentRange] = useAppConfig<LapRange>('trendsErsUsageRange', 'stint')
@@ -146,20 +144,16 @@ export default memo(function TrendPanel({ isDark, compact, layout, visible, wear
   const stintLaps = useMemo(() => allLaps.filter(lap => lap.lap_num >= stintStart), [allLaps, stintStart])
   const lapsFor = (range: LapRange) => range === 'all' ? allLaps : stintLaps
 
-  // The status history grows in place every frame; scan only what is new, and
-  // start again when held rows were rewritten. Rendering is driven by the
-  // `status` subscription above. Not memoized on the history: in All Laps mode
-  // it is the table's live view, whose identity never changes as it grows.
-  const [scanner] = useState(() => new StintStatusScanner())
-  const scan = scanner.scanFor(statusHistory, historyRevision)
-  const measures = measureLaps(scan, statusHistory, boundaries, allLaps.map(lap => lap.lap_num), hasMguh)
+  // Each completed lap's ERS and fuel, measured by the engine.
+  const measures = useMemo(() => new Map<number, LapMeasure>(pushedMeasures?.car_idx === driver
+    ? pushedMeasures.laps.map(lap => [lap.lap_num, lap]) : []), [pushedMeasures, driver])
 
   const fastestLap = stintLaps.reduce<(typeof stintLaps)[number] | null>((best, lap) =>
     lap.lap_valid && lap.lap_time_ms > 0 && (best === null || lap.lap_time_ms < best.lap_time_ms) ? lap : best, null)
   const previous = stintLaps.at(-1) ?? null
-  const deployedAverage = average(stintLaps.map(lap => measures.get(lap.lap_num)?.deployedMj ?? null))
-  const harvestedAverage = average(stintLaps.map(lap => measures.get(lap.lap_num)?.harvestedMj ?? null))
-  const fuelAverage = average(stintLaps.map(lap => measures.get(lap.lap_num)?.fuelKg ?? null))
+  const deployedAverage = average(stintLaps.map(lap => measures.get(lap.lap_num)?.ers_deployed_mj ?? null))
+  const harvestedAverage = average(stintLaps.map(lap => measures.get(lap.lap_num)?.ers_harvested_mj ?? null))
+  const fuelAverage = average(stintLaps.map(lap => measures.get(lap.lap_num)?.fuel_used_kg ?? null))
   const wearPerLap = tyreSets?.sets.find(set => set.fitted)?.avg_wear_per_lap
 
   // Fastest marks the quickest valid lap among those the graph shows.
@@ -175,32 +169,30 @@ export default memo(function TrendPanel({ isDark, compact, layout, visible, wear
   }, [lapPointLaps, boundaries])
 
   // The page renders on every status frame, but the combined points change only
-  // when a lap's measures or the tyre history do: rebuild them only then, so the
-  // chart is not handed a new dataset every frame. The tyre history can grow in
-  // place, so it is keyed by its extent rather than its identity.
-  const measuresKey = allLaps.map(lap => { const m = measures.get(lap.lap_num); return `${m?.deployedMj}:${m?.harvestedMj}` }).join('|')
+  // when the tyre history does: rebuild them only then, so the chart is not
+  // handed a new dataset every frame. The tyre history can grow in place, so it
+  // is keyed by its extent rather than its identity.
   const damageKey = damageHistory && damageHistory.length > 0
     ? `${damageHistory.length}:${damageHistory.time(0)}:${damageHistory.time(damageHistory.length - 1)}:${historyRevision}`
     : ''
-  const heldMeasures = useHeldByKey({ measures }, measuresKey)
   const deploymentLaps = lapsFor(deploymentRange)
-  const deploymentPoints = useMemo(() => energyPoints('deployedMj', deploymentLaps, heldMeasures.measures, boundaries),
-    [deploymentLaps, heldMeasures, boundaries])
+  const deploymentPoints = useMemo(() => energyPoints('ers_deployed_mj', deploymentLaps, measures, boundaries),
+    [deploymentLaps, measures, boundaries])
   const rechargeLaps = lapsFor(rechargeRange)
-  const rechargePoints = useMemo(() => energyPoints('harvestedMj', rechargeLaps, heldMeasures.measures, boundaries),
-    [rechargeLaps, heldMeasures, boundaries])
+  const rechargePoints = useMemo(() => energyPoints('ers_harvested_mj', rechargeLaps, measures, boundaries),
+    [rechargeLaps, measures, boundaries])
   const heldDamage = useHeldByKey({ rows: damageHistory }, damageKey)
   const combinedLaps = lapsFor(combinedRange)
   const combinedFirstLap = combinedRange === 'all' ? allLaps[0]?.lap_num ?? 1 : stintStart
-  const combinedLapPoints = useMemo(() => combined ? buildLapEndPoints(combinedLaps, heldMeasures.measures) : NO_POINTS,
-    [combined, combinedLaps, heldMeasures])
+  const combinedLapPoints = useMemo(() => combined ? buildLapEndPoints(combinedLaps, measures) : NO_POINTS,
+    [combined, combinedLaps, measures])
   const combinedTyrePoints = useMemo(() => combined
     ? buildTyreSamples(combinedLaps, combinedFirstLap, currentLap, boundaries, heldDamage.rows, wearMode)
     : NO_POINTS,
   [combined, combinedLaps, combinedFirstLap, currentLap, boundaries, heldDamage, wearMode])
   const combinedAxes = useCombinedAxes(combined ? combinedLapPoints : null, combinedTyrePoints, showRecharge, colors.lapTime, tyreYAxis)
-  const barPoints = useMemo(() => bars ? buildBarPoints(combinedLaps, heldMeasures.measures, boundaries, heldDamage.rows, wearMode) : NO_POINTS,
-    [bars, combinedLaps, heldMeasures, boundaries, heldDamage, wearMode])
+  const barPoints = useMemo(() => bars ? buildBarPoints(combinedLaps, measures, boundaries, heldDamage.rows, wearMode) : NO_POINTS,
+    [bars, combinedLaps, measures, boundaries, heldDamage, wearMode])
   const barAxes = useBarAxes(bars ? barPoints : null, colors.lapTime, tyreYAxis)
   // Left to right in each lap: the four tyres stacked FL to RR from the
   // bottom, ERS used, lap time.
@@ -292,8 +284,10 @@ function useHeldByKey<T>(value: T, key: string): T {
 }
 
 /** ERS used or recharged per completed lap; it gains a point only when a lap completes, like lap time. */
-function energyPoints(pick: 'deployedMj' | 'harvestedMj', laps: readonly { lap_num: number }[],
-  measures: ReturnType<typeof measureLaps>, boundaries: ReturnType<typeof useLapBoundaries>): TrendChartPoint[] {
+type LapMeasures = ReadonlyMap<number, LapMeasure>
+
+function energyPoints(pick: 'ers_deployed_mj' | 'ers_harvested_mj', laps: readonly { lap_num: number }[],
+  measures: LapMeasures, boundaries: ReturnType<typeof useLapBoundaries>): TrendChartPoint[] {
   return laps.map(lap => ({
     x: lap.lap_num, values: [measures.get(lap.lap_num)?.[pick] ?? null], label: `Lap ${lap.lap_num}`,
     lapStart: lapStartSessionTime(boundaries, lap.lap_num),
@@ -306,14 +300,14 @@ function energyPoints(pick: 'deployedMj' | 'harvestedMj', laps: readonly { lap_n
  * them directly; nothing is plotted for a lap until it is complete.
  */
 function buildLapEndPoints(laps: readonly { lap_num: number; lap_time_ms: number; lap_valid: boolean }[],
-  measures: ReturnType<typeof measureLaps>): TrendChartPoint[] {
+  measures: LapMeasures): TrendChartPoint[] {
   const fastest = laps.reduce<number | null>((best, lap) =>
     lap.lap_valid && lap.lap_time_ms > 0 && (best === null || lap.lap_time_ms < best) ? lap.lap_time_ms : best, null)
   return laps.map(lap => {
     const measure = measures.get(lap.lap_num)
     return {
       x: lap.lap_num, label: `Lap ${lap.lap_num}`,
-      values: [measure?.deployedMj ?? null, measure?.harvestedMj ?? null, lap.lap_time_ms > 0 ? lap.lap_time_ms / 1000 : null],
+      values: [measure?.ers_deployed_mj ?? null, measure?.ers_harvested_mj ?? null, lap.lap_time_ms > 0 ? lap.lap_time_ms / 1000 : null],
       invalid: lap.lap_time_ms > 0 && !lap.lap_valid, fastest: lap.lap_valid && lap.lap_time_ms === fastest,
     }
   })
@@ -366,7 +360,7 @@ function buildTyreSamples(laps: readonly { lap_time_ms: number }[], firstLap: nu
  * corner's tyre wear (or life) at the lap's closing line, ERS used, and lap time.
  */
 function buildBarPoints(laps: readonly { lap_num: number; lap_time_ms: number; lap_valid: boolean }[],
-  measures: ReturnType<typeof measureLaps>, boundaries: ReturnType<typeof useLapBoundaries>,
+  measures: LapMeasures, boundaries: ReturnType<typeof useLapBoundaries>,
   rows: ColumnView<DamageRow> | null, wearMode: 'wear' | 'life'): TrendChartPoint[] {
   const starts = new Map<number, number>()
   for (const boundary of boundaries) starts.set(boundary.lapNum, boundary.sessionTime)
@@ -381,7 +375,7 @@ function buildBarPoints(laps: readonly { lap_num: number; lap_time_ms: number; l
     })
     return {
       x: lap.lap_num, label: `Lap ${lap.lap_num}`,
-      values: [...wear, measures.get(lap.lap_num)?.deployedMj ?? null, lap.lap_time_ms > 0 ? lap.lap_time_ms / 1000 : null],
+      values: [...wear, measures.get(lap.lap_num)?.ers_deployed_mj ?? null, lap.lap_time_ms > 0 ? lap.lap_time_ms / 1000 : null],
       invalid: lap.lap_time_ms > 0 && !lap.lap_valid, fastest: lap.lap_valid && lap.lap_time_ms === fastest,
     }
   })

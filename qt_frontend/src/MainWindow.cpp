@@ -638,7 +638,6 @@ MainWindow::MainWindow(QWidget* parent)
             if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
             if (powerPage_) powerPage_->setMguhVisible(tnrp::hasMguh(fmt));
-            if (trendsPage_) trendsPage_->setHasMguh(tnrp::hasMguh(fmt));
             if (damagePage_) damagePage_->refreshTitles();   // DRS ↔ Rear Wing fault card
             // Overtaking-aid overlay follows the clip's format: DRS (F1 24/25) vs
             // SLM (F1 26). The live protocol_status handler is skipped in playback.
@@ -2436,6 +2435,14 @@ void MainWindow::onEngineRow(const QByteArray& json) {
         }
         return;
     }
+    // The streamed driver's per-lap ERS and fuel, pushed when a lap completes.
+    if (json.contains("\"type\":\"lap_measures\"")) {
+        tnrp::LapMeasuresRow measures;
+        if (trendsPage_ && !glz::read<glz::opts{.error_on_unknown_keys = false}>(
+                measures, std::string_view(json.constData(), static_cast<size_t>(json.size()))))
+            trendsPage_->setLapMeasures(measures);
+        return;
+    }
 
     if (inPlayback_ && playbackSeekInstalling_ &&
         !json.contains("\"type\":\"protocol_status\"") &&
@@ -2474,7 +2481,6 @@ void MainWindow::onEngineRow(const QByteArray& json) {
             if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
             if (powerPage_) powerPage_->setMguhVisible(ps->capabilities.hasMguh);
-            if (trendsPage_) trendsPage_->setHasMguh(ps->capabilities.hasMguh);
             if (damagePage_) damagePage_->refreshTitles();   // DRS ↔ Rear Wing fault card
             // Overtaking-aid overlay follows the format: DRS (F1 24/25) vs SLM (F1 26).
             const bool slm = tnrp::aeroMode(fmt) == "slm";

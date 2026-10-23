@@ -197,15 +197,16 @@ internal enum class PairedTelemetryPage(
         setOf(GraphFamily.G_FORCE, GraphFamily.RIDE_HEIGHT),
     ),
     // Trends always needs the lap rows: each lap's start, time and validity.
+    // Each lap's ERS use arrives measured, as lap_measures control rows.
     GRAPHS_TRENDS(
         "graphs-trends",
         listOf(
             DataConsumer.DRIVER_ROSTER,
-            DataConsumer.LAP_ENERGY,
+            DataConsumer.FITTED_TYRE,
             DataConsumer.TYRE_WEAR,
             DataConsumer.LAP_PROGRESS,
         ),
-        setOf(GraphFamily.TREND_ENERGY, GraphFamily.TYRE_WEAR),
+        setOf(GraphFamily.TYRE_WEAR),
     ),
     // Lap samples are requested one lap at a time (request_lap_data), so the
     // stream only needs the track and the roster; the playback cursor and lap

@@ -14,6 +14,11 @@ if [[ ! "$VERSION_NUMBER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 2
 fi
 
+if ! command -v zip >/dev/null 2>&1; then
+    echo "Error: zip is required to package the release (install the zip package)." >&2
+    exit 1
+fi
+
 RELEASE_ROOT="$ROOT_DIR/release"
 RELEASE_DIR="$RELEASE_ROOT/$VERSION_NUMBER"
 if [[ -e "$RELEASE_DIR" ]]; then
@@ -56,6 +61,12 @@ mkdir -p "$RELEASE_ROOT"
 mkdir "$RELEASE_DIR"
 for i in "${!ARTIFACTS[@]}"; do
     cp "${ARTIFACTS[$i]}" "$RELEASE_DIR/${ARTIFACT_NAMES[$i]}"
+done
+
+# Electron and Qt also ship zipped, beside the AppImage. zip keeps the
+# executable bit, so the extracted AppImage runs as is.
+for name in "Track-N-Race-Electron-Linux" "Track-N-Race-Qt-Linux"; do
+    (cd "$RELEASE_DIR" && zip -q "$name.zip" "$name.AppImage")
 done
 
 echo

@@ -1096,8 +1096,6 @@ private fun TrendsTab(store: TelemetryStore, graphs: GraphsController, active: B
     ChartsTab(
         store, graphs, active, charts,
         landscapeRows = listOf(listOf(0)),
-        // Each completed lap's recorded ERS counters, in playback.
-        extraSync = { graphs.sync(GraphFamily.TREND_ENERGY, 0.0, graphs.trendLaps()) },
         portrait = { chart, board ->
             val divider = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
             @Composable

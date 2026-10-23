@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "tnrp/Capabilities.h"
 #include "tnrp/Config.h"
 
 namespace tnrp {
@@ -40,6 +41,11 @@ public:
     // Format the parser is currently routing with (null == nothing detected yet,
     // represented as 0). Used by the engine to feed the writer's session rotation.
     uint16_t activeFormat() const { return activeFormat_; }
+    // The format whose rules the session is presented with (protocol_status's
+    // presentation_format); 0 before any packet.
+    uint16_t displayFormat() const {
+        return tnrp::presentationFormat(activeFormat_, regulations2026_, formula_);
+    }
 
     struct Result {
         bool                     dropped    = false;  // invalid format or duplicate frame

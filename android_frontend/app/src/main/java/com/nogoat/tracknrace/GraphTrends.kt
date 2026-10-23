@@ -24,25 +24,9 @@ internal data class TrendData(
         if (window == GraphWindow.STINT) laps.filter { it.lap >= stintStartLap } else laps
 }
 
-/** A lap's total of [field] from its recorded [trace]; see [lapTotal]. */
-internal fun lapTotal(trace: LapTrace, field: GraphField): Double? {
-    val times = DoubleArray(trace.size) { trace.times[it].toDouble() }
-    val end = times.lastOrNull() ?: return null
-    return lapTotal(times, trace.values[field.slot], 0, trace.size, 0.0, end)
-}
-
-/**
- * A lap's total of a counter that the game resets at the line: its highest
- * value in the second half of the lap. Just after the line the counter still
- * holds the previous lap's total, so the first half is not read.
- */
-internal fun lapTotal(times: DoubleArray, values: FloatArray, from: Int, until: Int, start: Double, end: Double): Double? {
-    val half = start + (end - start) / 2
-    var best = Double.NaN
-    for (index in from until until) {
-        if (times[index] < half) continue
-        val value = values[index].toDouble()
-        if (value.isFinite() && (best.isNaN() || value > best)) best = value
-    }
-    return best.takeIf { it.isFinite() }
-}
+/** One completed lap's ERS and fuel use as the engine measured it; null where it was not. */
+internal data class LapMeasure(
+    val deployedMj: Double?,
+    val harvestedMj: Double?,
+    val fuelUsedKg: Double?,
+)

@@ -3,6 +3,7 @@ import type {
   TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg,
   ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg,
   LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg, DriverLapHistory,
+  LapMeasuresMsg,
   AnalyzeLapData, AnalysisDriverLapCatalog, PlaybackLapDataMsg,
   StrategySnapshotMsg, PlaybackLapBlock, FastestLapMsg, PlaybackSeekFlushBinMsg, HostRestoreRanges,
   LiveFastestLapDataMsg, LiveLapDataMsg,
@@ -143,6 +144,8 @@ export interface TelemetryStoreState {
   fastestLapCarIdx: number | null
   // Pushed by the engine for the car whose lap-times view is open.
   driverLapHistory: DriverLapHistory | null
+  // The streamed driver's per-lap ERS and fuel use, pushed as laps complete.
+  lapMeasures: LapMeasuresMsg | null
   raceEvents: RaceEventMsg[]
   session: SessionMsg | null
   tyreSets: TyreSetsMsg | null
@@ -210,7 +213,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   telemetry: EMPTY.telemetry, motion: EMPTY.motion, motionEx: EMPTY.motionEx,
   status: null, statusHistory: EMPTY.status, damage: null, damageHistory: EMPTY.damage,
   lap: null, timing: null, participants: null, allStatus: null, strategy: null,
-  fastestLapCarIdx: null, driverLapHistory: null, raceEvents: [], session: null, tyreSets: null,
+  fastestLapCarIdx: null, driverLapHistory: null, lapMeasures: null, raceEvents: [], session: null, tyreSets: null,
   latest: null, fastestLapNum: null,
   ...EMPTY_ANALYZE_SLICES, analyzeLapStartTime: 0,
   analyzeLapRevision: 0,
@@ -919,7 +922,7 @@ function resetSession(): void {
     telemetry: EMPTY.telemetry, motion: EMPTY.motion, motionEx: EMPTY.motionEx, latest: null,
     statusHistory: EMPTY.status, damageHistory: EMPTY.damage,
     status: null, damage: null, lap: null, timing: null, allStatus: null,
-    participants: null, session: null, fastestLapCarIdx: null, driverLapHistory: null,
+    participants: null, session: null, fastestLapCarIdx: null, driverLapHistory: null, lapMeasures: null,
     tyreSets: null, strategy: null,
     strategyRebuilding: false,
     fastestLapNum: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
@@ -1552,6 +1555,7 @@ function handleMsg(msg: GatewayMsg): void {
     }
     case 'all_status':   set(state => ({ allStatus: mergeCarPatches(state.allStatus, msg as AllStatusMsg) as AllStatusMsg })); break
     case 'driver_lap_history': set({ driverLapHistory: msg as DriverLapHistory }); break
+    case 'lap_measures': set({ lapMeasures: msg as LapMeasuresMsg }); break
     case 'fastest_lap':
       set({ fastestLapCarIdx: (msg as FastestLapMsg).car_idx })
       fastestLapSet = true

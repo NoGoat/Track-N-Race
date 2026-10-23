@@ -12,8 +12,9 @@ function apply(): void {
 export function claimLapHistoryCar(carIdx: number): () => void {
   const claim = { carIdx }
   claims.push(claim)
-  // A row left from an earlier claim may describe another car or cursor.
-  useTelemetryStore.setState({ driverLapHistory: null })
+  // A row left from an earlier claim may describe another car or cursor. A
+  // claim restates the lap measures too.
+  useTelemetryStore.setState({ driverLapHistory: null, lapMeasures: null })
   apply()
   return () => {
     const index = claims.indexOf(claim)

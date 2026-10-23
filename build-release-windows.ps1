@@ -134,6 +134,8 @@ if ($Components -contains "Electron") {
     $artifacts += @{
         Source = Join-Path $rootDir "electron-frontend\dist\Track-N-Race - Electron - Installer.exe"
         Name = "Track-N-Race-Electron-Windows.exe"
+        ZipName = "Track-N-Race-Electron-Windows.zip"
+        KeepRaw = $true
     }
 }
 
@@ -170,6 +172,8 @@ if ($Components -contains "Qt") {
     $artifacts += @{
         Source = Join-Path $rootDir "qt_frontend\dist\Track-N-Race - Qt - Installer.exe"
         Name = "Track-N-Race-Qt-Windows.exe"
+        ZipName = "Track-N-Race-Qt-Windows.zip"
+        KeepRaw = $true
     }
 }
 
@@ -195,7 +199,10 @@ foreach ($artifact in $artifacts) {
     if ($artifact.ZipName) {
         Compress-Archive -LiteralPath $destination `
             -DestinationPath (Join-Path $releaseDir $artifact.ZipName)
-        Remove-Item -LiteralPath $destination
+        # Electron and Qt ship both the executable and its zip; Minimal only the zip.
+        if (-not $artifact.KeepRaw) {
+            Remove-Item -LiteralPath $destination
+        }
     }
 }
 
