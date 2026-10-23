@@ -101,7 +101,7 @@ if(APPLE)
         enable_language(Swift)
     endif()
 
-    set(MINIMAL_MACOS_DEPLOYMENT_TARGET "13.0" CACHE STRING
+    set(MINIMAL_MACOS_DEPLOYMENT_TARGET "13.3" CACHE STRING
         "Oldest macOS version supported by the SwiftUI frontend")
     if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
         set(CMAKE_OSX_DEPLOYMENT_TARGET "${MINIMAL_MACOS_DEPLOYMENT_TARGET}" CACHE STRING "" FORCE)
