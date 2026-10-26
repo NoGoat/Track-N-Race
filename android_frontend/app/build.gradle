@@ -5,6 +5,31 @@ plugins {
     id "org.jetbrains.kotlin.plugin.compose"
 }
 
+// The release key is never committed. Its location and alias come from
+// android_frontend/keystore.properties (gitignored; see
+// keystore.properties.example) or, when that file is absent, from
+// TNR_KEYSTORE_FILE and TNR_KEY_ALIAS. The passwords are never stored in a
+// file: build-signed-apk prompts for them and passes them in
+// TNR_KEYSTORE_PASSWORD and TNR_KEY_PASSWORD.
+def releaseSigning = [
+    storeFile    : System.getenv("TNR_KEYSTORE_FILE"),
+    keyAlias     : System.getenv("TNR_KEY_ALIAS"),
+    storePassword: System.getenv("TNR_KEYSTORE_PASSWORD"),
+    keyPassword  : System.getenv("TNR_KEY_PASSWORD"),
+]
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+if (keystorePropertiesFile.exists()) {
+    def keystoreProperties = new Properties()
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+    releaseSigning.storeFile = keystoreProperties.getProperty("storeFile")
+    releaseSigning.keyAlias = keystoreProperties.getProperty("keyAlias")
+}
+def hasReleaseSigning = releaseSigning.values().every { it }
+
+// build-signed-apk passes the release version; local builds keep the defaults.
+def tnrVersionName = project.findProperty("tnrVersionName") ?: "0.1.0"
+def tnrVersionCode = (project.findProperty("tnrVersionCode") ?: "1") as int
+
 // AGP 9's DSL: properties are assigned, and collection options are added to
 // rather than called as methods.
 android {
@@ -18,8 +43,8 @@ android {
         // API 37 blocks local network traffic until the user grants
         // ACCESS_LOCAL_NETWORK; TelemetryController gates every LAN use on it.
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = tnrVersionCode
+        versionName = tnrVersionName
 
         externalNativeBuild {
             cmake {
@@ -46,6 +71,17 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile = rootProject.file(releaseSigning.storeFile)
+                storePassword = releaseSigning.storePassword
+                keyAlias = releaseSigning.keyAlias
+                keyPassword = releaseSigning.keyPassword
+            }
+        }
+    }
+
     buildTypes {
         debug {
             debuggable = true
@@ -55,11 +91,14 @@ android {
             // a non-debuggable build alone is not an optimized release.
             minifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Local release builds must be signed before adb can install them.
-            // Distribution builds remain unsigned unless their caller supplies
-            // a production signing configuration.
+            // Local release builds must be signed before adb can install them,
+            // and use the debug key so they never need the release key.
+            // Otherwise the release key signs the APK when it is configured,
+            // and the APK stays unsigned when it is not.
             if (project.hasProperty("tnrLocalReleaseSigning")) {
                 signingConfig = signingConfigs.debug
+            } else if (hasReleaseSigning) {
+                signingConfig = signingConfigs.release
             }
         }
     }

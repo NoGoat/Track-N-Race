@@ -85,6 +85,45 @@ On Linux, use the equivalent shell scripts. They take `--sdk-root`,
 ./android_frontend/build-and-run-release.sh
 ```
 
+## Signed release APK
+
+Distributed APKs are signed with the Track N Race release key. Every update
+must be signed with the same key, or Android refuses to install it over the
+previous version, so keep the keystore and its passwords backed up outside
+the repository. The same key is used for Google Play: when enrolling in Play
+App Signing, choose to upload this key rather than let Google generate one, so
+APKs from the website and from Play update each other.
+
+Create the key once:
+
+```bash
+keytool -genkeypair -v -keystore tracknrace-release.jks -alias tracknrace \
+  -keyalg RSA -keysize 4096 -validity 10000
+```
+
+Copy `keystore.properties.example` to `keystore.properties` (gitignored) and
+set the keystore's path and alias, or set `TNR_KEYSTORE_FILE` and
+`TNR_KEY_ALIAS` instead. The passwords are never stored: the build script asks
+for them each run and checks them before building. Then build:
+
+```bash
+./android_frontend/build-signed-apk.sh 1.6.1
+```
+
+```powershell
+.\android_frontend\build-signed-apk.ps1 1.6.1
+```
+
+The script builds the R8-optimized release APK with that version
+(versionCode `major*10000 + minor*100 + patch`), verifies with `apksigner` that
+it carries the release signature and not the debug key, and writes
+`release/<version>/Track-N-Race-Android.apk` and its `.sha256` checksum. It
+prints the signing certificate's SHA-256, which is registered with the package
+name `com.nogoat.tracknrace` in the Android Developer Console.
+
+Without a release key configured, release builds are unsigned;
+`build-and-run-release` always signs its local builds with the debug key.
+
 ## Phone and game network setup
 
 Keep the phone and the PC/console running F1 on the same local network. Enable

@@ -252,7 +252,7 @@ if ! $SKIP_BUILD; then
     GRADLE="$(find_gradle)"
     GRADLE_ARGS=(--no-daemon -p "$PROJECT_DIR" ":app:assemble$BUILD_TYPE")
     if [[ "$BUILD_TYPE" == "Release" ]]; then
-        # Release APKs are unsigned by default. Opt in to the standard Android
+        # Local release builds never use the release key. Opt in to the standard Android
         # debug key for this local build-and-run workflow only.
         GRADLE_ARGS+=(-PtnrLocalReleaseSigning)
     fi

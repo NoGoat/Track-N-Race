@@ -184,7 +184,7 @@ if (-not $SkipBuild) {
     $GradleTask = ":app:assemble$BuildType"
     $GradleArgs = @('--no-daemon', '-p', $ProjectDir, $GradleTask)
     if ($BuildType -eq 'Release') {
-        # Release APKs are unsigned by default. Opt in to the standard Android
+        # Local release builds never use the release key. Opt in to the standard Android
         # debug key for this local build-and-run workflow only.
         $GradleArgs += '-PtnrLocalReleaseSigning'
     }

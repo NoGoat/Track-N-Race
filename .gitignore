@@ -46,6 +46,10 @@ hs_err_pid*
 .externalNativeBuild/
 captures/
 local.properties
+# Android release signing: the key and its passwords never enter the repo.
+keystore.properties
+*.jks
+*.keystore
 build/
 out/
 
