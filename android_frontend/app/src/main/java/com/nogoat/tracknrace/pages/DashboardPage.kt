@@ -365,25 +365,36 @@ private fun LandscapeDrive(
     gaps: State<RaceGaps>,
     race: Boolean,
 ) = DriveTones {
-    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 10.dp)) {
-        ShiftLights(frame, Modifier.fillMaxWidth().height(4.dp).graphicsLayer())
-        Spacer(Modifier.height(10.dp))
-        StatusRow(frame, alert, Modifier.fillMaxWidth().height(32.dp))
-        Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-            Column(Modifier.weight(1f).fillMaxHeight()) {
-                LapBlock(frame, Modifier.fillMaxWidth(), lapSize = 40.sp, deltaSize = 28.sp)
-                SpeedBlock(frame, Modifier.fillMaxWidth().weight(1f), gearSize = 96.sp, gearWidth = 68.dp, speedSize = 36.sp, larger = true)
-            }
-            Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
-            Column(
-                Modifier.width(300.dp).fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
-            ) {
-                EnergyRow(frame, Modifier.fillMaxWidth())
-                RaceGrid(frame, gaps, race, Modifier.fillMaxWidth())
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
-                TyreRow(frame, Modifier.fillMaxWidth())
+    // A phone on its side has about 260dp under the tabs: too little for the
+    // tablet's sizes and gaps, so both columns tighten below 300dp.
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val compact = maxHeight < 300.dp
+        Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = if (compact) 6.dp else 10.dp)) {
+            ShiftLights(frame, Modifier.fillMaxWidth().height(4.dp).graphicsLayer())
+            Spacer(Modifier.height(if (compact) 6.dp else 10.dp))
+            StatusRow(frame, alert, Modifier.fillMaxWidth().height(32.dp))
+            Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+            Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    if (compact) {
+                        // The left column is ~220dp on a phone: a 160dp delta would squeeze the lap time.
+                        LapBlock(frame, Modifier.fillMaxWidth(), lapSize = 32.sp, deltaSize = 24.sp, sectorGap = 8.dp, deltaWidth = 104.dp)
+                        SpeedBlock(frame, Modifier.fillMaxWidth().weight(1f), gearSize = 72.sp, gearWidth = 52.dp, speedSize = 32.sp, larger = true)
+                    } else {
+                        LapBlock(frame, Modifier.fillMaxWidth(), lapSize = 40.sp, deltaSize = 28.sp)
+                        SpeedBlock(frame, Modifier.fillMaxWidth().weight(1f), gearSize = 96.sp, gearWidth = 68.dp, speedSize = 36.sp, larger = true)
+                    }
+                }
+                Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+                Column(
+                    Modifier.width(300.dp).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 14.dp, Alignment.CenterVertically),
+                ) {
+                    EnergyRow(frame, Modifier.fillMaxWidth())
+                    RaceGrid(frame, gaps, race, Modifier.fillMaxWidth(), rowGap = if (compact) 6.dp else 10.dp)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
+                    TyreRow(frame, Modifier.fillMaxWidth())
+                }
             }
         }
     }
@@ -461,7 +472,7 @@ private fun lightNumber(size: TextUnit) =
 
 /** The running lap and its delta to the best, then the sectors as a progress bar. */
 @Composable
-private fun LapBlock(frame: DashboardFrameState, modifier: Modifier, lapSize: TextUnit, deltaSize: TextUnit) {
+private fun LapBlock(frame: DashboardFrameState, modifier: Modifier, lapSize: TextUnit, deltaSize: TextUnit, sectorGap: Dp = 12.dp, deltaWidth: Dp = 160.dp) {
     val c = LocalDashPalette.current
     Column(modifier) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
@@ -472,7 +483,7 @@ private fun LapBlock(frame: DashboardFrameState, modifier: Modifier, lapSize: Te
                     listOf(ReadoutRun(formatRunning(ms), if (ms > 0) c.hi else c.dis, bold = false))
                 }
             }
-            Column(Modifier.width(160.dp), horizontalAlignment = Alignment.End) {
+            Column(Modifier.width(deltaWidth), horizontalAlignment = Alignment.End) {
                 DriveLabel("Delta to best")
                 Live(lightNumber(deltaSize), Modifier.fillMaxWidth(), alignEnd = true) {
                     val delta = frame.lapDeltaSeconds
@@ -480,7 +491,7 @@ private fun LapBlock(frame: DashboardFrameState, modifier: Modifier, lapSize: Te
                 }
             }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(sectorGap))
         SectorBar(frame, Modifier.fillMaxWidth())
     }
 }
@@ -614,10 +625,10 @@ private fun EnergyRow(frame: DashboardFrameState, modifier: Modifier) {
 // ── Gaps and lap times ──────────────────────────────────────────────────────
 
 @Composable
-private fun RaceGrid(frame: DashboardFrameState, gaps: State<RaceGaps>, race: Boolean, modifier: Modifier) {
+private fun RaceGrid(frame: DashboardFrameState, gaps: State<RaceGaps>, race: Boolean, modifier: Modifier, rowGap: Dp = 10.dp) {
     val c = LocalDashPalette.current
     val value = Title.copy(fontSize = 16.sp)
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(rowGap)) {
         if (race) {
             val current = gaps.value
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {

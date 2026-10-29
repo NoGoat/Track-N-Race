@@ -3,6 +3,9 @@
 # connected phone. Linux counterpart of build-and-run.ps1.
 # Usage: ./build-and-run.sh [--device-serial <serial>] [--sdk-root <path>]
 #                           [--skip-build] [--build-type Debug|Release]
+#                           [--release-key]
+# --release-key signs a Release build with the release key, as
+# build-signed-apk.sh does, instead of the Android debug key.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,12 +13,14 @@ DEVICE_SERIAL=""
 SDK_ROOT=""
 SKIP_BUILD=false
 BUILD_TYPE="Debug"
+RELEASE_KEY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --device-serial) DEVICE_SERIAL="$2"; shift 2 ;;
         --sdk-root) SDK_ROOT="$2"; shift 2 ;;
         --skip-build) SKIP_BUILD=true; shift 1 ;;
+        --release-key) RELEASE_KEY=true; shift 1 ;;
         --build-type)
             case "$2" in
                 Debug|debug) BUILD_TYPE="Debug" ;;
@@ -26,6 +31,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+if $RELEASE_KEY && [[ "$BUILD_TYPE" != "Release" ]]; then
+    echo "--release-key requires --build-type Release" >&2
+    exit 1
+fi
 
 BUILD_TYPE_LOWER="${BUILD_TYPE,,}"
 APK_PATH="$PROJECT_DIR/app/build/outputs/apk/$BUILD_TYPE_LOWER/app-$BUILD_TYPE_LOWER.apk"
@@ -159,6 +169,70 @@ assert_android_sdk_packages() {
     fi
 }
 
+# The newest Build-Tools' apksigner verifies the signature Gradle applied.
+find_apksigner() {
+    local android_sdk="$1" apksigner
+    apksigner="$(ls -1d "$android_sdk"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1 || true)"
+    [[ -n "$apksigner" ]] || die 'apksigner was not found. Install Android SDK Build-Tools with Android Studio SDK Manager, then rerun.'
+    echo "$apksigner"
+}
+
+properties_value() {
+    sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*\$/\1/p" "$1" | tail -n 1
+}
+
+find_keytool() {
+    if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/keytool" ]]; then
+        echo "$JAVA_HOME/bin/keytool"
+        return
+    fi
+    command -v keytool 2>/dev/null && return
+    die 'keytool was not found. Install JDK 21 or set JAVA_HOME, then rerun.'
+}
+
+# Mirrors app/build.gradle: the keystore's location and alias come from
+# keystore.properties, else TNR_KEYSTORE_FILE and TNR_KEY_ALIAS. Fills
+# STORE_FILE and KEY_ALIAS. Checked here so a missing key fails before a long
+# build, not after it.
+resolve_release_key() {
+    local properties="$PROJECT_DIR/keystore.properties"
+    if [[ -f "$properties" ]]; then
+        STORE_FILE="$(properties_value "$properties" storeFile)"
+        KEY_ALIAS="$(properties_value "$properties" keyAlias)"
+        [[ -n "$STORE_FILE" ]] || die "keystore.properties has no value for 'storeFile'. See keystore.properties.example."
+        [[ -n "$KEY_ALIAS" ]] || die "keystore.properties has no value for 'keyAlias'. See keystore.properties.example."
+    else
+        STORE_FILE="${TNR_KEYSTORE_FILE:-}"
+        KEY_ALIAS="${TNR_KEY_ALIAS:-}"
+        [[ -n "$STORE_FILE" && -n "$KEY_ALIAS" ]] ||
+            die "The release key is not configured. Create android_frontend/keystore.properties from keystore.properties.example, or set TNR_KEYSTORE_FILE and TNR_KEY_ALIAS."
+    fi
+    [[ "$STORE_FILE" = /* ]] || STORE_FILE="$PROJECT_DIR/$STORE_FILE"
+    [[ -f "$STORE_FILE" ]] || die "The release keystore was not found at $STORE_FILE."
+}
+
+# The passwords are never stored in a file. They are asked for on each run and
+# reach Gradle as environment variables, which, unlike -P arguments, other
+# users cannot see in the process list.
+prompt_release_passwords() {
+    [[ -t 0 ]] || die 'The keystore passwords are entered interactively; run this script from a terminal.'
+    read -rsp "Keystore password: " TNR_KEYSTORE_PASSWORD; echo
+    [[ -n "$TNR_KEYSTORE_PASSWORD" ]] || die 'The keystore password is empty.'
+    read -rsp "Key password (Enter if the same as the keystore password): " TNR_KEY_PASSWORD; echo
+    [[ -n "$TNR_KEY_PASSWORD" ]] || TNR_KEY_PASSWORD="$TNR_KEYSTORE_PASSWORD"
+    export TNR_KEYSTORE_FILE="$STORE_FILE" TNR_KEY_ALIAS="$KEY_ALIAS" TNR_KEYSTORE_PASSWORD TNR_KEY_PASSWORD
+
+    # A wrong keystore password or alias fails here, not after the build.
+    "$KEYTOOL" -list -keystore "$STORE_FILE" -alias "$KEY_ALIAS" -storepass:env TNR_KEYSTORE_PASSWORD >/dev/null 2>&1 ||
+        die "The keystore password is wrong, or the keystore has no key with the alias '$KEY_ALIAS'."
+}
+
+# Prints the versionCode of the copy installed on a device, or nothing.
+get_installed_version_code() {
+    "$1" -s "$2" shell dumpsys package com.nogoat.tracknrace 2>/dev/null |
+        sed -nE 's/.*versionCode=([0-9]+).*/\1/p' | sort -n | tail -n 1
+}
+
 get_authorized_devices() {
     "$1" devices | tail -n +2 | sed -nE 's/^([^[:space:]]+)[[:space:]]+device([[:space:]]|$).*/\1/p'
 }
@@ -236,6 +310,14 @@ if ! $SKIP_BUILD; then
     assert_android_sdk_licenses "$RESOLVED_SDK"
     assert_android_sdk_packages "$RESOLVED_SDK"
     assert_java
+    if $RELEASE_KEY; then
+        STORE_FILE=""
+        KEY_ALIAS=""
+        resolve_release_key
+        APKSIGNER="$(find_apksigner "$RESOLVED_SDK")"
+        KEYTOOL="$(find_keytool)"
+        prompt_release_passwords
+    fi
 fi
 ADB="$(find_adb "$RESOLVED_SDK")"
 
@@ -251,10 +333,14 @@ fi
 if ! $SKIP_BUILD; then
     GRADLE="$(find_gradle)"
     GRADLE_ARGS=(--no-daemon -p "$PROJECT_DIR" ":app:assemble$BUILD_TYPE")
-    if [[ "$BUILD_TYPE" == "Release" ]]; then
-        # Local release builds never use the release key. Opt in to the standard Android
-        # debug key for this local build-and-run workflow only.
+    if [[ "$BUILD_TYPE" == "Release" ]] && ! $RELEASE_KEY; then
+        # Without --release-key, local release builds never use the release key. Opt
+        # in to the standard Android debug key for this local build-and-run workflow only.
         GRADLE_ARGS+=(-PtnrLocalReleaseSigning)
+    fi
+    # A stale APK from an earlier build must not pass for this one.
+    if $RELEASE_KEY; then
+        rm -f "$APK_PATH"
     fi
     # Emulator images are x86_64; include that ABI only when one is targeted.
     for serial in "${RESOLVED_DEVICE_SERIALS[@]}"; do
@@ -264,8 +350,36 @@ if ! $SKIP_BUILD; then
         fi
     done
 
+    # Android refuses to install a lower versionCode over a higher one, so build
+    # one above the newest copy on any device. The code follows
+    # build-signed-apk.sh's major*10000 + minor*100 + patch scheme, so the
+    # version name is derived from it: 10603 installed -> 10604, 1.6.4.
+    INSTALLED_VERSION_CODE=0
+    for serial in "${RESOLVED_DEVICE_SERIALS[@]}"; do
+        code="$(get_installed_version_code "$ADB" "$serial")"
+        if [[ -n "$code" ]] && (( code > INSTALLED_VERSION_CODE )); then
+            INSTALLED_VERSION_CODE=$code
+        fi
+    done
+    if (( INSTALLED_VERSION_CODE > 0 )); then
+        VERSION_CODE=$((INSTALLED_VERSION_CODE + 1))
+        VERSION_NAME="$((VERSION_CODE / 10000)).$((VERSION_CODE / 100 % 100)).$((VERSION_CODE % 100))"
+        echo "Installed versionCode is $INSTALLED_VERSION_CODE; building $VERSION_NAME (versionCode $VERSION_CODE)."
+        GRADLE_ARGS+=("-PtnrVersionName=$VERSION_NAME" "-PtnrVersionCode=$VERSION_CODE")
+    fi
+
     cyan "Building the native Jetpack Compose Android $BUILD_TYPE_LOWER APK..."
     "$GRADLE" "${GRADLE_ARGS[@]}" || die "Gradle build failed with exit code $?."
+
+    if $RELEASE_KEY; then
+        [[ -f "$APK_PATH" ]] || die "The release APK was not produced at $APK_PATH."
+        cyan "Verifying the APK signature..."
+        CERTS="$("$APKSIGNER" verify --verbose --print-certs "$APK_PATH")" ||
+            die "apksigner could not verify $APK_PATH; it is unsigned or its signature is invalid."
+        if grep -q 'CN=Android Debug' <<< "$CERTS"; then
+            die "$APK_PATH is signed with the Android debug key, not the release key."
+        fi
+    fi
 fi
 
 [[ -f "$APK_PATH" ]] || die "APK not found at $APK_PATH. Run without --skip-build first."
@@ -277,6 +391,9 @@ for serial in "${RESOLVED_DEVICE_SERIALS[@]}"; do
     if ! "$ADB" "${ADB_ARGS[@]}" install -r "$APK_PATH"; then
         DEVICE_FAILURES+=("$serial (install failed)")
         warn "Install failed on $serial; continuing with the remaining devices."
+        if $RELEASE_KEY; then
+            warn "If the installed copy was signed with a different key, uninstall it first (this deletes its data): adb -s $serial uninstall com.nogoat.tracknrace"
+        fi
         continue
     fi
 
