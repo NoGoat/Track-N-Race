@@ -1,5 +1,12 @@
 package com.nogoat.tracknrace.pages
 
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -24,14 +31,22 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nogoat.tracknrace.R
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import kotlinx.coroutines.launch
 
 /** Where the app's data comes from now, as the menu sheet's card shows it. */
@@ -137,7 +152,8 @@ private fun SourceCard(source: MenuSource, onCloseRecording: () -> Unit, onRecon
         MenuSource.Direct -> {
             icon = R.drawable.ic_sensors
             heading = "Live"
-            title = "Direct UDP"
+            // The address the game's UDP telemetry setting needs.
+            title = listOf("Direct UDP").plus(rememberDeviceAddresses()).joinToString(" · ")
             status = "From the game on this network"
         }
     }
@@ -228,3 +244,44 @@ private fun DriverRow(driver: MenuDriver, onPick: (() -> Unit)?) {
         modifier = (if (onPick != null) Modifier.clickable(onClick = onPick) else Modifier).padding(horizontal = 8.dp),
     )
 }
+
+/**
+ * This device's IPv4 LAN addresses (Wi-Fi, Ethernet, or its own hotspot), refreshed whenever
+ * a network comes, goes, or changes address. Interfaces are read directly so a hotspot the
+ * phone is hosting shows up too; ConnectivityManager doesn't report that one.
+ */
+@Composable
+private fun rememberDeviceAddresses(): List<String> {
+    val context = LocalContext.current
+    var addresses by remember { mutableStateOf(deviceAddresses()) }
+    DisposableEffect(context) {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { addresses = deviceAddresses() }
+            override fun onLost(network: Network) { addresses = deviceAddresses() }
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                addresses = deviceAddresses()
+            }
+        }
+        val request = NetworkRequest.Builder()
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        val registered = runCatching {
+            connectivity.registerNetworkCallback(request, callback, Handler(Looper.getMainLooper()))
+        }.isSuccess
+        onDispose { if (registered) connectivity.unregisterNetworkCallback(callback) }
+    }
+    return addresses
+}
+
+private val CellularPrefixes = listOf("rmnet", "ccmni", "pdp", "v4-rmnet")
+
+private fun deviceAddresses(): List<String> = runCatching {
+    NetworkInterface.getNetworkInterfaces().toList()
+        // Mobile data interfaces can carry private addresses too; the game can't reach those.
+        .filter { it.isUp && !it.isLoopback && CellularPrefixes.none { prefix -> it.name.startsWith(prefix) } }
+        .flatMap { it.inetAddresses.toList() }
+        .filter { it is Inet4Address && it.isSiteLocalAddress }
+        .mapNotNull { it.hostAddress }
+        .distinct()
+}.getOrDefault(emptyList())

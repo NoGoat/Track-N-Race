@@ -4,8 +4,12 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import androidx.annotation.RequiresApi
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.util.concurrent.Executor
 
 /**
  * Finds desktops advertising `_tracknrace-pair._tcp` over DNS-SD (Android's
@@ -34,14 +38,25 @@ internal class PairDiscovery(
     private companion object {
         const val SERVICE_TYPE = "_tracknrace-pair._tcp"
         const val PROTOCOL_VERSION = "3"
+        const val RESOLVE_TIMEOUT_MS = 5_000L
+        const val RETRY_DELAY_MS = 1_000L
     }
 
     private val nsd = context.applicationContext.getSystemService(NsdManager::class.java)
+    private val main = Handler(Looper.getMainLooper())
     private var discovery: NsdManager.DiscoveryListener? = null
 
-    // Before API 34 NsdManager resolves one service at a time.
+    // API 34+: one live info callback per found service, so a service that never
+    // answers (a desktop that left without a goodbye) can't hold up the others.
+    // One that hasn't answered within the timeout is forgotten.
+    private val watching = HashMap<String, NsdManager.ServiceInfoCallback>()
+    private val watchTimeouts = HashMap<String, Runnable>()
+
+    // Before API 34 NsdManager resolves one service at a time, and a resolve for
+    // a service that never answers may never call back, so each one is timed out.
     private val pending = ArrayDeque<NsdServiceInfo>()
-    private var resolving = false
+    private var resolve: Any? = null
+    private var timeout: Runnable? = null
 
     @Synchronized
     fun start() {
@@ -67,12 +82,25 @@ internal class PairDiscovery(
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 synchronized(this@PairDiscovery) {
                     if (discovery !== this) return
-                    pending.addLast(serviceInfo)
-                    resolveNextLocked()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        watchLocked(manager, serviceInfo)
+                    } else {
+                        pending.addLast(serviceInfo)
+                        resolveNextLocked()
+                    }
                 }
             }
 
-            override fun onServiceLost(serviceInfo: NsdServiceInfo) = Unit
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                synchronized(this@PairDiscovery) {
+                    if (discovery !== this) return
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        forgetLocked(manager, serviceInfo.serviceName)
+                    } else {
+                        pending.removeAll { it.serviceName == serviceInfo.serviceName }
+                    }
+                }
+            }
         }
         discovery = callback
         try {
@@ -88,39 +116,118 @@ internal class PairDiscovery(
         val callback = discovery ?: return
         discovery = null
         pending.clear()
+        // A resolve still in flight finishes into nothing; the next start() doesn't wait on it.
+        resolve = null
+        timeout?.let(main::removeCallbacks)
+        timeout = null
+        nsd?.let { manager ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                watching.keys.toList().forEach { forgetLocked(manager, it) }
+            }
+            try {
+                manager.stopServiceDiscovery(callback)
+            } catch (_: RuntimeException) {
+                // Already stopped by the system.
+            }
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    private fun watchLocked(manager: NsdManager, info: NsdServiceInfo) {
+        if (info.serviceName in watching) return
+        val callback = object : NsdManager.ServiceInfoCallback {
+            override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
+                synchronized(this@PairDiscovery) {
+                    if (watching[info.serviceName] === this) forgetLocked(manager, info.serviceName)
+                }
+            }
+
+            override fun onServiceUpdated(serviceInfo: NsdServiceInfo) {
+                synchronized(this@PairDiscovery) {
+                    if (watching[info.serviceName] !== this) return
+                    // It answered; keep watching it for address changes.
+                    watchTimeouts.remove(info.serviceName)?.let(main::removeCallbacks)
+                }
+                toService(serviceInfo)?.let(listener::onService)
+            }
+
+            override fun onServiceLost() = Unit
+
+            override fun onServiceInfoCallbackUnregistered() = Unit
+        }
         try {
-            nsd?.stopServiceDiscovery(callback)
+            manager.registerServiceInfoCallback(info, Executor { main.post(it) }, callback)
+            watching[info.serviceName] = callback
+            val timeout = Runnable {
+                synchronized(this) {
+                    if (watching[info.serviceName] === callback) forgetLocked(manager, info.serviceName)
+                }
+            }
+            watchTimeouts[info.serviceName] = timeout
+            main.postDelayed(timeout, RESOLVE_TIMEOUT_MS)
         } catch (_: RuntimeException) {
-            // Already stopped by the system.
+            // Already watched or rejected; discovery reports it again if it returns.
+        }
+    }
+
+    /** Stops watching a service; discovery reporting it again starts afresh. */
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    private fun forgetLocked(manager: NsdManager, serviceName: String) {
+        watchTimeouts.remove(serviceName)?.let(main::removeCallbacks)
+        val callback = watching.remove(serviceName) ?: return
+        try {
+            manager.unregisterServiceInfoCallback(callback)
+        } catch (_: RuntimeException) {
+            // Registration had already failed or ended.
         }
     }
 
     @Suppress("DEPRECATION") // resolveService is the only resolver below API 34.
     private fun resolveNextLocked() {
-        if (resolving) return
+        if (resolve != null) return
         val next = pending.removeFirstOrNull() ?: return
         val manager = nsd ?: return
-        resolving = true
-        val owner = discovery
-        manager.resolveService(next, object : NsdManager.ResolveListener {
-            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                finished(owner, null)
-            }
+        val token = Any()
+        resolve = token
+        timeout = Runnable { finished(token, null) }.also { main.postDelayed(it, RESOLVE_TIMEOUT_MS) }
+        try {
+            manager.resolveService(next, object : NsdManager.ResolveListener {
+                override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                    if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE) {
+                        // A timed-out resolve is still running in the system; try again after it.
+                        synchronized(this@PairDiscovery) {
+                            if (resolve !== token) return
+                            pending.addLast(next)
+                        }
+                    }
+                    finished(token, null)
+                }
 
-            override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                finished(owner, serviceInfo)
-            }
-        })
+                override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+                    finished(token, serviceInfo)
+                }
+            })
+        } catch (_: RuntimeException) {
+            main.post { finished(token, null) }
+        }
     }
 
-    private fun finished(owner: NsdManager.DiscoveryListener?, info: NsdServiceInfo?) {
-        val service = info?.let(::toService)
+    private fun finished(token: Any, info: NsdServiceInfo?) {
         synchronized(this) {
-            resolving = false
-            if (discovery !== owner || owner == null) return
-            resolveNextLocked()
+            // Already timed out, superseded, or stopped.
+            if (resolve !== token) return
+            resolve = null
+            timeout?.let(main::removeCallbacks)
+            timeout = null
+            if (discovery == null) return
+            if (pending.isNotEmpty() && info == null) {
+                // Space retries out instead of spinning against a busy resolver.
+                main.postDelayed({ synchronized(this) { resolveNextLocked() } }, RETRY_DELAY_MS)
+            } else {
+                resolveNextLocked()
+            }
         }
-        service?.let(listener::onService)
+        info?.let(::toService)?.let(listener::onService)
     }
 
     private fun toService(info: NsdServiceInfo): Service? {
