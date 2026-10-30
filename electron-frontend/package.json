@@ -130,7 +130,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react-swc": "^4.3.3",
     "cmake-js": "^8.0.0",
-    "electron": "^44.7.0",
+    "electron": "^44.9.1",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "node-addon-api": "^8.9.2",
