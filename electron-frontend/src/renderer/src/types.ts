@@ -863,6 +863,15 @@ declare global {
         comparisonDriverIndex: number,
         sectorDelta: boolean,
       ) => Promise<unknown | null>
+      map: (
+        mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'braking',
+        currentLapNum: number,
+        currentSource: 'file1' | 'file2',
+        currentDriverIndex: number,
+        comparisonLapNum: number | null,
+        comparisonSource: 'file1' | 'file2',
+        comparisonDriverIndex: number,
+      ) => Promise<unknown | null>
       closeFile: () => void
     }
 

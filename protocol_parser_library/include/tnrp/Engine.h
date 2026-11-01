@@ -257,6 +257,9 @@ public:
     void setLapHistoryCar(int carIdx);
     bool playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
                                       int driverIndex = -1) const;
+    // Runs `read` on the loaded recording under the engine lock; false when
+    // nothing is playing. The Analysis map (tnrp/AnalysisMap.h) reads through it.
+    bool playerReadRecording(const std::function<void(const TnrdReader&)>& read) const;
     // The loaded recording's answers to a phone's request_lap_delta and
     // request_lap_data: the JSON a paired phone receives as their "data".
     // Empty when nothing is playing or a lap is unknown.

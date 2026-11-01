@@ -362,6 +362,18 @@ const analysisBridge = {
     'analysis:compare-laps', currentLapNum, currentSource, currentDriverIndex,
     comparisonLapNum, comparisonSource, comparisonDriverIndex, sectorDelta,
   ),
+  map: (
+    mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'braking',
+    currentLapNum: number,
+    currentSource: 'file1' | 'file2',
+    currentDriverIndex: number,
+    comparisonLapNum: number | null,
+    comparisonSource: 'file1' | 'file2',
+    comparisonDriverIndex: number,
+  ): Promise<unknown | null> => ipcRenderer.invoke(
+    'analysis:map', mode, currentLapNum, currentSource, currentDriverIndex,
+    comparisonLapNum, comparisonSource, comparisonDriverIndex,
+  ),
   closeFile: (): void => ipcRenderer.send('analysis:close-file'),
 }
 

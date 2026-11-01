@@ -299,6 +299,14 @@ public:
     bool columnarHistory(uint8_t driver, const std::vector<uint8_t>& types, uint32_t v4Mask,
                          float from, float to, bool seed, std::vector<uint8_t>& out,
                          std::string* errorOut, const IndexedCancelCheck& cancelled = {});
+    // One driver's race-phase values of one numeric field of `type` within
+    // [from, to], read straight from the decoded columns with no JSON or
+    // payload in between: (session_time, value) pairs in time order. Samples
+    // marked unavailable, and rows without the field, are left out. Not safe
+    // to call concurrently on one instance.
+    bool fieldSamples(uint8_t driver, V6DataType type, std::string_view field, float from, float to,
+                      std::vector<std::pair<float, double>>& out, std::string* errorOut,
+                      const IndexedCancelCheck& cancelled = {});
     // One lap's samples of `types` for the playback driver within [from, to],
     // as the numeric fields each carries, in the order rowsForLap() returns
     // them: what a phone's chart lap request reads, with no row rendered as

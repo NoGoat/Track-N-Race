@@ -50,6 +50,7 @@ import {
   analysisLoadFile,
   analysisGetLapData,
   analysisCompareLaps,
+  analysisMap,
   analysisCloseFile,
   setOnPlaybackState,
   getActiveFilePath,
@@ -386,6 +387,18 @@ ipcMain.handle('analysis:compare-laps', (
 ) => analysisCompareLaps(
   currentLapNum, currentSource, currentDriverIndex,
   comparisonLapNum, comparisonSource, comparisonDriverIndex, sectorDelta))
+ipcMain.handle('analysis:map', (
+  _event,
+  mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'braking',
+  currentLapNum: number,
+  currentSource: 'file1' | 'file2',
+  currentDriverIndex: number,
+  comparisonLapNum: number | null,
+  comparisonSource: 'file1' | 'file2',
+  comparisonDriverIndex: number,
+) => analysisMap(
+  mode, currentLapNum, currentSource, currentDriverIndex,
+  comparisonLapNum, comparisonSource, comparisonDriverIndex))
 ipcMain.on('analysis:close-file', () => analysisCloseFile())
 
 ipcMain.handle('player:export-xlsx', async (event) => {

@@ -13,6 +13,7 @@
 #include <limits>
 #include <iterator>
 #include <optional>
+#include <system_error>
 #include <string_view>
 #include <thread>
 #include <unordered_set>
@@ -919,6 +920,7 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
         totalTime_ = indexedArchive_->totalTime();
         initialFuelKg_ = indexedArchive_->summary().initialFuelKg;
         if (detected == TnrdFormat::ChunkedV6) {
+            v6Path_ = path;
             if (auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get())) {
                 if (const auto player = v6->playerDriverIndex()) {
                     recordedDriverIndex_ = *player;
@@ -1074,6 +1076,11 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
 }
 
 void TnrdReader::close() {
+    ++loadSerial_;
+    ersPeaks_.clear();
+    if (ersPeakSweep_) ersPeakSweep_->cancel();
+    ersPeakSweep_.reset();
+    v6Path_.clear();
     std::fprintf(stderr, "[close-trace] TnrdReader::close entry format=%s index=%zu laps=%zu hotBytes=%zu seekCacheBytes=%zu temp=%s\n",
                  toString(loadedFormat_), index_.size(), lapBlocks_.size(),
                  hotBin_ ? hotBin_->size() : 0, packedSeekCacheBytes_,
@@ -3416,6 +3423,361 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
     gather(4, coldLap_);
     if (!f.coldJson.empty()) f.coldJson.pop_back();   // no trailing newline
     return f;
+}
+
+// ── Analysis map inputs ──────────────────────────────────────────────────────
+
+// Read with glaze reflection, which MSVC cannot apply to types in an
+// anonymous namespace, so these sit at namespace scope like the scan fields.
+struct ErsStatusFields {
+    float session_time{};
+    std::optional<float> engine_power_mguk_kw;
+    std::optional<double> ers_j;
+};
+struct ErsLapPayload {
+    std::vector<ErsStatusFields> statusHistory;
+};
+struct AeroStatusFields {
+    std::string type;
+    std::optional<int> active_aero_track_status;
+};
+struct HarvestStatusFields {
+    float session_time{};
+    std::optional<double> ers_harvested_mguk_j;
+    std::optional<double> ers_harvested_mguh_j;
+};
+struct HarvestLapPayload {
+    std::vector<HarvestStatusFields> statusHistory;
+};
+struct InputTelemetryFields {
+    float session_time{};
+    std::optional<float> throttle;
+    std::optional<float> brake;
+    std::optional<float> speed_kph;
+    std::optional<float> rpm;
+    std::optional<int> gear;
+    std::optional<float> steering;
+};
+struct InputLapPayload {
+    std::vector<InputTelemetryFields> telemetry;
+};
+
+namespace {
+
+// Appends a Session row's track status when it differs from the last one.
+void appendTrackStatus(std::vector<TrackStatusChange>& out, float sessionTime,
+                       std::string_view json) {
+    AeroStatusFields fields;
+    if (glz::read<kPartialRead>(fields, json) || fields.type != "session" ||
+        !fields.active_aero_track_status || *fields.active_aero_track_status < 0) return;
+    const int status = *fields.active_aero_track_status == 1 ? 1 : 0;
+    if (!out.empty() && out.back().status == status) return;
+    out.push_back({sessionTime, status});
+}
+
+} // namespace
+
+std::vector<int> TnrdReader::analysisLapNumbers(int driverIndex) const {
+    std::vector<int> laps;
+    if (loadedFormat_ == TnrdFormat::ChunkedV6 && driverIndex >= 0 &&
+        driverIndex != playbackDriverIndex_) {
+        auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+        if (!v6 || !v6->driverHeader(static_cast<uint8_t>(driverIndex))) return laps;
+        for (const auto& lap : v6->driverLapSummaries(static_cast<uint8_t>(driverIndex))) {
+            const int lapNum = static_cast<int>(lap.lapNumber);
+            if (lap.phase == detail::V6Phase::Race && lapNum > 0 &&
+                std::find(laps.begin(), laps.end(), lapNum) == laps.end()) laps.push_back(lapNum);
+        }
+        return laps;
+    }
+    for (const auto& [lapNum, block] : lapBlocks_) laps.push_back(lapNum);
+    return laps;
+}
+
+bool TnrdReader::getAnalysisErsSamples(int lapNum, std::vector<ErsSample>& out,
+                                       int driverIndex) const {
+    // V6: the two columns straight from the archive, no JSON either way.
+    if (auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+        v6 && loadedFormat_ == TnrdFormat::ChunkedV6) {
+        AnalysisLapProgress lap;
+        if (!getAnalysisLapProgress(lapNum, lap, driverIndex)) return false;
+        const int car = analysisCarIndex(driverIndex);
+        if (car < 0 || car >= 24) return false;
+        std::vector<std::pair<float, double>> power;
+        std::vector<std::pair<float, double>> store;
+        std::string error;
+        if (!v6->fieldSamples(static_cast<uint8_t>(car), detail::V6DataType::EnginePower,
+                              "engine_power_mguk_kw", lap.startSessionTime, lap.endSessionTime,
+                              power, &error) ||
+            !v6->fieldSamples(static_cast<uint8_t>(car), detail::V6DataType::ERSStore,
+                              "ers_j", lap.startSessionTime, lap.endSessionTime, store, &error))
+            return false;
+        // Each power sample takes the store's latest value at or before it.
+        out.clear();
+        out.reserve(power.size());
+        size_t s = 0;
+        double ersJ = store.empty() ? 0.0 : store.front().second;
+        for (const auto& [time, kw] : power) {
+            while (s < store.size() && store[s].first <= time) ersJ = store[s++].second;
+            if (std::isfinite(kw)) out.push_back({time, static_cast<float>(kw), ersJ});
+        }
+        return true;
+    }
+    // Other formats: the lap's Car Status rows as playback renders them, so
+    // every recording format reads exactly what the Analysis charts read.
+    constexpr uint32_t statusRows = 1u << 2;
+    const std::string json = getLapDataMessage(lapNum, statusRows, driverIndex);
+    if (json.empty()) return false;
+    ErsLapPayload payload;
+    if (glz::read<kPartialRead>(payload, json)) return false;
+    out.clear();
+    out.reserve(payload.statusHistory.size());
+    for (const auto& row : payload.statusHistory) {
+        if (!row.engine_power_mguk_kw || !std::isfinite(*row.engine_power_mguk_kw)) continue;
+        out.push_back({row.session_time, *row.engine_power_mguk_kw, row.ers_j.value_or(0.0)});
+    }
+    return true;
+}
+
+namespace {
+
+// Two counter columns as one series: a sample at every time either has one,
+// each column carrying its latest value forward.
+std::vector<HarvestSample> mergeHarvest(const std::vector<std::pair<float, double>>& mguk,
+                                        const std::vector<std::pair<float, double>>& mguh) {
+    std::vector<HarvestSample> out;
+    out.reserve(std::max(mguk.size(), mguh.size()));
+    size_t k = 0, h = 0;
+    double kNow = 0.0, hNow = 0.0;
+    while (k < mguk.size() || h < mguh.size()) {
+        const float time = h >= mguh.size() || (k < mguk.size() && mguk[k].first <= mguh[h].first)
+            ? mguk[k].first : mguh[h].first;
+        while (k < mguk.size() && mguk[k].first == time) kNow = mguk[k++].second;
+        while (h < mguh.size() && mguh[h].first == time) hNow = mguh[h++].second;
+        if (std::isfinite(kNow) && std::isfinite(hNow)) out.push_back({time, kNow + hNow});
+    }
+    return out;
+}
+
+// The harvest counters of one car over [from, to], read raw from a V6 archive.
+bool v6HarvestSamples(detail::TnrdV6Archive& v6, uint8_t car, float from, float to,
+                      std::vector<HarvestSample>& out, const detail::IndexedCancelCheck& cancelled = {}) {
+    std::vector<std::pair<float, double>> mguk;
+    std::vector<std::pair<float, double>> mguh;
+    std::string error;
+    if (!v6.fieldSamples(car, detail::V6DataType::ERSHarvest, "ers_harvested_mguk_j",
+                         from, to, mguk, &error, cancelled) ||
+        !v6.fieldSamples(car, detail::V6DataType::ERSHarvest, "ers_harvested_mguh_j",
+                         from, to, mguh, &error, cancelled)) return false;
+    out = mergeHarvest(mguk, mguh);
+    return true;
+}
+
+} // namespace
+
+bool TnrdReader::getAnalysisHarvestSamples(int lapNum, std::vector<HarvestSample>& out,
+                                           int driverIndex) const {
+    if (auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+        v6 && loadedFormat_ == TnrdFormat::ChunkedV6) {
+        AnalysisLapProgress lap;
+        if (!getAnalysisLapProgress(lapNum, lap, driverIndex)) return false;
+        const int car = analysisCarIndex(driverIndex);
+        if (car < 0 || car >= 24) return false;
+        return v6HarvestSamples(*v6, static_cast<uint8_t>(car), lap.startSessionTime,
+                                lap.endSessionTime, out);
+    }
+    // Other formats: the lap's Car Status rows as playback renders them.
+    constexpr uint32_t statusRows = 1u << 2;
+    const std::string json = getLapDataMessage(lapNum, statusRows, driverIndex);
+    if (json.empty()) return false;
+    HarvestLapPayload payload;
+    if (glz::read<kPartialRead>(payload, json)) return false;
+    out.clear();
+    out.reserve(payload.statusHistory.size());
+    for (const auto& row : payload.statusHistory)
+        if (row.ers_harvested_mguk_j || row.ers_harvested_mguh_j)
+            out.push_back({row.session_time,
+                           row.ers_harvested_mguk_j.value_or(0.0) + row.ers_harvested_mguh_j.value_or(0.0)});
+    return true;
+}
+
+bool TnrdReader::getAnalysisInputSamples(int lapNum, std::vector<InputSample>& out,
+                                         int driverIndex) const {
+    // V6: the two pedal columns straight from the archive.
+    if (auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+        v6 && loadedFormat_ == TnrdFormat::ChunkedV6) {
+        AnalysisLapProgress lap;
+        if (!getAnalysisLapProgress(lapNum, lap, driverIndex)) return false;
+        const int car = analysisCarIndex(driverIndex);
+        if (car < 0 || car >= 24) return false;
+        constexpr size_t kColumns = 6;
+        std::array<std::vector<std::pair<float, double>>, kColumns> columns;
+        const std::array<std::pair<detail::V6DataType, const char*>, kColumns> fields{{
+            {detail::V6DataType::Throttle, "throttle"}, {detail::V6DataType::Brake, "brake"},
+            {detail::V6DataType::Speed, "speed_kph"}, {detail::V6DataType::RPM, "rpm"},
+            {detail::V6DataType::Gear, "gear"}, {detail::V6DataType::Steering, "steering"}}};
+        std::string error;
+        const uint8_t id = static_cast<uint8_t>(car);
+        for (size_t c = 0; c < kColumns; ++c)
+            if (!v6->fieldSamples(id, fields[c].first, fields[c].second,
+                                  lap.startSessionTime, lap.endSessionTime, columns[c], &error))
+                return false;
+        // One sample per moment any column changed, each carrying the latest
+        // value of every column.
+        out.clear();
+        out.reserve(columns[2].size());
+        std::array<size_t, kColumns> at{};
+        std::array<double, kColumns> now{};
+        for (;;) {
+            float time = std::numeric_limits<float>::infinity();
+            for (size_t c = 0; c < kColumns; ++c)
+                if (at[c] < columns[c].size()) time = std::min(time, columns[c][at[c]].first);
+            if (!std::isfinite(time)) break;
+            for (size_t c = 0; c < kColumns; ++c)
+                while (at[c] < columns[c].size() && columns[c][at[c]].first == time)
+                    now[c] = columns[c][at[c]++].second;
+            out.push_back({time, static_cast<float>(now[0]), static_cast<float>(now[1]),
+                           static_cast<float>(now[2]), static_cast<float>(now[3]),
+                           static_cast<int>(std::lround(now[4])), static_cast<float>(now[5])});
+        }
+        return true;
+    }
+    // Other formats: the lap's Car Telemetry rows as playback renders them.
+    constexpr uint32_t telemetryRows = 1u << 1;
+    const std::string json = getLapDataMessage(lapNum, telemetryRows, driverIndex);
+    if (json.empty()) return false;
+    InputLapPayload payload;
+    if (glz::read<kPartialRead>(payload, json)) return false;
+    out.clear();
+    out.reserve(payload.telemetry.size());
+    for (const auto& row : payload.telemetry)
+        if (row.throttle || row.brake)
+            out.push_back({row.session_time, row.throttle.value_or(0.0f), row.brake.value_or(0.0f),
+                           row.speed_kph.value_or(0.0f), row.rpm.value_or(0.0f), row.gear.value_or(0),
+                           row.steering.value_or(0.0f)});
+    return true;
+}
+
+std::vector<TrackStatusChange> TnrdReader::aeroTrackStatusTimeline() const {
+    std::vector<TrackStatusChange> timeline;
+    if (!indexedArchive_ || !isChunkedTnrd(loadedFormat_)) return timeline;
+    if (auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get())) {
+        // Shared records are stored in file order; analysis laps are race laps.
+        std::vector<const detail::V6SharedRecord*> race;
+        for (const auto& record : v6->sharedRecords())
+            if (record.phase == detail::V6Phase::Race) race.push_back(&record);
+        std::stable_sort(race.begin(), race.end(), [](const auto* a, const auto* b) {
+            return a->sessionTime < b->sessionTime;
+        });
+        for (const auto* record : race) appendTrackStatus(timeline, record->sessionTime, record->json);
+        return timeline;
+    }
+    if (lapBlocks_.empty()) return timeline;
+    std::vector<detail::V4TimedRow> rows;
+    std::string error;
+    if (!const_cast<detail::TnrdIndexedArchive*>(indexedArchive_.get())->rowsForRange(
+            lapBlocks_.begin()->second.startSessionTime, lapBlocks_.rbegin()->second.endSessionTime,
+            detail::v4TypeBit(5), rows, &error)) return timeline;
+    std::stable_sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+        return a.sessionTime < b.sessionTime;
+    });
+    for (const auto& row : rows) appendTrackStatus(timeline, row.sessionTime, row.json);
+    return timeline;
+}
+
+bool TnrdReader::cachedErsPeaks(int driverIndex, ErsPeaks& out) const {
+    const auto it = ersPeaks_.find(analysisCarIndex(driverIndex));
+    if (it == ersPeaks_.end()) return false;
+    out = it->second;
+    return true;
+}
+
+void TnrdReader::cacheErsPeaks(int driverIndex, uint64_t serial, const ErsPeaks& peaks) const {
+    if (serial == loadSerial_) ersPeaks_[analysisCarIndex(driverIndex)] = peaks;
+}
+
+void TnrdReader::startErsPeakSweep() {
+    if (ersPeakSweep_ || v6Path_.empty() || loadedFormat_ != TnrdFormat::ChunkedV6) return;
+    auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+    if (!v6) return;
+
+    struct SweepLap { float start; float end; };
+    struct SweepCar { int driver; std::vector<SweepLap> laps; };
+    auto cars = std::make_shared<std::vector<SweepCar>>();
+    for (int driver = 0; driver < 24; ++driver) {
+        if (!v6->driverHeader(static_cast<uint8_t>(driver))) continue;
+        SweepCar car{driver, {}};
+        for (const auto& lap : v6->driverLapSummaries(static_cast<uint8_t>(driver)))
+            if (lap.phase == detail::V6Phase::Race)
+                car.laps.push_back({lap.startSessionTime, lap.endSessionTime});
+        if (!car.laps.empty()) cars->push_back(std::move(car));
+    }
+    if (cars->empty()) return;
+
+    std::vector<int> drivers;
+    for (const auto& car : *cars) drivers.push_back(car.driver);
+    auto sweep = std::make_shared<ErsPeakSweep>(drivers);
+    ersPeakSweep_ = sweep;
+
+    // Each worker opens its own archive (one instance takes one call at a
+    // time) and takes cars from a shared queue until none are left.
+    const auto timeline = std::make_shared<const std::vector<TrackStatusChange>>(aeroTrackStatusTimeline());
+    auto next = std::make_shared<std::atomic<size_t>>(0);
+    const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
+    const size_t workers = std::min<size_t>(cars->size(), std::min(4u, hardware));
+    size_t started = 0;
+    for (size_t w = 0; w < workers; ++w) {
+        try {
+            std::thread([sweep, cars, next, timeline, path = v6Path_] {
+                detail::V6LoadResult loaded;
+                std::string error;
+                bool open = false;
+                try {
+                    open = detail::TNRD_V6::load(path, loaded, error) && loaded.archive;
+                } catch (...) {}
+                std::vector<std::pair<float, double>> power;
+                std::vector<ErsSample> samples;
+                std::vector<HarvestSample> harvest;
+                for (size_t index = (*next)++; index < cars->size(); index = (*next)++) {
+                    const auto& car = (*cars)[index];
+                    if (!open || sweep->cancelled()) {
+                        sweep->publish(car.driver, std::nullopt);
+                        continue;
+                    }
+                    // Every car taken is published, or a map waiting on it would
+                    // never return.
+                    std::optional<ErsPeaks> result;
+                    try {
+                        ErsPeaks peaks;
+                        // The engine-power column for each lap, read raw.
+                        for (const auto& lap : car.laps) {
+                            if (sweep->cancelled()) break;
+                            if (!loaded.archive->fieldSamples(static_cast<uint8_t>(car.driver),
+                                    detail::V6DataType::EnginePower, "engine_power_mguk_kw",
+                                    lap.start, lap.end, power, &error,
+                                    [&sweep] { return sweep->cancelled(); })) continue;
+                            samples.clear();
+                            samples.reserve(power.size());
+                            for (const auto& [time, kw] : power)
+                                if (std::isfinite(kw)) samples.push_back({time, static_cast<float>(kw), 0.0});
+                            accumulateErsPeaks(peaks, samples, lap.start, lap.end, *timeline);
+                            if (v6HarvestSamples(*loaded.archive, static_cast<uint8_t>(car.driver),
+                                    lap.start, lap.end, harvest, [&sweep] { return sweep->cancelled(); }))
+                                accumulateHarvestPeak(peaks, harvest, lap.start, lap.end);
+                        }
+                        if (!sweep->cancelled()) result = peaks;
+                    } catch (...) {}
+                    sweep->publish(car.driver, result);
+                }
+            }).detach();
+            ++started;
+        } catch (const std::system_error&) {
+            break;
+        }
+    }
+    // With no worker running nobody would publish; waiters fall back to their
+    // own scan instead.
+    if (started == 0) sweep->cancel();
 }
 
 } // namespace tnrp

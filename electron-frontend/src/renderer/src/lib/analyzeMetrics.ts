@@ -41,6 +41,10 @@ export interface AnalyzeConfig {
   splitRatio: number
   /** Split view: draw each car's current map position as a line on the graphs. */
   splitCursors: boolean
+  /** Map: mark where each lap starts braking for each corner. */
+  brakingPoints: boolean
+  /** Map: show the Data Comparison panel. */
+  inputPanel: boolean
   syncedTooltip: boolean
   sectorBoundaries: boolean
   sectorDelta: boolean
@@ -50,8 +54,12 @@ export interface AnalyzeConfig {
   lapBLabel: string
   mapCurrentColor: string
   mapComparisonColor: string
+  mapColoring: AnalyzeMapColoring
   series: AnalyzeSeriesConfig[]
 }
+
+/** How the Analysis map paints the track. */
+export type AnalyzeMapColoring = 'none' | 'dominance' | 'ers' | 'harvest' | 'inputs'
 
 export const DEFAULT_MAP_CURRENT_COLOR = '#5794F2'
 export const DEFAULT_SPLIT_RATIO = 0.5
@@ -231,6 +239,8 @@ export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
   individualGraphs: false,
   splitRatio: DEFAULT_SPLIT_RATIO,
   splitCursors: true,
+  brakingPoints: false,
+  inputPanel: true,
   syncedTooltip: false,
   sectorBoundaries: false,
   sectorDelta: false,
@@ -240,6 +250,7 @@ export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
   lapBLabel: '',
   mapCurrentColor: DEFAULT_MAP_CURRENT_COLOR,
   mapComparisonColor: DEFAULT_MAP_COMPARISON_COLOR,
+  mapColoring: 'none',
   series: [
     ...['speed', 'rpm', 'ers'].map(metricId => ({
       metricId,
@@ -304,6 +315,8 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
       ? clampSplitRatio(value.splitRatio)
       : DEFAULT_SPLIT_RATIO,
     splitCursors: value?.splitCursors !== false,
+    brakingPoints: value?.brakingPoints === true,
+    inputPanel: value?.inputPanel !== false,
     syncedTooltip: value?.syncedTooltip === true,
     sectorBoundaries,
     sectorDelta: value?.sectorDelta === true,
@@ -313,6 +326,7 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
     lapBLabel: label(value?.lapBLabel, DEFAULT_LAP_B_LABEL),
     mapCurrentColor: /^#[0-9a-f]{6}$/i.test(value?.mapCurrentColor ?? '') ? value!.mapCurrentColor! : DEFAULT_MAP_CURRENT_COLOR,
     mapComparisonColor: /^#[0-9a-f]{6}$/i.test(value?.mapComparisonColor ?? '') ? value!.mapComparisonColor! : DEFAULT_MAP_COMPARISON_COLOR,
+    mapColoring: (['dominance', 'ers', 'harvest', 'inputs'] as const).find(mode => mode === value?.mapColoring) ?? 'none',
     series: hasSeries ? series : DEFAULT_ANALYZE_CONFIG.series.map(item => ({ ...item })),
   }
 }

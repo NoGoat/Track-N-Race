@@ -277,6 +277,8 @@ interface NativeEngine extends NativePairEngine {
   analysisGetLapData(lapNum: number, rowTypeMask: number, secondary: boolean, driverIndex: number): string | null
   analysisCompareLaps(currentLapNum: number, currentSecondary: boolean, currentDriverIndex: number,
     comparisonLapNum: number, comparisonSecondary: boolean, comparisonDriverIndex: number, sectorDelta: boolean): Promise<string | null>
+  analysisMap(mode: string, currentLapNum: number, currentSecondary: boolean, currentDriverIndex: number,
+    comparisonLapNum: number, comparisonSecondary: boolean, comparisonDriverIndex: number): Promise<string | null>
   analysisCloseFile(): void
 }
 
@@ -1189,6 +1191,33 @@ export function analysisGetLapData(
   if (!engine) return null
   const json = engine.analysisGetLapData(
     lapNum, rowTypeMask >>> 0, source === 'file2', driverIndex)
+  if (!json) return null
+  try {
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+}
+
+export async function analysisMap(
+  mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'braking',
+  currentLapNum: number,
+  currentSource: 'file1' | 'file2',
+  currentDriverIndex: number,
+  comparisonLapNum: number | null,
+  comparisonSource: 'file1' | 'file2',
+  comparisonDriverIndex: number,
+): Promise<unknown | null> {
+  if (!engine) return null
+  const json = await engine.analysisMap(
+    mode,
+    currentLapNum,
+    currentSource === 'file2',
+    currentDriverIndex,
+    comparisonLapNum ?? -1,
+    comparisonSource === 'file2',
+    comparisonDriverIndex,
+  )
   if (!json) return null
   try {
     return JSON.parse(json)

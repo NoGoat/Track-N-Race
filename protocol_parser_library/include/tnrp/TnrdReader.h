@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "tnrp/control_rows.h"
+#include "tnrp/AnalysisMap.h"
 #include "tnrp/LapDelta.h"
 #include "tnrp/LapMeasures.h"
 #include "tnrp/Strategy.h"
@@ -207,6 +208,37 @@ public:
     std::string phoneChartLapJson(int lapNum, const std::vector<std::string>& channels) const;
     bool getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
                                 int driverIndex = -1) const;
+    // ── Analysis map inputs (tnrp/AnalysisMap.h) ──
+    // The laps getAnalysisLapProgress can answer for this driver.
+    std::vector<int> analysisLapNumbers(int driverIndex = -1) const;
+    // One lap's Car Status MGU-K and ERS store samples for this driver.
+    bool getAnalysisErsSamples(int lapNum, std::vector<ErsSample>& out,
+                               int driverIndex = -1) const;
+    // One lap's MGU-K + MGU-H harvest counter samples for this driver.
+    bool getAnalysisHarvestSamples(int lapNum, std::vector<HarvestSample>& out,
+                                   int driverIndex = -1) const;
+    // One lap's throttle and brake samples for this driver.
+    bool getAnalysisInputSamples(int lapNum, std::vector<InputSample>& out,
+                                 int driverIndex = -1) const;
+    // The race's active-aero track status over time, from its Session rows.
+    // Empty when the recording has none (formats before 2026, V1-V3 files).
+    std::vector<TrackStatusChange> aeroTrackStatusTimeline() const;
+    // A car's whole-recording ERS peaks, kept once scanned. loadSerial()
+    // changes with every load/close, so a scan that finishes after another
+    // recording was opened is not stored against it.
+    uint64_t loadSerial() const { return loadSerial_; }
+    bool cachedErsPeaks(int driverIndex, ErsPeaks& out) const;
+    void cacheErsPeaks(int driverIndex, uint64_t serial, const ErsPeaks& peaks) const;
+    // The car a driver index names: -1 is the car playback follows.
+    int analysisCarIndex(int driverIndex) const {
+        return driverIndex >= 0 ? driverIndex : effectivePlaybackDriver();
+    }
+    // V6 recordings opened from a file: finds every car's ERS peaks on
+    // background threads, each reading its own copy of the archive, so the
+    // first ERS Usage map does not wait for a scan. Hosts call it after
+    // load() for recordings they will analyse; close() cancels it.
+    void startErsPeakSweep();
+    std::shared_ptr<ErsPeakSweep> ersPeakSweep() const { return ersPeakSweep_; }
     // One car's completed laps ending at or before `throughTime`. V6 only;
     // other formats return no laps.
     DriverLapHistoryRow driverLapHistory(int driver, float throughTime) const;
@@ -358,6 +390,10 @@ private:
     int                      fastestLapMs_  = 0;
     double                   initialFuelKg_ = -1.0;
     int                      trackLengthM_ = 0;
+    uint64_t                 loadSerial_ = 0;
+    std::string              v6Path_;   // the V6 file loaded, for the peak sweep
+    std::shared_ptr<ErsPeakSweep> ersPeakSweep_;
+    mutable std::map<int, ErsPeaks> ersPeaks_;
 
     size_t upperBoundTime(float t) const;
     size_t lowerBoundTime(float t) const;

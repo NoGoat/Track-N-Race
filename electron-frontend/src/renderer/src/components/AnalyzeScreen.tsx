@@ -2,14 +2,14 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal, flushSync } from 'react-dom'
 import { type FormatOptionLabelMeta, type GroupBase, type SingleValue } from 'react-select'
 import Select from '../lib/AnimatedSelect'
-import { AlertTriangle, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Eye, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, SeparatorVertical, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Disc3, Eye, Gauge, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, Palette, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, SeparatorVertical, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_COMBINED_BY_ID, ANALYZE_METRIC_BY_ID, ANALYZE_TYRE_CORNERS, ANALYZE_TYRE_ROWS, DEFAULT_ANALYZE_CONFIG,
   analyzeCornerKeyOf, analyzeSeriesConflicts, analyzeSeriesLineColor, sanitizeCornerColors, sanitizeCorners,
   DEFAULT_COMPARE_LABEL, DEFAULT_CURRENT_LABEL, DEFAULT_LAP_A_LABEL, DEFAULT_LAP_B_LABEL,
   DEFAULT_DELTA_NEGATIVE_COLOR, DEFAULT_DELTA_POSITIVE_COLOR, sanitizeAnalyzeConfig,
-  type AnalyzeConfig, type AnalyzeSeriesConfig,
+  type AnalyzeConfig, type AnalyzeMapColoring, type AnalyzeSeriesConfig,
 } from '../lib/analyzeMetrics'
 import type { AnalysisYAxisState } from '../lib/graphSections'
 import { buildSelectStyles } from '../lib/selectStyles'
@@ -20,6 +20,7 @@ import { tyreCompoundColor } from '../lib/tyreCompounds'
 import { useModalPresence, useModalPresenceValue } from '../lib/useModalPresence'
 import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
+import { parseAnalysisMapResult, type AnalysisMapResult } from '../lib/analyzeMapPaint'
 import { buildLapProgressMap, findSectorSplits, interpolateDistanceAtTime, type LapProgressMap } from '../lib/lapDelta'
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../lib/playbackCursor'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -107,6 +108,15 @@ const ANALYZE_TOGGLE_BUTTON_CLASS = 'analyze-toggle-button flex h-8 min-w-0 flex
 const ANALYZE_COMPARISON_COLOR_CLASS = 'h-5 w-5 shrink-0 cursor-pointer rounded border border-[var(--border)] shadow-inner'
 const EMPTY_LAP_OPTION_GROUPS: GroupBase<ComparisonLapOption>[] = []
 const noop = () => {}
+
+type MapColoringOption = { value: AnalyzeMapColoring; label: string }
+const MAP_COLORING_OPTIONS: MapColoringOption[] = [
+  { value: 'none', label: 'None' },
+  { value: 'dominance', label: 'Track Dominance' },
+  { value: 'inputs', label: 'Driver Inputs' },
+  { value: 'ers', label: 'ERS Usage' },
+  { value: 'harvest', label: 'ERS Harvest' },
+]
 const ANALYSIS_MOTION_EASING = 'cubic-bezier(0.65, 0, 0.35, 1)'
 const ANALYSIS_MOTION_DURATION = 260
 const ANALYSIS_PRESENCE_DURATION = ANALYSIS_MOTION_DURATION + 20
@@ -863,6 +873,41 @@ const EMPTY_ANALYZE_LAP: AnalyzeLapData = {
   rowTypeMask: 0,
 }
 
+/**
+ * libtnrp's map calculation for `mode` over the laps on show; null while there
+ * is nothing to ask for. While a newly selected lap's answer is on its way the
+ * last one in the same mode stays up, rather than the map dropping to plain.
+ */
+function useAnalysisMap(
+  mode: AnalysisMapResult['mode'] | null,
+  currentDriver: AnalysisDriverSelection | null,
+  currentLap: number | null,
+  comparisonDriver: AnalysisDriverSelection | null,
+  comparisonLap: number | null,
+  filesKey: string,
+): AnalysisMapResult | null {
+  const key = mode && currentDriver && currentLap !== null
+    ? [mode, analysisLapKey(currentDriver, currentLap),
+        comparisonDriver && comparisonLap !== null ? analysisLapKey(comparisonDriver, comparisonLap) : '-',
+        filesKey].join('|')
+    : null
+  const [response, setResponse] = useState<AnalysisMapResult | null>(null)
+  useEffect(() => {
+    if (!key || !mode || !currentDriver || currentLap === null) return
+    let cancelled = false
+    const comparison = comparisonLap !== null ? comparisonDriver : null
+    void window.analysisBridge.map(
+      mode, currentLap, currentDriver.source, currentDriver.driverIndex,
+      comparison ? comparisonLap : null,
+      comparison?.source ?? 'file1', comparison?.driverIndex ?? -1,
+    ).then(raw => {
+      if (!cancelled) setResponse(parseAnalysisMapResult(raw))
+    })
+    return () => { cancelled = true }
+  }, [comparisonDriver, comparisonLap, currentDriver, currentLap, key, mode])
+  return key && response?.mode === mode ? response : null
+}
+
 export default function AnalyzeScreen({
   isDark, playbackFilename, currentLapNum, compareLapNum, onCompareLapChange,
   compareDriver, onCompareDriverChange,
@@ -1366,6 +1411,21 @@ export default function AnalyzeScreen({
   const distinctMapTrackIds = [...new Set(mapTrackIds)]
   const mapTrackId = distinctMapTrackIds[0] ?? primaryTrackId
   const compatibleMapCircuit = distinctMapTrackIds.length <= 1
+
+  // libtnrp colours the map for the laps on show (tnrp/AnalysisMap.h), and
+  // finds their braking points when those are switched on.
+  const mapCurrentDriver = fixedLapMode.enabled ? lapADriver : currentDriverSelection
+  const mapComparisonDriver = fixedLapMode.enabled ? lapBDriver : compareDriver
+  const mapCurrentLap = fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum
+  const mapComparisonLap = fixedLapMode.enabled ? fixedLapMode.lapB : selectedCompareLapNum
+  const mapFilesKey = `${playbackFilename ?? ''}|${secondaryFile?.filename ?? ''}`
+  const mapActive = mapVisible && !!playbackFilename
+  const mapResult = useAnalysisMap(
+    mapActive && config.mapColoring !== 'none' ? config.mapColoring : null,
+    mapCurrentDriver, mapCurrentLap, mapComparisonDriver, mapComparisonLap, mapFilesKey)
+  const brakingResult = useAnalysisMap(
+    mapActive && config.brakingPoints ? 'braking' : null,
+    mapCurrentDriver, mapCurrentLap, mapComparisonDriver, mapComparisonLap, mapFilesKey)
   const sectorBoundariesEnabled = !mismatchedFiles && config.sectorBoundaries
   const sectorDeltaEnabled = sectorBoundariesEnabled && config.sectorDelta
   const selectedDistanceMode = deltaAvailable && (fixedLapMode.enabled
@@ -1749,7 +1809,7 @@ export default function AnalyzeScreen({
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${primaryView === 'map' ? 'analyze-toggle-button--active' : ''}`}
                 ><MapIcon size={15} /></button>
               </div>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-4 gap-2">
                 <button
                   type="button" aria-label="Individual Graphs" aria-pressed={config.individualGraphs} title="Individual Graphs"
                   onClick={() => save({ ...config, individualGraphs: !config.individualGraphs })}
@@ -1782,7 +1842,32 @@ export default function AnalyzeScreen({
                   onClick={() => save({ ...config, splitCursors: !config.splitCursors })}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.splitCursors ? 'analyze-toggle-button--active' : ''}`}
                 ><SeparatorVertical size={15} /></button>
+                <button
+                  type="button" aria-label="Braking Points" aria-pressed={config.brakingPoints} title="Braking Points"
+                  disabled={!mapVisible}
+                  onClick={() => save({ ...config, brakingPoints: !config.brakingPoints })}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.brakingPoints ? 'analyze-toggle-button--active' : ''}`}
+                ><Disc3 size={15} /></button>
+                <button
+                  type="button" aria-label="Data Comparison Panel" aria-pressed={config.inputPanel} title="Data Comparison Panel"
+                  disabled={!mapVisible}
+                  onClick={() => save({ ...config, inputPanel: !config.inputPanel })}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.inputPanel ? 'analyze-toggle-button--active' : ''}`}
+                ><Gauge size={15} /></button>
               </div>
+              {mapVisible && <div className="flex items-center">
+                <label htmlFor="analysis-map-coloring" className="mr-2 w-11 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Layer</label>
+                <div className="flex-1 min-w-0">
+                  <Select<MapColoringOption>
+                    inputId="analysis-map-coloring"
+                    value={MAP_COLORING_OPTIONS.find(option => option.value === config.mapColoring) ?? MAP_COLORING_OPTIONS[0]}
+                    options={MAP_COLORING_OPTIONS}
+                    onChange={option => save({ ...config, mapColoring: option?.value ?? 'none' })}
+                    styles={lapSelectStyles} components={selectComponents}
+                    isSearchable={false} menuPortalTarget={document.body}
+                  />
+                </div>
+              </div>}
               {playbackFilename && blocks && <div className="mb-1 space-y-1">
                 <div className="h-8 flex items-center gap-1 min-w-0">
                   <span
@@ -2063,6 +2148,11 @@ export default function AnalyzeScreen({
               trackId={mapTrackId}
               compatibleCircuit={compatibleMapCircuit}
               isDark={isDark}
+              mapColoring={config.mapColoring}
+              mapResult={mapResult}
+              brakingResult={brakingResult}
+              showInputPanel={config.inputPanel}
+              comparisonSelected={comparisonSelected}
               sectorColors={sectorColors}
               reduceAnimations={reduceAnimations}
               mapDimmed={mapDimmed}
@@ -2104,6 +2194,9 @@ export default function AnalyzeScreen({
               <AnalysisHelpItem icon={<Columns3 size={15} />} label="Sector Boundaries">Shows Sectors instead of Distance on the X Axis.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<ChartNoAxesCombined size={15} />} label="Sector Delta">Instead of whole lap delta, it splits the delta into sectors.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<ListChevronsUpDown size={15} />} label="Comparison">Compare two laps.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<Palette size={15} />} label="Map Layer">Track Dominance colors each stretch by the faster lap. Driver Inputs shows braking, full and partial throttle, and coasting, one map per lap. ERS Usage shows where each lap deployed ERS, one map per lap. Full colour is the car's peak MGU-K output in the recording for the grip it was driving in. ERS Harvest shows where each lap harvested energy, full colour at the car's peak harvest power.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<Disc3 size={15} />} label="Braking Points">Marks each corner's braking zone (dimmed) and acceleration zone on the racing line, in the colour of the lap that was quicker through it. Hover a zone to compare the two laps.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<Gauge size={15} />} label="Data Comparison Panel">Shows or hides the steering, pedals, ERS, speed and gear panel on the map.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<SeparatorVertical size={15} />} label="Split Cursors">In Split Mode while comparing, shows where both cars are on the lap as lines on the graphs.</AnalysisHelpItem>
             </div>
 

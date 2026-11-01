@@ -1557,6 +1557,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
         ok = reader_.load(path, header);
         if (!ok && errorOut) *errorOut = reader_.lastError();
         if (ok) {
+            reader_.startErsPeakSweep();
             ++liveStrategyGeneration_;
             enqueueLiveStrategyWork({StrategyWorkKind::Reset,
                                      liveStrategyGeneration_, liveStrategyFormat_,
@@ -2094,6 +2095,13 @@ bool Engine::playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
                                           int driverIndex) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return inPlayback_.load() && reader_.getAnalysisLapProgress(lapNum, out, driverIndex);
+}
+
+bool Engine::playerReadRecording(const std::function<void(const TnrdReader&)>& read) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!inPlayback_.load()) return false;
+    read(reader_);
+    return true;
 }
 
 void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {

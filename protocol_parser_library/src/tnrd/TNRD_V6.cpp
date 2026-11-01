@@ -4374,6 +4374,37 @@ bool TnrdV6Archive::columnarHistory(uint8_t driver, const std::vector<uint8_t>& 
     return true;
 }
 
+bool TnrdV6Archive::fieldSamples(uint8_t driver, V6DataType type, std::string_view field,
+                                 float from, float to, std::vector<std::pair<float, double>>& out,
+                                 std::string* errorOut, const IndexedCancelCheck& cancelled) {
+    out.clear();
+    if (!isOpen()) { fail(errorOut, "V6 archive is not open"); return false; }
+    const auto bucket = impl_->raceChunksByDriverType.find(
+        Impl::driverTypeKey(driver, static_cast<uint8_t>(type)));
+    if (bucket == impl_->raceChunksByDriverType.end()) return true;
+    for (const uint32_t index : bucket->second) {
+        const auto& chunk = impl_->v6Chunks[index];
+        if (chunk.lastTime < from || chunk.firstTime > to) continue;
+        if (cancelled && cancelled()) return false;
+        std::shared_ptr<const ChunkData> data;
+        if (!impl_->load(index, data, errorOut)) return false;
+        const auto& table = data->table;
+        const auto column = std::find_if(table.columns.begin(), table.columns.end(),
+            [&](const ColumnarChunk::Column& candidate) {
+                return candidate.name == field && candidate.kind != ColumnKind::Json;
+            });
+        if (column == table.columns.end()) continue;
+        for (size_t r = 0; r < table.time.size(); ++r) {
+            const float time = table.time[r];
+            if (time < from || time > to || !column->has(r) || rowUnavailable(table, r)) continue;
+            out.emplace_back(time, columnValue(*column, r));
+        }
+    }
+    std::stable_sort(out.begin(), out.end(),
+        [](const auto& a, const auto& b) { return a.first < b.first; });
+    return true;
+}
+
 namespace TNRD_V6 {
 bool load(const std::string& path, V6LoadResult& result, std::string& error) {
     auto archive = std::make_unique<TnrdV6Archive>(); HeaderRow header;

@@ -1,4 +1,5 @@
 #include <napi.h>
+#include <tnrp/AnalysisMap.h>
 #include <tnrp/Engine.h>
 #include <tnrp/Labels.h>
 #include <tnrp/CardColors.h>
@@ -307,6 +308,7 @@ public:
         state_->reader.setLapStatusSummaries(true);
         ok_ = state_->reader.load(path_, header);
         if (ok_) {
+            state_->reader.startErsPeakSweep();
             blocksJson_ = state_->reader.lapBlocksMessage();
             trackId_ = header.track_id;
             trackName_ = header.track_name;
@@ -412,6 +414,62 @@ private:
     Napi::Promise::Deferred deferred_;
 };
 
+// Colours the Analysis map (tnrp/AnalysisMap.h) for one or two laps, each from
+// the playback recording or the secondary Analysis recording.
+class AnalysisMapWorker : public Napi::AsyncWorker {
+public:
+    AnalysisMapWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                      std::shared_ptr<AnalysisReaderState> secondary, std::string mode,
+                      int currentLap, bool currentSecondary, int currentDriver,
+                      int comparisonLap, bool comparisonSecondary, int comparisonDriver)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)),
+          secondary_(std::move(secondary)), mode_(std::move(mode)),
+          currentLap_(currentLap), currentSecondary_(currentSecondary),
+          currentDriver_(currentDriver), comparisonLap_(comparisonLap),
+          comparisonSecondary_(comparisonSecondary), comparisonDriver_(comparisonDriver),
+          deferred_(Napi::Promise::Deferred::New(env)) {}
+
+    void Execute() override {
+        const auto access = [this](bool secondary) -> tnrp::RecordingAccess {
+            if (secondary) {
+                auto state = secondary_;
+                return [state](const std::function<void(const tnrp::TnrdReader&)>& read) {
+                    if (state->busy.load()) return false;
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (!state->reader.isLoaded()) return false;
+                    read(state->reader);
+                    return true;
+                };
+            }
+            auto engine = engine_;
+            return [engine](const std::function<void(const tnrp::TnrdReader&)>& read) {
+                return engine && engine->playerReadRecording(read);
+            };
+        };
+        const tnrp::AnalysisMapLap current{access(currentSecondary_), currentLap_, currentDriver_};
+        const tnrp::AnalysisMapLap comparison{access(comparisonSecondary_), comparisonLap_, comparisonDriver_};
+        json_ = tnrp::writeJson(tnrp::buildAnalysisMap(
+            mode_, current, comparisonLap_ >= 0 ? &comparison : nullptr));
+    }
+
+    void OnOK() override { deferred_.Resolve(Napi::String::New(Env(), json_)); }
+    void OnError(const Napi::Error& error) override { deferred_.Reject(error.Value()); }
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    std::shared_ptr<AnalysisReaderState> secondary_;
+    std::string mode_;
+    int currentLap_;
+    bool currentSecondary_;
+    int currentDriver_;
+    int comparisonLap_;
+    bool comparisonSecondary_;
+    int comparisonDriver_;
+    std::string json_;
+    Napi::Promise::Deferred deferred_;
+};
+
 class TNRPAddon : public Napi::ObjectWrap<TNRPAddon>, public tnrp::Sink {
 public:
     static Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -450,6 +508,7 @@ public:
             InstanceMethod("analysisLoadFile", &TNRPAddon::AnalysisLoadFile),
             InstanceMethod("analysisGetLapData", &TNRPAddon::AnalysisGetLapData),
             InstanceMethod("analysisCompareLaps", &TNRPAddon::AnalysisCompareLaps),
+            InstanceMethod("analysisMap", &TNRPAddon::AnalysisMap),
             InstanceMethod("analysisCloseFile", &TNRPAddon::AnalysisCloseFile),
             InstanceMethod("playerExportXlsx", &TNRPAddon::PlayerExportXlsx),
             InstanceMethod("pairStart", &TNRPAddon::PairStart),
@@ -1915,6 +1974,28 @@ private:
             info[2].As<Napi::Number>().Int32Value(), info[3].As<Napi::Number>().Int32Value(),
             info[4].As<Napi::Boolean>().Value(), info[5].As<Napi::Number>().Int32Value(),
             info[6].As<Napi::Boolean>().Value());
+        Napi::Promise promise = worker->GetPromise();
+        worker->Queue();
+        return promise;
+    }
+
+    // (mode, currentLap, currentSecondary, currentDriver,
+    //  comparisonLap (-1 for none), comparisonSecondary, comparisonDriver)
+    Napi::Value AnalysisMap(const Napi::CallbackInfo& info) {
+        auto resolveEmpty = [&info]() {
+            auto deferred = Napi::Promise::Deferred::New(info.Env());
+            deferred.Resolve(Napi::String::New(info.Env(), ""));
+            return deferred.Promise();
+        };
+        if (info.Length() < 7 || !info[0].IsString() || !info[1].IsNumber() ||
+            !info[2].IsBoolean() || !info[3].IsNumber() || !info[4].IsNumber() ||
+            !info[5].IsBoolean() || !info[6].IsNumber() || !engine) return resolveEmpty();
+
+        auto* worker = new AnalysisMapWorker(
+            info.Env(), engine, analysisReader_, info[0].As<Napi::String>().Utf8Value(),
+            info[1].As<Napi::Number>().Int32Value(), info[2].As<Napi::Boolean>().Value(),
+            info[3].As<Napi::Number>().Int32Value(), info[4].As<Napi::Number>().Int32Value(),
+            info[5].As<Napi::Boolean>().Value(), info[6].As<Napi::Number>().Int32Value());
         Napi::Promise promise = worker->GetPromise();
         worker->Queue();
         return promise;

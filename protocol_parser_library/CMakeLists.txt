@@ -122,6 +122,7 @@ add_library(tnrp STATIC
     src/Labels.cpp
     src/CardColors.cpp
     src/TeamColors.cpp
+    src/AnalysisMap.cpp
     src/LapDelta.cpp
     src/LapMeasures.cpp
     src/LiveV6Store.cpp
