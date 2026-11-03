@@ -408,6 +408,49 @@ export interface MarshalZoneInfo {
   flag: number         // -1=invalid, 0=none, 1=green, 2=blue, 3=yellow
 }
 
+// ── Track maps (tnrp/TrackMaps.h) ──────────────────────────────────────────
+
+export interface TrackMapSettings { modded: boolean; generate: boolean }
+export interface TrackMapResult { ok: boolean; id: string; error: string }
+export interface TrackMapEdit {
+  display_name?: string
+  track_name?: string
+  circuit_name?: string
+  rotation_deg?: number
+}
+
+// Which map a session uses: the engine's "track_map" row.
+export interface TrackMapResolution {
+  type: 'track_map'
+  scope: 'live' | 'playback' | 'recording'
+  track_id: number
+  track_length_m: number
+  track_key: string
+  map_id: string
+  reason: 'pinned' | 'track_id' | 'length' | 'geometry' | 'generated' | 'none'
+  checked: boolean
+  mismatch: boolean
+  fit_m: number
+  generating: boolean
+}
+
+export interface TrackMapCatalogEntry {
+  id: string
+  source: 'builtin' | 'generated' | 'imported' | 'edited'
+  name: string
+  circuit: string
+  track_id: number
+  track_length_m: number
+  created_at: number
+  created_from: string
+  laps_used: number
+}
+
+export interface TrackMapCatalog {
+  maps: TrackMapCatalogEntry[]
+  pins: Record<string, string>
+}
+
 export interface SessionMsg {
   type: 'session'
   ts: string
@@ -864,7 +907,7 @@ declare global {
         sectorDelta: boolean,
       ) => Promise<unknown | null>
       map: (
-        mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'braking',
+        mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'speed' | 'braking',
         currentLapNum: number,
         currentSource: 'file1' | 'file2',
         currentDriverIndex: number,
@@ -873,6 +916,23 @@ declare global {
         comparisonDriverIndex: number,
       ) => Promise<unknown | null>
       closeFile: () => void
+    }
+    trackMapsBridge: {
+      getSettings: () => Promise<TrackMapSettings>
+      setSettings: (value: Partial<TrackMapSettings>) => Promise<TrackMapSettings>
+      onSettings: (cb: (settings: TrackMapSettings) => void) => () => void
+      catalog: () => Promise<unknown>
+      get: (id: string) => Promise<unknown | null>
+      state: () => Promise<unknown | null>
+      pin: (trackKey: string, mapId: string) => Promise<void>
+      rename: (id: string, name: string) => Promise<TrackMapResult>
+      remove: (id: string) => Promise<TrackMapResult>
+      edit: (id: string, value: TrackMapEdit) => Promise<TrackMapResult>
+      importMaps: () => Promise<TrackMapResult>
+      exportMap: (id: string, suggestedName: string) => Promise<TrackMapResult>
+      generateFromRecording: () => Promise<TrackMapResult>
+      resolveRecording: (filePath: string) => Promise<unknown | null>
+      openFolder: () => Promise<void>
     }
 
   }

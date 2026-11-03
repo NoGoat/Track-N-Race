@@ -9,6 +9,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tnrp/LapDelta.h"
@@ -82,6 +83,63 @@ private:
     std::condition_variable changed_;
     std::set<int> pending_;
     std::map<int, ErsPeaks> peaks_;
+    std::atomic<bool> cancelled_{false};
+};
+
+// One corner of the track, found from every car's laps rather than one lap's
+// steering: where the path averaged over them turns tighter than a corner.
+struct TrackCorner {
+    float fromM{};   // lap distance where it starts turning
+    float toM{};     // ... and stops; below fromM when it crosses the line
+    float apexM{};   // halfway through the turning of its tightest stretch
+    int side{};      // -1 left, 1 right
+};
+
+struct TrackCorners {
+    float trackLengthM{};
+    std::vector<TrackCorner> corners;
+};
+
+// The path of many laps averaged by lap distance, metre by metre, and the
+// corners in it. Laps can come from any car; add each clean one.
+class TrackPathAverage {
+public:
+    explicit TrackPathAverage(float trackLengthM);
+    // One lap: its world positions and its lap distance over time, each in
+    // time order. False when it was not used: too few samples, or the car
+    // jumped (a teleport back to the track).
+    bool addLap(const std::vector<float>& time, const std::vector<double>& x,
+                const std::vector<double>& z,
+                const std::vector<std::pair<float, double>>& lapDistance);
+    void merge(const TrackPathAverage& other);
+    size_t laps() const { return laps_; }
+    // Empty when too few laps were added or they leave gaps in the lap.
+    TrackCorners corners() const;
+
+private:
+    float trackLengthM_{};
+    size_t laps_{};
+    std::vector<double> sumX_;
+    std::vector<double> sumZ_;
+    std::vector<uint32_t> count_;
+};
+
+// A recording's track corners, found by a background sweep over every car's
+// laps started when it opens (TnrdReader::startTrackCornerSweep). Thread-safe.
+class TrackCornerSweep {
+public:
+    // Blocks until the sweep finishes. False when it found no corners or
+    // was cancelled.
+    bool waitFor(TrackCorners& out);
+    void publish(std::optional<TrackCorners> corners);
+    void cancel();
+    bool cancelled() const { return cancelled_.load(); }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    bool done_{};
+    std::optional<TrackCorners> corners_;
     std::atomic<bool> cancelled_{false};
 };
 
@@ -163,10 +221,11 @@ struct BrakingPointPair {
     std::vector<BrakingObservation> observations;
 };
 
-// One corner inside a braking zone, found from the steering so flat-out
-// corners count: where the wheel is turned furthest into it, the slowest speed through
-// it, and which way it turns (-1 left, 1 right; 0 when found from speed alone,
-// in a recording without steering).
+// One corner inside a braking zone, flat-out ones included: its apex, the
+// slowest speed through it, and which way it turns (-1 left, 1 right; 0 when
+// found from speed alone). With the recording's TrackCorners the apex is the
+// track's; without them it is found from the lap's steering, where the driver
+// has done half the corner's steering, or from speed dips with no steering.
 struct CornerApex {
     float distanceM{};
     float speedKph{};
@@ -232,6 +291,22 @@ struct ErsHarvestMap {
     float peakKw{};
 };
 
+// Speed for one lap, in fixed-length bins from the timing line.
+struct SpeedMap {
+    int lapNum{};
+    float binM{};
+    float trackLengthM{};
+    // Per bin: the time-weighted mean speed (km/h). Bins no sample landed in
+    // take a neighbour's value.
+    std::vector<float> speedKph;
+    // The lap's slowest and fastest samples (km/h).
+    float minKph{};
+    float maxKph{};
+    // Each corner in the lap's braking zones (findBrakingPoints), with its
+    // slowest speed, in lap order.
+    std::vector<CornerApex> apexes;
+};
+
 // ERS Usage for one lap, in fixed-length bins from the timing line.
 struct ErsUsageMap {
     int lapNum{};
@@ -250,8 +325,14 @@ struct ErsUsageMap {
 };
 
 struct AnalysisMapResult {
-    std::string mode;   // "dominance", "ers", "harvest", "inputs" or "braking"
+    std::string mode;   // "dominance", "ers", "harvest", "inputs", "speed" or "braking"
     TrackDominanceMap dominance;
+    SpeedMap currentSpeed;
+    SpeedMap comparisonSpeed;
+    // Speed with two laps: one scale (km/h) covering both, so a colour means
+    // the same speed on either map. One lap alone: that lap's own range.
+    float speedScaleMinKph{};
+    float speedScaleMaxKph{};
     ErsUsageMap current;
     ErsUsageMap comparison;
     DriverInputsMap currentInputs;
@@ -295,20 +376,29 @@ ErsHarvestMap calculateErsHarvest(const AnalysisLapProgress& lap,
 // kPedalPressed after at least kBrakeOffBeforeS off it, and the application
 // lasts at least kBrakeHoldS. Every gap off the brake shorter than that stays
 // part of the same application, so ABS pulsing, pressure dips and trail-brake
-// pulses neither split, shorten nor drop a zone.
+// pulses neither split, shorten nor drop a zone. `corners` are the
+// recording's track corners, when known.
 std::vector<BrakingPoint> findBrakingPoints(const AnalysisLapProgress& lap,
-                                            const std::vector<InputSample>& samples);
+                                            const std::vector<InputSample>& samples,
+                                            const TrackCorners* corners = nullptr);
 
 // Each lap's braking zones, in lap order. With a comparison lap, braking
 // points pair one to one: nearest within kBrakingPairM, then zones that
 // overlap; a zone only one lap brakes for pairs with the other lap's lift.
+// Each lap's corners come from its own recording's track corners, when known.
 BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
                                         const std::vector<InputSample>& currentInputs,
                                         const AnalysisLapProgress* comparison,
-                                        const std::vector<InputSample>* comparisonInputs);
+                                        const std::vector<InputSample>* comparisonInputs,
+                                        const TrackCorners* currentCorners = nullptr,
+                                        const TrackCorners* comparisonCorners = nullptr);
 
 DriverInputsMap calculateDriverInputs(const AnalysisLapProgress& lap,
                                       const std::vector<InputSample>& samples);
+
+SpeedMap calculateSpeed(const AnalysisLapProgress& lap,
+                        const std::vector<InputSample>& samples,
+                        const TrackCorners* corners = nullptr);
 
 ErsUsageMap calculateErsUsage(const AnalysisLapProgress& lap,
                               const std::vector<ErsSample>& samples,
@@ -326,8 +416,8 @@ struct AnalysisMapLap {
     int driverIndex{-1};
 };
 
-// The complete map for `mode`: "dominance", "ers", "harvest", "inputs" or
-// "braking". `comparison`
+// The complete map for `mode`: "dominance", "ers", "harvest", "inputs",
+// "speed" or "braking". `comparison`
 // may be null; Track Dominance then has nothing to compare and returns no
 // sectors.
 AnalysisMapResult buildAnalysisMap(const std::string& mode, const AnalysisMapLap& current,

@@ -7,6 +7,7 @@ import TrackMap from './TrackMap'
 import { useColorFn } from '../lib/cards'
 import { useLabels } from '../lib/labels'
 import { TRACK_MAPS } from '../lib/trackMaps'
+import { useResolvedTrackMap, useTrackMapStore } from '../stores/trackMapStore'
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../app/appConfig'
 import { safetyCarActionLabel, safetyCarTypeLabel } from '../app/bannerHelpers'
 import type { DensityMode } from '../lib/graphSections'
@@ -383,14 +384,18 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
   const noData  = !session
   const colorFn = useColorFn(null, null, isDark)
   const info    = session ? TRACK_MAPS[session.track_id] : null
+  const mapResolution = useTrackMapStore(state => state.session)
   const gpKey   = session ? `track.${session.track_id}.track_name` : ''
   const circuitKey = session ? `track.${session.track_id}.circuit_name` : ''
   const gpOverride = gpKey ? t(gpKey) : ''
   const circuitOverride = circuitKey ? t(circuitKey) : ''
-  const gpName  = gpOverride && gpOverride !== gpKey
-    ? gpOverride : (info?.track_name ?? (session ? `Track ${session.track_id}` : '—'))
-  const circuit = circuitOverride && circuitOverride !== circuitKey
-    ? circuitOverride : (info?.circuit_name ?? '')
+  // A saved map (generated, imported or edited) carries the names the user gave it.
+  const resolvedMap = useResolvedTrackMap(session?.track_id ?? null, mapResolution)
+  const savedMap = resolvedMap?.source ? resolvedMap : null
+  const gpName  = savedMap?.track_name || (gpOverride && gpOverride !== gpKey
+    ? gpOverride : (info?.track_name ?? (session ? `Track ${session.track_id}` : '—')))
+  const circuit = savedMap?.circuit_name || (circuitOverride && circuitOverride !== circuitKey
+    ? circuitOverride : (info?.circuit_name ?? ''))
 
   const playerCar = timing?.cars.find(c => c.idx === timing.player_idx && c.result_status === 2)
   const remainingLaps = (session && session.total_laps > 0 && playerCar)
@@ -513,7 +518,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
               {layout.showMap && (
                 <div className={`session-map-transition ${mapFullscreen ? 'absolute inset-0 z-40 bg-[var(--bg-base)]' : 'flex-1 min-h-0'}`}>
                   <TrackMap trackId={session?.track_id ?? null} participants={participants} isDark={isDark} sectorColors={sectorColors}
-                  driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={mapFullscreen} onToggleFullscreen={() => setMapFullscreenAnimated(!mapFullscreen)} />
+                  driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={mapFullscreen} onToggleFullscreen={() => setMapFullscreenAnimated(!mapFullscreen)} mapResolution={mapResolution} />
                 </div>
               )}
 

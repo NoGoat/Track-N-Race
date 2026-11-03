@@ -3,7 +3,7 @@ import { type SingleValue } from 'react-select'
 import Select from '../lib/AnimatedSelect'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
-import { Maximize2, Minimize2 } from 'lucide-react'
+import { Maximize2, Minimize2, Pencil } from 'lucide-react'
 import { useSize } from '../hooks/useSize'
 import { TRACK_MAPS, type TrackMapData } from '../lib/trackMaps'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
@@ -11,7 +11,9 @@ import { useLabels } from '../lib/labels'
 import DriverSelect from './DriverSelect'
 import { buildDriverOptions, type DriverOption } from '../lib/driverOptions'
 import type { TrackPaint } from '../lib/analyzeMapPaint'
-import type { CarPosition, ParticipantsMsg, PositionsMsg } from '../types'
+import type { CarPosition, ParticipantsMsg, PositionsMsg, TrackMapResolution } from '../types'
+import { useResolvedTrackMap, useTrackMapStore } from '../stores/trackMapStore'
+import EditMapModal from './EditMapModal'
 
 type ZoomOption = { value: number; label: string }
 type MapOption = { value: number; label: string }
@@ -1001,6 +1003,48 @@ const ZoomSelector = memo(({ zoomLevel, onChange, isDark }: ZoomSelectorProps) =
 })
 ZoomSelector.displayName = 'ZoomSelector'
 
+type ModdedMapOption = { value: string; label: string }
+
+const SOURCE_LABELS: Record<string, string> = { generated: 'Generated', imported: 'Imported' }
+
+interface ModdedMapPickerProps {
+  resolution: TrackMapResolution
+  onPinned?: () => void
+  isDark: boolean
+}
+
+// With Modded Maps on: any saved or built-in map, kept for this track.
+const ModdedMapPicker = memo(({ resolution, onPinned, isDark }: ModdedMapPickerProps) => {
+  const catalog = useTrackMapStore(state => state.catalog)
+  const styles = useMemo(() => buildSelectStyles(isDark, { solidBg: true }), [isDark])
+  const options = useMemo<ModdedMapOption[]>(() => [
+    { value: '', label: 'Auto' },
+    ...catalog.maps.map(entry => ({
+      value: entry.id,
+      label: SOURCE_LABELS[entry.source] ? `${entry.name} · ${SOURCE_LABELS[entry.source]}` : entry.name,
+    })),
+  ], [catalog.maps])
+  const pinned = catalog.pins[resolution.track_key] ?? ''
+  const value = options.find(option => option.value === pinned) ?? options[0]
+  const handleChange = useCallback((option: SingleValue<ModdedMapOption>) => {
+    void window.trackMapsBridge.pin(resolution.track_key, option?.value ?? '').then(() => onPinned?.())
+  }, [onPinned, resolution.track_key])
+  return (
+    <div className="w-44 shrink-0">
+      <Select<ModdedMapOption>
+        aria-label="Map"
+        value={value}
+        options={options}
+        onChange={handleChange}
+        isSearchable
+        styles={styles}
+        components={selectComponents}
+      />
+    </div>
+  )
+})
+ModdedMapPicker.displayName = 'ModdedMapPicker'
+
 interface TestMapControlsProps {
   alignRight: boolean
   trackId: number | null
@@ -1068,9 +1112,16 @@ interface Props {
   trackPaint?:         TrackPaint | null
   /** Ticks drawn across the track, such as braking points. */
   trackMarks?:         readonly TrackMark[] | null
+  /** The engine's map choice for this track (Modded Maps). */
+  mapResolution?:      TrackMapResolution | null
+  /** Called after the user picks a map, for a choice the engine does not
+   *  resend by itself (a recording open in Analysis). */
+  onMapPinned?:        () => void
+  /** Draws this map instead of the track's (Edit Map's preview). */
+  mapOverride?:        TrackMapData | null
 }
 
-export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1, markerSource, trackPaint = null, trackMarks = null }: Props) {
+export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1, markerSource, trackPaint = null, trackMarks = null, mapResolution = null, onMapPinned, mapOverride = null }: Props) {
   const { ref: wrapRef, width, height } = useSize()
   const { raw: labels } = useLabels()
   const backgroundCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -1138,7 +1189,19 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     ...option,
     label: labels[`track.${option.value}.track_name`] ?? option.label,
   })).sort((a, b) => a.label.localeCompare(b.label)), [labels])
-  const map = previewTrackId != null ? TRACK_MAPS[previewTrackId] ?? null : null
+  const resolvedMap = useResolvedTrackMap(trackId, mapResolution)
+  const moddedMaps = useTrackMapStore(state => state.settings.modded)
+  const pickerResolution = moddedMaps && mapResolution && mapResolution.track_id === trackId ? mapResolution : null
+  // The debug test controls preview another track's bundled map.
+  const map = mapOverride ?? (previewTrackId !== trackId
+    ? (previewTrackId != null ? TRACK_MAPS[previewTrackId] ?? null : null)
+    : resolvedMap)
+  // With Modded Maps on, the map in use can be renamed and rotated.
+  const editableMapId = pickerResolution
+    ? pickerResolution.map_id || (trackId != null && TRACK_MAPS[trackId] ? `builtin:${trackId}` : '')
+    : ''
+  const [editingMapId, setEditingMapId] = useState<string | null>(null)
+  const closeMapEditor = useCallback(() => setEditingMapId(null), [])
   const effectiveAeroMode = previewAeroOverlay === 'drs' ? 'drs' : 'slm'
   const effectiveSlmTrackStatus = previewAeroOverlay === 'slm-wet' ? 1 : 0
 
@@ -1442,6 +1505,25 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
           </span>
         </div>
       )}
+      {pickerResolution && (pickerResolution.generating || pickerResolution.mismatch) && (
+        <div className="pointer-events-none absolute bottom-2 left-2 z-10 rounded-md bg-[var(--bg-panel)] px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-[var(--text-secondary)]">
+          {pickerResolution.generating ? 'Building map…' : 'Map doesn\'t fit'}
+        </div>
+      )}
+      {pickerResolution && (
+        <div className="absolute top-2 left-2 z-10 flex items-center gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          <ModdedMapPicker resolution={pickerResolution} onPinned={onMapPinned} isDark={isDark} />
+          {editableMapId && map && (
+            <button
+              onClick={() => setEditingMapId(editableMapId)}
+              className="h-7 w-7 rounded-[6px] bg-[var(--bg-panel)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all flex items-center justify-center shrink-0"
+              title="Edit Map"
+            >
+              <Pencil size={13} />
+            </button>
+          )}
+        </div>
+      )}
       {map && (driverOptions.length > 0 || onToggleFullscreen) && (
         <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {selectedDriverIdx !== null && (
@@ -1469,6 +1551,9 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
             </button>
           )}
         </div>
+      )}
+      {editableMapId && (
+        <EditMapModal mapId={editingMapId} isDark={isDark} onClose={closeMapEditor} onSaved={onMapPinned} />
       )}
     </div>
   )

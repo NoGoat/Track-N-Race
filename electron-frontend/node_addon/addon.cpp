@@ -6,6 +6,7 @@
 #include <tnrp/LapDelta.h>
 #include <tnrp/TnrdReader.h>
 #include <tnrp/TeamColors.h>
+#include <tnrp/TrackMaps.h>
 #include <tnrp/XlsxExport.h>
 #include <algorithm>
 #include <atomic>
@@ -309,6 +310,7 @@ public:
         ok_ = state_->reader.load(path_, header);
         if (ok_) {
             state_->reader.startErsPeakSweep();
+            state_->reader.startTrackCornerSweep();
             blocksJson_ = state_->reader.lapBlocksMessage();
             trackId_ = header.track_id;
             trackName_ = header.track_name;
@@ -470,6 +472,30 @@ private:
     Napi::Promise::Deferred deferred_;
 };
 
+// The answer to a track map change the renderer asked for.
+struct TrackMapResult {
+    bool ok{};
+    std::string id;
+    std::string error;
+};
+
+// Runs a track map call that reads a recording or the disk off the JS thread
+// and resolves with the JSON it returns.
+class TrackMapWorker : public Napi::AsyncWorker {
+public:
+    TrackMapWorker(Napi::Env env, std::function<std::string()> call)
+        : Napi::AsyncWorker(env), call_(std::move(call)), deferred_(Napi::Promise::Deferred::New(env)) {}
+    void Execute() override { json_ = call_(); }
+    void OnOK() override { deferred_.Resolve(Napi::String::New(Env(), json_)); }
+    void OnError(const Napi::Error& error) override { deferred_.Reject(error.Value()); }
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+
+private:
+    std::function<std::string()> call_;
+    std::string json_;
+    Napi::Promise::Deferred deferred_;
+};
+
 class TNRPAddon : public Napi::ObjectWrap<TNRPAddon>, public tnrp::Sink {
 public:
     static Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -519,6 +545,20 @@ public:
             InstanceMethod("pairRemoveDevice", &TNRPAddon::PairRemoveDevice),
             InstanceMethod("pairGetState", &TNRPAddon::PairGetState),
             InstanceMethod("telemetryRetention", &TNRPAddon::TelemetryRetention),
+            InstanceMethod("trackMapsAddBuiltins", &TNRPAddon::TrackMapsAddBuiltins),
+            InstanceMethod("trackMapsSetDirectory", &TNRPAddon::TrackMapsSetDirectory),
+            InstanceMethod("trackMapsSetOptions", &TNRPAddon::TrackMapsSetOptions),
+            InstanceMethod("trackMapsCatalog", &TNRPAddon::TrackMapsCatalog),
+            InstanceMethod("trackMapsGet", &TNRPAddon::TrackMapsGet),
+            InstanceMethod("trackMapsState", &TNRPAddon::TrackMapsState),
+            InstanceMethod("trackMapsPin", &TNRPAddon::TrackMapsPin),
+            InstanceMethod("trackMapsRename", &TNRPAddon::TrackMapsRename),
+            InstanceMethod("trackMapsDelete", &TNRPAddon::TrackMapsDelete),
+            InstanceMethod("trackMapsEdit", &TNRPAddon::TrackMapsEdit),
+            InstanceMethod("trackMapsImport", &TNRPAddon::TrackMapsImport),
+            InstanceMethod("trackMapsExport", &TNRPAddon::TrackMapsExport),
+            InstanceMethod("trackMapsGenerate", &TNRPAddon::TrackMapsGenerate),
+            InstanceMethod("trackMapsResolveRecording", &TNRPAddon::TrackMapsResolveRecording),
             InstanceMethod("destroy", &TNRPAddon::Destroy)
         });
         TRACE("Init: after DefineClass");
@@ -2057,6 +2097,156 @@ private:
     // player*/TnrdReader at all, so this opens its own throwaway TnrdReader
     // internally (see tnrp::exportTnrdFileToXlsx). Registered as an instance
     // method purely because that's where N-API methods live on this class.
+    // ── Track maps (tnrp/TrackMaps.h) ────────────────────────────────────────
+
+    static std::string stringArg(const Napi::CallbackInfo& info, size_t index) {
+        return info.Length() > index && info[index].IsString()
+            ? info[index].As<Napi::String>().Utf8Value() : std::string{};
+    }
+
+    // Promise-returning track map call; resolves "" when there is no engine.
+    Napi::Value queueTrackMapCall(const Napi::CallbackInfo& info, std::function<std::string()> call) {
+        if (!engine) call = [] { return std::string{}; };
+        auto* worker = new TrackMapWorker(info.Env(), std::move(call));
+        Napi::Promise promise = worker->GetPromise();
+        worker->Queue();
+        return promise;
+    }
+
+    // (jsonStrings[]) -> number registered.
+    Napi::Value TrackMapsAddBuiltins(const Napi::CallbackInfo& info) {
+        uint32_t added = 0;
+        if (engine && info.Length() >= 1 && info[0].IsArray()) {
+            Napi::Array maps = info[0].As<Napi::Array>();
+            for (uint32_t i = 0; i < maps.Length(); ++i) {
+                Napi::Value value = maps.Get(i);
+                if (value.IsString() && engine->trackMaps().addBuiltin(value.As<Napi::String>().Utf8Value()))
+                    ++added;
+            }
+            if (added) engine->refreshTrackMap();
+        }
+        return Napi::Number::New(info.Env(), added);
+    }
+
+    Napi::Value TrackMapsSetDirectory(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1 && info[0].IsString()) {
+            engine->trackMaps().setUserDirectory(info[0].As<Napi::String>().Utf8Value());
+            engine->refreshTrackMap();
+        }
+        return info.Env().Undefined();
+    }
+
+    // (moddedMaps, generateMaps)
+    Napi::Value TrackMapsSetOptions(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 2 && info[0].IsBoolean() && info[1].IsBoolean())
+            engine->setTrackMapOptions(info[0].As<Napi::Boolean>().Value(), info[1].As<Napi::Boolean>().Value());
+        return info.Env().Undefined();
+    }
+
+    Napi::Value TrackMapsCatalog(const Napi::CallbackInfo& info) {
+        return Napi::String::New(info.Env(), engine ? engine->trackMaps().catalogJson() : "{}");
+    }
+
+    // (id) -> the map file's JSON, or "".
+    Napi::Value TrackMapsGet(const Napi::CallbackInfo& info) {
+        return Napi::String::New(info.Env(), engine ? engine->trackMaps().mapJson(stringArg(info, 0)) : "");
+    }
+
+    // The last "track_map" row, or "".
+    Napi::Value TrackMapsState(const Napi::CallbackInfo& info) {
+        return Napi::String::New(info.Env(), engine ? engine->trackMapStateJson() : "");
+    }
+
+    // (trackKey, mapId); an empty mapId clears the pin.
+    Napi::Value TrackMapsPin(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 2 && info[0].IsString() && info[1].IsString()) {
+            engine->trackMaps().pin(info[0].As<Napi::String>().Utf8Value(),
+                                    info[1].As<Napi::String>().Utf8Value());
+            engine->refreshTrackMap();
+        }
+        return info.Env().Undefined();
+    }
+
+    // The mutating calls below resolve with {"ok","id","error"} JSON.
+    Napi::Value TrackMapsRename(const Napi::CallbackInfo& info) {
+        auto target = engine;
+        return queueTrackMapCall(info, [target, id = stringArg(info, 0), name = stringArg(info, 1)] {
+            TrackMapResult result{.id = id};
+            result.ok = target->trackMaps().rename(id, name, &result.error);
+            if (result.ok) target->refreshTrackMap();
+            return tnrp::writeJson(result);
+        });
+    }
+
+    // (id, editJson): tnrp::TrackMapEdit fields. Resolves with the edited map's
+    // ID, which is a new one when a built-in map was edited.
+    Napi::Value TrackMapsEdit(const Napi::CallbackInfo& info) {
+        auto target = engine;
+        return queueTrackMapCall(info, [target, id = stringArg(info, 0), json = stringArg(info, 1)] {
+            TrackMapResult result;
+            tnrp::TrackMapEdit edit;
+            if (glz::read<glz::opts{.error_on_unknown_keys = false}>(edit, json)) {
+                result.error = "Invalid map details";
+                return tnrp::writeJson(result);
+            }
+            result.id = target->trackMaps().edit(id, edit, &result.error);
+            result.ok = !result.id.empty();
+            if (result.ok) target->refreshTrackMap();
+            return tnrp::writeJson(result);
+        });
+    }
+
+    Napi::Value TrackMapsDelete(const Napi::CallbackInfo& info) {
+        auto target = engine;
+        return queueTrackMapCall(info, [target, id = stringArg(info, 0)] {
+            TrackMapResult result{.id = id};
+            result.ok = target->trackMaps().remove(id, &result.error);
+            if (result.ok) target->refreshTrackMap();
+            return tnrp::writeJson(result);
+        });
+    }
+
+    // (sourcePath)
+    Napi::Value TrackMapsImport(const Napi::CallbackInfo& info) {
+        auto target = engine;
+        return queueTrackMapCall(info, [target, path = stringArg(info, 0)] {
+            TrackMapResult result;
+            result.id = target->trackMaps().importFile(path, &result.error);
+            result.ok = !result.id.empty();
+            if (result.ok) target->refreshTrackMap();
+            return tnrp::writeJson(result);
+        });
+    }
+
+    // (id, destinationPath)
+    Napi::Value TrackMapsExport(const Napi::CallbackInfo& info) {
+        auto target = engine;
+        return queueTrackMapCall(info, [target, id = stringArg(info, 0), path = stringArg(info, 1)] {
+            TrackMapResult result{.id = id};
+            result.ok = target->trackMaps().exportFile(id, path, &result.error);
+            return tnrp::writeJson(result);
+        });
+    }
+
+    // (recordingPath): builds and saves a map from a V6 recording.
+    Napi::Value TrackMapsGenerate(const Napi::CallbackInfo& info) {
+        auto target = engine;
+        return queueTrackMapCall(info, [target, path = stringArg(info, 0)] {
+            TrackMapResult result;
+            result.id = target->generateTrackMap(path, &result.error);
+            result.ok = !result.id.empty();
+            return tnrp::writeJson(result);
+        });
+    }
+
+    // (recordingPath) -> a "track_map" row with scope "recording", or "".
+    Napi::Value TrackMapsResolveRecording(const Napi::CallbackInfo& info) {
+        auto target = engine;
+        return queueTrackMapCall(info, [target, path = stringArg(info, 0)] {
+            return target->resolveTrackMapForRecording(path);
+        });
+    }
+
     Napi::Value PlayerExportXlsx(const Napi::CallbackInfo& info) {
         Napi::Env env = info.Env();
         if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsFunction()) {

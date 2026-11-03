@@ -9,6 +9,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <numbers>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -32,6 +33,8 @@ constexpr size_t kSuperclipMinBins = 3;
 constexpr float kHarvestWindowS = 0.25f;
 // Driver inputs are classified over bins of this length.
 constexpr float kInputBinM = 10.0f;
+// Speed is averaged over bins of this length.
+constexpr float kSpeedBinM = 10.0f;
 // Pedal travel (0-1) that counts as pressed, and throttle that counts as flat out.
 constexpr float kPedalPressed = 0.05f;
 constexpr float kFullThrottle = 0.98f;
@@ -98,6 +101,31 @@ constexpr float kCorrectionMaxS = 0.7f;
 // it costs at least kApexProminenceKph.
 constexpr float kLiftLookbackM = 150.0f;
 constexpr float kLiftMinS = 0.3f;
+// Track corners (TrackPathAverage): every clean lap's path is averaged metre
+// by metre of lap distance; its heading is taken across kPathHeadingM and its
+// curvature across kPathCurvatureM. A corner is where that path turns tighter
+// than kTrackCornerRadiusM for at least kTrackCornerMinM, and runs on either
+// side while tighter than kTrackCornerEndRadiusM. Its apex is halfway through
+// the turning of its core, where it turns at least kApexCoreShare as tightly
+// as at its tightest: many corners hold one radius for a long stretch (São
+// Paulo's Descida do Lago for 70 m), and the tightest point along it moved
+// from one end to the other between one car's laps and every car's. Same-way corners less than kTrackCornerJoinM apart
+// are one. Positions jumping more than kPathMaxStepM between samples are a
+// teleport, and a lap needs kPathMinSamples of them; gaps in the averaged
+// path up to kPathMaxGapM are bridged, and kPathMinLaps laps are needed. At
+// São Paulo one car's laps and every car's put each braking corner's apex
+// within 3 m of each other.
+constexpr int kPathHeadingM = 5;
+constexpr int kPathCurvatureM = 10;
+constexpr double kTrackCornerRadiusM = 250.0;
+constexpr double kTrackCornerEndRadiusM = 500.0;
+constexpr double kApexCoreShare = 0.5;
+constexpr int kTrackCornerMinM = 15;
+constexpr int kTrackCornerJoinM = 20;
+constexpr double kPathMaxStepM = 60.0;
+constexpr size_t kPathMinSamples = 100;
+constexpr int kPathMaxGapM = 20;
+constexpr size_t kPathMinLaps = 3;
 // ERS Usage is averaged over bins of this length.
 constexpr float kErsBinM = 10.0f;
 // Peaks closer than this are the same cap read with reporting noise: F1 25
@@ -244,24 +272,83 @@ std::vector<SteeringCorner> steeringCorners(const std::vector<InputSample>& samp
     return joined;
 }
 
-// The corners whose turn-in falls between two session times, from the
-// steering: where the wheel is turned furthest into the turn, and the slowest speed through
-// each. Without steering, speed dips stand in (findApexes).
+// The corners whose apex falls between two session times, from the steering:
+// each apex where the driver has done half the corner's steering, summed over
+// time, and the slowest speed through each. The wheel's furthest point is not
+// used: through a corner taken on a sawing wheel (São Paulo's second Senna S)
+// it lands on whichever spike was largest. Over 8 recorded circuits, against
+// the tightest point of each corner's path averaged over every lap, the half
+// point is a median 10 m off (the furthest point 13 m), and a corner's apex
+// moves 6 m from lap to lap (13 m). Without steering, speed dips stand in
+// (findApexes).
+//
+// With the recording's track corners, those stand in for the steering: each
+// corner the lap is in at any point between the two times, at the track's
+// apex, with the lap's slowest speed from the corner's turn-in to its exit.
 std::vector<CornerApex> findApexes(const detail::ProgressMap& progress,
                                    const std::vector<InputSample>& samples, float from, float to);
+float timeAtDistance(const detail::ProgressMap& progress, float distance);
 std::vector<CornerApex> findCorners(const detail::ProgressMap& progress,
-                                    const std::vector<InputSample>& samples, float from, float to) {
+                                    const std::vector<InputSample>& samples, float from, float to,
+                                    const TrackCorners* track) {
+    if (track && !track->corners.empty() && !progress.points.empty()) {
+        const float lapStart = progress.points.front().session_time;
+        const float lapEnd = progress.points.back().session_time;
+        std::vector<CornerApex> out;
+        for (const auto& corner : track->corners) {
+            const float at = timeAtDistance(progress, corner.apexM);
+            if (!std::isfinite(at)) continue;
+            // A corner across the line is cut at it, on the apex's side.
+            const bool wraps = corner.fromM > corner.toM;
+            float t0 = wraps && corner.apexM < corner.fromM ? lapStart : timeAtDistance(progress, corner.fromM);
+            float t1 = wraps && corner.apexM >= corner.fromM ? lapEnd : timeAtDistance(progress, corner.toM);
+            if (!std::isfinite(t0)) t0 = lapStart;
+            if (!std::isfinite(t1)) t1 = lapEnd;
+            // Any of the corner between the two times counts: a lap can be
+            // flat out again before a long corner's apex.
+            if (t1 < from || t0 > to) continue;
+            std::optional<float> slowest;
+            float nearest = std::numeric_limits<float>::infinity();
+            float atApex = 0.0f;
+            for (const auto& sample : samples) {
+                if (sample.session_time >= t0 && sample.session_time <= t1)
+                    slowest = std::min(slowest.value_or(sample.speed_kph), sample.speed_kph);
+                if (std::abs(sample.session_time - at) < nearest) {
+                    nearest = std::abs(sample.session_time - at);
+                    atApex = sample.speed_kph;
+                }
+            }
+            out.push_back({corner.apexM, slowest.value_or(atApex), corner.side});
+        }
+        return out;
+    }
     const auto corners = steeringCorners(samples);
     if (corners.empty()) return findApexes(progress, samples, from, to);
     std::vector<CornerApex> out;
     for (const auto& corner : corners) {
-        size_t peak = corner.first;
+        // Steering into the turn, held until the next sample.
+        const auto turning = [&](size_t i) {
+            const float dt = samples[i + 1].session_time - samples[i].session_time;
+            return std::max(0.0f, samples[i].steering * static_cast<float>(corner.side)) * std::max(0.0f, dt);
+        };
+        double total = 0.0;
         float slowest = samples[corner.first].speed_kph;
         for (size_t i = corner.first; i <= corner.last; ++i) {
-            if (samples[i].steering * corner.side > samples[peak].steering * corner.side) peak = i;
+            if (i < corner.last) total += turning(i);
             slowest = std::min(slowest, samples[i].speed_kph);
         }
-        const float at = samples[peak].session_time;
+        float at = samples[corner.first].session_time;
+        double sum = 0.0;
+        for (size_t i = corner.first; i < corner.last && total > 0.0; ++i) {
+            const double step = turning(i);
+            if (sum + step >= total / 2.0) {
+                const double ratio = step > 0.0 ? (total / 2.0 - sum) / step : 0.0;
+                at = samples[i].session_time + static_cast<float>(ratio) *
+                     (samples[i + 1].session_time - samples[i].session_time);
+                break;
+            }
+            sum += step;
+        }
         if (at < from || at > to) continue;
         const float m = distanceAtTime(progress, at);
         if (m >= 0.0f) out.push_back({m, slowest, corner.side});
@@ -365,8 +452,61 @@ struct LapRead {
     std::vector<ErsSample> ers;
     std::vector<TrackStatusChange> trackStatus;
     ErsPeaks peaks;
+    // The recording's track corners, when its sweep found them.
+    std::optional<TrackCorners> corners;
     bool ok{};
 };
+
+// The recording's track corners. A V6 recording's sweep started at load has
+// usually finished; it is waited for outside the recording's lock. Without
+// one (formats that hold only the playback car) that car's laps are read
+// once, a lap per lock, and the corners kept on the reader.
+std::optional<TrackCorners> readCorners(const AnalysisMapLap& request) {
+    std::shared_ptr<TrackCornerSweep> sweep;
+    std::optional<TrackCorners> cached;
+    std::vector<int> laps;
+    uint64_t serial = 0;
+    if (!request.recording([&](const TnrdReader& reader) {
+            sweep = reader.trackCornerSweep();
+            if (sweep) return;
+            TrackCorners corners;
+            if (reader.cachedTrackCorners(corners)) cached = std::move(corners);
+            else {
+                laps = reader.analysisLapNumbers(-1);
+                serial = reader.loadSerial();
+            }
+        })) return std::nullopt;
+    TrackCorners corners;
+    if (sweep) return sweep->waitFor(corners) ? std::optional<TrackCorners>(std::move(corners)) : std::nullopt;
+    if (cached) return cached->corners.empty() ? std::nullopt : cached;
+
+    std::optional<TrackPathAverage> average;
+    for (const int lapNum : laps) {
+        AnalysisLapProgress lap;
+        std::vector<PlayerPositionPoint> positions;
+        bool read = false;
+        if (!request.recording([&](const TnrdReader& reader) {
+                read = reader.getAnalysisLapProgress(lapNum, lap, -1) && lap.lapTimeMs > 0 &&
+                       reader.getAnalysisPositionSamples(lapNum, positions, -1);
+            })) return std::nullopt;
+        if (!read || !(lap.trackLengthM > 0.0f)) continue;
+        if (!average) average.emplace(lap.trackLengthM);
+        std::vector<float> time;
+        std::vector<double> x, z;
+        for (const auto& point : positions) {
+            time.push_back(point.session_time);
+            x.push_back(point.x);
+            z.push_back(point.z);
+        }
+        std::vector<std::pair<float, double>> lapDistance;
+        for (const auto& point : lap.points) lapDistance.emplace_back(point.session_time, point.lap_distance_m);
+        (void)average->addLap(time, x, z, lapDistance);
+    }
+    if (average) corners = average->corners();
+    (void)request.recording([&](const TnrdReader& reader) { reader.cacheTrackCorners(serial, corners); });
+    if (corners.corners.empty()) return std::nullopt;
+    return corners;
+}
 
 // Reads one lap, and for ERS Usage the car's whole-recording peaks: from the
 // reader's cache, or by reading each of the car's laps in turn.
@@ -560,6 +700,198 @@ void describeBrakingZones(BrakingPointsMap& braking, const LapRead& current, con
 
 } // namespace
 
+TrackPathAverage::TrackPathAverage(float trackLengthM)
+    : trackLengthM_(trackLengthM > 0.0f ? trackLengthM : 0.0f) {
+    const size_t count = static_cast<size_t>(std::ceil(trackLengthM_));
+    sumX_.assign(count, 0.0);
+    sumZ_.assign(count, 0.0);
+    count_.assign(count, 0);
+}
+
+bool TrackPathAverage::addLap(const std::vector<float>& time, const std::vector<double>& x,
+                              const std::vector<double>& z,
+                              const std::vector<std::pair<float, double>>& lapDistance) {
+    const size_t n = std::min({time.size(), x.size(), z.size()});
+    if (count_.empty() || n < kPathMinSamples || lapDistance.size() < 2) return false;
+    for (size_t i = 1; i < n; ++i)
+        if (std::hypot(x[i] - x[i - 1], z[i] - z[i - 1]) > kPathMaxStepM) return false;
+    // Each position's lap distance, from the timing samples either side.
+    std::vector<double> distance(n, -1.0);
+    size_t j = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const float t = time[i];
+        if (t < lapDistance.front().first || t > lapDistance.back().first) continue;
+        while (j + 2 < lapDistance.size() && lapDistance[j + 1].first < t) ++j;
+        const auto& [t0, d0] = lapDistance[j];
+        const auto& [t1, d1] = lapDistance[j + 1];
+        // Across the line the distance falls back; neither side is this lap's.
+        if (d1 < d0) continue;
+        const double ratio = t1 > t0 ? (t - t0) / (t1 - t0) : 0.0;
+        distance[i] = d0 + (d1 - d0) * std::clamp(ratio, 0.0, 1.0);
+    }
+    // Each metre the lap passes, once, from the positions either side of it.
+    const size_t count = count_.size();
+    std::vector<bool> seen(count, false);
+    bool any = false;
+    for (size_t i = 1; i < n; ++i) {
+        const double a = distance[i - 1], b = distance[i];
+        if (a < 0.0 || b <= a || b - a > kPathMaxStepM) continue;
+        for (double m = std::ceil(a); m <= b && m < static_cast<double>(count); m += 1.0) {
+            const size_t k = static_cast<size_t>(m);
+            if (seen[k]) continue;
+            const double ratio = (m - a) / (b - a);
+            sumX_[k] += x[i - 1] + (x[i] - x[i - 1]) * ratio;
+            sumZ_[k] += z[i - 1] + (z[i] - z[i - 1]) * ratio;
+            ++count_[k];
+            seen[k] = any = true;
+        }
+    }
+    if (any) ++laps_;
+    return any;
+}
+
+void TrackPathAverage::merge(const TrackPathAverage& other) {
+    if (other.count_.size() != count_.size()) return;
+    for (size_t k = 0; k < count_.size(); ++k) {
+        sumX_[k] += other.sumX_[k];
+        sumZ_[k] += other.sumZ_[k];
+        count_[k] += other.count_[k];
+    }
+    laps_ += other.laps_;
+}
+
+TrackCorners TrackPathAverage::corners() const {
+    TrackCorners result;
+    result.trackLengthM = trackLengthM_;
+    const int count = static_cast<int>(count_.size());
+    if (laps_ < kPathMinLaps || count < 4 * kPathCurvatureM) return result;
+    const auto wrap = [count](int k) { return ((k % count) + count) % count; };
+
+    // The averaged path, short gaps bridged.
+    std::vector<double> px(static_cast<size_t>(count)), pz(static_cast<size_t>(count));
+    int start = -1;
+    for (int k = 0; k < count; ++k)
+        if (count_[static_cast<size_t>(k)] > 0) { start = k; break; }
+    if (start < 0) return result;
+    for (int step = 0; step < count;) {
+        const int k = wrap(start + step);
+        int gap = 1;
+        while (gap < count && count_[static_cast<size_t>(wrap(k + gap))] == 0) ++gap;
+        if (gap - 1 > kPathMaxGapM) return result;
+        const auto mean = [&](const std::vector<double>& sum, int at) {
+            return sum[static_cast<size_t>(at)] / count_[static_cast<size_t>(at)];
+        };
+        const int next = wrap(k + gap);
+        const double x0 = mean(sumX_, k), z0 = mean(sumZ_, k);
+        const double x1 = mean(sumX_, next), z1 = mean(sumZ_, next);
+        for (int g = 0; g < gap; ++g) {
+            const double ratio = static_cast<double>(g) / gap;
+            px[static_cast<size_t>(wrap(k + g))] = x0 + (x1 - x0) * ratio;
+            pz[static_cast<size_t>(wrap(k + g))] = z0 + (z1 - z0) * ratio;
+        }
+        step += gap;
+    }
+
+    // Signed curvature: positive turning right, as the steering reads.
+    std::vector<double> heading(static_cast<size_t>(count));
+    for (int k = 0; k < count; ++k) {
+        const size_t a = static_cast<size_t>(wrap(k - kPathHeadingM));
+        const size_t b = static_cast<size_t>(wrap(k + kPathHeadingM));
+        heading[static_cast<size_t>(k)] = std::atan2(pz[b] - pz[a], px[b] - px[a]);
+    }
+    std::vector<double> curvature(static_cast<size_t>(count));
+    for (int k = 0; k < count; ++k) {
+        double turn = heading[static_cast<size_t>(wrap(k + kPathCurvatureM))] -
+                      heading[static_cast<size_t>(wrap(k - kPathCurvatureM))];
+        turn = std::remainder(turn, 2.0 * std::numbers::pi);
+        curvature[static_cast<size_t>(k)] = turn / (2.0 * kPathCurvatureM);
+    }
+    const auto sideAt = [&](int k, double radius) {
+        const double c = curvature[static_cast<size_t>(wrap(k))];
+        return std::abs(c) >= 1.0 / radius ? (c > 0.0 ? 1 : -1) : 0;
+    };
+
+    // Corners: runs tighter than kTrackCornerRadiusM, scanned from a point
+    // that is not, so a corner across the line stays whole.
+    int origin = -1;
+    for (int k = 0; k < count; ++k)
+        if (sideAt(k, kTrackCornerRadiusM) == 0) { origin = k; break; }
+    if (origin < 0) return result;
+    struct Run { int first; int last; int side; };   // offsets from origin
+    std::vector<Run> runs;
+    for (int step = 1; step < count;) {
+        const int side = sideAt(origin + step, kTrackCornerRadiusM);
+        if (side == 0) { ++step; continue; }
+        int end = step;
+        while (end + 1 < count && sideAt(origin + end + 1, kTrackCornerRadiusM) == side) ++end;
+        if (!runs.empty() && runs.back().side == side && step - runs.back().last <= kTrackCornerJoinM)
+            runs.back().last = end;
+        else
+            runs.push_back({step, end, side});
+        step = end + 1;
+    }
+    runs.erase(std::remove_if(runs.begin(), runs.end(), [](const Run& run) {
+        return run.last - run.first + 1 < kTrackCornerMinM;
+    }), runs.end());
+    // Neighbouring corners share the stretch between them at its straightest
+    // point: neither runs past it.
+    const auto straightness = [&](int k) { return std::abs(curvature[static_cast<size_t>(wrap(origin + k))]); };
+    std::vector<int> split(runs.size() + 1, 0);
+    split.back() = count;
+    for (size_t r = 1; r < runs.size(); ++r) {
+        int straightest = runs[r - 1].last + 1;
+        for (int k = straightest; k < runs[r].first; ++k)
+            if (straightness(k) < straightness(straightest)) straightest = k;
+        split[r] = straightest;
+    }
+    for (size_t r = 0; r < runs.size(); ++r) {
+        const auto& run = runs[r];
+        // Out to where it is no tighter than kTrackCornerEndRadiusM.
+        int first = run.first, last = run.last;
+        while (first - 1 > split[r] && sideAt(origin + first - 1, kTrackCornerEndRadiusM) == run.side) --first;
+        while (last + 1 < split[r + 1] && sideAt(origin + last + 1, kTrackCornerEndRadiusM) == run.side) ++last;
+        // The apex: halfway through the turning of the corner's core.
+        const auto turning = [&](int k) { return curvature[static_cast<size_t>(wrap(origin + k))] * run.side; };
+        double peak = 0.0;
+        for (int k = first; k <= last; ++k) peak = std::max(peak, turning(k));
+        const auto core = [&](int k) { return turning(k) >= kApexCoreShare * peak ? turning(k) : 0.0; };
+        double total = 0.0;
+        for (int k = first; k <= last; ++k) total += core(k);
+        int apex = first;
+        for (double sum = 0.0; apex < last && sum + core(apex) < total / 2.0; ++apex) sum += core(apex);
+        result.corners.push_back({static_cast<float>(wrap(origin + first)), static_cast<float>(wrap(origin + last)),
+                                  static_cast<float>(wrap(origin + apex)), run.side});
+    }
+    std::sort(result.corners.begin(), result.corners.end(),
+        [](const TrackCorner& x, const TrackCorner& y) { return x.apexM < y.apexM; });
+    return result;
+}
+
+bool TrackCornerSweep::waitFor(TrackCorners& out) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    changed_.wait(lock, [&] { return cancelled_.load() || done_; });
+    if (cancelled_.load() || !corners_ || corners_->corners.empty()) return false;
+    out = *corners_;
+    return true;
+}
+
+void TrackCornerSweep::publish(std::optional<TrackCorners> corners) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        done_ = true;
+        corners_ = std::move(corners);
+    }
+    changed_.notify_all();
+}
+
+void TrackCornerSweep::cancel() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cancelled_.store(true);
+    }
+    changed_.notify_all();
+}
+
 ErsPeakSweep::ErsPeakSweep(const std::vector<int>& drivers)
     : pending_(drivers.begin(), drivers.end()) {}
 
@@ -727,7 +1059,8 @@ ErsHarvestMap calculateErsHarvest(const AnalysisLapProgress& lap,
 }
 
 std::vector<BrakingPoint> findBrakingPoints(const AnalysisLapProgress& lap,
-                                            const std::vector<InputSample>& samples) {
+                                            const std::vector<InputSample>& samples,
+                                            const TrackCorners* corners) {
     std::vector<BrakingPoint> points;
     const auto progress = detail::buildProgressMap(lap);
     if (progress.points.empty()) return points;
@@ -841,7 +1174,7 @@ std::vector<BrakingPoint> findBrakingPoints(const AnalysisLapProgress& lap,
         // slowest of them is the zone's minimum speed.
         const float zoneEnd = fullThrottle ? samples[*fullThrottle].session_time : exitEnd;
         point.endM = std::max(point.distanceM, distanceAtTime(progress, zoneEnd));
-        point.apexes = findCorners(progress, samples, at.session_time, zoneEnd);
+        point.apexes = findCorners(progress, samples, at.session_time, zoneEnd, corners);
         if (point.apexes.empty()) {
             const float m = distanceAtTime(progress, slowestAt);
             point.apexes.push_back({m >= 0.0f ? m : point.distanceM, samples[slowest].speed_kph});
@@ -862,7 +1195,7 @@ namespace {
 // mistaken for a lift.
 std::optional<BrakingPoint> liftZone(const detail::ProgressMap& progress,
                                      const std::vector<InputSample>& samples, float fromM, float toM,
-                                     float notBeforeM) {
+                                     float notBeforeM, const TrackCorners* corners) {
     const float t0 = timeAtDistance(progress, std::max({0.0f, fromM - kLiftLookbackM, notBeforeM}));
     const float t1 = timeAtDistance(progress, toM);
     if (!std::isfinite(t0) || !std::isfinite(t1)) return std::nullopt;
@@ -903,7 +1236,7 @@ std::optional<BrakingPoint> liftZone(const detail::ProgressMap& progress,
     }
     point.endM = std::max(point.distanceM, full ? point.fullThrottleM : toM);
     point.apexes = findCorners(progress, samples, at.session_time,
-                               full ? samples[*full].session_time : t1);
+                               full ? samples[*full].session_time : t1, corners);
     if (point.apexes.empty()) point.apexes.push_back({point.distanceM, slowest});
     setMinimumFromApexes(point);
     return point;
@@ -914,13 +1247,15 @@ std::optional<BrakingPoint> liftZone(const detail::ProgressMap& progress,
 BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
                                         const std::vector<InputSample>& currentInputs,
                                         const AnalysisLapProgress* comparison,
-                                        const std::vector<InputSample>* comparisonInputs) {
+                                        const std::vector<InputSample>* comparisonInputs,
+                                        const TrackCorners* currentCorners,
+                                        const TrackCorners* comparisonCorners) {
     BrakingPointsMap result;
     result.trackLengthM = current.trackLengthM;
-    result.current = findBrakingPoints(current, currentInputs);
+    result.current = findBrakingPoints(current, currentInputs, currentCorners);
     if (!comparison || !comparisonInputs) return result;
     if (!(result.trackLengthM > 0.0f)) result.trackLengthM = comparison->trackLengthM;
-    result.comparison = findBrakingPoints(*comparison, *comparisonInputs);
+    result.comparison = findBrakingPoints(*comparison, *comparisonInputs, comparisonCorners);
 
     const auto a = detail::buildProgressMap(current);
     const auto b = detail::buildProgressMap(*comparison);
@@ -971,7 +1306,7 @@ BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
         if (currentTaken[i]) continue;
         const float from = result.current[i].distanceM, to = result.current[i].endM;
         const float notBefore = previousEnd(result.comparison, comparisonBraked, from);
-        if (auto lift = liftZone(b, *comparisonInputs, from, to, notBefore)) {
+        if (auto lift = liftZone(b, *comparisonInputs, from, to, notBefore, comparisonCorners)) {
             matched.push_back({i, result.comparison.size()});
             result.comparison.push_back(std::move(*lift));
         }
@@ -980,7 +1315,7 @@ BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
         if (comparisonTaken[j]) continue;
         const float from = result.comparison[j].distanceM, to = result.comparison[j].endM;
         const float notBefore = previousEnd(result.current, currentBraked, from);
-        if (auto lift = liftZone(a, currentInputs, from, to, notBefore)) {
+        if (auto lift = liftZone(a, currentInputs, from, to, notBefore, currentCorners)) {
             matched.push_back({result.current.size(), j});
             result.current.push_back(std::move(*lift));
         }
@@ -1034,17 +1369,17 @@ BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
         auto& y = result.comparison[static_cast<size_t>(pair.comparison)];
         // Both laps' corners over the shared zone, so they line up.
         const auto refind = [&](BrakingPoint& point, const detail::ProgressMap& progress,
-                                const std::vector<InputSample>& samples) {
+                                const std::vector<InputSample>& samples, const TrackCorners* corners) {
             const float t0 = timeAtDistance(progress, pair.fromM);
             const float t1 = timeAtDistance(progress, pair.toM);
             if (!std::isfinite(t0) || !std::isfinite(t1)) return;
-            auto apexes = findCorners(progress, samples, t0, t1);
+            auto apexes = findCorners(progress, samples, t0, t1, corners);
             if (apexes.empty()) return;
             point.apexes = std::move(apexes);
             setMinimumFromApexes(point);
         };
-        refind(x, a, currentInputs);
-        refind(y, b, *comparisonInputs);
+        refind(x, a, currentInputs, currentCorners);
+        refind(y, b, *comparisonInputs, comparisonCorners);
         pair.currentTimeS = timeOver(a, pair.fromM, pair.toM);
         pair.comparisonTimeS = timeOver(b, pair.fromM, pair.toM);
         // Braking and acceleration, split at one distance for both laps so
@@ -1106,6 +1441,57 @@ DriverInputsMap calculateDriverInputs(const AnalysisLapProgress& lap,
     return result;
 }
 
+SpeedMap calculateSpeed(const AnalysisLapProgress& lap,
+                        const std::vector<InputSample>& samples,
+                        const TrackCorners* corners) {
+    SpeedMap result;
+    result.lapNum = lap.lapNum;
+    result.binM = kSpeedBinM;
+    const auto progress = detail::buildProgressMap(lap);
+    if (progress.points.empty() || samples.empty()) return result;
+    const float length = lapLength(lap, progress.maxDistance);
+    if (!(length > 0.0f)) return result;
+    result.trackLengthM = length;
+
+    // Each sample holds until the next one; its time in a bin weights it.
+    const size_t count = static_cast<size_t>(std::max(1.0f, std::ceil(length / kSpeedBinM)));
+    std::vector<double> sum(count, 0.0);
+    std::vector<double> weight(count, 0.0);
+    float lowest = std::numeric_limits<float>::infinity();
+    float highest = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i + 1 < samples.size(); ++i) {
+        const float t0 = samples[i].session_time;
+        const float t1 = samples[i + 1].session_time;
+        const float dt = t1 - t0;
+        if (!(dt > 0.0f) || t0 < lap.startSessionTime || t1 > lap.endSessionTime) continue;
+        const float speed = samples[i].speed_kph;
+        if (!(speed >= 0.0f)) continue;
+        const float distance = distanceAtTime(progress, (t0 + t1) / 2.0f);
+        if (!(distance >= 0.0f)) continue;
+        const size_t bin = std::min(count - 1, static_cast<size_t>(distance / kSpeedBinM));
+        sum[bin] += static_cast<double>(speed) * dt;
+        weight[bin] += dt;
+        lowest = std::min(lowest, speed);
+        highest = std::max(highest, speed);
+    }
+    if (!(highest >= lowest)) return result;
+    result.minKph = lowest;
+    result.maxKph = highest;
+    std::vector<std::optional<float>> speeds(count);
+    for (size_t k = 0; k < count; ++k)
+        if (weight[k] > 0.0) speeds[k] = static_cast<float>(sum[k] / weight[k]);
+    fillGaps(speeds);
+    result.speedKph.reserve(count);
+    for (const auto& value : speeds) result.speedKph.push_back(value.value_or(lowest));
+    // A track corner two zones both reach is listed once.
+    for (const auto& zone : findBrakingPoints(lap, samples, corners))
+        for (const auto& apex : zone.apexes)
+            if (apex.side == 0 || std::none_of(result.apexes.begin(), result.apexes.end(),
+                    [&](const CornerApex& listed) { return listed.distanceM == apex.distanceM; }))
+                result.apexes.push_back(apex);
+    return result;
+}
+
 ErsUsageMap calculateErsUsage(const AnalysisLapProgress& lap,
                               const std::vector<ErsSample>& samples,
                               const std::vector<TrackStatusChange>& timeline,
@@ -1161,30 +1547,53 @@ AnalysisMapResult buildAnalysisMap(const std::string& mode, const AnalysisMapLap
     const bool ers = mode == "ers" || harvest;
     const bool braking = mode == "braking";
     const bool inputs = mode == "inputs";
-    if (!ers && !inputs && !braking && mode != "dominance") return result;
+    const bool speed = mode == "speed";
+    if (!ers && !inputs && !speed && !braking && mode != "dominance") return result;
 
-    // The pedals feed Driver Inputs, braking points and superclip detection.
-    const bool readPedals = inputs || braking || harvest;
+    // The pedals feed Driver Inputs, Speed (and its corners), braking points
+    // and superclip detection.
+    const bool readPedals = inputs || speed || braking || harvest;
     // Braking zones read each lap's ERS and harvest samples but need no peaks.
     const bool readErs = ers || braking;
     const bool readHarvest = harvest || braking;
-    const LapRead a = readLap(current, readErs, readPedals, readHarvest, !braking);
-    const std::optional<LapRead> b = comparison
+    LapRead a = readLap(current, readErs, readPedals, readHarvest, !braking);
+    std::optional<LapRead> b = comparison
         ? std::optional<LapRead>(readLap(*comparison, readErs, readPedals, readHarvest, !braking)) : std::nullopt;
     result.hasCurrent = a.ok;
     result.hasComparison = b && b->ok;
+    // Speed and braking place each corner from the lap's own recording.
+    if (speed || braking) {
+        if (result.hasCurrent) a.corners = readCorners(current);
+        if (result.hasComparison) b->corners = readCorners(*comparison);
+    }
+    const TrackCorners* currentCorners = a.corners ? &*a.corners : nullptr;
+    const TrackCorners* comparisonCorners = b && b->corners ? &*b->corners : nullptr;
 
     if (braking) {
         if (result.hasCurrent)
             result.braking = calculateBrakingPoints(a.progress, a.inputs,
                 result.hasComparison ? &b->progress : nullptr,
-                result.hasComparison ? &b->inputs : nullptr);
+                result.hasComparison ? &b->inputs : nullptr,
+                currentCorners, comparisonCorners);
         if (result.hasCurrent && result.hasComparison) describeBrakingZones(result.braking, a, *b);
         return result;
     }
     if (inputs) {
         if (result.hasCurrent) result.currentInputs = calculateDriverInputs(a.progress, a.inputs);
         if (result.hasComparison) result.comparisonInputs = calculateDriverInputs(b->progress, b->inputs);
+        return result;
+    }
+    if (speed) {
+        if (result.hasCurrent) result.currentSpeed = calculateSpeed(a.progress, a.inputs, currentCorners);
+        if (result.hasComparison)
+            result.comparisonSpeed = calculateSpeed(b->progress, b->inputs, comparisonCorners);
+        bool scaled = false;
+        for (const SpeedMap* lap : {&result.currentSpeed, &result.comparisonSpeed}) {
+            if (lap->speedKph.empty()) continue;
+            result.speedScaleMinKph = scaled ? std::min(result.speedScaleMinKph, lap->minKph) : lap->minKph;
+            result.speedScaleMaxKph = scaled ? std::max(result.speedScaleMaxKph, lap->maxKph) : lap->maxKph;
+            scaled = true;
+        }
         return result;
     }
     if (!ers) {

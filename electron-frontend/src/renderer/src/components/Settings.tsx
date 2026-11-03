@@ -19,6 +19,9 @@ import Select from '../lib/AnimatedSelect'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
 import ColorPicker from './ColorPicker'
+import EditMapModal from './EditMapModal'
+import { useTrackMapStore, useTrackMapStoreInit } from '../stores/trackMapStore'
+import type { TrackMapCatalogEntry, TrackMapResult } from '../types'
 
 declare const __APP_VERSION__: string | undefined
 
@@ -184,6 +187,88 @@ const Row = memo(function Row({ label, description, warning, children }: {
       </div>
       <div className="shrink-0">{children}</div>
     </div>
+  )
+})
+
+const MAP_SOURCE_LABELS: Record<string, string> = { generated: 'Generated', imported: 'Imported', edited: 'Edited' }
+
+function savedMapDetails(entry: TrackMapCatalogEntry): string {
+  const parts = [MAP_SOURCE_LABELS[entry.source] ?? entry.source]
+  if (entry.track_length_m > 0) parts.push(`${(entry.track_length_m / 1000).toFixed(3)} km`)
+  if (entry.laps_used > 0) parts.push(`${entry.laps_used} ${entry.laps_used === 1 ? 'lap' : 'laps'}`)
+  if (entry.created_at > 0) parts.push(new Date(entry.created_at).toLocaleDateString())
+  return parts.join(' · ')
+}
+
+// Settings ▸ Map: modded maps, generating them, and the saved ones.
+const ModdedMapsSettings = memo(function ModdedMapsSettings({ isDark }: { isDark: boolean }) {
+  useTrackMapStoreInit()
+  const settings = useTrackMapStore(state => state.settings)
+  const catalog = useTrackMapStore(state => state.catalog)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const saved = catalog.maps.filter(entry => entry.source !== 'builtin')
+
+  const run = async (label: string, action: () => Promise<TrackMapResult>, done?: string) => {
+    setBusy(label)
+    setMessage(null)
+    try {
+      const result = await action()
+      if (!result.ok && result.error !== 'cancelled') setMessage(result.error || 'Something went wrong')
+      else if (result.ok && done) setMessage(done)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <>
+      <Row label="Modded Maps" description="Pick any map for a track and match maps to the cars.">
+        <Toggle value={settings.modded} onChange={value => void window.trackMapsBridge.setSettings({ modded: value })} />
+      </Row>
+      {settings.modded && (
+        <Row label="Generate Maps" description="Build and save a map when none fits the track.">
+          <Toggle value={settings.generate} onChange={value => void window.trackMapsBridge.setSettings({ generate: value })} />
+        </Row>
+      )}
+      <div className="mx-4 mt-2">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[9px] uppercase tracking-[0.2em] text-[var(--text-muted)]">Saved maps</p>
+          <div className="flex items-center gap-1.5">
+            <button className={BUTTON_CLASS} disabled={busy !== null}
+              onClick={() => void run('generate', () => window.trackMapsBridge.generateFromRecording(), 'Map saved')}>
+              {busy === 'generate' ? 'Generating…' : 'From Recording…'}
+            </button>
+            <button className={BUTTON_CLASS} disabled={busy !== null}
+              onClick={() => void run('import', () => window.trackMapsBridge.importMaps())}>
+              Import…
+            </button>
+            <button className={BUTTON_CLASS} onClick={() => void window.trackMapsBridge.openFolder()}>
+              <Folder size={12} />
+            </button>
+          </div>
+        </div>
+        {saved.length === 0 ? (
+          <p className="py-5 text-xs text-[var(--text-muted)]">No saved maps.</p>
+        ) : saved.map(entry => (
+          <div key={entry.id} className="mt-2 flex items-center gap-3 rounded-lg border border-[var(--border-muted)] px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-semibold text-[var(--text-primary)]">{entry.name}</p>
+              <p className="text-[10px] text-[var(--text-muted)]">{savedMapDetails(entry)}</p>
+            </div>
+            <button className={BUTTON_CLASS} disabled={busy !== null}
+              onClick={() => setEditingId(entry.id)}>Edit</button>
+            <button className={BUTTON_CLASS} disabled={busy !== null}
+              onClick={() => void run('export', () => window.trackMapsBridge.exportMap(entry.id, entry.name))}>Export</button>
+            <button className={BUTTON_CLASS} disabled={busy !== null}
+              onClick={() => void run('delete', () => window.trackMapsBridge.remove(entry.id))}>Delete</button>
+          </div>
+        ))}
+        {message && <p className="mt-3 whitespace-pre-line text-xs text-[var(--text-muted)]">{message}</p>}
+      </div>
+      <EditMapModal mapId={editingId} isDark={isDark} onClose={() => setEditingId(null)} />
+    </>
   )
 })
 
@@ -997,6 +1082,7 @@ const Settings = memo(function Settings({
           value={mapTimeout} onChange={onMapTimeoutChange}
         />
       </Row>
+      <ModdedMapsSettings isDark={theme !== 'light'} />
     </div>
   )
 

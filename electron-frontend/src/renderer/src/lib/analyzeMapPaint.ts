@@ -51,17 +51,17 @@ function oklabToHex([L, a, b]: Oklab): string {
   }).join('')
 }
 
-/** ERS_STEPS + 1 colours from the ramp's start to its end, blended in OKLCH
+/** steps + 1 colours from the ramp's start to its end, blended in OKLCH
  *  along the shorter hue arc, as CSS `in oklch` gradients are. */
-function rampColors([from, to]: readonly [string, string]): string[] {
+function rampColors([from, to]: readonly [string, string], steps = ERS_STEPS): string[] {
   const [l0, a0, b0] = hexToOklab(from)
   const [l1, a1, b1] = hexToOklab(to)
   const c0 = Math.hypot(a0, b0)
   const c1 = Math.hypot(a1, b1)
   const h0 = Math.atan2(b0, a0)
   const dh = ((Math.atan2(b1, a1) - h0 + 3 * Math.PI) % (2 * Math.PI)) - Math.PI
-  return Array.from({ length: ERS_STEPS + 1 }, (_, step) => {
-    const t = step / ERS_STEPS
+  return Array.from({ length: steps + 1 }, (_, step) => {
+    const t = step / steps
     const c = c0 + (c1 - c0) * t
     const h = h0 + dh * t
     return oklabToHex([l0 + (l1 - l0) * t, c * Math.cos(h), c * Math.sin(h)])
@@ -82,6 +82,30 @@ const HARVEST_COLORS_LIGHT = rampColors(HARVEST_RAMP_LIGHT)
 // apart from both harvest ramps (wine to pink, brown to amber).
 export const SUPERCLIP_COLOR_DARK = '#8C9CF0'
 export const SUPERCLIP_COLOR_LIGHT = '#8C9CF0'
+
+// Speed runs from the slowest to the fastest speed on show: indigo to yellow
+// on the dark theme and indigo to orange on the light one, through magenta and
+// red, so it never looks like ERS Usage or Harvest. Finer steps than ERS keep
+// a few km/h between neighbouring colours.
+const SPEED_STEPS = 50
+export const SPEED_RAMP_DARK = ['#4C2A9A', '#FCE36B'] as const
+export const SPEED_RAMP_LIGHT = ['#3B2A8C', '#F08A24'] as const
+const SPEED_COLORS_DARK = rampColors(SPEED_RAMP_DARK, SPEED_STEPS)
+const SPEED_COLORS_LIGHT = rampColors(SPEED_RAMP_LIGHT, SPEED_STEPS)
+
+/** One lap's speed from libtnrp. */
+export interface SpeedResult {
+  lapNum: number
+  binM: number
+  trackLengthM: number
+  /** Per bin: the time-weighted mean speed (km/h). */
+  speedKph: number[]
+  /** The lap's slowest and fastest samples (km/h). */
+  minKph: number
+  maxKph: number
+  /** Each corner in the lap's braking zones, with its slowest speed. */
+  apexes: { distanceM: number; speedKph: number; side: number }[]
+}
 
 /** One lap's ERS Usage from libtnrp. */
 export interface ErsUsageResult {
@@ -170,7 +194,7 @@ export interface BrakingPointResult {
   minSpeedKph: number
   minSpeedM: number
   /** Each corner in the zone, found from the steering so flat-out corners
-   *  count: where the wheel is turned furthest, the slowest speed through it,
+   *  count: where half its steering is done, the slowest speed through it,
    *  and which way it turns (-1 left, 1 right, 0 when found from speed alone). */
   apexes: { distanceM: number; speedKph: number; side: number }[]
   /** Where the zone ends: full throttle, else the next braking point. */
@@ -200,7 +224,7 @@ export interface DriverInputsResult {
 }
 
 export interface AnalysisMapResult {
-  mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'braking'
+  mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'speed' | 'braking'
   dominance: {
     miniSectorM: number
     trackLengthM: number
@@ -211,6 +235,11 @@ export interface AnalysisMapResult {
   comparison: ErsUsageResult
   currentInputs: DriverInputsResult
   comparisonInputs: DriverInputsResult
+  currentSpeed: SpeedResult
+  comparisonSpeed: SpeedResult
+  /** One km/h scale for both laps' speed maps. */
+  speedScaleMinKph: number
+  speedScaleMaxKph: number
   currentHarvest: ErsHarvestResult
   comparisonHarvest: ErsHarvestResult
   hasCurrent: boolean
@@ -231,9 +260,10 @@ export interface AnalysisMapResult {
 
 export function parseAnalysisMapResult(raw: unknown): AnalysisMapResult | null {
   const result = raw as Partial<AnalysisMapResult> | null
-  if (!result || !['dominance', 'ers', 'harvest', 'inputs', 'braking'].includes(result.mode ?? '') || !result.braking ||
+  if (!result || !['dominance', 'ers', 'harvest', 'inputs', 'speed', 'braking'].includes(result.mode ?? '') || !result.braking ||
       !result.dominance || !result.current || !result.comparison ||
       !result.currentInputs || !result.comparisonInputs ||
+      !result.currentSpeed || !result.comparisonSpeed ||
       !result.currentHarvest || !result.comparisonHarvest) return null
   return result as AnalysisMapResult
 }
@@ -302,5 +332,19 @@ export function inputsPaint(inputs: DriverInputsResult, isDark: boolean): TrackP
   return {
     translucent: false,
     colorAt: fraction => colors[Math.min(colors.length - 1, Math.max(0, Math.floor(fraction * length / inputs.binM)))],
+  }
+}
+
+/** Speed along the speed ramp, from `minKph` (the slowest on show) to `maxKph`. */
+export function speedPaint(speed: SpeedResult, minKph: number, maxKph: number, isDark: boolean): TrackPaint | null {
+  if (speed.speedKph.length === 0 || !(speed.binM > 0) || !(speed.trackLengthM > 0)) return null
+  const ramp = isDark ? SPEED_COLORS_DARK : SPEED_COLORS_LIGHT
+  const span = maxKph - minKph
+  const colors = speed.speedKph.map(kph =>
+    ramp[span > 0 ? Math.round(Math.min(1, Math.max(0, (kph - minKph) / span)) * SPEED_STEPS) : SPEED_STEPS])
+  const length = speed.trackLengthM
+  return {
+    translucent: false,
+    colorAt: fraction => colors[Math.min(colors.length - 1, Math.max(0, Math.floor(fraction * length / speed.binM)))],
   }
 }

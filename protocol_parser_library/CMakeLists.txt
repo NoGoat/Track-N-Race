@@ -136,6 +136,12 @@ add_library(tnrp STATIC
     src/tnrd/TNRD_V4.cpp
     src/tnrd/TNRD_V5.cpp
     src/tnrd/TNRD_V6.cpp
+    src/tnrd/TNRD_V1_Reader.cpp
+    src/tnrd/TNRD_V2_Reader.cpp
+    src/tnrd/TNRD_V3_Reader.cpp
+    src/tnrd/TNRD_V4_Reader.cpp
+    src/tnrd/TNRD_V5_Reader.cpp
+    src/tnrd/TNRD_V6_Reader.cpp
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp
@@ -143,6 +149,9 @@ add_library(tnrp STATIC
     src/PairDiscovery.cpp
     src/PairLapData.cpp
     src/PairServer.cpp
+    src/TrackMaps.cpp
+    src/TrackMapBuilder.cpp
+    src/TrackMapTracker.cpp
     src/Engine.cpp
     src/XlsxExport.cpp
 )

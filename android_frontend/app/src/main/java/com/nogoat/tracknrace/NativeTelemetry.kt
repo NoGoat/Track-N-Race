@@ -106,4 +106,34 @@ internal class NativeTelemetry(
     private external fun nativeLapDelta(currentLap: Int, comparisonLap: Int, sectorDelta: Boolean): String?
 
     private external fun nativeLapData(lapNumber: Int, channels: Array<String>, forCharts: Boolean): String?
+
+    // Track maps (tnrp/TrackMaps.h), the current session's library. Not wired
+    // to any UI yet. Changes return {"ok","id","error"} JSON.
+    external fun nativeTrackMapsAddBuiltins(maps: Array<String>): Int
+
+    external fun nativeTrackMapsSetDirectory(directory: String)
+
+    external fun nativeTrackMapsSetOptions(moddedMaps: Boolean, generateMaps: Boolean)
+
+    external fun nativeTrackMapsCatalog(): String
+
+    external fun nativeTrackMapsGet(id: String): String?
+
+    external fun nativeTrackMapsState(): String?
+
+    external fun nativeTrackMapsPin(trackKey: String, mapId: String)
+
+    external fun nativeTrackMapsRename(id: String, name: String): String
+
+    external fun nativeTrackMapsDelete(id: String): String
+
+    external fun nativeTrackMapsEdit(id: String, editJson: String): String
+
+    external fun nativeTrackMapsImport(path: String): String
+
+    external fun nativeTrackMapsExport(id: String, path: String): String
+
+    external fun nativeTrackMapsGenerate(path: String): String
+
+    external fun nativeTrackMapsResolveRecording(path: String): String?
 }

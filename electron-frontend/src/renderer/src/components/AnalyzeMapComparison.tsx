@@ -3,11 +3,12 @@ import { AlertTriangle } from 'lucide-react'
 import PlaybackBar from '../app/components/PlaybackBar'
 import { setAnalyzeCursorSource } from '../lib/analyzeCursor'
 import {
-  dominancePaint, ersPaint, harvestPaint, inputsPaint,
+  dominancePaint, ersPaint, harvestPaint, inputsPaint, speedPaint,
   ERS_RAMP_DARK, ERS_RAMP_LIGHT, HARVEST_RAMP_DARK, HARVEST_RAMP_LIGHT, INPUT_COLORS_DARK,
   SUPERCLIP_COLOR_DARK, SUPERCLIP_COLOR_LIGHT, INPUT_COLORS_LIGHT, INPUT_STATE_LABELS,
+  SPEED_RAMP_DARK, SPEED_RAMP_LIGHT,
   type AnalysisMapResult, type BrakingObservation, type BrakingPairResult, type BrakingPointResult,
-  type ErsHarvestResult, type ErsUsageResult, type TrackPaint,
+  type ErsHarvestResult, type ErsUsageResult, type SpeedResult, type TrackPaint,
 } from '../lib/analyzeMapPaint'
 import { useSize } from '../hooks/useSize'
 import type { AnalyzeMapColoring } from '../lib/analyzeMetrics'
@@ -16,6 +17,7 @@ import { useModalPresence } from '../lib/useModalPresence'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData, PlayerPositionPoint } from '../types'
 import TrackMap, { type TrackMapMarker, type TrackMark } from './TrackMap'
+import { useTrackMapStore } from '../stores/trackMapStore'
 import AnalyzeInputComparison from './AnalyzeInputComparison'
 
 interface Props {
@@ -146,6 +148,40 @@ function HarvestScale({ harvest, isDark }: { harvest: ErsHarvestResult | null; i
           </span>}
         </>}
   </div>
+}
+
+/** Speed scale: the ramp runs from the slowest to the fastest speed on show,
+ *  the same on both laps' maps. */
+function SpeedScale({ speed, minKph, maxKph, isDark }: { speed: SpeedResult | null; minKph: number; maxKph: number; isDark: boolean }) {
+  if (!speed || speed.speedKph.length === 0) return null
+  return <div className="pointer-events-none absolute bottom-2 right-2 z-10 flex items-center gap-1.5 text-[9px] font-mono text-[var(--text-secondary)]">
+    <span>{Math.round(minKph)}</span>
+    <span className="h-1.5 w-16 rounded-full" style={{
+      background: `linear-gradient(in oklch to right, ${(isDark ? SPEED_RAMP_DARK : SPEED_RAMP_LIGHT).join(', ')})`,
+    }} />
+    <span className="text-[var(--text-primary)]">{Math.round(maxKph)} km/h</span>
+  </div>
+}
+
+// Each corner's apex is marked this far either side of it on the Speed map.
+const APEX_MARK_M = 6
+
+/** Marks each corner's apex on a lap's speed map, with its slowest speed on hover. */
+function apexMarks(speed: SpeedResult | null, isDark: boolean): TrackMark[] {
+  if (!speed || !(speed.trackLengthM > 0)) return []
+  const length = speed.trackLengthM
+  const color = isDark ? '#F4F5F8' : '#14151A'
+  return speed.apexes.map((apex, index) => ({
+    fromFraction: Math.max(0, apex.distanceM - APEX_MARK_M) / length,
+    toFraction: Math.min(length, apex.distanceM + APEX_MARK_M) / length,
+    color,
+    tooltip: <div className="flex flex-col gap-0.5 whitespace-nowrap tabular-nums">
+      <span className="text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">
+        Apex {index + 1}{sideText(apex.side)} · {formatM(apex.distanceM)}
+      </span>
+      <span className="text-[12px] font-bold">{Math.round(apex.speedKph)} km/h</span>
+    </div>,
+  }))
 }
 
 const formatM = (m: number) => `${Math.round(m).toLocaleString()} m`
@@ -404,10 +440,16 @@ export default memo(function AnalyzeMapComparison({
 }: Props) {
   const playbackBarPresence = useModalPresence(fixedMode, 180)
   const aeroMode = useTelemetryStore(state => state.protocolStatus?.aero_mode ?? 'drs')
+  // The primary recording is the one loaded for playback; its map choice
+  // applies to every lap drawn on its circuit.
+  const mapResolution = useTrackMapStore(state => state.session)
   const result = mapResult?.mode === mapColoring ? mapResult : null
   const ersMode = mapColoring === 'ers'
   const inputsMode = mapColoring === 'inputs'
   const harvestMode = mapColoring === 'harvest'
+  const speedMode = mapColoring === 'speed'
+  const currentSpeed = speedMode && result?.hasCurrent ? result.currentSpeed : null
+  const comparisonSpeed = speedMode && result?.hasComparison ? result.comparisonSpeed : null
   const currentHarvest = harvestMode && result?.hasCurrent ? result.currentHarvest : null
   const comparisonHarvest = harvestMode && result?.hasComparison ? result.comparisonHarvest : null
   const currentUsage = ersMode && result?.hasCurrent ? result.current : null
@@ -424,20 +466,27 @@ export default memo(function AnalyzeMapComparison({
         result.hasCurrent ? inputsPaint(result.currentInputs, isDark) : null,
         result.hasComparison ? inputsPaint(result.comparisonInputs, isDark) : null,
       ]
+      case 'speed': return [
+        result.hasCurrent ? speedPaint(result.currentSpeed, result.speedScaleMinKph, result.speedScaleMaxKph, isDark) : null,
+        result.hasComparison ? speedPaint(result.comparisonSpeed, result.speedScaleMinKph, result.speedScaleMaxKph, isDark) : null,
+      ]
       default: return [
         result.hasCurrent ? ersPaint(result.current, isDark) : null,
         result.hasComparison ? ersPaint(result.comparison, isDark) : null,
       ]
     }
   }, [comparisonColor, currentColor, isDark, result])
-  // ERS Usage and Driver Inputs give each lap its own map, side by side on a
-  // wide pane and stacked on a tall one. The layout follows the selection, not
-  // the lap data, so switching laps does not drop to one map while it loads.
-  const separateMaps = (ersMode || harvestMode || inputsMode) && comparisonSelected
-  const legend = (usage: ErsUsageResult | null, harvest: ErsHarvestResult | null) => ersMode
+  // ERS Usage, ERS Harvest, Driver Inputs and Speed give each lap its own
+  // map, side by side on a wide pane and stacked on a tall one. The layout
+  // follows the selection, not the lap data, so switching laps does not drop
+  // to one map while it loads.
+  const separateMaps = (ersMode || harvestMode || inputsMode || speedMode) && comparisonSelected
+  const legend = (usage: ErsUsageResult | null, harvest: ErsHarvestResult | null, speed: SpeedResult | null) => ersMode
     ? <ErsScale usage={usage} isDark={isDark} />
     : harvestMode
       ? <HarvestScale harvest={harvest} isDark={isDark} />
+    : speedMode && result
+      ? <SpeedScale speed={speed} minKph={result.speedScaleMinKph} maxKph={result.speedScaleMaxKph} isDark={isDark} />
     : inputsMode && result
       ? <InputsLegend isDark={isDark} />
       : null
@@ -499,8 +548,16 @@ export default memo(function AnalyzeMapComparison({
         : winner(pair.currentAccelerationS, pair.comparisonAccelerationS),
       tooltip(pair.current + 1, braking.current[pair.current], braking.comparison[pair.comparison], pair)))
   }, [brakingResult, comparisonColor, comparisonLabel, currentColor, currentLabel, isDark])
-  const currentMarks = brakingMarks
-  const comparisonMarks = separateMaps ? brakingMarks : null
+  // The Speed map marks each lap's corners on its own map, over any braking zones.
+  const currentMarks = useMemo<TrackMark[] | null>(() => {
+    const apexes = apexMarks(currentSpeed, isDark)
+    return apexes.length > 0 ? [...(brakingMarks ?? []), ...apexes] : brakingMarks
+  }, [brakingMarks, currentSpeed, isDark])
+  const comparisonMarks = useMemo<TrackMark[] | null>(() => {
+    if (!separateMaps) return null
+    const apexes = apexMarks(comparisonSpeed, isDark)
+    return apexes.length > 0 ? [...(brakingMarks ?? []), ...apexes] : brakingMarks
+  }, [brakingMarks, comparisonSpeed, isDark, separateMaps])
   const { ref: mapsRef, width: mapsWidth, height: mapsHeight } = useSize()
   const stackMaps = mapsHeight > mapsWidth
   const total = Math.max(lapDuration(current), lapDuration(comparison))
@@ -643,7 +700,8 @@ export default memo(function AnalyzeMapComparison({
     markerSource={separateMaps ? currentMarkerSource : markerSource}
     trackPaint={trackPaint}
     trackMarks={currentMarks}
-  />, [aeroMode, compatibleCircuit, currentMarkerSource, currentMarks, isDark, mapDimmed, markerSource, reduceAnimations, sectorColors, separateMaps, trackId, trackPaint])
+    mapResolution={mapResolution}
+  />, [aeroMode, compatibleCircuit, currentMarkerSource, currentMarks, isDark, mapDimmed, mapResolution, markerSource, reduceAnimations, sectorColors, separateMaps, trackId, trackPaint])
 
   const comparisonMap = useMemo(() => separateMaps && <TrackMap
     trackId={compatibleCircuit ? trackId : null}
@@ -656,7 +714,8 @@ export default memo(function AnalyzeMapComparison({
     markerSource={comparisonMarkerSource}
     trackPaint={comparisonTrackPaint}
     trackMarks={comparisonMarks}
-  />, [aeroMode, compatibleCircuit, comparisonMarkerSource, comparisonMarks, comparisonTrackPaint, isDark, mapDimmed, reduceAnimations, sectorColors, separateMaps, trackId])
+    mapResolution={mapResolution}
+  />, [aeroMode, compatibleCircuit, comparisonMarkerSource, comparisonMarks, comparisonTrackPaint, isDark, mapDimmed, mapResolution, reduceAnimations, sectorColors, separateMaps, trackId])
 
   return <div className="h-full min-h-0 flex flex-col">
     <div ref={mapsRef} className="flex-1 min-h-0 relative">
@@ -664,17 +723,17 @@ export default memo(function AnalyzeMapComparison({
         ? <div className={`absolute inset-0 flex ${stackMaps ? 'flex-col' : ''}`}>
             <div className="relative flex-1 min-w-0 min-h-0">
               {map}
-              {legend(currentUsage, currentHarvest)}
+              {legend(currentUsage, currentHarvest, currentSpeed)}
             </div>
             <div className={`shrink-0 bg-[var(--border)] ${stackMaps ? 'h-px' : 'w-px'}`} />
             <div className="relative flex-1 min-w-0 min-h-0">
               {comparisonMap}
-              {legend(comparisonUsage, comparisonHarvest)}
+              {legend(comparisonUsage, comparisonHarvest, comparisonSpeed)}
             </div>
           </div>
         : <>
             {map}
-            {legend(currentUsage, currentHarvest)}
+            {legend(currentUsage, currentHarvest, currentSpeed)}
           </>}
       {peakMismatches.length > 0 && <div
         role="status"

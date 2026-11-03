@@ -5,6 +5,7 @@ import { inspectBinaryBatch } from './binaryRows'
 import { configStore as store } from './configStore'
 import { normalizeTeamColorOverrides, type TeamColorOverrides } from './teamColors'
 import { setTelemetryRetentionProvider } from './diagnostics'
+import { loadBuiltinTrackMaps } from './builtinTrackMaps'
 import {
   configurePairService,
   pairEngineConfig,
@@ -280,6 +281,20 @@ interface NativeEngine extends NativePairEngine {
   analysisMap(mode: string, currentLapNum: number, currentSecondary: boolean, currentDriverIndex: number,
     comparisonLapNum: number, comparisonSecondary: boolean, comparisonDriverIndex: number): Promise<string | null>
   analysisCloseFile(): void
+  trackMapsAddBuiltins(maps: string[]): number
+  trackMapsSetDirectory(directory: string): void
+  trackMapsSetOptions(moddedMaps: boolean, generateMaps: boolean): void
+  trackMapsCatalog(): string
+  trackMapsGet(id: string): string
+  trackMapsState(): string
+  trackMapsPin(trackKey: string, mapId: string): void
+  trackMapsRename(id: string, name: string): Promise<string>
+  trackMapsDelete(id: string): Promise<string>
+  trackMapsEdit(id: string, editJson: string): Promise<string>
+  trackMapsImport(path: string): Promise<string>
+  trackMapsExport(id: string, path: string): Promise<string>
+  trackMapsGenerate(path: string): Promise<string>
+  trackMapsResolveRecording(path: string): Promise<string>
 }
 
 // Replace ranges of a host restore flush (Engine::setHostVisible). Chart
@@ -801,7 +816,9 @@ export function startBridge(): BridgeStartResult {
         // while hidden, just like the load metadata above.
         batch.includes('"type":"playback_lap_data"') ||
         batch.includes('"type":"playback_loaded"') ||
-        batch.includes('"type":"playback_close"')
+        batch.includes('"type":"playback_close"') ||
+        batch.includes('"type":"track_map"') ||
+        batch.includes('"type":"track_maps_changed"')
       const forwardDriverLapCatalogDuringSeek =
         batch.includes('"type":"playback_lap_blocks"')
       if (seekForwardPhase === 'waiting-flush') {
@@ -922,6 +939,7 @@ export function startBridge(): BridgeStartResult {
       console.error(`[udp] Listener failed on ${String(config.bindAddress || '0.0.0.0')}:${config.port}: ${udpError}`)
     }
     configurePairService(engine)
+    configureTrackMaps()
     if (additionalLoggingEnabled && !udpError) {
       console.info(`[udp] Listener bound on ${String(config.bindAddress || '0.0.0.0')}:${config.port}`)
       startDiagnosticTimer()
@@ -937,6 +955,8 @@ export function startBridge(): BridgeStartResult {
       store.onDidChange('debug.additionalLogging', value => configureAdditionalLogging(value === true)),
       store.onDidChange('debug.nodeApiExceptions', value =>
         engine?.setNativeExceptionReporting?.(value === true)),
+      store.onDidChange(TRACK_MAPS_MODDED_KEY, () => configureTrackMaps()),
+      store.onDidChange(TRACK_MAPS_GENERATE_KEY, () => configureTrackMaps()),
     ]
 
     return { bridgeError: null, udpError }
@@ -1200,7 +1220,7 @@ export function analysisGetLapData(
 }
 
 export async function analysisMap(
-  mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'braking',
+  mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'speed' | 'braking',
   currentLapNum: number,
   currentSource: 'file1' | 'file2',
   currentDriverIndex: number,
@@ -1358,4 +1378,138 @@ export function restartUdp(): string | null {
   stopBridge()
   const { bridgeError, udpError } = startBridge()
   return bridgeError ?? udpError
+}
+
+// ── Track maps (tnrp/TrackMaps.h) ───────────────────────────────────────────
+// libtnrp chooses, generates and stores maps; this layer hands it the bundled
+// maps and the user folder, and turns the renderer's requests into calls.
+
+const TRACK_MAPS_MODDED_KEY = 'maps.modded'
+const TRACK_MAPS_GENERATE_KEY = 'maps.generate'
+
+export interface TrackMapSettings { modded: boolean; generate: boolean }
+export interface TrackMapResult { ok: boolean; id: string; error: string }
+
+// The engine the bundled maps were last given to; a UDP restart makes a new one.
+let builtinTrackMapsEngine: NativeEngine | null = null
+
+export function trackMapsDirectory(): string {
+  return path.join(app.getPath('userData'), 'maps')
+}
+
+export function getTrackMapSettings(): TrackMapSettings {
+  return {
+    modded: store.get(TRACK_MAPS_MODDED_KEY, false) === true,
+    generate: store.get(TRACK_MAPS_GENERATE_KEY, false) === true,
+  }
+}
+
+export function setTrackMapSettings(settings: Partial<TrackMapSettings>): TrackMapSettings {
+  if (typeof settings.modded === 'boolean') store.set(TRACK_MAPS_MODDED_KEY, settings.modded)
+  if (typeof settings.generate === 'boolean') store.set(TRACK_MAPS_GENERATE_KEY, settings.generate)
+  // store.onDidChange reconfigures the engine.
+  return getTrackMapSettings()
+}
+
+function configureTrackMaps(): void {
+  const target = engine
+  if (!target) return
+  const settings = getTrackMapSettings()
+  target.trackMapsSetDirectory(trackMapsDirectory())
+  target.trackMapsSetOptions(settings.modded, settings.modded && settings.generate)
+  if (settings.modded && builtinTrackMapsEngine !== target) {
+    builtinTrackMapsEngine = target
+    void loadBuiltinTrackMaps().then(maps => {
+      if (engine === target) target.trackMapsAddBuiltins(maps)
+    }).catch(error => {
+      builtinTrackMapsEngine = null
+      console.error('[maps] Failed to load the built-in maps:', error)
+    })
+  }
+}
+
+function parseTrackMapResult(json: string): TrackMapResult {
+  try {
+    const value = JSON.parse(json) as Partial<TrackMapResult>
+    return { ok: value.ok === true, id: value.id ?? '', error: value.error ?? '' }
+  } catch {
+    return { ok: false, id: '', error: 'The map engine is not available.' }
+  }
+}
+
+export function trackMapsCatalog(): unknown {
+  try { return JSON.parse(engine?.trackMapsCatalog() ?? '{}') } catch { return { maps: [], pins: {} } }
+}
+
+// A saved map's file contents, or null.
+export function trackMapsGet(id: string): unknown | null {
+  const json = engine?.trackMapsGet(id) ?? ''
+  if (!json) return null
+  try { return JSON.parse(json) } catch { return null }
+}
+
+// The live session's or loaded recording's last "track_map" row, or null.
+export function trackMapsState(): unknown | null {
+  const json = engine?.trackMapsState() ?? ''
+  if (!json) return null
+  try { return JSON.parse(json) } catch { return null }
+}
+
+export function trackMapsPin(trackKey: string, mapId: string): void {
+  engine?.trackMapsPin(trackKey, mapId)
+  broadcastTrackMapsChanged()
+}
+
+function broadcastTrackMapsChanged(): void {
+  broadcast({ type: 'track_maps_changed' })
+}
+
+async function trackMapChange(call: (target: NativeEngine) => Promise<string>): Promise<TrackMapResult> {
+  if (!engine) return { ok: false, id: '', error: 'The map engine is not available.' }
+  const result = parseTrackMapResult(await call(engine))
+  if (result.ok) broadcastTrackMapsChanged()
+  return result
+}
+
+export function trackMapsRename(id: string, name: string): Promise<TrackMapResult> {
+  return trackMapChange(target => target.trackMapsRename(id, name))
+}
+
+// What Edit Map changes (tnrp::TrackMapEdit).
+export interface TrackMapEdit {
+  display_name?: string
+  track_name?: string
+  circuit_name?: string
+  rotation_deg?: number
+}
+
+export function trackMapsEdit(id: string, edit: TrackMapEdit): Promise<TrackMapResult> {
+  return trackMapChange(target => target.trackMapsEdit(id, JSON.stringify(edit)))
+}
+
+export function trackMapsDelete(id: string): Promise<TrackMapResult> {
+  return trackMapChange(target => target.trackMapsDelete(id))
+}
+
+export function trackMapsImport(filePath: string): Promise<TrackMapResult> {
+  return trackMapChange(target => target.trackMapsImport(filePath))
+}
+
+export async function trackMapsExport(id: string, filePath: string): Promise<TrackMapResult> {
+  if (!engine) return { ok: false, id, error: 'The map engine is not available.' }
+  return parseTrackMapResult(await engine.trackMapsExport(id, filePath))
+}
+
+// The engine announces a generated map itself (track_maps_changed).
+export async function trackMapsGenerate(filePath: string): Promise<TrackMapResult> {
+  if (!engine) return { ok: false, id: '', error: 'The map engine is not available.' }
+  return parseTrackMapResult(await engine.trackMapsGenerate(filePath))
+}
+
+// The map a recording opened in Analysis uses, as a "track_map" row, or null.
+export async function trackMapsResolveRecording(filePath: string): Promise<unknown | null> {
+  if (!engine) return null
+  const json = await engine.trackMapsResolveRecording(filePath)
+  if (!json) return null
+  try { return JSON.parse(json) } catch { return null }
 }

@@ -4,8 +4,8 @@
 #include "tnrp/rows.h"
 #include "tnrp/control_rows.h"
 #include "TnrdCodec.h"
-#include "tnrd/TNRD_V4.h"
 #include "tnrd/TNRD_V6.h"
+#include "tnrd/TnrdReaderBackend.h"
 
 #include <xlsxwriter.h>
 #include <glaze/glaze.hpp>
@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
@@ -517,14 +518,15 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
 
     (void)header;  // no longer written to an Info sheet; kept for API stability
 
-    auto* v6Archive = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
-    size_t total = index_.size();
-    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
-        total = 0;
-        for (const auto& chunk : indexedArchive_->chunks())
-            if (v6Archive ? v6SheetName(static_cast<uint8_t>(chunk.rowType))
-                          : sheetNameForType(static_cast<uint8_t>(chunk.rowType))) total += chunk.rowCount;
-    }
+    // Each generation's reader lists and reads its own stored rows; V6 rows
+    // also name their driver, lap and phase in extra columns.
+    const bool v6Layout = backend_->exportUsesV6Layout();
+    const auto sheetName = [&](uint8_t type) {
+        return v6Layout ? v6SheetName(type) : sheetNameForType(type);
+    };
+    std::vector<uint8_t> typeOrder;                       // first-stored order
+    size_t total = 0;
+    backend_->exportPlan([&](uint8_t type) { return sheetName(type) != nullptr; }, typeOrder, total);
     // Throttle progress callbacks to ~500 calls over the whole export rather
     // than once per row (row counts can run into the hundreds of thousands).
     const size_t reportEvery = total > 0 ? std::max<size_t>(1, total / 500) : 1;
@@ -551,98 +553,59 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
 
     report(0.0, "Preparing worksheets");
 
-    // Bucket the flat, time-ordered index into per-type groups, preserving each
-    // type's rows in file order and the first-seen order of the types (so sheet
-    // tabs come out in the same order as before). Building one sheet fully
-    // before the next lets us report an honest per-sheet stage message.
-    std::vector<uint8_t> typeOrder;                       // first-seen order
-    std::unordered_map<uint8_t, std::vector<const IndexEntry*>> byType;
-    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
-        for (const auto& chunk : indexedArchive_->chunks()) {
-            const uint8_t type = static_cast<uint8_t>(chunk.rowType);
-            if ((v6Archive ? v6SheetName(type) : sheetNameForType(type)) &&
-                std::find(typeOrder.begin(),typeOrder.end(),type)==typeOrder.end()) typeOrder.push_back(type);
-        }
-    } else for (const IndexEntry& e : index_) {
-        if (!sheetNameForType(e.type)) continue;          // skip unknown/untabled types
-        auto it = byType.find(e.type);
-        if (it == byType.end()) {
-            typeOrder.push_back(e.type);
-            it = byType.emplace(e.type, std::vector<const IndexEntry*>{}).first;
-        }
-        it->second.push_back(&e);
-    }
-
     size_t done = 0;
     for (size_t s = 0; s < typeOrder.size(); ++s) {
         const uint8_t type = typeOrder[s];
-        const char* sheetName = v6Archive ? v6SheetName(type) : sheetNameForType(type);
-        const auto& entries = byType[type];
+        const char* name = sheetName(type);
 
-        std::string stage = "Writing " + std::string(sheetName) + " sheet ("
+        std::string stage = "Writing " + std::string(name) + " sheet ("
                           + std::to_string(s + 1) + "/" + std::to_string(typeOrder.size()) + ")";
         report(kRowBandTop * static_cast<double>(done) / static_cast<double>(total > 0 ? total : 1), stage);
 
-        lxw_worksheet* ws = workbook_add_worksheet(wb, sheetName);
-        writeHeaderRow(ws, bold, v6Archive ? v6ExportColumns() : columnsForType(type));
+        lxw_worksheet* ws = workbook_add_worksheet(wb, name);
+        writeHeaderRow(ws, bold, v6Layout ? v6ExportColumns() : columnsForType(type));
         lxw_row_t nextRow = 1;
 
         // The Participants packet is re-emitted throughout the session (once per
         // session_time change) but its driver roster is effectively static, so
         // writing every occurrence duplicates the same drivers. Emit it just
         // once (the first occurrence). Other row types are genuine time series.
-        const bool firstOnly = (type == 8);
+        const bool firstOnly = !v6Layout && type == 8;
 
         bool wrote = false;
-        if (v6Archive) {
-            std::map<uint32_t, detail::V6LapSummary> laps;
-            for (const auto& driver : v6Archive->driverHeaders())
-                for (const auto& lap : v6Archive->driverLapSummaries(driver.vehicleIndex)) laps[lap.lapId] = lap;
-            const auto& chunks = v6Archive->v6Chunks();
-            for (size_t chunkIndex = 0; chunkIndex < chunks.size(); ++chunkIndex) {
-                const auto& chunk = chunks[chunkIndex]; if (chunk.typeId != type) continue;
-                std::shared_ptr<std::string> plain; std::string chunkError;
-                if (!v6Archive->loadChunkPlain(chunkIndex, plain, &chunkError)) {
-                    workbook_close(wb); std::error_code cleanupError; fs::remove(stagingPath,cleanupError);
-                    if (errorOut) *errorOut = chunkError; return false;
-                }
-                const auto lap = laps.find(chunk.lapId); size_t pos = 0;
-                while (pos < plain->size()) {
-                    size_t nl = plain->find('\n', pos); if (nl == std::string::npos) nl = plain->size();
-                    if (nl > pos) {
-                        const std::string line = plain->substr(pos, nl - pos); lxw_col_t column = 0;
+        std::string rowError;
+        const bool ok = backend_->exportRows(type,
+            [&](std::string_view line, float sessionTime, const detail::TnrdReaderBackend::ExportChunkMeta* meta) {
+                if (!line.empty() && (!firstOnly || !wrote)) {
+                    const std::string text(line);
+                    const float t = std::isnan(sessionTime) ? rowSessionTime(text) : sessionTime;
+                    if (meta) {
+                        lxw_col_t column = 0;
                         worksheet_write_number(ws, nextRow, column++, static_cast<double>(nextRow - 1), nullptr);
-                        worksheet_write_number(ws, nextRow, column++, rowSessionTime(line), nullptr);
-                        worksheet_write_number(ws, nextRow, column++, chunk.driverIndex, nullptr);
-                        worksheet_write_number(ws, nextRow, column++, chunk.lapId, nullptr);
-                        worksheet_write_number(ws, nextRow, column++, lap == laps.end() ? 0 : lap->second.lapNumber, nullptr);
-                        worksheet_write_string(ws, nextRow, column++, chunk.phase == detail::V6Phase::Formation ? "formation" : "race", nullptr);
+                        worksheet_write_number(ws, nextRow, column++, t, nullptr);
+                        worksheet_write_number(ws, nextRow, column++, meta->driverIndex, nullptr);
+                        worksheet_write_number(ws, nextRow, column++, meta->lapId, nullptr);
+                        worksheet_write_number(ws, nextRow, column++, meta->lapNumber, nullptr);
+                        worksheet_write_string(ws, nextRow, column++, meta->formation ? "formation" : "race", nullptr);
                         worksheet_write_string(ws, nextRow, column++, detail::v6TypeName(static_cast<detail::V6DataType>(type)), nullptr);
-                        worksheet_write_string(ws, nextRow, column++, line.c_str(), nullptr);
-                        ++nextRow; ++done;
-                        if(total>0&&(done%reportEvery==0||done==total))report(kRowBandTop*static_cast<double>(done)/static_cast<double>(total),stage);
+                        worksheet_write_string(ws, nextRow, column++, text.c_str(), nullptr);
+                        ++nextRow;
+                    } else {
+                        writeDataRow(ws, nextRow, t, type, text);
                     }
-                    if (nl == plain->size()) break; pos = nl + 1;
-                }
-            }
-        } else if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
-            std::string chunkError;
-            const bool ok=indexedArchive_->forEachChunk(detail::v4TypeBit(type),[&](const detail::V4ChunkInfo&,std::string_view plain){
-                size_t pos=0;while(pos<plain.size()){size_t nl=plain.find('\n',pos);if(nl==std::string_view::npos)nl=plain.size();if(nl>pos){std::string line(plain.substr(pos,nl-pos));if(!firstOnly||!wrote){const float t=rowSessionTime(line);writeDataRow(ws,nextRow,t,type,line);wrote=true;}++done;if(total>0&&(done%reportEvery==0||done==total))report(kRowBandTop*static_cast<double>(done)/static_cast<double>(total),stage);}if(nl==plain.size())break;pos=nl+1;}return true;
-            },&chunkError);
-            if(!ok){workbook_close(wb);std::error_code cleanupError;fs::remove(stagingPath,cleanupError);if(errorOut)*errorOut=chunkError.empty()?"could not read indexed export chunk":chunkError;return false;}
-        } else for (const IndexEntry* e : entries) {
-            if (!firstOnly || !wrote) {
-                std::string line = readLine(e->offset);
-                if (!line.empty()) {
-                    writeDataRow(ws, nextRow, e->sessionTime, type, line);
                     wrote = true;
                 }
-            }
-
-            ++done;
-            if (total > 0 && (done % reportEvery == 0 || done == total))
-                report(kRowBandTop * static_cast<double>(done) / static_cast<double>(total), stage);
+                ++done;
+                if (total > 0 && (done % reportEvery == 0 || done == total))
+                    report(kRowBandTop * static_cast<double>(done) / static_cast<double>(total), stage);
+                return !firstOnly || !wrote;
+            }, &rowError);
+        if (!ok) {
+            workbook_close(wb);
+            std::error_code cleanupError;
+            fs::remove(stagingPath, cleanupError);
+            if (errorOut) *errorOut = rowError.empty() ? "could not read indexed export chunk" : rowError;
+            return false;
         }
     }
 

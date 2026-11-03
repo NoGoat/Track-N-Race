@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { PlaybackState } from '../main/bridgeManager'
+import type { PlaybackState, TrackMapEdit, TrackMapResult, TrackMapSettings } from '../main/bridgeManager'
 
 const storeAPI = {
   get: (key: string, defaultValue: unknown): unknown =>
@@ -363,7 +363,7 @@ const analysisBridge = {
     comparisonLapNum, comparisonSource, comparisonDriverIndex, sectorDelta,
   ),
   map: (
-    mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'braking',
+    mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'speed' | 'braking',
     currentLapNum: number,
     currentSource: 'file1' | 'file2',
     currentDriverIndex: number,
@@ -375,6 +375,34 @@ const analysisBridge = {
     comparisonLapNum, comparisonSource, comparisonDriverIndex,
   ),
   closeFile: (): void => ipcRenderer.send('analysis:close-file'),
+}
+
+// Track maps (tnrp/TrackMaps.h): settings, the saved maps and the session's
+// choice. Choices arrive as "track_map" telemetry rows; a "track_maps_changed"
+// row means the catalog changed.
+const trackMapsBridge = {
+  getSettings: (): Promise<TrackMapSettings> => ipcRenderer.invoke('track-maps:get-settings'),
+  setSettings: (value: Partial<TrackMapSettings>): Promise<TrackMapSettings> =>
+    ipcRenderer.invoke('track-maps:set-settings', value),
+  onSettings: (cb: (settings: TrackMapSettings) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, settings: TrackMapSettings) => cb(settings)
+    ipcRenderer.on('track-maps:settings', handler)
+    return () => { ipcRenderer.removeListener('track-maps:settings', handler) }
+  },
+  catalog: (): Promise<unknown> => ipcRenderer.invoke('track-maps:catalog'),
+  get: (id: string): Promise<unknown | null> => ipcRenderer.invoke('track-maps:get', id),
+  state: (): Promise<unknown | null> => ipcRenderer.invoke('track-maps:state'),
+  pin: (trackKey: string, mapId: string): Promise<void> => ipcRenderer.invoke('track-maps:pin', trackKey, mapId),
+  rename: (id: string, name: string): Promise<TrackMapResult> => ipcRenderer.invoke('track-maps:rename', id, name),
+  remove: (id: string): Promise<TrackMapResult> => ipcRenderer.invoke('track-maps:delete', id),
+  edit: (id: string, value: TrackMapEdit): Promise<TrackMapResult> => ipcRenderer.invoke('track-maps:edit', id, value),
+  importMaps: (): Promise<TrackMapResult> => ipcRenderer.invoke('track-maps:import'),
+  exportMap: (id: string, suggestedName: string): Promise<TrackMapResult> =>
+    ipcRenderer.invoke('track-maps:export', id, suggestedName),
+  generateFromRecording: (): Promise<TrackMapResult> => ipcRenderer.invoke('track-maps:generate'),
+  resolveRecording: (filePath: string): Promise<unknown | null> =>
+    ipcRenderer.invoke('track-maps:resolve-recording', filePath),
+  openFolder: (): Promise<void> => ipcRenderer.invoke('track-maps:open-folder'),
 }
 
 contextBridge.exposeInMainWorld('electronStore', storeAPI)
@@ -391,3 +419,4 @@ contextBridge.exposeInMainWorld('updateBridge', updateBridge)
 contextBridge.exposeInMainWorld('pairingBridge', pairingBridge)
 contextBridge.exposeInMainWorld('playerBridge', playerBridge)
 contextBridge.exposeInMainWorld('analysisBridge', analysisBridge)
+contextBridge.exposeInMainWorld('trackMapsBridge', trackMapsBridge)

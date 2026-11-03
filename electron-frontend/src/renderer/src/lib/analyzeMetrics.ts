@@ -59,7 +59,7 @@ export interface AnalyzeConfig {
 }
 
 /** How the Analysis map paints the track. */
-export type AnalyzeMapColoring = 'none' | 'dominance' | 'ers' | 'harvest' | 'inputs'
+export type AnalyzeMapColoring = 'none' | 'dominance' | 'ers' | 'harvest' | 'inputs' | 'speed'
 
 export const DEFAULT_MAP_CURRENT_COLOR = '#5794F2'
 export const DEFAULT_SPLIT_RATIO = 0.5
@@ -326,7 +326,7 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
     lapBLabel: label(value?.lapBLabel, DEFAULT_LAP_B_LABEL),
     mapCurrentColor: /^#[0-9a-f]{6}$/i.test(value?.mapCurrentColor ?? '') ? value!.mapCurrentColor! : DEFAULT_MAP_CURRENT_COLOR,
     mapComparisonColor: /^#[0-9a-f]{6}$/i.test(value?.mapComparisonColor ?? '') ? value!.mapComparisonColor! : DEFAULT_MAP_COMPARISON_COLOR,
-    mapColoring: (['dominance', 'ers', 'harvest', 'inputs'] as const).find(mode => mode === value?.mapColoring) ?? 'none',
+    mapColoring: (['dominance', 'ers', 'harvest', 'inputs', 'speed'] as const).find(mode => mode === value?.mapColoring) ?? 'none',
     series: hasSeries ? series : DEFAULT_ANALYZE_CONFIG.series.map(item => ({ ...item })),
   }
 }

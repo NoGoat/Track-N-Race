@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TNRD_V4.h"
+#include "TnrdIndexedArchive.h"
 
 #include <cstdint>
 #include <functional>

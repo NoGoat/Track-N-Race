@@ -114,6 +114,7 @@ const MAP_COLORING_OPTIONS: MapColoringOption[] = [
   { value: 'none', label: 'None' },
   { value: 'dominance', label: 'Track Dominance' },
   { value: 'inputs', label: 'Driver Inputs' },
+  { value: 'speed', label: 'Speed' },
   { value: 'ers', label: 'ERS Usage' },
   { value: 'harvest', label: 'ERS Harvest' },
 ]
@@ -2194,7 +2195,7 @@ export default function AnalyzeScreen({
               <AnalysisHelpItem icon={<Columns3 size={15} />} label="Sector Boundaries">Shows Sectors instead of Distance on the X Axis.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<ChartNoAxesCombined size={15} />} label="Sector Delta">Instead of whole lap delta, it splits the delta into sectors.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<ListChevronsUpDown size={15} />} label="Comparison">Compare two laps.</AnalysisHelpItem>
-              <AnalysisHelpItem icon={<Palette size={15} />} label="Map Layer">Track Dominance colors each stretch by the faster lap. Driver Inputs shows braking, full and partial throttle, and coasting, one map per lap. ERS Usage shows where each lap deployed ERS, one map per lap. Full colour is the car's peak MGU-K output in the recording for the grip it was driving in. ERS Harvest shows where each lap harvested energy, full colour at the car's peak harvest power.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<Palette size={15} />} label="Map Layer">Track Dominance colors each stretch by the faster lap. Driver Inputs shows braking, full and partial throttle, and coasting, one map per lap. Speed colours each lap from its slowest to its fastest point on one scale, one map per lap; hover a corner's mark for its apex speed. ERS Usage shows where each lap deployed ERS, one map per lap. Full colour is the car's peak MGU-K output in the recording for the grip it was driving in. ERS Harvest shows where each lap harvested energy, full colour at the car's peak harvest power.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<Disc3 size={15} />} label="Braking Points">Marks each corner's braking zone (dimmed) and acceleration zone on the racing line, in the colour of the lap that was quicker through it. Hover a zone to compare the two laps.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<Gauge size={15} />} label="Data Comparison Panel">Shows or hides the steering, pedals, ERS, speed and gear panel on the map.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<SeparatorVertical size={15} />} label="Split Cursors">In Split Mode while comparing, shows where both cars are on the lap as lines on the graphs.</AnalysisHelpItem>

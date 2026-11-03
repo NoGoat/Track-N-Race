@@ -267,6 +267,26 @@ bool LiveV6Store::rebuildStrategy(float through, int minimumStops,
     return true;
 }
 
+std::unique_ptr<TnrdV6Archive> LiveV6Store::openArchive(const std::vector<uint8_t>& types,
+                                                        bool shared) {
+    V6ImageFilter filter;
+    filter.types = types;
+    filter.shared = shared;
+    auto promise = std::make_shared<std::promise<std::shared_ptr<const V6MemoryImage>>>();
+    auto future = promise->get_future();
+    impl_->requestImage(filter, [promise](std::shared_ptr<const V6MemoryImage> image) {
+        promise->set_value(std::move(image));
+    });
+    const auto image = future.get();
+    if (!image) return nullptr;
+    impl_->noteImage(image);
+    auto archive = std::make_unique<TnrdV6Archive>();
+    HeaderRow header;
+    std::string error;
+    if (!archive->openMemory(image, header, &error)) return nullptr;
+    return archive;
+}
+
 LiveV6Store::ReadStats LiveV6Store::readStats() const {
     ReadStats out;
     {

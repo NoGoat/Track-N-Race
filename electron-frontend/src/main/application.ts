@@ -57,6 +57,22 @@ import {
   sweepTempFiles,
   getPendingRecordingChoices,
   resolveRecordingChoice,
+  getTrackMapSettings,
+  setTrackMapSettings,
+  trackMapsCatalog,
+  trackMapsGet,
+  trackMapsState,
+  trackMapsPin,
+  trackMapsRename,
+  trackMapsDelete,
+  trackMapsEdit,
+  type TrackMapEdit,
+  trackMapsImport,
+  trackMapsExport,
+  trackMapsGenerate,
+  trackMapsResolveRecording,
+  trackMapsDirectory,
+  type TrackMapSettings,
   type PlayerLoadResult,
   type RecordingChoice
 } from './bridgeManager'
@@ -389,7 +405,7 @@ ipcMain.handle('analysis:compare-laps', (
   comparisonLapNum, comparisonSource, comparisonDriverIndex, sectorDelta))
 ipcMain.handle('analysis:map', (
   _event,
-  mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'braking',
+  mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'speed' | 'braking',
   currentLapNum: number,
   currentSource: 'file1' | 'file2',
   currentDriverIndex: number,
@@ -423,6 +439,97 @@ ipcMain.handle('player:export-xlsx', async (event) => {
   return exportSessionXlsx(srcPath, filePath, (pct, stage) => {
     if (!sender.isDestroyed()) sender.send('player:export-progress', pct, stage)
   })
+})
+
+// ── Track maps ──────────────────────────────────────────────────────────────
+
+function windowFor(event: Electron.IpcMainInvokeEvent): BrowserWindow | undefined {
+  return BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+}
+
+ipcMain.handle('track-maps:get-settings', () => getTrackMapSettings())
+ipcMain.handle('track-maps:set-settings', (_event, value: Partial<TrackMapSettings>) => {
+  const settings = setTrackMapSettings(value && typeof value === 'object' ? value : {})
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('track-maps:settings', settings)
+  }
+  return settings
+})
+ipcMain.handle('track-maps:catalog', () => trackMapsCatalog())
+ipcMain.handle('track-maps:get', (_event, id: unknown) => typeof id === 'string' ? trackMapsGet(id) : null)
+ipcMain.handle('track-maps:state', () => trackMapsState())
+ipcMain.handle('track-maps:pin', (_event, trackKey: unknown, mapId: unknown) => {
+  if (typeof trackKey === 'string' && typeof mapId === 'string') trackMapsPin(trackKey, mapId)
+})
+ipcMain.handle('track-maps:rename', (_event, id: unknown, name: unknown) =>
+  typeof id === 'string' && typeof name === 'string' && name.trim()
+    ? trackMapsRename(id, name.trim())
+    : { ok: false, id: '', error: 'A name is required' })
+ipcMain.handle('track-maps:edit', (_event, id: unknown, value: unknown) => {
+  if (typeof id !== 'string' || !value || typeof value !== 'object') return { ok: false, id: '', error: 'No such map' }
+  const input = value as Record<string, unknown>
+  const edit: TrackMapEdit = {}
+  for (const key of ['display_name', 'track_name', 'circuit_name'] as const) {
+    if (typeof input[key] === 'string') edit[key] = (input[key] as string).trim()
+  }
+  if (typeof input.rotation_deg === 'number' && Number.isFinite(input.rotation_deg)) edit.rotation_deg = input.rotation_deg
+  return trackMapsEdit(id, edit)
+})
+ipcMain.handle('track-maps:delete', (_event, id: unknown) =>
+  typeof id === 'string' ? trackMapsDelete(id) : { ok: false, id: '', error: 'No such map' })
+ipcMain.handle('track-maps:resolve-recording', (_event, filePath: unknown) =>
+  typeof filePath === 'string' ? trackMapsResolveRecording(filePath) : null)
+ipcMain.handle('track-maps:open-folder', async () => {
+  fs.mkdirSync(trackMapsDirectory(), { recursive: true })
+  const error = await shell.openPath(trackMapsDirectory())
+  if (error) dialog.showErrorBox('Unable to Open Maps Folder', error)
+})
+ipcMain.handle('track-maps:import', async (event) => {
+  const win = windowFor(event)
+  const options = {
+    title: 'Import Map',
+    defaultPath: lastDialogDirectory(),
+    filters: [{ name: 'Track Map', extensions: ['json'] }],
+    properties: ['openFile', 'multiSelections'] as ('openFile' | 'multiSelections')[],
+  }
+  const { canceled, filePaths } = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+  if (canceled || filePaths.length === 0) return { ok: false, id: '', error: 'cancelled' }
+  rememberDialogDirectory(filePaths[0])
+  let last = { ok: false, id: '', error: '' }
+  const errors: string[] = []
+  for (const filePath of filePaths) {
+    last = await trackMapsImport(filePath)
+    if (!last.ok) errors.push(`${path.basename(filePath)}: ${last.error}`)
+  }
+  return errors.length ? { ok: false, id: last.id, error: errors.join('\n') } : last
+})
+ipcMain.handle('track-maps:export', async (event, id: unknown, suggestedName: unknown) => {
+  if (typeof id !== 'string') return { ok: false, id: '', error: 'No such map' }
+  const base = (typeof suggestedName === 'string' && suggestedName.trim() ? suggestedName.trim() : 'track-map')
+    .replace(/[\\/:*?"<>|]+/g, '-')
+  const win = windowFor(event)
+  const options = {
+    title: 'Export Map',
+    defaultPath: path.join(lastDialogDirectory() ?? app.getPath('documents'), `${base}.json`),
+    filters: [{ name: 'Track Map', extensions: ['json'] }],
+  }
+  const { canceled, filePath } = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+  if (canceled || !filePath) return { ok: false, id, error: 'cancelled' }
+  rememberDialogDirectory(filePath)
+  return trackMapsExport(id, filePath)
+})
+ipcMain.handle('track-maps:generate', async (event) => {
+  const win = windowFor(event)
+  const options = {
+    title: 'Generate Map from Recording',
+    defaultPath: lastDialogDirectory(),
+    filters: [{ name: 'Track N Race Data', extensions: ['tnrd'] }],
+    properties: ['openFile'] as ('openFile')[],
+  }
+  const { canceled, filePaths } = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+  if (canceled || filePaths.length === 0) return { ok: false, id: '', error: 'cancelled' }
+  rememberDialogDirectory(filePaths[0])
+  return trackMapsGenerate(filePaths[0])
 })
 
 ipcMain.on('udp-restart', (event) => {
