@@ -155,6 +155,10 @@ While not in use anymore, I would like to thank all the projects listed under he
 
 I would also like to make a special shoutout to the [Telemetry Scan](https://github.com/alisezisli/Telemetry-Scan) project by [alisezisli](https://github.com/alisezisli). Track N Race originally started off as me trying to build an UI wrapper around their Python backend before evolving into the project it is today. Without Telemetry Scan, Track N Race wouldn't exist.
 
+## Contributing
+
+Track N Race is a solo dev project, so outside code contributions aren't accepted. Feedback, advice and forks are welcome. If you fork it, let me know on [Discord](https://discord.gg/UMVRrN3RbR). See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 This project is licensed under the terms of the [GPLv3 License](LICENSE).
