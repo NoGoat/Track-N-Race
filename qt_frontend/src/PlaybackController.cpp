@@ -186,13 +186,13 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
     pbLayout->addWidget(speedCombo_);
 
     // A normal (non-flat) button so it reads as a real "Export" action; icon-only by
-    // default, gaining an "Export to Excel" label when the toolbar's labels option is
+    // default, gaining an "Export to Parquet" label when the toolbar's labels option is
     // on (see setShowLabels). The actual save dialog + off-thread export live in
     // MainWindow (mirrors the Electron renderer→main split), reached via exportRequested().
     exportBtn_ = new QPushButton(bar_);
     exportBtn_->setIcon(exportIcon(bar_, iconTint));
     exportBtn_->setIconSize(QSize(20, 20));
-    exportBtn_->setToolTip("Export to Excel");
+    exportBtn_->setToolTip("Export to Parquet");
     pbLayout->addWidget(exportBtn_);
 
     // A normal (non-flat) button so it reads as a real "Close" action; icon-only by
@@ -441,7 +441,7 @@ void PlaybackController::setShowLabels(bool on) {
     }
 
     if (!exportBtn_) return;
-    exportBtn_->setText(on ? "Export to Excel" : QString());
+    exportBtn_->setText(on ? "Export to Parquet" : QString());
     if (on) {
         exportBtn_->setMinimumSize(0, 34);
         exportBtn_->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);

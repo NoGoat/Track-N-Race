@@ -1,14 +1,14 @@
 #include "TrackMapWidget.h"
 #include "ClearableComboBox.h"
+#include "EditMapDialog.h"
 #include "../PresentationScheduler.h"
+#include "../TrackMapService.h"
 
 #include <QPainter>
 #include <QPainterPath>
-#include <QFile>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QComboBox>
+#include <QLabel>
+#include <QMouseEvent>
 #include <QToolButton>
 #include <QFontMetrics>
 #include "../IconUtils.h"
@@ -21,6 +21,9 @@
 #include <algorithm>
 #include <tuple>
 #include <utility>
+
+#include <tnrp/AnalysisMapPaint.h>
+#include <tnrp/TrackMaps.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -54,6 +57,7 @@ constexpr int    LABEL_H   = 16;
 constexpr int    LABEL_GAP = 5;
 constexpr int    LABEL_R   = 3;
 constexpr int    ACCENT_W  = 3;
+constexpr double MARK_HOVER_PX = 8.0;   // how close the pointer must be to a mark
 
 const char* SECTOR_DARK[3]  = { "#E8002D", "#0090D0", "#FFD700" };
 const char* SECTOR_LIGHT[3] = { "#D32F2F", "#0D47A1", "#B7950B" };
@@ -259,6 +263,52 @@ TrackMapWidget::TrackMapWidget(QWidget* parent) : QWidget(parent) {
     connect(fsButton_, &QToolButton::clicked, this, [this]{ emit fullscreenToggled(); });
     setFullscreenState(false);   // initial (maximise) icon
 
+    // Modded maps (top-left): any saved or built-in map, kept for this track,
+    // and Edit Map for the one in use. Bottom-left: the choice's status.
+    mapCombo_ = new QComboBox(this);
+    mapCombo_->setAccessibleName(QStringLiteral("Map"));
+    mapCombo_->setToolTip(QStringLiteral("Map"));
+    mapCombo_->hide();
+    connect(mapCombo_, QOverload<int>::of(&QComboBox::activated), this, [this](int) {
+        TrackMapService::instance().pin(mapCombo_->property("trackKey").toString(),
+                                        mapCombo_->currentData().toString());
+    });
+    editButton_ = new QToolButton(this);
+    editButton_->setIcon(adaptThemeIcon(QIcon::fromTheme(QStringLiteral("document-edit")),
+                                        palette().color(QPalette::WindowText),
+                                        style()->standardIcon(QStyle::SP_FileDialogDetailedView)));
+    editButton_->setToolTip(QStringLiteral("Edit Map"));
+    editButton_->setAccessibleName(QStringLiteral("Edit Map"));
+    editButton_->hide();
+    connect(editButton_, &QToolButton::clicked, this, [this] {
+        const QString id = editButton_->property("mapId").toString();
+        if (id.isEmpty()) return;
+        EditMapDialog dialog(id, this);
+        dialog.exec();
+    });
+    mapStatus_ = new QLabel(this);
+    mapStatus_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    mapStatus_->setAutoFillBackground(true);
+    mapStatus_->setContentsMargins(6, 2, 6, 2);
+    mapStatus_->hide();
+
+    // The hovered mark's card.
+    markCard_ = new QLabel(this);
+    markCard_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    markCard_->setTextFormat(Qt::RichText);
+    markCard_->setFrameShape(QFrame::StyledPanel);
+    markCard_->setAutoFillBackground(true);
+    markCard_->setBackgroundRole(QPalette::ToolTipBase);
+    markCard_->setForegroundRole(QPalette::ToolTipText);
+    markCard_->setContentsMargins(8, 6, 8, 6);
+    markCard_->hide();
+    setMouseTracking(true);
+
+    TrackMapService& service = TrackMapService::instance();
+    connect(&service, &TrackMapService::sessionChanged, this, &TrackMapWidget::reloadMap);
+    connect(&service, &TrackMapService::catalogChanged, this, &TrackMapWidget::reloadMap);
+    connect(&service, &TrackMapService::settingsChanged, this, &TrackMapWidget::reloadMap);
+
     positionControls();
 }
 
@@ -286,112 +336,124 @@ void TrackMapWidget::setShowLabels(bool on) {
 // ── Track loading ──────────────────────────────────────────────────────────
 
 bool TrackMapWidget::setTrack(int trackId) {
-    if (trackId == trackId_ && loaded_) return true;
+    // Changes to the session's choice and the saved maps arrive as signals.
+    if (trackSet_ && trackId == trackId_) return loaded_;
+    trackSet_ = true;
+    trackId_ = trackId;
+    reloadMap();
+    return loaded_;
+}
 
-    trackName_.clear();
-    circuitName_.clear();
+void TrackMapWidget::setMapOverride(std::shared_ptr<const tnrp::TrackMapData> map) {
+    mapOverride_ = std::move(map);
+    reloadMap();
+}
 
-    QFile f(QString(":/maps/track_%1.json").arg(trackId));
-    if (!f.open(QIODevice::ReadOnly)) {
-        loaded_ = false; trackId_ = trackId;
-        update();
-        return false;
+void TrackMapWidget::reloadMap() {
+    std::shared_ptr<const tnrp::TrackMapData> map = mapOverride_
+        ? mapOverride_ : TrackMapService::instance().mapFor(trackId_);
+    if (map != map_ || (map && !loaded_)) {
+        map_ = map;
+        if (!map_ || !loadMap(*map_)) {
+            loaded_ = false;
+            trackName_.clear();
+            circuitName_.clear();
+            markPaths_.clear();
+            showHoveredMark(-1, {});
+            update();
+        }
     }
-    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-    f.close();
+    refreshMapPicker();
+}
 
-    if (!doc.isObject()) {
-        loaded_ = false; trackId_ = trackId;
-        update();
-        return false;
-    }
-    const QJsonObject j = doc.object();
+bool TrackMapWidget::loadMap(const tnrp::TrackMapData& map) {
+    trackName_   = QString::fromStdString(map.track_name);
+    circuitName_ = QString::fromStdString(map.circuit_name);
 
-    trackName_   = j.value("track_name").toString();
-    circuitName_ = j.value("circuit_name").toString();
+    transform_.minX  = map.transform.min_x;
+    transform_.minZ  = map.transform.min_z;
+    transform_.scale = map.transform.scale;
+    transform_.offX  = map.transform.off_x;
+    transform_.offZ  = map.transform.off_z;
+    viewBoxW_    = map.view_box.width > 0 ? map.view_box.width : 1000.0;
+    viewBoxH_    = map.view_box.height > 0 ? map.view_box.height : 1000.0;
+    rotationDeg_ = map.rotation_deg;
 
-    const QJsonObject tf = j.value("transform").toObject();
-    transform_.minX  = tf.value("min_x").toDouble(0.0);
-    transform_.minZ  = tf.value("min_z").toDouble(0.0);
-    transform_.scale = tf.value("scale").toDouble(1.0);
-    transform_.offX  = tf.value("off_x").toDouble(0.0);
-    transform_.offZ  = tf.value("off_z").toDouble(0.0);
-    const QJsonObject vb = j.value("view_box").toObject();
-    viewBoxW_    = vb.value("width").toDouble(1000.0);
-    viewBoxH_    = vb.value("height").toDouble(1000.0);
-    rotationDeg_ = j.value("rotation_deg").toDouble(0.0);
-
+    const auto point = [](const tnrp::MapPoint& p) { return QPointF(p[0], p[1]); };
     rawSectors_.clear();
     rawSectors_.resize(3);
-    for (const QJsonValue& sv : j.value("sectors").toArray()) {
-        const QJsonObject sector = sv.toObject();
-        int idx = sector.value("index").toInt((int)rawSectors_.size());  // 1-based
-        const QJsonArray points = sector.value("points").toArray();
+    for (const tnrp::TrackMapSector& sector : map.sectors) {
         std::vector<QPointF> pts;
-        pts.reserve((size_t)points.size());
-        for (const QJsonValue& pv : points) {
-            const QJsonArray p = pv.toArray();
-            if (p.size() >= 2)
-                pts.emplace_back(p[0].toDouble(), p[1].toDouble());
-        }
-        if (idx >= 1 && idx <= 3) rawSectors_[idx - 1] = std::move(pts);
-        else                      rawSectors_.push_back(std::move(pts));
+        pts.reserve(sector.points.size());
+        for (const tnrp::MapPoint& p : sector.points) pts.push_back(point(p));
+        if (sector.index >= 1 && sector.index <= 3) rawSectors_[sector.index - 1] = std::move(pts);
+        else                                         rawSectors_.push_back(std::move(pts));
     }
+    if (buildCenterline(rawSectors_).size() < 2) return false;
 
     // Overtaking-aid zones store only {start,end}; the polyline is re-derived from
     // the centerline in rebuildPrepared(). DRS (F1 24/25) plus the 2026 SLM dry-
     // and wet-weather zone sets.
-    const auto parseZones = [](const QJsonArray& arr) {
-        std::vector<std::pair<QPointF, QPointF>> zones;
-        for (const QJsonValue& zv : arr) {
-            const QJsonObject z = zv.toObject();
-            const QJsonArray start = z.value("start").toArray();
-            const QJsonArray end   = z.value("end").toArray();
-            if (start.size() >= 2 && end.size() >= 2) {
-                zones.emplace_back(
-                    QPointF(start[0].toDouble(), start[1].toDouble()),
-                    QPointF(end[0].toDouble(),   end[1].toDouble()));
-            }
-        }
-        return zones;
+    const auto zones = [&](const std::vector<tnrp::TrackMapZone>& in) {
+        std::vector<std::pair<QPointF, QPointF>> out;
+        out.reserve(in.size());
+        for (const tnrp::TrackMapZone& zone : in) out.emplace_back(point(zone.start), point(zone.end));
+        return out;
     };
-    rawDrs_    = parseZones(j.value("drs_zones").toArray());
-    rawSlmDry_ = parseZones(j.value("slm_dry").toArray());
-    rawSlmWet_ = parseZones(j.value("slm_wet").toArray());
+    rawDrs_    = zones(map.drs_zones);
+    rawSlmDry_ = zones(map.slm_dry.value_or(std::vector<tnrp::TrackMapZone>{}));
+    rawSlmWet_ = zones(map.slm_wet.value_or(std::vector<tnrp::TrackMapZone>{}));
 
     rawSpeedTraps_.clear();
-    for (const QJsonValue& tv : j.value("speed_traps").toArray()) {
-        const QJsonArray trap = tv.toArray();
-        if (trap.size() >= 2)
-            rawSpeedTraps_.emplace_back(trap[0].toDouble(), trap[1].toDouble());
-    }
+    for (const tnrp::MapPoint& trap : map.speed_traps) rawSpeedTraps_.push_back(point(trap));
 
-    const auto parsePoint = [&](const char* key, bool& present, QPointF& point) {
-        present = false;
-        const QJsonArray arr = j.value(QLatin1String(key)).toArray();
-        if (arr.size() >= 2) {
-            present = true;
-            point = QPointF(arr[0].toDouble(), arr[1].toDouble());
-        }
+    const auto optionalPoint = [&](const std::optional<tnrp::MapPoint>& in, bool& present, QPointF& out) {
+        present = in.has_value();
+        if (present) out = point(*in);
     };
-    parsePoint("overtake_detection_point", rawHasOvertakeDetection_, rawOvertakeDetection_);
-    parsePoint("overtake_activation_point", rawHasOvertakeActivation_, rawOvertakeActivation_);
+    optionalPoint(map.overtake_detection_point, rawHasOvertakeDetection_, rawOvertakeDetection_);
+    optionalPoint(map.overtake_activation_point, rawHasOvertakeActivation_, rawOvertakeActivation_);
+    optionalPoint(map.start_finish, rawHasSF_, rawSF_);
 
-    rawHasSF_ = false;
-    {
-        const QJsonArray sf = j.value("start_finish").toArray();
-        if (sf.size() >= 2) {
-            rawHasSF_ = true;
-            rawSF_ = QPointF(sf[0].toDouble(), sf[1].toDouble());
-        }
-    }
-
-    trackId_ = trackId;
-    loaded_  = true;
+    loaded_ = true;
     rebuildPrepared();
     rebuildStaticLayer();
     update();
     return true;
+}
+
+// ── Modded maps: picker, Edit Map, status ──────────────────────────────────
+
+void TrackMapWidget::refreshMapPicker() {
+    if (!mapCombo_) return;
+    TrackMapService& service = TrackMapService::instance();
+    const tnrp::TrackMapResolution* resolution =
+        mapOverride_ ? nullptr : service.resolutionFor(trackId_);
+    mapCombo_->setVisible(resolution);
+    const QString editable = resolution ? service.editableMapId(trackId_) : QString();
+    editButton_->setVisible(!editable.isEmpty() && loaded_);
+    editButton_->setProperty("mapId", editable);
+    mapStatus_->setVisible(resolution && (resolution->generating || resolution->mismatch));
+    if (resolution) {
+        mapStatus_->setText(resolution->generating ? QStringLiteral("Building map…")
+                                                   : QStringLiteral("Map doesn't fit"));
+        mapStatus_->adjustSize();
+        const QString trackKey = QString::fromStdString(resolution->track_key);
+        const QString pinned = service.pinned(trackKey);
+        QSignalBlocker block(mapCombo_);
+        mapCombo_->clear();
+        mapCombo_->addItem(QStringLiteral("Auto"), QString());
+        for (const tnrp::TrackMapEntry& entry : service.entries()) {
+            QString label = QString::fromStdString(entry.name);
+            if (entry.source == "generated") label += QStringLiteral(" · Generated");
+            else if (entry.source == "imported") label += QStringLiteral(" · Imported");
+            mapCombo_->addItem(label, QString::fromStdString(entry.id));
+        }
+        const int index = mapCombo_->findData(pinned);
+        mapCombo_->setCurrentIndex(index >= 0 ? index : 0);
+        mapCombo_->setProperty("trackKey", trackKey);
+    }
+    positionControls();
 }
 
 void TrackMapWidget::rebuildPrepared() {
@@ -491,6 +553,27 @@ void TrackMapWidget::rebuildPrepared() {
         }
         prep_.hasSF = true; prep_.sfPt = sf; prep_.sfIdx = best;
     }
+
+    // The lap line: the centerline from the start/finish line, each vertex's
+    // fraction of the lap by arc length. Painted layers and marks draw on it.
+    const size_t lapStart = rawHasSF_ && !rotatedCenterline.empty()
+        ? size_t(nearestIdx(rotatedCenterline, rot(rawSF_))) : 0;
+    prep_.lapLine.clear();
+    prep_.lapLine.reserve(rotatedCenterline.size());
+    prep_.lapLine.insert(prep_.lapLine.end(), rotatedCenterline.begin() + lapStart, rotatedCenterline.end());
+    prep_.lapLine.insert(prep_.lapLine.end(), rotatedCenterline.begin(), rotatedCenterline.begin() + lapStart);
+    prep_.lapFraction.assign(prep_.lapLine.size(), 0.0);
+    double arc = 0.0;
+    for (size_t i = 1; i < prep_.lapLine.size(); ++i) {
+        const QPointF d = prep_.lapLine[i] - prep_.lapLine[i - 1];
+        arc += std::hypot(d.x(), d.y());
+        prep_.lapFraction[i] = arc;
+    }
+    if (prep_.lapLine.size() > 1) {
+        const QPointF d = prep_.lapLine.front() - prep_.lapLine.back();
+        const double total = arc + std::hypot(d.x(), d.y());
+        if (total > 0) for (double& f : prep_.lapFraction) f /= total;
+    }
 }
 
 TrackMapWidget::Layout TrackMapWidget::buildLayout(double cw, double ch) const {
@@ -533,7 +616,12 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
     // step with the active palette rather than hard-coded white/black.
     const QColor lineCol = palette().color(QPalette::Text);
 
-    for (size_t si = 0; si < prep_.sectors.size(); ++si) {
+    const bool painted = !paintColors_.empty();
+    // With the track in sector colours the boundary ticks are plain; otherwise,
+    // including a painted track that hides the sector colours, the ticks carry them.
+    const bool sectorTrack = sectorColors_ && !painted;
+    if (painted) drawPaintedTrack(p, l, TRACK_PX * tzf);
+    if (!painted) for (size_t si = 0; si < prep_.sectors.size(); ++si) {
         const QPolygonF& poly = prep_.sectors[si];
         if (poly.size() < 2) continue;
         QPolygonF canvasPts;
@@ -556,7 +644,7 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
         const Junction& jc = prep_.junctions[ji];
         const QPointF c = tc(jc.pt);
         const double half = std::max(JUNC_HALF * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
-        const QColor jcol = sectorColors_ ? lineCol : QColor(pal[std::min(ji + 1, size_t(2))]);
+        const QColor jcol = sectorTrack ? lineCol : QColor(pal[std::min(ji + 1, size_t(2))]);
         QPen pen(jcol); pen.setWidthF(3.0 * zf); pen.setCapStyle(Qt::RoundCap);
         p.setPen(pen);
         p.drawLine(QPointF(c.x() - jc.nx * half, c.y() - jc.ny * half),
@@ -602,13 +690,14 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
 
         // Detection is a filled dot matching the speed-trap size; activation is
         // a perpendicular tick. Both belong only to the active 2026 SLM overlay.
-        if (prep_.hasOvertakeDetection) {
+        // A painted track leaves the overtake markers out, as it does speed traps.
+        if (prep_.hasOvertakeDetection && !painted) {
             const double markerR = std::max(TRAP_R * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
             p.setPen(Qt::NoPen);
             p.setBrush(overtakeColor);
             p.drawEllipse(tc(prep_.overtakeDetection), markerR, markerR);
         }
-        if (prep_.hasOvertakeActivation) {
+        if (prep_.hasOvertakeActivation && !painted) {
             const Junction& jc = prep_.overtakeActivation;
             const QPointF c = tc(jc.pt);
             const double half = std::max(JUNC_HALF * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
@@ -628,7 +717,7 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
     const double trapR = std::max(TRAP_R * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
     p.setPen(Qt::NoPen);
     p.setBrush(trapColor);
-    for (const QPointF& trap : prep_.speedTraps)
+    if (!painted) for (const QPointF& trap : prep_.speedTraps)
         p.drawEllipse(tc(trap), trapR, trapR);
 
     // … and the start/finish line (start of sector 1).
@@ -638,12 +727,172 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
         const QPointF c = tc(prep_.sfPt);
         const double half = std::max(SF_HALF * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
         // Plain track → red start/finish; colour-coded track → contrasting line.
-        const QColor sfCol = sectorColors_ ? lineCol : QColor(SECTOR_DARK[0]);
+        const QColor sfCol = sectorTrack ? lineCol : QColor(SECTOR_DARK[0]);
         QPen pen(sfCol); pen.setWidthF(2.5 * zf); pen.setCapStyle(Qt::RoundCap);
         p.setPen(pen);
         p.drawLine(QPointF(c.x() - n.x() * half, c.y() - n.y() * half),
                    QPointF(c.x() + n.x() * half, c.y() + n.y() * half));
     }
+}
+
+// ── Painted layer and marks ────────────────────────────────────────────────
+
+void TrackMapWidget::setPaint(const tnrp::AnalysisMapPaint& paint) {
+    std::vector<QColor> colors;
+    colors.reserve(paint.colors.size());
+    for (const std::string& color : paint.colors) colors.emplace_back(QString::fromStdString(color));
+    if (colors == paintColors_ && paint.binM == paintBinM_ && paint.trackLengthM == paintTrackLengthM_)
+        return;
+    paintColors_ = std::move(colors);
+    paintBinM_ = paint.binM;
+    paintTrackLengthM_ = paint.trackLengthM;
+    rebuildStaticLayer();
+    update();
+}
+
+QColor TrackMapWidget::paintColorAt(double fraction) const {
+    if (paintColors_.empty()) return {};
+    const double n = double(paintColors_.size());
+    // A bin length of 0 spreads the colours evenly over the lap.
+    const double bin = paintBinM_ > 0 && paintTrackLengthM_ > 0
+        ? std::floor(fraction * paintTrackLengthM_ / paintBinM_) : std::floor(fraction * n);
+    return paintColors_[size_t(std::clamp(bin, 0.0, n - 1))];
+}
+
+// The lap line in runs of one colour, each segment coloured at its midpoint.
+void TrackMapWidget::drawPaintedTrack(QPainter& p, const Layout& l, double width) const {
+    const auto& pts = prep_.lapLine;
+    const auto& fractions = prep_.lapFraction;
+    const size_t n = pts.size();
+    if (n < 2) return;
+    const auto tc = [&](const QPointF& vb) { return QPointF(vb.x() * l.scale + l.ox, vb.y() * l.scale + l.oy); };
+    QPen pen;
+    pen.setWidthF(width);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setBrush(Qt::NoBrush);
+    QPolygonF run;
+    QColor runColor;
+    const auto flush = [&] {
+        if (run.size() < 2 || !runColor.isValid()) return;
+        pen.setColor(runColor);
+        p.setPen(pen);
+        p.drawPolyline(run);
+    };
+    for (size_t i = 0; i < n; ++i) {
+        const size_t next = (i + 1) % n;
+        const QColor color = paintColorAt((fractions[i] + (next == 0 ? 1.0 : fractions[next])) / 2.0);
+        if (run.isEmpty() || color != runColor) {
+            flush();
+            run.clear();
+            runColor = color;
+            run << tc(pts[i]);
+        }
+        run << tc(pts[next]);
+    }
+    flush();
+}
+
+// The lap line at a fraction of the lap.
+QPointF TrackMapWidget::lapPointAt(double fraction) const {
+    const auto& pts = prep_.lapLine;
+    const auto& fractions = prep_.lapFraction;
+    const size_t n = pts.size();
+    if (n == 0) return {};
+    const double f = std::fmod(std::fmod(fraction, 1.0) + 1.0, 1.0);
+    size_t lo = size_t(std::upper_bound(fractions.begin(), fractions.end(), f) - fractions.begin());
+    lo = lo > 0 ? lo - 1 : 0;
+    const size_t next = (lo + 1) % n;
+    const double end = next == 0 ? 1.0 : fractions[next];
+    const double span = end - fractions[lo];
+    const double t = span > 0 ? (f - fractions[lo]) / span : 0.0;
+    return pts[lo] + (pts[next] - pts[lo]) * t;
+}
+
+void TrackMapWidget::setMarks(const QVector<Mark>& marks) {
+    marks_ = marks;
+    showHoveredMark(-1, {});
+    update();
+}
+
+// Each mark's stretch of the lap line over the track, a little wider than it,
+// with square ends cut where it starts and stops, edged in the background
+// colour so it stays distinct from the track under it. Returns the device
+// points along each stretch, for hover.
+std::vector<QPolygonF> TrackMapWidget::drawMarks(QPainter& p, const Layout& l, double tzf) const {
+    std::vector<QPolygonF> paths;
+    if (prep_.lapLine.size() < 2 || marks_.isEmpty()) return paths;
+    const double width = TRACK_PX * tzf + 3;
+    const auto tc = [&](const QPointF& vb) { return QPointF(vb.x() * l.scale + l.ox, vb.y() * l.scale + l.oy); };
+    const QColor edge = palette().color(QPalette::Window);
+    paths.reserve(size_t(marks_.size()));
+    for (const Mark& mark : marks_) {
+        const double from = mark.from;
+        const double to = mark.to >= from ? mark.to : mark.to + 1.0;
+        QPolygonF path;
+        path << tc(lapPointAt(from));
+        for (int lap = 0; lap <= 1; ++lap)
+            for (double vertex : prep_.lapFraction) {
+                const double f = vertex + lap;
+                if (f > from && f < to) path << tc(lapPointAt(f));
+            }
+        path << tc(lapPointAt(to));
+        QPen pen(edge);
+        pen.setCapStyle(Qt::FlatCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        pen.setWidthF(width + 3);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(pen);
+        p.drawPolyline(path);
+        p.save();
+        p.setOpacity(p.opacity() * mark.opacity);
+        pen.setColor(mark.color);
+        pen.setWidthF(width);
+        p.setPen(pen);
+        p.drawPolyline(path);
+        p.restore();
+        paths.push_back(std::move(path));
+    }
+    return paths;
+}
+
+void TrackMapWidget::mouseMoveEvent(QMouseEvent* event) {
+    QWidget::mouseMoveEvent(event);
+    const QPointF pointer = event->position();
+    // The nearest highlighted stretch, by its closest point to the pointer.
+    int best = -1;
+    double bestDistance = MARK_HOVER_PX;
+    QPointF bestPoint = pointer;
+    for (size_t index = 0; index < markPaths_.size() && index < size_t(marks_.size()); ++index) {
+        if (marks_[int(index)].tooltip.isEmpty()) continue;
+        for (const QPointF& point : markPaths_[index]) {
+            const double distance = std::hypot(point.x() - pointer.x(), point.y() - pointer.y());
+            if (distance <= bestDistance) { best = int(index); bestDistance = distance; bestPoint = point; }
+        }
+    }
+    if (best != hoveredMark_) showHoveredMark(best, bestPoint);
+}
+
+void TrackMapWidget::leaveEvent(QEvent* event) {
+    QWidget::leaveEvent(event);
+    showHoveredMark(-1, {});
+}
+
+void TrackMapWidget::showHoveredMark(int index, const QPointF& at) {
+    hoveredMark_ = index;
+    if (!markCard_) return;
+    if (index < 0 || index >= marks_.size() || marks_[index].tooltip.isEmpty()) {
+        markCard_->hide();
+        return;
+    }
+    markCard_->setText(marks_[index].tooltip);
+    markCard_->adjustSize();
+    const QSize card = markCard_->size();
+    const int x = at.x() + 12 + card.width() > width() ? int(at.x()) - 12 - card.width() : int(at.x()) + 12;
+    const int y = std::min(int(at.y()) + 12, std::max(0, height() - card.height()));
+    markCard_->move(std::max(0, x), y);
+    markCard_->raise();
+    markCard_->show();
 }
 
 // ── Static circuit layer (cached pixmap, base layout) ──────────────────────
@@ -841,7 +1090,8 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
     if (!loaded_) {
         p.setPen(QColor(dark_ ? "#6e7177" : "#9aa0aa"));
         p.drawText(rect(), Qt::AlignCenter,
-                   trackId_ < 0 ? "Waiting for session…" : "No map for this track");
+                   trackId_ < 0 && !mapOverride_ ? "Waiting for session…" : "No map for this track");
+        markPaths_.clear();
         return;
     }
 
@@ -881,7 +1131,7 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
 
     // ── Track: cached pixmap when idle, live vector render when zoomed ───
     // Opacity dims only the track outline; driver dots/labels stay full strength.
-    p.setOpacity(mapOpacity_);
+    p.setOpacity(paintColors_.empty() ? mapOpacity_ : 1.0);
     if (!hasCam_) {
         if (staticLayer_.isNull() || staticLayerSize_ != size())
             rebuildStaticLayer();
@@ -890,6 +1140,10 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
         drawTrack(p, layout, effZoom);
     }
     p.setOpacity(1.0);
+    {
+        std::vector<QPolygonF> paths = drawMarks(p, layout, std::pow(effZoom, 0.8));
+        if (!hasCam_) markPaths_ = std::move(paths);
+    }
 
     const Layout& l = layout;
 
@@ -980,6 +1234,17 @@ void TrackMapWidget::setRenderingActive(bool on) {
 void TrackMapWidget::positionControls() {
     if (!driverCombo_) return;
     const int margin = 8, gap = 6;
+    if (mapCombo_) {
+        const int ctrlH = mapCombo_->sizeHint().height();
+        mapCombo_->setFixedWidth(176);
+        mapCombo_->move(margin, margin);
+        mapCombo_->raise();
+        editButton_->resize(ctrlH, ctrlH);
+        editButton_->move(margin + (mapCombo_->isVisible() ? mapCombo_->width() + gap : 0), margin);
+        editButton_->raise();
+        mapStatus_->move(margin, height() - margin - mapStatus_->height());
+        mapStatus_->raise();
+    }
     int maxNameWidth = 0;
     QFontMetrics fm = driverCombo_->fontMetrics();
     for (int i = 0; i < driverCombo_->count(); ++i) {

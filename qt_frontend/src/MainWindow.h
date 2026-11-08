@@ -211,9 +211,24 @@ public:
     void respondToPairing(bool approve);
     void removePairDevice(const QString& id);
 
+    // Every density section at once (Settings ▸ Density "Set all to"), and the
+    // mode they all share — nullopt when sections differ. The three sections
+    // with their own levels are left out of the comparison, as in Electron.
+    void setAllDensity(tnr::DensityMode mode);
+    std::optional<tnr::DensityMode> uniformDensity() const;
+
+    // First-time setup's connection check: the listener's last error (empty
+    // while it is bound) and the datagrams the engine has received so far.
+    QString udpListenerError() const { return udpListenerError_; }
+    quint64 udpDatagramsReceived() const;
+
+    // Shows first-time setup over the whole window (no-op while it is open).
+    void showFirstTimeSetup();
+
 signals:
     void protocolWarningChanged(int detectedFormat, int forcedFormat);
     void pairServiceStateChanged();
+    void udpListenerStatusChanged(const QString& error);
 
 private slots:
     // Receives a coalesced JSONL batch (cold/control) from the libtnrp engine
@@ -349,8 +364,8 @@ private:
     void refreshPlaybackDriverSelector();
     void resetPlaybackDriverSelection();
 
-    // ── Excel export (playback bar → here) ────────────────────────
-    // Export runs off the GUI thread (XlsxExportWorker on exportThread_); progress
+    // ── Parquet export (playback bar → here) ──────────────────────
+    // Export runs off the GUI thread (ParquetExportWorker on exportThread_); progress
     // is shown on a determinate overlay mirroring loadingOverlay_. exporting_ guards
     // against a second export starting while one is in flight.
     QWidget*      exportOverlay_     = nullptr;
@@ -358,7 +373,7 @@ private:
     QProgressBar* exportProgressBar_ = nullptr;
     QThread*      exportThread_      = nullptr;
     bool          exporting_         = false;
-    void onExportXlsxRequested();   // save dialog + off-thread export of the loaded clip
+    void onExportParquetRequested();   // folder dialog + off-thread export of the loaded clip
 
     // ── Telemetry engine (libtnrp) ────────────────────────────────
     // Owns UDP receive, F1 24/25 parsing, .tnrd recording, and (Stage 2) playback.
@@ -373,6 +388,8 @@ private:
     void applyEngineLogging();   // push wantRecord/outputDirectory to the engine
     QString recreateEngine();    // stop/create/start using the current persisted host config
     void showUdpListenerStatus(const QString& error);   // titlebar "UDP ERROR"; empty clears it
+    QString udpListenerError_;
+    QPointer<QWidget> firstTimeSetup_;   // FirstTimeSetup while it is open
     void setLapHistoryCar(int carIdx);   // subscribe the engine to one car's lap times (-1 = none)
     QPointer<DriverLapsDialog> lapsDialog_;   // the open lap-times dialog, fed by pushed rows
     // Electron's lapHistoryCar claims: the engine pushes one car at a time;

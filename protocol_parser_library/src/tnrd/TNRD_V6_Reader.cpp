@@ -611,10 +611,7 @@ public:
     bool historyRequest(float from, float to, uint32_t mask,
                         TnrdReader::HistoryRequest& out) const override;
 
-    bool exportUsesV6Layout() const override { return true; }
-    void exportPlan(const std::function<bool(uint8_t)>& hasSheet,
-                    std::vector<uint8_t>& typeOrder, size_t& total) const override;
-    bool exportRows(uint8_t type, const ExportRowFn& row, std::string* errorOut) override;
+    bool exportParquet(const ParquetExportRequest& request, std::string* errorOut) override;
 
 private:
     // A stored raw JSONL row plus its session_time (for ordering). The json is
@@ -2879,48 +2876,12 @@ std::string TnrdV6Reader::lapBlocksMessage() const {
 }
 
 
-void TnrdV6Reader::exportPlan(const std::function<bool(uint8_t)>& hasSheet,
-                              std::vector<uint8_t>& typeOrder, size_t& total) const {
-    total = 0;
-    if (!indexedArchive_) return;
-    for (const auto& chunk : indexedArchive_->chunks()) {
-        const uint8_t type = static_cast<uint8_t>(chunk.rowType);
-        if (!hasSheet(type)) continue;
-        total += chunk.rowCount;
-        if (std::find(typeOrder.begin(), typeOrder.end(), type) == typeOrder.end())
-            typeOrder.push_back(type);
+bool TnrdV6Reader::exportParquet(const ParquetExportRequest& request, std::string* errorOut) {
+    if (!indexedArchive_) {
+        if (errorOut) *errorOut = "no .tnrd loaded";
+        return false;
     }
-}
-
-bool TnrdV6Reader::exportRows(uint8_t type, const ExportRowFn& row, std::string* errorOut) {
-    if (!indexedArchive_) return false;
-    std::map<uint32_t, V6LapSummary> laps;
-    for (const auto& driver : indexedArchive_->driverHeaders())
-        for (const auto& lap : indexedArchive_->driverLapSummaries(driver.vehicleIndex)) laps[lap.lapId] = lap;
-    const auto& chunks = indexedArchive_->v6Chunks();
-    for (size_t chunkIndex = 0; chunkIndex < chunks.size(); ++chunkIndex) {
-        const auto& chunk = chunks[chunkIndex];
-        if (chunk.typeId != type) continue;
-        std::shared_ptr<std::string> plain;
-        if (!indexedArchive_->loadChunkPlain(chunkIndex, plain, errorOut)) return false;
-        const auto lap = laps.find(chunk.lapId);
-        ExportChunkMeta meta;
-        meta.driverIndex = chunk.driverIndex;
-        meta.lapId = chunk.lapId;
-        meta.lapNumber = lap == laps.end() ? 0 : lap->second.lapNumber;
-        meta.formation = chunk.phase == V6Phase::Formation;
-        size_t pos = 0;
-        while (pos < plain->size()) {
-            size_t nl = plain->find('\n', pos);
-            if (nl == std::string::npos) nl = plain->size();
-            if (nl > pos)
-                (void)row(std::string_view(*plain).substr(pos, nl - pos),
-                          std::numeric_limits<float>::quiet_NaN(), &meta);
-            if (nl == plain->size()) break;
-            pos = nl + 1;
-        }
-    }
-    return true;
+    return exportTnrdV6Parquet(*indexedArchive_, request, errorOut);
 }
 
 } // namespace

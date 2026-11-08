@@ -4,7 +4,7 @@ import { Bug, Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive
 import QRCode from 'qrcode'
 import type { PairAvailability, PairServiceState } from '../types'
 import {
-  GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, DENSITY_OPTIONS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS, HEADER_LEVEL_OPTIONS,
+  GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, compactPreset, DENSITY_OPTIONS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS, HEADER_LEVEL_OPTIONS,
   TYRE_Y_AXIS_SECTIONS, POWER_Y_AXIS_SECTIONS, ANALYSIS_Y_AXIS_SECTIONS,
   type GraphViewState, type GraphView, type CompactState, type DensityMode, type ChartYAxisState, type YAxisBehavior,
 } from '../lib/graphSections'
@@ -20,6 +20,8 @@ import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
 import ColorPicker from './ColorPicker'
 import EditMapModal from './EditMapModal'
+import { PcAddressList, preferredAddress, useNetworkInterfaces } from './PcAddressList'
+import { ConnectionCheck } from './ConnectionCheck'
 import { useTrackMapStore, useTrackMapStoreInit } from '../stores/trackMapStore'
 import type { TrackMapCatalogEntry, TrackMapResult } from '../types'
 
@@ -84,7 +86,7 @@ interface Props {
 
 type Option<T> = { value: T; label: string }
 
-const SegmentedControl = memo(function SegmentedControl<T extends string | number | boolean>({
+export const SegmentedControl = memo(function SegmentedControl<T extends string | number | boolean>({
   options, value, onChange,
 }: {
   options: Option<T>[]
@@ -150,7 +152,7 @@ const SegmentedControl = memo(function SegmentedControl<T extends string | numbe
   )
 }) as <T extends string | number | boolean>(props: { options: Option<T>[]; value: T; onChange: (v: T) => void }) => React.ReactElement
 
-const Toggle = memo(function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+export const Toggle = memo(function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
       role="switch"
@@ -167,7 +169,7 @@ const Toggle = memo(function Toggle({ value, onChange }: { value: boolean; onCha
   )
 })
 
-const Row = memo(function Row({ label, description, warning, children }: {
+export const Row = memo(function Row({ label, description, warning, children }: {
   label: string
   description: React.ReactNode
   warning?: string
@@ -463,6 +465,12 @@ const Settings = memo(function Settings({
   
   const [port, setPort]         = useState<number>(() => window.electronStore.get('udp.port', 20777) as number)
   const [addr, setAddr]         = useState<string>(() => window.electronStore.get('udp.bindAddress', '0.0.0.0') as string)
+  const pcInterfaces = useNetworkInterfaces()
+  const [pcAddress, setPcAddress] = useState('')
+  const [connectionCheckOpen, setConnectionCheckOpen] = useState(false)
+  useEffect(() => {
+    if (pcInterfaces.length > 0) setPcAddress(address => address || preferredAddress(pcInterfaces))
+  }, [pcInterfaces])
   const [forwardingEnabled, setForwardingEnabled] = useState<boolean>(
     () => window.electronStore.get('udp.forwardingEnabled', false) as boolean,
   )
@@ -892,16 +900,7 @@ const Settings = memo(function Settings({
   }
 
   const renderCompact = () => {
-    const setAllDensity = (mode: DensityMode) => {
-      const next: CompactState = {
-        ...compact,
-        overviewTyres: mode === 'spacious' ? 6 : mode === 'compact' ? 1 : 0,
-        sessionWeather: mode === 'spacious' ? 4 : mode === 'compact' ? 1 : 0,
-        sessionHeader: mode === 'spacious' ? 3 : mode === 'compact' ? 1 : 0,
-      }
-      for (const k of ALL_COMPACT_BOOL_KEYS) next[k] = mode
-      onCompactChange(next)
-    }
+    const setAllDensity = (mode: DensityMode) => onCompactChange(compactPreset(compact, mode))
     return (
       <div className="flex flex-col gap-1">
         <div className="flex items-center justify-end px-4 py-3 gap-2">
@@ -1229,6 +1228,10 @@ const Settings = memo(function Settings({
 
   const renderNetwork = () => (
     <div className="flex flex-col gap-1">
+      <GroupLabel>This PC’s address</GroupLabel>
+      <div className="px-4 pb-2">
+        <PcAddressList interfaces={pcInterfaces} selectedAddress={pcAddress} onSelectAddress={setPcAddress} copyable />
+      </div>
       <Row label="UDP Port" description="Port the game broadcasts telemetry to (2025 default: 20777)">
         <div className="w-28">
           <input
@@ -1338,6 +1341,23 @@ const Settings = memo(function Settings({
           {udpStatus === 'applying' ? 'Restarting…' : udpStatus === 'ok' ? 'Applied' : 'Apply & Restart'}
         </button>
       </div>
+
+      {/* First-time setup's connection check, so a skipped setup can still fix the firewall. */}
+      <Row label="Check Connection" description="Firewall, port and incoming telemetry.">
+        <button type="button" className={BUTTON_CLASS} onClick={() => setConnectionCheckOpen(open => !open)}>
+          {connectionCheckOpen ? 'Hide' : 'Check connection'}
+        </button>
+      </Row>
+      {connectionCheckOpen && (
+        <div className="px-4 pb-2">
+          <ConnectionCheck
+            platform={window.platform}
+            port={Number(window.electronStore.get('udp.port', 20777)) || 20777}
+            selectedAddress={pcAddress}
+            interfaces={pcInterfaces}
+          />
+        </div>
+      )}
     </div>
   )
 

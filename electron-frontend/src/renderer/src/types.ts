@@ -779,6 +779,37 @@ export interface PairServiceState {
   error: string | null
 }
 
+export interface FirstTimeSetupState {
+  show: boolean
+  forced: boolean
+  defaultRecordingDirectory: string
+}
+
+export interface SetupNetworkInterface {
+  name: string
+  kind: 'wifi' | 'ethernet' | 'other' | 'virtual' | 'loopback'
+  address: string
+}
+
+export interface SetupFirewallStatus {
+  supported: boolean
+  enabled: boolean
+  publicNetwork: boolean
+  privateNetwork: boolean
+  domainNetwork: boolean
+  allowed: 'yes' | 'no' | 'unknown'
+  blockRule: boolean
+  error: string
+}
+
+export interface SetupUdpProbe {
+  available: boolean
+  running: boolean
+  datagrams: number
+  accepted: number
+  lastFormat: number
+}
+
 declare global {
   interface DebugSettingsPayload {
     additionalLogging: boolean
@@ -811,6 +842,17 @@ declare global {
       getStatus: () => Promise<{ ok: boolean; error?: string }>
       restart: () => Promise<{ ok: boolean; error?: string }>
       onStatusChange: (cb: (status: { ok: boolean; error?: string }) => void) => () => void
+    }
+    setupBridge: {
+      getState: () => FirstTimeSetupState
+      complete: () => Promise<void>
+      networkInterfaces: () => Promise<SetupNetworkInterface[]>
+      firewallStatus: () => Promise<SetupFirewallStatus>
+      allowThroughFirewall: () => Promise<string>
+      udpProbe: () => Promise<SetupUdpProbe>
+      freeBytes: (directory: string) => Promise<number | null>
+      ensureDirectory: (directory: string) => Promise<boolean>
+      onOpen: (cb: (state: FirstTimeSetupState) => void) => () => void
     }
     debugBridge: {
       get: () => Promise<DebugSettingsPayload>
@@ -885,7 +927,7 @@ declare global {
       getAllLapsData: (rowTypeMask?: number) => void
       getWindowData: (windowSeconds: number, rowTypeMask?: number) => void
       close: () => void
-      exportXlsx: () => Promise<{ ok: boolean; error?: string }>
+      exportParquet: () => Promise<{ ok: boolean; folder?: string; error?: string }>
       onExportProgress: (cb: (pct: number, stage: string) => void) => () => void
       onStateChange: (cb: (state: PlaybackState) => void) => () => void
       onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void

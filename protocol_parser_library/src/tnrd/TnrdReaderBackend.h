@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "tnrp/TnrdReader.h"
+#include "TnrdExporter.h"
 
 namespace tnrp::detail {
 
@@ -98,25 +99,10 @@ public:
     virtual bool v6FastestLapAt(float t, FastestLapRow& out) const = 0;
     virtual float v6NextLapEndAfter(float t) const = 0;
 
-    // ── XLSX export ─────────────────────────────────────────────────────────
-    // Where a V6 row came from, for the V6 sheet layout's extra columns.
-    struct ExportChunkMeta {
-        int driverIndex{};
-        uint32_t lapId{};
-        uint32_t lapNumber{};
-        bool formation{};
-    };
-    // Called once per stored row: its JSONL text and session time (NaN when the
-    // caller should read it from the row). Returning false means later rows of
-    // this type are only counted, so they may arrive with an empty line.
-    using ExportRowFn = std::function<bool(std::string_view line, float sessionTime,
-                                           const ExportChunkMeta* meta)>;
-    virtual bool exportUsesV6Layout() const = 0;
-    // The row types with a sheet (`hasSheet`), in first-stored order, and how
-    // many rows the export will visit.
-    virtual void exportPlan(const std::function<bool(uint8_t)>& hasSheet,
-                            std::vector<uint8_t>& typeOrder, size_t& total) const = 0;
-    virtual bool exportRows(uint8_t type, const ExportRowFn& row, std::string* errorOut) = 0;
+    // ── Parquet export ──────────────────────────────────────────────────────
+    // Writes the recording's tables into request.directory through this
+    // generation's exporter (TNRD_V*_Exporter.cpp; see TnrdExporter.h).
+    virtual bool exportParquet(const ParquetExportRequest& request, std::string* errorOut) = 0;
 };
 
 // Each generation's reader, from its own module.

@@ -8,10 +8,10 @@ class QHBoxLayout;
 class QToolButton;
 
 // Underline tabs matching the main toolbar's page switcher, as used by the
-// Analysis lap modes: a row of checkable tool buttons
-// in an exclusive group on a tinted bar. Every button reserves the same
-// border-bottom width (transparent unless checked), so the accent underline
-// only changes colour and never shifts the text.
+// Analysis lap modes: a row of checkable tool buttons, sharing the bar's width
+// equally, in an exclusive group on a tinted bar. Every button reserves the
+// same border-bottom width (transparent unless checked), so the accent
+// underline only changes colour and never shifts the text.
 class UnderlineTabBar : public QWidget {
     Q_OBJECT
 public:
@@ -36,6 +36,7 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void changeEvent(QEvent* event) override;
 
 private:
     QHBoxLayout* layout_ = nullptr;

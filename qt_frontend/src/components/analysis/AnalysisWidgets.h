@@ -9,6 +9,7 @@
 
 #include <array>
 
+class QGridLayout;
 class QLabel;
 
 namespace analysis {
@@ -17,10 +18,6 @@ namespace analysis {
 QString formatLapTime(int milliseconds);
 // "+0.123" / "-0.045" / "0.000"; "—.---" when unknown.
 QString formatDelta(double seconds);
-
-// Filled circle with a darker rim, sized for combo boxes and labels. Used for
-// tyre compounds and for identifying a lap's colour next to its name.
-QIcon dotIcon(const QColor& fill, const QWidget* context, int size = 12);
 
 } // namespace analysis
 
@@ -44,8 +41,10 @@ private:
     QColor color_;
 };
 
-// S1 / S2 / S3 / Lap time delta between the two laps. Values are coloured with
-// the Delta series' slower / faster colours so they read like the chart.
+// S1 / S2 / S3 / Lap time delta between the two laps, as a band of tiles above
+// the graphs. Values are coloured with the Delta series' slower / faster
+// colours so they read like the chart. The tiles sit in one row, or two rows
+// of two when the pane is too narrow, so none is ever cut off.
 class AnalysisDeltaReadout : public QWidget {
     Q_OBJECT
 public:
@@ -58,8 +57,13 @@ public:
 
 protected:
     void changeEvent(QEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private:
+    QGridLayout* grid_ = nullptr;
+    QVector<QWidget*> cells_;
+    int columns_ = 0;
+    int shownCells_ = 0;
     QVector<QWidget*> sectorCells_;
     QVector<QLabel*> values_;
     std::array<double, 4> seconds_{};
@@ -67,4 +71,5 @@ private:
     QColor faster_;
 
     void repaintValues();
+    void reflow();
 };

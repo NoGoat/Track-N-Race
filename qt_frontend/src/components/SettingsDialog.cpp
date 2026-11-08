@@ -8,6 +8,12 @@
 #include "../PresentationScheduler.h"
 #include "AnalyzeMetrics.h"
 #include "PairingQrCode.h"
+#include "PcAddressList.h"
+#include "ConnectionCheck.h"
+#include "SegmentedControl.h"
+#include "analysis/AnalysisPanels.h"
+#include "EditMapDialog.h"
+#include "../TrackMapService.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -34,6 +40,7 @@
 #include <QStackedWidget>
 #include <QScrollArea>
 #include <QListWidget>
+#include <QStyledItemDelegate>
 #include <QPalette>
 #include <QApplication>
 #include <QDesktopServices>
@@ -58,6 +65,10 @@
 #include <QTimer>
 #include <QUrl>
 #include <QAbstractButton>
+#include <QDateTime>
+#include <QDir>
+#include <QLocale>
+#include <QPointer>
 #include <algorithm>
 #include <initializer_list>
 #include <iterator>
@@ -78,52 +89,27 @@ static QFrame* verticalSeparator() {
     return f;
 }
 
-// Segmented-control button, identical to the toolbar's window-size picker (see
-// SegmentButton in AppToolbar.cpp). When checked it paints itself as the active
-// style's *default button* — the same blue outline the on-toggles wear — which a
-// QToolButton can't get for free: the DefaultButton look lives on
-// QStyleOptionButton, which only QPushButton feeds the style, so for the checked
-// state we draw a default QPushButton bevel + label ourselves. Unchecked
-// segments fall through to the normal flat auto-raised look.
-namespace {
-class SegmentButton : public QToolButton {
-public:
-    using QToolButton::QToolButton;
+using tnrui::segmented;   // SegmentedControl.h, shared with first-time setup
 
-protected:
-    void paintEvent(QPaintEvent* e) override {
-        if (!isChecked()) { QToolButton::paintEvent(e); return; }
-        QStylePainter p(this);
-        QStyleOptionButton opt;
-        opt.initFrom(this);
-        opt.rect = rect();
-        opt.text = text();
-        opt.features = QStyleOptionButton::DefaultButton;
-        opt.state |= QStyle::State_Raised;
-        opt.state &= ~(QStyle::State_On | QStyle::State_Sunken);
-        p.drawControl(QStyle::CE_PushButton, opt);
+namespace {
+// The category list's selected row wears the segmented controls' selected
+// look (the style's default-button outline) instead of a solid fill, as the
+// Analysis lists do.
+class NavDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        QStyleOptionViewItem opt(option);
+        if (opt.state.testFlag(QStyle::State_Selected)) {
+            analysisPaintSelectedRow(painter, opt.rect, opt.palette, opt.state.testFlag(QStyle::State_Enabled),
+                                     opt.widget);
+            opt.state &= ~(QStyle::State_Selected | QStyle::State_MouseOver);
+        }
+        opt.state &= ~QStyle::State_HasFocus;
+        QStyledItemDelegate::paint(painter, opt, index);
     }
 };
-
-// An exclusive row of SegmentButtons; ids are the given values.
-QWidget* segmented(QButtonGroup*& groupOut, std::initializer_list<std::pair<const char*, int>> options) {
-    auto* row = new QWidget;
-    auto* layout = new QHBoxLayout(row);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-    auto* group = new QButtonGroup(row);
-    group->setExclusive(true);
-    for (const auto& option : options) {
-        auto* button = new SegmentButton(row);
-        button->setText(QString::fromUtf8(option.first));
-        button->setCheckable(true);
-        button->setAutoRaise(true);
-        group->addButton(button, option.second);
-        layout->addWidget(button);
-    }
-    groupOut = group;
-    return row;
-}
 
 // Muted, wrapping explanation shown under a control.
 QLabel* hint(const QString& text) {
@@ -275,6 +261,7 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     nav_->setSpacing(1);
     nav_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     nav_->viewport()->setAutoFillBackground(false);
+    nav_->setItemDelegate(new NavDelegate(nav_));
     navLayout->addWidget(nav_, 1);
     noMatches_ = hint("No settings match your search.");
     noMatches_->setAlignment(Qt::AlignHCenter);
@@ -1040,6 +1027,150 @@ QWidget* SettingsDialog::buildTrackMapPage() {
     });
     form->addRow("Outline opacity:", opacityRow);
     form->addRow(QString(), hint("Driver markers always stay fully opaque."));
+
+    // ── Modded maps (tnrp/TrackMaps.h via TrackMapService) ──
+    addSection(form, "Maps");
+    TrackMapService& maps = TrackMapService::instance();
+    auto* moddedCheck = new QCheckBox("Modded Maps");
+    moddedCheck->setChecked(maps.modded());
+    form->addRow(QString(), moddedCheck);
+    form->addRow(QString(), hint("Pick any map for a track and match maps to the cars."));
+    auto* generateCheck = new QCheckBox("Generate Maps");
+    generateCheck->setChecked(maps.generate());
+    auto* generateHint = hint("Build and save a map when none fits the track.");
+    form->addRow(QString(), generateCheck);
+    form->addRow(QString(), generateHint);
+    const auto showGenerate = [generateCheck, generateHint] {
+        const bool on = TrackMapService::instance().modded();
+        generateCheck->setVisible(on);
+        generateHint->setVisible(on);
+    };
+    showGenerate();
+    connect(moddedCheck, &QCheckBox::toggled, this, [showGenerate](bool on) {
+        TrackMapService::instance().setModded(on);
+        showGenerate();
+    });
+    connect(generateCheck, &QCheckBox::toggled, this, [](bool on) {
+        TrackMapService::instance().setGenerate(on);
+    });
+
+    // Saved maps: generate one from a recording, import, or open the folder;
+    // each can be edited, exported or deleted.
+    auto* actions = new QWidget;
+    auto* actionsLayout = new QHBoxLayout(actions);
+    actionsLayout->setContentsMargins(0, 0, 0, 0);
+    auto* fromRecording = new QPushButton("From Recording…");
+    auto* importMaps = new QPushButton("Import…");
+    auto* openFolder = new QPushButton("Open Folder");
+    actionsLayout->addWidget(fromRecording);
+    actionsLayout->addWidget(importMaps);
+    actionsLayout->addWidget(openFolder);
+    actionsLayout->addStretch(1);
+    form->addRow("Saved maps:", actions);
+    auto* savedList = new QWidget;
+    auto* savedLayout = new QVBoxLayout(savedList);
+    savedLayout->setContentsMargins(0, 0, 0, 0);
+    savedLayout->setSpacing(4);
+    form->addRow(QString(), savedList);
+    auto* message = hint(QString());
+    message->hide();
+    form->addRow(QString(), message);
+
+    // Disables the buttons while a change runs, then reports its outcome.
+    auto busyButtons = std::make_shared<QList<QPointer<QPushButton>>>();
+    const auto setBusy = [busyButtons, fromRecording, importMaps](bool busy) {
+        fromRecording->setEnabled(!busy);
+        importMaps->setEnabled(!busy);
+        for (const QPointer<QPushButton>& button : *busyButtons)
+            if (button) button->setEnabled(!busy);
+    };
+    QPointer<QLabel> messageGuard(message);
+    const auto run = [setBusy, messageGuard](const QString& done) {
+        setBusy(true);
+        if (messageGuard) messageGuard->hide();
+        return TrackMapService::Done([setBusy, messageGuard, done](const TrackMapService::Result& result) {
+            if (!messageGuard) return;
+            setBusy(false);
+            QString text = result.error;
+            if (!result.ok && text.isEmpty()) text = QStringLiteral("Something went wrong");
+            if (result.ok && text.isEmpty()) text = done;
+            messageGuard->setText(text);
+            messageGuard->setVisible(!text.isEmpty());
+        });
+    };
+
+    const auto refreshSaved = [this, savedLayout, busyButtons, run] {
+        while (QLayoutItem* item = savedLayout->takeAt(0)) {
+            if (QWidget* widget = item->widget()) widget->deleteLater();
+            delete item;
+        }
+        busyButtons->clear();
+        int shown = 0;
+        for (const tnrp::TrackMapEntry& entry : TrackMapService::instance().entries()) {
+            if (entry.source == "builtin") continue;
+            ++shown;
+            const QString id = QString::fromStdString(entry.id);
+            const QString name = QString::fromStdString(entry.name);
+            QStringList details;
+            if (entry.source == "generated") details << QStringLiteral("Generated");
+            else if (entry.source == "imported") details << QStringLiteral("Imported");
+            else if (entry.source == "edited") details << QStringLiteral("Edited");
+            else details << QString::fromStdString(entry.source);
+            if (entry.trackLengthM > 0)
+                details << QStringLiteral("%1 km").arg(entry.trackLengthM / 1000.0, 0, 'f', 3);
+            if (entry.lapsUsed > 0)
+                details << (entry.lapsUsed == 1 ? QStringLiteral("1 lap")
+                                                : QStringLiteral("%1 laps").arg(entry.lapsUsed));
+            if (entry.createdAt > 0)
+                details << QLocale().toString(QDateTime::fromMSecsSinceEpoch(entry.createdAt).date(),
+                                              QLocale::ShortFormat);
+            auto* row = new QFrame;
+            row->setFrameShape(QFrame::StyledPanel);
+            auto* rowLayout = new QHBoxLayout(row);
+            auto* text = new QLabel(QStringLiteral("<b>%1</b><br><small>%2</small>")
+                                        .arg(name.toHtmlEscaped(), details.join(QStringLiteral(" · "))));
+            rowLayout->addWidget(text, 1);
+            auto* edit = new QPushButton("Edit");
+            auto* exportButton = new QPushButton("Export");
+            auto* remove = new QPushButton("Delete");
+            for (QPushButton* button : {edit, exportButton, remove}) {
+                rowLayout->addWidget(button);
+                busyButtons->push_back(button);
+            }
+            connect(edit, &QPushButton::clicked, this, [this, id] {
+                EditMapDialog dialog(id, this);
+                dialog.exec();
+            });
+            connect(exportButton, &QPushButton::clicked, this, [this, id, name, run] {
+                const QString path = QFileDialog::getSaveFileName(
+                    this, "Export Map", QDir::home().filePath(name + QStringLiteral(".json")),
+                    "Track maps (*.json)");
+                if (!path.isEmpty()) TrackMapService::instance().exportMap(id, path, run("Map exported"));
+            });
+            connect(remove, &QPushButton::clicked, this, [id, run] {
+                TrackMapService::instance().remove(id, run(QString()));
+            });
+            savedLayout->addWidget(row);
+        }
+        if (shown == 0) savedLayout->addWidget(hint("No saved maps."));
+    };
+    refreshSaved();
+    connect(&maps, &TrackMapService::catalogChanged, page, refreshSaved);
+    connect(fromRecording, &QPushButton::clicked, this, [this, run] {
+        const QString path = QFileDialog::getOpenFileName(this, "Generate Map From Recording", QString(),
+                                                          "Track N Race recordings (*.tnrd)");
+        if (!path.isEmpty()) TrackMapService::instance().generateFromRecording(path, run("Map saved"));
+    });
+    connect(importMaps, &QPushButton::clicked, this, [this, run] {
+        const QStringList paths = QFileDialog::getOpenFileNames(this, "Import Maps", QString(),
+                                                                "Track maps (*.json)");
+        if (!paths.isEmpty()) TrackMapService::instance().importFiles(paths, run(QString()));
+    });
+    connect(openFolder, &QPushButton::clicked, this, [] {
+        const QString directory = TrackMapService::instance().directory();
+        QDir().mkpath(directory);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
+    });
     return page;
 }
 
@@ -1371,6 +1502,18 @@ QWidget* SettingsDialog::buildProtocolPage() {
 
     addSection(form, "Network");
 
+    // This PC's addresses, the same list as first-time setup's, with Copy.
+    // Only a reference for the game's UDP IP Address; nothing here is saved.
+    auto* addresses = new PcAddressList(true);
+    addresses->setMinimumWidth(460);
+    PcAddressList::load(addresses, [addresses](QVector<tnrp::NetworkInterfaceInfo> list) {
+        addresses->setSelectedAddress(PcAddressList::preferredAddress(list));
+        addresses->setInterfaces(list);
+    });
+    form->addRow("This PC’s address:", addresses);
+    if (auto* label = qobject_cast<QLabel*>(form->labelForField(addresses)))
+        label->setAlignment(Qt::AlignRight | Qt::AlignTop);
+
     // Network controls are a local draft. Nothing is persisted or restarted
     // until Apply & Restart is pressed.
     udpPortSpin_ = new QSpinBox;
@@ -1436,6 +1579,33 @@ QWidget* SettingsDialog::buildProtocolPage() {
     applyLayout->addWidget(udpApplyStatus_, 1);
     applyLayout->addWidget(udpApplyButton_);
     form->addRow(applyRow);
+
+    // First-time setup's connection check, so a skipped setup can still fix
+    // the firewall. Built when opened and removed when hidden, so it only polls
+    // while shown.
+    auto* checkButton = new QPushButton("Check connection");
+    form->addRow("Connection:", checkButton);
+    form->addRow(QString(), hint("Firewall, port and incoming telemetry."));
+    auto* checkHolder = new QWidget;
+    auto* checkLayout = new QVBoxLayout(checkHolder);
+    checkLayout->setContentsMargins(0, 0, 0, 0);
+    checkHolder->setMinimumWidth(460);
+    checkHolder->hide();
+    form->addRow(checkHolder);
+    connect(checkButton, &QPushButton::clicked, this, [this, checkButton, checkHolder, checkLayout, addresses] {
+        if (auto* open = checkHolder->findChild<ConnectionCheck*>()) {
+            delete open;
+            checkHolder->hide();
+            checkButton->setText("Check connection");
+            return;
+        }
+        auto* check = new ConnectionCheck(mainWindow_, checkHolder);
+        if (!addresses->selectedAddress().isEmpty()) check->setSelectedAddress(addresses->selectedAddress());
+        connect(addresses, &PcAddressList::addressSelected, check, &ConnectionCheck::setSelectedAddress);
+        checkLayout->addWidget(check);
+        checkHolder->show();
+        checkButton->setText("Hide");
+    });
 
     udpStatusResetTimer_ = new QTimer(this);
     udpStatusResetTimer_->setSingleShot(true);
@@ -1648,7 +1818,7 @@ QWidget* SettingsDialog::buildTeamColorsPage() {
     auto* formatGroup = new QButtonGroup(formatControl);
     formatGroup->setExclusive(true);
     for (const int format : {2024, 2025, 2026}) {
-        auto* button = new SegmentButton(formatControl);
+        auto* button = new tnrui::SegmentButton(formatControl);
         button->setText(QString::number(format));
         button->setCheckable(true);
         button->setAutoRaise(true);
@@ -2077,8 +2247,6 @@ QWidget* SettingsDialog::buildAboutPage() {
         { "qt-toast (fork)", "—",      "MIT",     "© 2024 Niklas Henning",                  "https://github.com/niklashenning/qt-toast", "github.com", ":/licenses/MIT-qt-toast.txt" },
         { "zlib",          "1.3.2",    "zlib",    "© 1995–2026 Jean-loup Gailly & Mark Adler", "https://zlib.net",              "zlib.net",        ":/licenses/Zlib.txt"     },
         { "Zstandard",     "1.5.7",    "BSD 3-Clause", "© Meta Platforms, Inc. and affiliates", "https://facebook.github.io/zstd/", "facebook.github.io", ":/licenses/BSD-3-Clause-Zstandard.txt" },
-        // libxlsxwriter powers the "Export to Excel" action; linked in every build.
-        { "libxlsxwriter", "1.2.4",    "BSD 2-Clause", "© 2014–2026 John McNamara",         "https://libxlsxwriter.github.io", "libxlsxwriter.github.io", ":/licenses/BSD-2-Clause-libxlsxwriter.txt" },
         // libsodium and CPace encrypt and authenticate the paired-display link.
         { "libsodium",     "1.0.20",   "ISC",     "© 2013–2026 Frank Denis",                "https://libsodium.org",         "libsodium.org",   ":/licenses/ISC-libsodium.txt" },
         { "CPace",         "—",        "BSD 2-Clause", "© 2020–2021 Frank Denis",           "https://github.com/jedisct1/cpace", "github.com",   ":/licenses/BSD-2-Clause-cpace.txt" },

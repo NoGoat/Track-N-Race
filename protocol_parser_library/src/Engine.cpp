@@ -950,6 +950,7 @@ void Engine::setDiagnosticsEnabled(bool enabled) {
 
 void Engine::onDatagram(const uint8_t* data, int length) {
     if (inPlayback_.load()) return;
+    datagramsReceived_.fetch_add(1, std::memory_order_relaxed);
 
     std::lock_guard<std::mutex> lk(mutex_);
     const bool collectDiagnostics = liveDiagnosticsEnabled_;

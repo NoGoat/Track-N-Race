@@ -357,7 +357,7 @@ function BrakingTooltip({ zone, phase, fromM, splitM, toM, current, comparison, 
         {comparison && lapHead(comparisonLabel, comparisonColor, 'right')}
       </tr></thead>
       <tbody>
-        {shown.map(([measure, a, b, better, warn]) => <tr key={measure}>
+        {shown.map(([measure, a, b, better, warn], rowIndex) => <tr key={measure} className="braking-row" style={{ animationDelay: `${rowIndex * 18}ms` }}>
           {current && cell(a, better === 0, warn?.[0] ?? false, currentColor, 'left')}
           <td className="border-t border-[var(--border)] px-1.5 py-[3px] text-center text-[9px] text-[var(--text-secondary)]">{measure}</td>
           {comparison && cell(b, better === 1, warn?.[1] ?? false, comparisonColor, 'right')}

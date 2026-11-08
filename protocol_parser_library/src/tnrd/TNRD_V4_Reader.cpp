@@ -285,7 +285,6 @@ public:
     }
     bool v6FastestLapAt(float, FastestLapRow&) const override { return false; }
     float v6NextLapEndAfter(float) const override { return std::numeric_limits<float>::infinity(); }
-    bool exportUsesV6Layout() const override { return false; }
     // TNRD_V4 recordings have no column history.
     std::unique_ptr<TnrdReader::HistoryReader> openHistoryReader(std::string*) const override { return {}; }
     bool historyRequest(float, float, uint32_t, TnrdReader::HistoryRequest&) const override { return false; }
@@ -332,9 +331,7 @@ public:
     bool getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out, int driverIndex) const override;
     std::vector<TrackStatusChange> aeroTrackStatusTimeline() const override;
 
-    void exportPlan(const std::function<bool(uint8_t)>& hasSheet,
-                    std::vector<uint8_t>& typeOrder, size_t& total) const override;
-    bool exportRows(uint8_t type, const ExportRowFn& row, std::string* errorOut) override;
+    bool exportParquet(const ParquetExportRequest& request, std::string* errorOut) override;
 
 private:
     // A stored raw JSONL row plus its session_time (for ordering). The json is
@@ -1217,34 +1214,31 @@ bool TnrdV4Reader::getAnalysisPositionSamples(int lapNum, std::vector<PlayerPosi
 }
 
 
-void TnrdV4Reader::exportPlan(const std::function<bool(uint8_t)>& hasSheet,
-                         std::vector<uint8_t>& typeOrder, size_t& total) const {
-    total = 0;
-    if (!indexedArchive_) return;
-    for (const auto& chunk : indexedArchive_->chunks()) {
-        const uint8_t type = static_cast<uint8_t>(chunk.rowType);
-        if (!hasSheet(type)) continue;
-        total += chunk.rowCount;
-        if (std::find(typeOrder.begin(), typeOrder.end(), type) == typeOrder.end())
-            typeOrder.push_back(type);
+// Hands every stored row to the V4 exporter, chunk by chunk (by row type,
+// then lap, then sequence). Rows carry their own session_time.
+bool TnrdV4Reader::exportParquet(const ParquetExportRequest& request, std::string* errorOut) {
+    if (!indexedArchive_) {
+        if (errorOut) *errorOut = "no .tnrd loaded";
+        return false;
     }
-}
-
-bool TnrdV4Reader::exportRows(uint8_t type, const ExportRowFn& row, std::string* errorOut) {
-    if (!indexedArchive_) return false;
-    return indexedArchive_->forEachChunk(v4TypeBit(type),
-        [&](const V4ChunkInfo&, std::string_view plain) {
-            size_t pos = 0;
-            while (pos < plain.size()) {
-                size_t nl = plain.find('\n', pos);
-                if (nl == std::string_view::npos) nl = plain.size();
-                if (nl > pos)
-                    (void)row(plain.substr(pos, nl - pos), std::numeric_limits<float>::quiet_NaN(), nullptr);
-                if (nl == plain.size()) break;
-                pos = nl + 1;
-            }
-            return true;
-        }, errorOut);
+    JsonlExportSource source;
+    for (const auto& chunk : indexedArchive_->chunks()) source.rowCount += chunk.rowCount;
+    source.forEach = [this](const JsonlExportSource::Visitor& visit, std::string* readError) {
+        return indexedArchive_->forEachChunk(~V4RowTypeMask{},
+            [&](const V4ChunkInfo&, std::string_view plain) {
+                size_t pos = 0;
+                while (pos < plain.size()) {
+                    size_t nl = plain.find('\n', pos);
+                    if (nl == std::string_view::npos) nl = plain.size();
+                    if (nl > pos && !visit(std::numeric_limits<float>::quiet_NaN(), plain.substr(pos, nl - pos)))
+                        return false;
+                    if (nl == plain.size()) break;
+                    pos = nl + 1;
+                }
+                return true;
+            }, readError);
+    };
+    return exportTnrdV4Parquet(source, request, errorOut);
 }
 
 } // namespace

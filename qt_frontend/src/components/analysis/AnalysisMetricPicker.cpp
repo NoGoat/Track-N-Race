@@ -1,4 +1,5 @@
 #include "AnalysisMetricPicker.h"
+#include "AnalysisPanels.h"
 #include "AnalysisSeriesModel.h"
 
 #include "../../IconUtils.h"
@@ -181,7 +182,8 @@ QWidget* AnalysisMetricPicker::buildChipSection(const QString& title, const QStr
     for (const QString& id : metricIds) {
         const AnalyzeMetric* metric = analyzeMetric(id);
         if (!metric) continue;
-        auto* chip = new QToolButton(flowHost);
+        // Checked chips wear the segmented controls' selected look.
+        auto* chip = new AnalysisToggleButton(flowHost);
         chip->setText(metric->label);
         chip->setCheckable(true);
         chip->setToolButtonStyle(Qt::ToolButtonTextOnly);
@@ -299,11 +301,12 @@ void AnalysisMetricPicker::popup(const QWidget* anchor) {
     const int width = qMin(kPopupWidth, available.width() - 16);
     content_->ensurePolished();
     const int chrome = filter_->sizeHint().height() + 16 + 2 + 2 * frameWidth();
-    const int wanted = chrome + content_->sizeHint().height();
+    // 10 px of room below the last row.
+    const int wanted = chrome + content_->sizeHint().height() + 10;
     const int below = available.bottom() - anchorRect.bottom() - 4;
     const int above = anchorRect.top() - available.top() - 4;
     const bool openBelow = below >= qMin(wanted, 360) || below >= above;
-    const int height = qMax(200, qMin(wanted, openBelow ? below : above));
+    const int height = qMax(210, qMin(wanted, openBelow ? below : above));
     int x = anchorRect.left();
     x = qBound(available.left() + 8, x, available.right() - width - 8);
     const int y = openBelow ? anchorRect.bottom() + 4 : anchorRect.top() - 4 - height;

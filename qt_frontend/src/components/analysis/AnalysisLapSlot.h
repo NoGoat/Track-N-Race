@@ -3,14 +3,14 @@
 #include "AnalysisRecording.h"
 
 #include <QColor>
-#include <QGroupBox>
 #include <QString>
 #include <QVector>
+#include <QWidget>
 
-class AnalysisColorButton;
+class AnalysisLapSummary;
 class QComboBox;
-class QLabel;
 class QLineEdit;
+class QToolButton;
 
 struct AnalysisDriverChoice {
     AnalysisDriverRef ref;
@@ -25,16 +25,27 @@ struct AnalysisLapChoice {
     bool fastest = false;
 };
 
-// One side of a comparison: which driver, which lap, and how that lap is named
-// and coloured in the legend, tooltips and map. A "following" slot mirrors the
-// playback cursor and only its name and colour are editable.
-class AnalysisLapSlot : public QGroupBox {
+// One side of a comparison, as one collapsible section:
+//
+//   v [colour]  NoGoat · C3 · Lap 58 · 1:12.148
+//     Driver  [ NoGoat                 v ]
+//     Lap     [ C3 · Lap 58 · 1:12.148 v ]
+//     Name    [ Lap A                    ]
+//
+// The header's swatch picks the lap's colour; the summary stays readable while
+// the fields are collapsed. A "following" slot mirrors the playback cursor: its
+// Driver and Lap are read only and only the name and colour are editable.
+class AnalysisLapSlot : public QWidget {
     Q_OBJECT
 public:
     enum class Mode { Selectable, FollowsPlayback };
 
+    // `title` names the slot in tooltips and dialogs.
     AnalysisLapSlot(const QString& title, const QString& defaultLabel, Mode mode,
                     QWidget* parent = nullptr);
+
+    bool isExpanded() const { return expanded_; }
+    void setExpanded(bool expanded);
 
     // Selectable slots. Keeps the current driver when still offered, otherwise
     // selects `fallback`. Headers separate the recordings when both are open.
@@ -63,7 +74,7 @@ public:
     QString label() const;           // as typed; may be empty
     QString resolvedLabel() const;   // falls back to the default label
     void setLabel(const QString& label);
-    QColor color() const;
+    QColor color() const { return color_; }
     void setColor(const QColor& color);
 
 signals:
@@ -71,15 +82,25 @@ signals:
     void lapActivated();
     void labelEdited(const QString& label);
     void colorPicked(const QColor& color);
+    // The user opened or closed this section.
+    void expandedChanged();
 
 private:
     Mode mode_;
+    QString title_;
     QString defaultLabel_;
+    QColor color_;
+    bool expanded_ = true;
+    QString followedDriver_;
+    QWidget* header_ = nullptr;
+    QToolButton* arrow_ = nullptr;
+    QToolButton* swatch_ = nullptr;
+    AnalysisLapSummary* summary_ = nullptr;
+    QWidget* body_ = nullptr;
     QComboBox* driverBox_ = nullptr;
     QComboBox* lapBox_ = nullptr;
-    QLabel* followedDriver_ = nullptr;
-    QLabel* followedCompound_ = nullptr;
-    QLabel* followedLap_ = nullptr;
     QLineEdit* labelEdit_ = nullptr;
-    AnalysisColorButton* colorButton_ = nullptr;
+
+    void refreshSwatch();
+    void refreshSummary();
 };

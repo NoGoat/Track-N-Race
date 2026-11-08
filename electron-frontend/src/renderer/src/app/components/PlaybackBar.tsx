@@ -211,14 +211,14 @@ export default memo(function PlaybackBar({ compact, currentLapNum = null, export
           <button
             onClick={onExport}
             disabled={exportState === 'busy'}
-            title={exportState === 'error' ? exportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'}
+            title={exportState === 'error' ? exportError ?? 'Export failed' : 'Export session to Parquet'}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] border border-[var(--border)] transition-colors disabled:opacity-50 shrink-0"
           >
             <Download size={downloadIconSize} className={exportState === 'busy' ? 'animate-pulse' : ''} />
-            <span>Export (.xlsx)</span>
+            <span>Export (Parquet)</span>
           </button>
         ) : (
-          <button onClick={onExport} disabled={exportState === 'busy'} title={exportState === 'error' ? exportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0`}><Download size={downloadIconSize} className={exportState === 'busy' ? 'animate-pulse' : ''} /></button>
+          <button onClick={onExport} disabled={exportState === 'busy'} title={exportState === 'error' ? exportError ?? 'Export failed' : 'Export session to Parquet'} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0`}><Download size={downloadIconSize} className={exportState === 'busy' ? 'animate-pulse' : ''} /></button>
         )
       )}
     </div>

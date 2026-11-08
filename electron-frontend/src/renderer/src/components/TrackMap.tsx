@@ -1478,7 +1478,8 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     <div ref={wrapRef} className="relative w-full h-full"
       onMouseMove={handleMarkHover} onMouseLeave={() => setHoveredMark(null)}>
       {hoveredMark && trackMarks?.[hoveredMark.index]?.tooltip && <div
-        className="pointer-events-none absolute z-20 w-max rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] px-3 py-2.5 text-[10px] font-mono text-[var(--text-primary)] shadow-[0_6px_20px_rgba(0,0,0,0.4)]"
+        key={hoveredMark.index}
+        className="braking-card pointer-events-none absolute z-20 w-max rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] px-3 py-2.5 text-[10px] font-mono text-[var(--text-primary)] shadow-[0_6px_20px_rgba(0,0,0,0.4)]"
         style={{
           left: hoveredMark.x > width - 310 ? undefined : hoveredMark.x + 12,
           right: hoveredMark.x > width - 310 ? width - hoveredMark.x + 12 : undefined,

@@ -88,7 +88,6 @@ private val ATTRIBUTIONS = listOf(
     Attribution("zlib", "1.3.2", "Zlib", "https://zlib.net", R.raw.zlib, AttributionCategory.NATIVE),
     Attribution("Zstandard", "1.5.7", "BSD-3-Clause", "https://facebook.github.io/zstd/", R.raw.zstandard, AttributionCategory.NATIVE),
     Attribution("Glaze", "7.8.3", "MIT", "https://github.com/stephenberry/glaze", R.raw.glaze, AttributionCategory.NATIVE),
-    Attribution("libxlsxwriter", "1.2.4", "BSD-2-Clause", "https://libxlsxwriter.github.io", R.raw.libxlsxwriter, AttributionCategory.NATIVE),
     Attribution("libsodium", "1.0.20", "ISC", "https://libsodium.org", R.raw.libsodium, AttributionCategory.NATIVE),
     Attribution("CPace", "41701e7", "BSD-2-Clause", "https://github.com/jedisct1/cpace", R.raw.cpace, AttributionCategory.NATIVE),
 )

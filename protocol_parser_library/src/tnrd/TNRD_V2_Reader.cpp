@@ -233,7 +233,6 @@ public:
     }
     bool v6FastestLapAt(float, FastestLapRow&) const override { return false; }
     float v6NextLapEndAfter(float) const override { return std::numeric_limits<float>::infinity(); }
-    bool exportUsesV6Layout() const override { return false; }
     // TNRD_V2 recordings have no column history.
     std::unique_ptr<TnrdReader::HistoryReader> openHistoryReader(std::string*) const override { return {}; }
     bool historyRequest(float, float, uint32_t, TnrdReader::HistoryRequest&) const override { return false; }
@@ -281,9 +280,7 @@ public:
     bool getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out, int driverIndex) const override;
     std::vector<TrackStatusChange> aeroTrackStatusTimeline() const override { return {}; }
 
-    void exportPlan(const std::function<bool(uint8_t)>& hasSheet,
-                    std::vector<uint8_t>& typeOrder, size_t& total) const override;
-    bool exportRows(uint8_t type, const ExportRowFn& row, std::string* errorOut) override;
+    bool exportParquet(const ParquetExportRequest& request, std::string* errorOut) override;
 
 private:
     // A stored raw JSONL row plus its session_time (for ordering). The json is
@@ -1190,23 +1187,39 @@ bool TnrdV2Reader::getAnalysisPositionSamples(int lapNum, std::vector<PlayerPosi
 }
 
 
-void TnrdV2Reader::exportPlan(const std::function<bool(uint8_t)>& hasSheet,
-                              std::vector<uint8_t>& typeOrder, size_t& total) const {
-    total = index_.size();
-    for (const IndexEntry& e : index_)
-        if (hasSheet(e.type) && std::find(typeOrder.begin(), typeOrder.end(), e.type) == typeOrder.end())
-            typeOrder.push_back(e.type);
-}
-
-bool TnrdV2Reader::exportRows(uint8_t type, const ExportRowFn& row, std::string* errorOut) {
-    (void)errorOut;
-    bool reading = true;
-    for (const IndexEntry& e : index_) {
-        if (e.type != type) continue;
-        if (reading) reading = row(readLine(e.offset), e.sessionTime, nullptr);
-        else (void)row({}, e.sessionTime, nullptr);
+// Hands every indexed row to the V2 exporter in file order, reading the
+// temp file in contiguous blocks (one seek per block, as playback does).
+bool TnrdV2Reader::exportParquet(const ParquetExportRequest& request, std::string* errorOut) {
+    if (!isLoaded()) {
+        if (errorOut) *errorOut = "no .tnrd loaded";
+        return false;
     }
-    return true;
+    JsonlExportSource source;
+    source.rowCount = index_.size();
+    source.forEach = [this](const JsonlExportSource::Visitor& visit, std::string* readError) {
+        constexpr size_t kBlockRows = 8192;
+        for (size_t from = 0; from < index_.size(); from += kBlockRows) {
+            const size_t to = std::min(index_.size(), from + kBlockRows);
+            const size_t got = readBlock(from, to);
+            if (got == 0) {
+                if (readError) *readError = "could not read the decompressed recording";
+                return false;
+            }
+            size_t visited = 0;
+            bool keepGoing = true;
+            walkBlockLines(scratch_.data(), got, from, to - from, [&](size_t i, const char* line, int length) {
+                ++visited;
+                if (keepGoing) keepGoing = visit(index_[i].sessionTime, std::string_view(line, (size_t)length));
+            });
+            if (!keepGoing) return false;
+            if (visited != to - from) {
+                if (readError) *readError = "the decompressed recording is shorter than its index";
+                return false;
+            }
+        }
+        return true;
+    };
+    return exportTnrdV2Parquet(source, request, errorOut);
 }
 
 } // namespace

@@ -3803,6 +3803,32 @@ bool TnrdV6Archive::loadChunkPlain(size_t index, std::shared_ptr<std::string>& o
     return true;
 }
 
+bool TnrdV6Archive::loadChunkColumns(size_t index, V6ChunkColumns& out, std::string* errorOut) {
+    out = {};
+    if (index >= impl_->v6Chunks.size()) { fail(errorOut, "invalid V6 chunk index"); return false; }
+    std::shared_ptr<const ChunkData> data;
+    if (!impl_->load(index, data, errorOut)) return false;
+    const ColumnarChunk& table = data->table;
+    out.time = table.time;
+    out.columns.reserve(table.columns.size());
+    for (const auto& column : table.columns) {
+        V6ChunkColumns::Column& copy = out.columns.emplace_back();
+        copy.name = column.name;
+        switch (column.kind) {
+            case ColumnKind::Int:     copy.kind = V6ChunkColumns::Kind::Int; break;
+            case ColumnKind::Float32: copy.kind = V6ChunkColumns::Kind::Float32; break;
+            case ColumnKind::Float64: case ColumnKind::Decimal: copy.kind = V6ChunkColumns::Kind::Float64; break;
+            case ColumnKind::Bool:    copy.kind = V6ChunkColumns::Kind::Bool; break;
+            case ColumnKind::Json:    copy.kind = V6ChunkColumns::Kind::Json; break;
+        }
+        copy.present = column.present;
+        copy.ints = column.ints;
+        copy.reals = column.reals;
+        copy.texts = column.texts;
+    }
+    return true;
+}
+
 bool TnrdV6Archive::rowsForChunks(const std::vector<size_t>& indices, std::vector<std::vector<V6TimedRow>>& out,
                                   std::string* errorOut) {
     out.clear(); out.reserve(indices.size());

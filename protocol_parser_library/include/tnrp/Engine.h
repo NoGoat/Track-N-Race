@@ -170,6 +170,10 @@ public:
     bool restartUdp(uint16_t port, const std::string& bindAddress);
     std::string udpLastError() const;
     void setDiagnosticsEnabled(bool enabled);
+    // Live UDP datagrams received since the engine started, whether or not
+    // diagnostics are on (playback drops datagrams and doesn't count them).
+    // Lock-free, so a UI can poll it. First-time setup's connection check.
+    uint64_t datagramsReceived() const { return datagramsReceived_.load(std::memory_order_relaxed); }
     LiveDiagnostics liveDiagnostics() const;
     LiveHistoryMemoryStats liveHistoryMemoryStats() const;
     StrategyMemoryStats strategyMemoryStats() const;
@@ -496,6 +500,7 @@ private:
     std::vector<std::string> playbackStrategyPendingRows_; // guarded by mutex_
     std::string playbackPath_;                        // guarded by mutex_
     uint64_t runtimeDatagramsProcessed_{};             // guarded by mutex_
+    std::atomic<uint64_t> datagramsReceived_{0};
     uint64_t runtimeDatagramBytesProcessed_{};         // guarded by mutex_
     uint64_t runtimeParserRowsProduced_{};             // guarded by mutex_
     uint64_t runtimeParserControlRowsProduced_{};      // guarded by mutex_

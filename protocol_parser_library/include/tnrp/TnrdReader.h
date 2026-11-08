@@ -309,14 +309,17 @@ public:
     // the recording is not V6.
     float v6NextLapEndAfter(float t) const;
 
-    // ── XLSX export (raw data dump, implemented in XlsxExport.cpp) ──────────
-    // Walks the whole index in file order and writes one XLSX sheet per row
-    // type encountered, plus an "Info" sheet from `header`. Requires isLoaded().
-    // onProgress (if set) is called periodically from this same thread with
-    // (rowsDone, totalUnits, stage) as the export proceeds — see XlsxExport.h.
-    bool exportXlsx(const HeaderRow& header, const std::string& outPath,
-                    std::string* errorOut = nullptr,
-                    const std::function<void(size_t, size_t, const std::string&)>& onProgress = nullptr);
+    // ── Parquet export (implemented in ParquetExport.cpp) ───────────────────
+    // Writes every stored row as Parquet tables, one <Table>.parquet each, into
+    // `directory` (an existing folder, UTF-8) through this generation's
+    // exporter; `header` is recorded in each file's metadata. Requires
+    // isLoaded(). onProgress gets (fraction 0..1, stage) on this thread;
+    // `cancelled` is polled between rows. tnrp/ParquetExport.h wraps this
+    // with a staged, never-overwriting output folder.
+    bool exportParquet(const HeaderRow& header, const std::string& directory,
+                       std::string* errorOut = nullptr,
+                       const std::function<void(double, const std::string&)>& onProgress = nullptr,
+                       const std::function<bool()>& cancelled = nullptr);
 
 private:
     bool loadWithFormat(const std::string& path, HeaderRow& outHeader, TnrdFormat format);

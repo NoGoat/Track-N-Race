@@ -95,6 +95,24 @@ struct V6ChunkInfo {
     uint64_t sequence{};
 };
 
+// One chunk's samples as typed columns (TnrdV6Archive::loadChunkColumns),
+// exactly as stored: a Decimal column arrives as Float64 holding the same
+// doubles, a Float32 column's reals are exact floats.
+struct V6ChunkColumns {
+    enum class Kind : uint8_t { Int, Float32, Float64, Bool, Json };
+    struct Column {
+        std::string name;
+        Kind kind{};
+        std::vector<uint8_t> present;    // one flag per row; empty when every row has it
+        std::vector<int64_t> ints;       // Int and Bool (1 = true), one slot per row
+        std::vector<double> reals;       // Float32 and Float64, one slot per row
+        std::vector<std::string> texts;  // Json, one slot per row
+        bool has(size_t row) const { return present.empty() || present[row]; }
+    };
+    std::vector<float> time;  // session time per row
+    std::vector<Column> columns;
+};
+
 struct V6SharedRecord {
     V6Phase phase{V6Phase::Race};
     float sessionTime{};
@@ -279,6 +297,8 @@ public:
     const std::vector<V6SharedRecord>& sharedRecords() const;
     float logicalTime(V6Phase, float) const;
     bool loadChunkPlain(size_t, std::shared_ptr<std::string>&, std::string*);
+    // A v6Chunks() entry's samples as typed columns, with no JSON on the path.
+    bool loadChunkColumns(size_t, V6ChunkColumns&, std::string*);
     bool readDriverLapTypes(uint8_t, uint32_t, const std::vector<uint8_t>&,
                             std::vector<V6TimedRow>&, std::string*);
     bool readDriverRangeTypes(uint8_t, float, float, const std::vector<uint8_t>&,

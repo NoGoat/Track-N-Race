@@ -1,11 +1,28 @@
-[CmdletBinding()]
+# Usage: .uild-and-run.ps1 [-QtPrefix ...] [-BreezePrefix ...] [-BreezeRuntimeDir ...] [--first-launch]
+#   --first-launch (or -FirstLaunch) opens first-time setup on launch, even on
+#   an install that has already finished it.
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$QtPrefix = "",
     [string]$BreezePrefix = "",
-    [string]$BreezeRuntimeDir = ""
+    [string]$BreezeRuntimeDir = "",
+    [switch]$FirstLaunch,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$AppArgs = @()
 )
 
 $ErrorActionPreference = "Stop"
+
+$launchArgs = @()
+foreach ($arg in $AppArgs) {
+    if ($arg -ieq "--first-launch" -or $arg -ieq "--first-time-setup") {
+        $FirstLaunch = $true
+    } else {
+        Write-Error "Unknown argument: $arg"
+        exit 1
+    }
+}
+if ($FirstLaunch) { $launchArgs += "--first-launch" }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 if (-not $scriptDir) { $scriptDir = "." }
@@ -36,6 +53,10 @@ if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
     exit 1
 }
 
-Write-Host "`nLaunching: $exePath" -ForegroundColor Green
-Start-Process -FilePath $exePath -WorkingDirectory $releaseDir
+Write-Host "`nLaunching: $exePath $($launchArgs -join ' ')" -ForegroundColor Green
+if ($launchArgs.Count -gt 0) {
+    Start-Process -FilePath $exePath -WorkingDirectory $releaseDir -ArgumentList $launchArgs
+} else {
+    Start-Process -FilePath $exePath -WorkingDirectory $releaseDir
+}
 

@@ -191,6 +191,31 @@ const udpBridge = {
   },
 }
 
+const setupBridge = {
+  // Synchronous so the renderer knows before its first paint whether to show setup.
+  getState: (): FirstTimeSetupState => ipcRenderer.sendSync('setup:get-state'),
+  complete: (): Promise<void> => ipcRenderer.invoke('setup:complete'),
+  networkInterfaces: (): Promise<SetupNetworkInterface[]> => ipcRenderer.invoke('setup:network-interfaces'),
+  firewallStatus: (): Promise<SetupFirewallStatus> => ipcRenderer.invoke('setup:firewall-status'),
+  allowThroughFirewall: (): Promise<string> => ipcRenderer.invoke('setup:firewall-allow'),
+  udpProbe: (): Promise<SetupUdpProbe> => ipcRenderer.invoke('setup:udp-probe'),
+  freeBytes: (directory: string): Promise<number | null> => ipcRenderer.invoke('setup:free-bytes', directory),
+  ensureDirectory: (directory: string): Promise<boolean> => ipcRenderer.invoke('setup:ensure-directory', directory),
+  onOpen: (callback: (state: FirstTimeSetupState) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: FirstTimeSetupState) => callback(state)
+    ipcRenderer.on('setup:open', listener)
+    return () => ipcRenderer.removeListener('setup:open', listener)
+  },
+}
+
+interface FirstTimeSetupState { show: boolean; forced: boolean; defaultRecordingDirectory: string }
+interface SetupNetworkInterface { name: string; kind: 'wifi' | 'ethernet' | 'other' | 'virtual' | 'loopback'; address: string }
+interface SetupFirewallStatus {
+  supported: boolean; enabled: boolean; publicNetwork: boolean; privateNetwork: boolean; domainNetwork: boolean
+  allowed: 'yes' | 'no' | 'unknown'; blockRule: boolean; error: string
+}
+interface SetupUdpProbe { available: boolean; running: boolean; datagrams: number; accepted: number; lastFormat: number }
+
 const debugBridge = {
   get: (): Promise<DebugSettings> => ipcRenderer.invoke('debug-settings-get'),
   setAdditionalLogging: (enabled: boolean): void =>
@@ -319,7 +344,7 @@ const playerBridge = {
   getAllLapsData: (rowTypeMask?: number) => ipcRenderer.send('player:getAllLapsData', rowTypeMask),
   getWindowData: (windowSeconds: number, rowTypeMask?: number) => ipcRenderer.send('player:getWindowData', windowSeconds, rowTypeMask),
   close: () => ipcRenderer.send('player:close'),
-  exportXlsx: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:export-xlsx'),
+  exportParquet: (): Promise<{ ok: boolean; folder?: string; error?: string }> => ipcRenderer.invoke('player:export-parquet'),
   onExportProgress: (cb: (pct: number, stage: string) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, pct: number, stage: string) => cb(pct, stage)
     ipcRenderer.on('player:export-progress', handler)
@@ -410,6 +435,7 @@ contextBridge.exposeInMainWorld('platform', process.platform)
 contextBridge.exposeInMainWorld('telemetryBridge', telemetryBridge)
 contextBridge.exposeInMainWorld('windowControls', windowControls)
 contextBridge.exposeInMainWorld('udpBridge', udpBridge)
+contextBridge.exposeInMainWorld('setupBridge', setupBridge)
 contextBridge.exposeInMainWorld('debugBridge', debugBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
 contextBridge.exposeInMainWorld('strategyBridge', strategyBridge)

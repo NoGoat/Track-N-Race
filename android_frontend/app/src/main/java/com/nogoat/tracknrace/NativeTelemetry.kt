@@ -21,6 +21,14 @@ internal class NativeTelemetry(
          */
         @JvmStatic
         external fun nativeSummarize(path: String): String?
+
+        /**
+         * Exports the recording at [path] as Parquet tables into a new
+         * "<recording>_parquet" folder inside [destDir]. Blocking; call it off
+         * the main thread. JSON: {"ok":true,"folder":...} or {"ok":false,"error":...}.
+         */
+        @JvmStatic
+        external fun nativeExportParquet(path: String, destDir: String): String
     }
 
     fun start(port: Int): String? = nativeStart(port)
@@ -106,6 +114,10 @@ internal class NativeTelemetry(
     private external fun nativeLapDelta(currentLap: Int, comparisonLap: Int, sectorDelta: Boolean): String?
 
     private external fun nativeLapData(lapNumber: Int, channels: Array<String>, forCharts: Boolean): String?
+
+    // Analysis map layer colours (tnrp/AnalysisMapPaint.h): {"dark":…,"light":…}.
+    // Not wired to any UI yet.
+    external fun nativeAnalysisMapPaletteJson(): String
 
     // Track maps (tnrp/TrackMaps.h), the current session's library. Not wired
     // to any UI yet. Changes return {"ok","id","error"} JSON.

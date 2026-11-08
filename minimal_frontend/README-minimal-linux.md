@@ -15,7 +15,7 @@ This is a system-linked Linux executable, not an AppImage. Run it with:
   the Qt Wayland package separately when native Wayland support is required.
 - The system C and C++ runtimes: glibc, libstdc++, and libgcc
 
-Glaze, zlib, Zstandard, libxlsxwriter, and minizip are linked statically and do
+Glaze, zlib, and Zstandard are linked statically and do
 not need separate runtime packages. To see the exact shared libraries required
 by a particular build, run:
 
@@ -60,7 +60,6 @@ The first configure downloads and statically builds these pinned dependencies:
 - Glaze 7.8.3
 - zlib 1.3.2
 - Zstandard 1.5.7
-- libxlsxwriter 1.2.4, including its bundled minizip
 
 Build from the repository root:
 

@@ -57,6 +57,7 @@ public:
     AnalysisSplitterHandle(Qt::Orientation orientation, AnalysisSplitter* parent);
 
 protected:
+    void paintEvent(QPaintEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;

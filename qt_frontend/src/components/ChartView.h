@@ -204,6 +204,10 @@ public:
     void setSeriesOrder(const QVector<int>& bottomToTop);
     void linkSeriesVisibility(int primarySeriesId, int linkedSeriesId);
     void setAxisVisible(int axisId, bool visible);
+    // A visible axis without labels keeps its grid lines (and takes no room
+    // for labels), as Electron's stacked graphs draw x grid lines on every
+    // graph but x labels on the last only. On by default.
+    void setAxisLabelsVisible(int axisId, bool visible);
     // Moves an axis to another side; laneOrder ranks it among that side's axes
     // (lower sits nearer the plot).
     void setAxisSide(int axisId, Side side, int laneOrder = 0);

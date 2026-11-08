@@ -1,4 +1,5 @@
 #include "AnalysisSplitter.h"
+#include "AnalysisPanels.h"
 
 #include <QMouseEvent>
 #include <QPainter>
@@ -105,11 +106,13 @@ void AnalysisSplitter::resetToDefault() {
 
 void AnalysisSplitter::setHovered(bool hovered) {
     hovered_ = hovered;
+    if (count() > 1) handle(1)->update();
     refreshBadge();
 }
 
 void AnalysisSplitter::setDragging(bool dragging) {
     dragging_ = dragging;
+    if (count() > 1) handle(1)->update();
     refreshBadge();
 }
 
@@ -142,6 +145,11 @@ void AnalysisSplitter::refreshBadge() {
 AnalysisSplitterHandle::AnalysisSplitterHandle(Qt::Orientation orientation, AnalysisSplitter* parent)
     : QSplitterHandle(orientation, parent), owner_(parent) {
     setToolTip(QStringLiteral("Drag to resize · Double-click for 50 / 50"));
+}
+
+void AnalysisSplitterHandle::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    analysisPaintGrip(painter, rect(), palette(), owner_->hovered_ || owner_->dragging_);
 }
 
 void AnalysisSplitterHandle::enterEvent(QEnterEvent* event) {

@@ -146,13 +146,13 @@ export function usePlayback(onClose: () => void) {
     if (current.isPlaying) window.playerBridge.pause()
     else window.playerBridge.play()
   }, [])
-  const exportXlsx = useCallback(async () => {
+  const exportParquet = useCallback(async () => {
     if (exportState === 'busy') return
     setExportState('busy')
     setExportError(null)
     setExportProgress(0)
     setExportStage('Preparing export')
-    const result = await window.playerBridge.exportXlsx()
+    const result = await window.playerBridge.exportParquet()
     if (result.ok || result.error === 'cancelled') setExportState('idle')
     else {
       setExportState('error')
@@ -176,7 +176,7 @@ export function usePlayback(onClose: () => void) {
 
   return {
     close, confirmOpenFilePath, currentLapNum, exportError, exportProgress, exportStage,
-    exportState, exportXlsx, loadError, seekBackward, seekForward, seekProgress, selectFile, setSpeed,
+    exportState, exportParquet, loadError, seekBackward, seekForward, seekProgress, selectFile, setSpeed,
     sessionFileStart, setConfirmOpenFilePath, setLoadError,
     speedRpmBlocks, state, togglePlay,
   }

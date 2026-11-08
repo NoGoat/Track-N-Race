@@ -251,6 +251,7 @@ interface NativeEngine extends NativePairEngine {
   setDiagnosticsEnabled?(enabled: boolean): void
   setNativeExceptionReporting?(enabled: boolean): void
   liveDiagnostics?(): unknown
+  datagramsReceived?(): number
   telemetryRetention?(): Record<string, unknown> | null
   setDataRequirements(streamMask: number, historyMask: number, historyWindow: number, requestId: number,
     v6Types: number[], v6HistoryTypes: number[]): void
@@ -273,7 +274,7 @@ interface NativeEngine extends NativePairEngine {
   playerGetLapData(lapNum: number, rowTypeMask: number): void
   playerGetAllLapsData(requestId: number, rowTypeMask: number): void
   playerGetWindowData(windowSeconds: number, requestId: number, rowTypeMask: number): void
-  playerExportXlsx(srcPath: string, destPath: string, onProgress: (pct: number, stage: string) => void): Promise<{ ok: boolean; error?: string }>
+  playerExportParquet(srcPath: string, destDir: string, onProgress: (pct: number, stage: string) => void): Promise<{ ok: boolean; folder?: string; error?: string }>
   analysisLoadFile(filePath: string): Promise<{ ok: boolean; error?: string; blocksJson: string; trackId?: number; trackName?: string }>
   analysisGetLapData(lapNum: number, rowTypeMask: number, secondary: boolean, driverIndex: number): string | null
   analysisCompareLaps(currentLapNum: number, currentSecondary: boolean, currentDriverIndex: number,
@@ -320,6 +321,9 @@ interface NativeAddon {
     onPairDiagnostic: (message: string) => void,
   ) => NativeEngine
   sweepTempFiles(): void
+  networkInterfacesJson?(): string
+  firewallStatusJson?(port: number, programPath: string): Promise<string>
+  firewallAllowProgram?(programPath: string): Promise<string>
 }
 
 let engine: NativeEngine | null = null
@@ -1291,13 +1295,92 @@ export function sweepTempFiles(): void {
   }
 }
 
-export function exportSessionXlsx(
+// ── First-time setup (tnrp/NetworkSetup.h) ──────────────────────────────────
+
+export interface NetworkInterfaceInfo {
+  name: string
+  kind: 'wifi' | 'ethernet' | 'other' | 'virtual' | 'loopback'
+  address: string
+}
+
+export interface FirewallStatus {
+  supported: boolean
+  enabled: boolean
+  publicNetwork: boolean
+  privateNetwork: boolean
+  domainNetwork: boolean
+  allowed: 'yes' | 'no' | 'unknown'
+  blockRule: boolean
+  error: string
+}
+
+const UNSUPPORTED_FIREWALL: FirewallStatus = {
+  supported: false, enabled: false, publicNetwork: false, privateNetwork: false, domainNetwork: false,
+  allowed: 'unknown', blockRule: false, error: '',
+}
+
+export function listNetworkInterfaces(): NetworkInterfaceInfo[] {
+  try {
+    const json = loadAddon().networkInterfacesJson?.()
+    return json ? JSON.parse(json) as NetworkInterfaceInfo[] : []
+  } catch (error) {
+    console.error('[setup] network interface listing failed:', error)
+    return []
+  }
+}
+
+export async function getFirewallStatus(port: number): Promise<FirewallStatus> {
+  try {
+    const json = await loadAddon().firewallStatusJson?.(port, process.execPath)
+    return json ? { ...UNSUPPORTED_FIREWALL, ...JSON.parse(json) as Partial<FirewallStatus> } : UNSUPPORTED_FIREWALL
+  } catch (error) {
+    console.error('[setup] firewall status failed:', error)
+    return { ...UNSUPPORTED_FIREWALL, error: String(error) }
+  }
+}
+
+// "" on success, "cancelled" when the UAC prompt is declined, otherwise an error.
+export async function allowThroughFirewall(): Promise<string> {
+  try {
+    const allow = loadAddon().firewallAllowProgram
+    return allow ? await allow(process.execPath) : 'Firewall changes are not available in this build.'
+  } catch (error) {
+    console.error('[setup] firewall allow failed:', error)
+    return String(error)
+  }
+}
+
+export interface UdpProbe {
+  available: boolean
+  running: boolean
+  datagrams: number
+  accepted: number
+  lastFormat: number
+}
+
+// Live listener counters for the setup connection check. The datagram count
+// comes from the engine's always-on counter: liveDiagnostics' own count only
+// runs while additional logging is on.
+export function udpProbe(): UdpProbe {
+  const snapshot = engine?.liveDiagnostics?.() as Record<string, unknown> | undefined
+  if (!snapshot) return { available: false, running: false, datagrams: 0, accepted: 0, lastFormat: 0 }
+  const num = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0
+  return {
+    available: true,
+    running: snapshot.udpRunning === true,
+    datagrams: num(engine?.datagramsReceived?.()),
+    accepted: num(snapshot.accepted),
+    lastFormat: num(snapshot.lastIncomingFormat),
+  }
+}
+
+export function exportSessionParquet(
   srcPath: string,
-  destPath: string,
+  destDir: string,
   onProgress?: (pct: number, stage: string) => void
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; folder?: string; error?: string }> {
   if (!engine) return Promise.resolve({ ok: false, error: 'engine not started' })
-  return engine.playerExportXlsx(srcPath, destPath, onProgress ?? (() => {}))
+  return engine.playerExportParquet(srcPath, destDir, onProgress ?? (() => {}))
 }
 
 export function setOverride(value: ProtocolOverride): void {

@@ -83,13 +83,12 @@ const HARVEST_COLORS_LIGHT = rampColors(HARVEST_RAMP_LIGHT)
 export const SUPERCLIP_COLOR_DARK = '#8C9CF0'
 export const SUPERCLIP_COLOR_LIGHT = '#8C9CF0'
 
-// Speed runs from the slowest to the fastest speed on show: indigo to yellow
-// on the dark theme and indigo to orange on the light one, through magenta and
-// red, so it never looks like ERS Usage or Harvest. Finer steps than ERS keep
-// a few km/h between neighbouring colours.
+// Speed runs from the slowest to the fastest speed on show: raspberry to
+// periwinkle on the dark theme and olive to periwinkle on the light one. Finer
+// steps than ERS keep a few km/h between neighbouring colours.
 const SPEED_STEPS = 50
-export const SPEED_RAMP_DARK = ['#4C2A9A', '#FCE36B'] as const
-export const SPEED_RAMP_LIGHT = ['#3B2A8C', '#F08A24'] as const
+export const SPEED_RAMP_DARK = ['#C8577F', '#767AC9'] as const
+export const SPEED_RAMP_LIGHT = ['#7E7F3C', '#767AC9'] as const
 const SPEED_COLORS_DARK = rampColors(SPEED_RAMP_DARK, SPEED_STEPS)
 const SPEED_COLORS_LIGHT = rampColors(SPEED_RAMP_LIGHT, SPEED_STEPS)
 

@@ -17,6 +17,7 @@ import {
   stopPairService,
 } from './pairHostAdapter'
 import { setFatalFlushHandler } from './diagnostics'
+import { hasFirstTimeSetupSwitch, registerFirstTimeSetupIpc, requestFirstTimeSetup } from './firstTimeSetup'
 import { checkForUpdateOnStartup, RELEASE_PAGE_URL, skipUpdateVersion, type AvailableUpdate } from './updateChecker'
 import {
   setOverride,
@@ -30,7 +31,7 @@ import {
   getProtocolConfig,
   requestStatus,
   setRendererVisible,
-  exportSessionXlsx,
+  exportSessionParquet,
   playerLoad,
   playerPlay,
   playerPause,
@@ -180,8 +181,11 @@ app.on('second-instance', (_event, commandLine) => {
     if (filePath) {
       win.webContents.send('player:request-open-confirm', filePath)
     }
+    if (hasFirstTimeSetupSwitch(commandLine)) requestFirstTimeSetup(win)
   }
 })
+
+registerFirstTimeSetupIpc()
 
 // Support drag/drop or open-file events on macOS for completeness
 app.on('open-file', (event, filePath) => {
@@ -417,26 +421,29 @@ ipcMain.handle('analysis:map', (
   comparisonLapNum, comparisonSource, comparisonDriverIndex))
 ipcMain.on('analysis:close-file', () => analysisCloseFile())
 
-ipcMain.handle('player:export-xlsx', async (event) => {
+// The library creates "<recording>_parquet" (numbered when taken) inside the
+// chosen folder; the dialog only picks where.
+ipcMain.handle('player:export-parquet', async (event) => {
   const srcPath = getActiveFilePath()
   if (!srcPath) return { ok: false, error: 'No session loaded' }
 
-  const base = path.basename(srcPath).replace(/\.(tnrd|trnd)$/i, '')
   const exportDirectory = lastDialogDirectory() ?? path.dirname(srcPath)
   const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
-  const options = {
-    title: 'Export Session to Excel',
-    defaultPath: path.join(exportDirectory, `${base}.xlsx`),
-    filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
+  const options: Electron.OpenDialogOptions = {
+    title: 'Export Session to Parquet',
+    defaultPath: exportDirectory,
+    buttonLabel: 'Export Here',
+    properties: ['openDirectory', 'createDirectory']
   }
-  const { canceled, filePath } = win
-    ? await dialog.showSaveDialog(win, options)
-    : await dialog.showSaveDialog(options)
-  if (canceled || !filePath) return { ok: false, error: 'cancelled' }
-  rememberDialogDirectory(filePath)
+  const { canceled, filePaths } = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options)
+  const destDir = filePaths[0]
+  if (canceled || !destDir) return { ok: false, error: 'cancelled' }
+  rememberDialogDirectory(destDir, true)
 
   const sender = event.sender
-  return exportSessionXlsx(srcPath, filePath, (pct, stage) => {
+  return exportSessionParquet(srcPath, destDir, (pct, stage) => {
     if (!sender.isDestroyed()) sender.send('player:export-progress', pct, stage)
   })
 })

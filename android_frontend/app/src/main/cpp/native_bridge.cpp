@@ -8,10 +8,12 @@
 #include <string>
 #include <vector>
 
+#include "tnrp/AnalysisMapPaint.h"
 #include "tnrp/Config.h"
 #include "tnrp/BinaryRows.h"
 #include "tnrp/PairCrypto.h"
 #include "tnrp/Engine.h"
+#include "tnrp/ParquetExport.h"
 #include "tnrp/PairServer.h"
 #include "tnrp/Sink.h"
 #include "tnrp/TnrdReader.h"
@@ -569,6 +571,13 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsSetOptions(
         current->engine->setTrackMapOptions(moddedMaps == JNI_TRUE, generateMaps == JNI_TRUE);
 }
 
+// The Analysis map layer colours (tnrp/AnalysisMapPaint.h) as
+// {"dark": palette, "light": palette}. Not wired to any UI yet.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeAnalysisMapPaletteJson(JNIEnv* env, jobject) {
+    return javaString(env, tnrp::analysisMapPaletteJson());
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsCatalog(JNIEnv* env, jobject) {
     auto current = session();
@@ -675,4 +684,19 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsResolveRecording(
     auto current = session();
     const std::string json = current ? current->engine->resolveTrackMapForRecording(utf8(env, path)) : "";
     return json.empty() ? nullptr : javaString(env, json);
+}
+
+// Exports the recording at `path` as Parquet tables into a new
+// "<recording>_parquet" folder inside `destDir` (tnrp/ParquetExport.h).
+// Blocking: call it off the main thread. Returns {"ok":true,"folder":...} or
+// {"ok":false,"error":...}.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeExportParquet(
+    JNIEnv* env, jclass, jstring path, jstring destDir) {
+    std::string folder;
+    std::string error;
+    const bool ok = tnrp::exportTnrdFileToParquet(utf8(env, path), utf8(env, destDir), &folder, &error);
+    const std::string json = ok ? "{\"ok\":true,\"folder\":" + jsonString(folder) + "}"
+                                : "{\"ok\":false,\"error\":" + jsonString(error) + "}";
+    return javaString(env, json);
 }

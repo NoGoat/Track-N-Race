@@ -1,13 +1,15 @@
 #include <napi.h>
 #include <tnrp/AnalysisMap.h>
+#include <tnrp/AnalysisMapPaint.h>
 #include <tnrp/Engine.h>
 #include <tnrp/Labels.h>
 #include <tnrp/CardColors.h>
 #include <tnrp/LapDelta.h>
+#include <tnrp/NetworkSetup.h>
 #include <tnrp/TnrdReader.h>
 #include <tnrp/TeamColors.h>
 #include <tnrp/TrackMaps.h>
-#include <tnrp/XlsxExport.h>
+#include <tnrp/ParquetExport.h>
 #include <algorithm>
 #include <atomic>
 #include <functional>
@@ -60,7 +62,7 @@ static tnrp::TeamColorOverrides readTeamColorOverrides(const Napi::Value& value)
     return tnrp::sanitizeTeamColorOverrides(result);
 }
 
-// Runs the (potentially several-second) XLSX export off the JS thread via
+// Runs the (potentially several-second) Parquet export off the JS thread via
 // libuv's threadpool, resolving a Promise on completion. Progress (0..100)
 // is reported back through AsyncProgressQueueWorker's queue, which safely
 // marshals each Send() from the worker thread onto the JS thread as an
@@ -72,18 +74,18 @@ struct ExportTick {
     std::string stage;
 };
 
-class ExportXlsxWorker : public Napi::AsyncProgressQueueWorker<ExportTick> {
+class ExportParquetWorker : public Napi::AsyncProgressQueueWorker<ExportTick> {
 public:
-    ExportXlsxWorker(Napi::Env env, std::string src, std::string dest, Napi::Function progressCb)
+    ExportParquetWorker(Napi::Env env, std::string src, std::string dest, Napi::Function progressCb)
         : Napi::AsyncProgressQueueWorker<ExportTick>(env), src_(std::move(src)), dest_(std::move(dest)),
           progressCb_(Napi::Persistent(progressCb)),
           deferred_(Napi::Promise::Deferred::New(env)) {}
 
     void Execute(const ExecutionProgress& progress) override {   // libuv worker thread — no Napi/JS access here
-        ok_ = tnrp::exportTnrdFileToXlsx(src_, dest_, &error_,
-            [&progress](size_t done, size_t total, const std::string& stage) {
+        ok_ = tnrp::exportTnrdFileToParquet(src_, dest_, &folder_, &error_,
+            [&progress](double fraction, const std::string& stage) {
                 ExportTick tick;
-                tick.pct = total > 0 ? (100.0 * static_cast<double>(done) / static_cast<double>(total)) : 100.0;
+                tick.pct = 100.0 * fraction;
                 tick.stage = stage;
                 progress.Send(&tick, 1);
             });
@@ -98,14 +100,15 @@ public:
         Napi::HandleScope scope(Env());
         Napi::Object result = Napi::Object::New(Env());
         result.Set("ok", ok_);
-        if (!ok_) result.Set("error", error_);
+        if (ok_) result.Set("folder", folder_);
+        else result.Set("error", error_);
         deferred_.Resolve(result);
     }
     void OnError(const Napi::Error& e) override { deferred_.Reject(e.Value()); }
     Napi::Promise GetPromise() { return deferred_.Promise(); }
 
 private:
-    std::string src_, dest_, error_;
+    std::string src_, dest_, folder_, error_;
     bool ok_ = false;
     Napi::FunctionReference progressCb_;
     Napi::Promise::Deferred deferred_;
@@ -506,6 +509,7 @@ public:
             InstanceMethod("setDiagnosticsEnabled", &TNRPAddon::SetDiagnosticsEnabled),
             InstanceMethod("setNativeExceptionReporting", &TNRPAddon::SetNativeExceptionReporting),
             InstanceMethod("liveDiagnostics", &TNRPAddon::LiveDiagnostics),
+            InstanceMethod("datagramsReceived", &TNRPAddon::DatagramsReceived),
             InstanceMethod("setOverride", &TNRPAddon::SetOverride),
             InstanceMethod("setTeamColorOverrides", &TNRPAddon::SetTeamColorOverrides),
             InstanceMethod("teamColorCatalog", &TNRPAddon::TeamColorCatalog),
@@ -536,7 +540,7 @@ public:
             InstanceMethod("analysisCompareLaps", &TNRPAddon::AnalysisCompareLaps),
             InstanceMethod("analysisMap", &TNRPAddon::AnalysisMap),
             InstanceMethod("analysisCloseFile", &TNRPAddon::AnalysisCloseFile),
-            InstanceMethod("playerExportXlsx", &TNRPAddon::PlayerExportXlsx),
+            InstanceMethod("playerExportParquet", &TNRPAddon::PlayerExportParquet),
             InstanceMethod("pairStart", &TNRPAddon::PairStart),
             InstanceMethod("pairStop", &TNRPAddon::PairStop),
             InstanceMethod("pairOpenWindow", &TNRPAddon::PairOpenWindow),
@@ -1216,6 +1220,11 @@ private:
         if (info.Length() >= 1)
             nativeExceptionReporting_->store(
                 info[0].ToBoolean().Value(), std::memory_order_relaxed);
+    }
+
+    Napi::Value DatagramsReceived(const Napi::CallbackInfo& info) {
+        return Napi::Number::New(info.Env(),
+            engine ? static_cast<double>(engine->datagramsReceived()) : 0.0);
     }
 
     Napi::Value LiveDiagnostics(const Napi::CallbackInfo& info) {
@@ -2091,12 +2100,6 @@ private:
         return info.Env().Undefined();
     }
 
-    // Exports an arbitrary .tnrd file to XLSX. Deliberately independent of
-    // `engine`'s playback state — the Electron app's playback path
-    // (src/main/sessionPlayer.ts) doesn't use this native Engine's
-    // player*/TnrdReader at all, so this opens its own throwaway TnrdReader
-    // internally (see tnrp::exportTnrdFileToXlsx). Registered as an instance
-    // method purely because that's where N-API methods live on this class.
     // ── Track maps (tnrp/TrackMaps.h) ────────────────────────────────────────
 
     static std::string stringArg(const Napi::CallbackInfo& info, size_t index) {
@@ -2247,13 +2250,18 @@ private:
         });
     }
 
-    Napi::Value PlayerExportXlsx(const Napi::CallbackInfo& info) {
+    // Exports an arbitrary .tnrd file to a new "<recording>_parquet" folder
+    // inside destDir, resolving {ok, folder?, error?}. Deliberately independent
+    // of `engine`'s playback state: it opens its own throwaway TnrdReader
+    // (see tnrp::exportTnrdFileToParquet). Registered as an instance method
+    // purely because that's where N-API methods live on this class.
+    Napi::Value PlayerExportParquet(const Napi::CallbackInfo& info) {
         Napi::Env env = info.Env();
         if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsFunction()) {
-            Napi::TypeError::New(env, "Expected (srcPath, destPath, onProgress)").ThrowAsJavaScriptException();
+            Napi::TypeError::New(env, "Expected (srcPath, destDir, onProgress)").ThrowAsJavaScriptException();
             return env.Undefined();
         }
-        auto* worker = new ExportXlsxWorker(env, info[0].As<Napi::String>().Utf8Value(),
+        auto* worker = new ExportParquetWorker(env, info[0].As<Napi::String>().Utf8Value(),
                                                   info[1].As<Napi::String>().Utf8Value(),
                                                   info[2].As<Napi::Function>());
         Napi::Promise p = worker->GetPromise();
@@ -2279,6 +2287,12 @@ Napi::Value CardColorsJson(const Napi::CallbackInfo& info) {
     return Napi::String::New(info.Env(), tnrp::cardColorsJson());
 }
 
+// Module-level: the Analysis map layer colours (tnrp/AnalysisMapPaint.h) as
+// {"dark": palette, "light": palette}.
+Napi::Value AnalysisMapPaletteJson(const Napi::CallbackInfo& info) {
+    return Napi::String::New(info.Env(), tnrp::analysisMapPaletteJson());
+}
+
 // Module-level: reclaim stale "tracknrace_*.tmp" decompression temps left by
 // crashed runs (either app). Call once at startup, after the single-instance
 // lock is held, so a second instance can't unlink an active session's temp.
@@ -2287,13 +2301,64 @@ Napi::Value SweepTempFiles(const Napi::CallbackInfo& info) {
     return info.Env().Undefined();
 }
 
+// Runs a string-returning library call on libuv's threadpool and resolves a
+// Promise<string> with its result. Used for first-time-setup checks that can
+// take a while (firewall rule enumeration) or block on the user (UAC prompt).
+class StringTaskWorker : public Napi::AsyncWorker {
+public:
+    StringTaskWorker(Napi::Env env, std::function<std::string()> task)
+        : Napi::AsyncWorker(env), task_(std::move(task)), deferred_(Napi::Promise::Deferred::New(env)) {}
+    void Execute() override { result_ = task_(); }
+    void OnOK() override { deferred_.Resolve(Napi::String::New(Env(), result_)); }
+    void OnError(const Napi::Error& e) override { deferred_.Reject(e.Value()); }
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+
+private:
+    std::function<std::string()> task_;
+    std::string result_;
+    Napi::Promise::Deferred deferred_;
+};
+
+// Module-level: IPv4 addresses of active adapters as JSON
+// ([{name, kind, address}], see tnrp/NetworkSetup.h).
+Napi::Value NetworkInterfacesJson(const Napi::CallbackInfo& info) {
+    return Napi::String::New(info.Env(), tnrp::networkInterfacesJson());
+}
+
+// Module-level: firewallStatusJson(port, programPath) -> Promise<string JSON>.
+Napi::Value FirewallStatusJson(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const uint16_t port = info.Length() >= 1 && info[0].IsNumber()
+        ? static_cast<uint16_t>(info[0].As<Napi::Number>().Uint32Value()) : 20777;
+    const std::string program = info.Length() >= 2 && info[1].IsString() ? info[1].As<Napi::String>().Utf8Value() : "";
+    auto* worker = new StringTaskWorker(env, [port, program] { return tnrp::firewallStatusJson(port, program); });
+    Napi::Promise promise = worker->GetPromise();
+    worker->Queue();
+    return promise;
+}
+
+// Module-level: firewallAllowProgram(programPath) -> Promise<string>; "" on
+// success, "cancelled" when the UAC prompt is declined, otherwise an error.
+Napi::Value FirewallAllowProgram(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const std::string program = info.Length() >= 1 && info[0].IsString() ? info[0].As<Napi::String>().Utf8Value() : "";
+    auto* worker = new StringTaskWorker(env, [program] { return tnrp::firewallAllowProgram(program); });
+    Napi::Promise promise = worker->GetPromise();
+    worker->Queue();
+    return promise;
+}
+
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     TRACE("InitAll: module loading");
     TNRPAddon::Init(env, exports);
     TRACE("InitAll: module loaded");
     exports.Set("labelsJson", Napi::Function::New(env, LabelsJson));
     exports.Set("cardColorsJson", Napi::Function::New(env, CardColorsJson));
+    exports.Set("analysisMapPaletteJson", Napi::Function::New(env, AnalysisMapPaletteJson));
     exports.Set("sweepTempFiles", Napi::Function::New(env, SweepTempFiles));
+    exports.Set("networkInterfacesJson", Napi::Function::New(env, NetworkInterfacesJson));
+    exports.Set("firewallStatusJson", Napi::Function::New(env, FirewallStatusJson));
+    exports.Set("firewallAllowProgram", Napi::Function::New(env, FirewallAllowProgram));
     return exports;
 }
 

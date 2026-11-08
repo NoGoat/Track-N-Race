@@ -988,6 +988,11 @@ export default function AnalyzeScreen({
     labelStyleGroupHeadings: true,
     menuWidth: 'calc(100% + 50px)',
   }), [isDark])
+  const layerSelectStyles = useMemo(() => buildSelectStyles(isDark, {
+    solidBg: true,
+    controlHeight: 32,
+    labelStyleGroupHeadings: true,
+  }), [isDark])
   // Driver rows carry the race number, name and team, so their menu is as
   // wide as the title bar's driver picker.
   const driverSelectStyles = useMemo(() => buildSelectStyles(isDark, {
@@ -1864,7 +1869,7 @@ export default function AnalyzeScreen({
                     value={MAP_COLORING_OPTIONS.find(option => option.value === config.mapColoring) ?? MAP_COLORING_OPTIONS[0]}
                     options={MAP_COLORING_OPTIONS}
                     onChange={option => save({ ...config, mapColoring: option?.value ?? 'none' })}
-                    styles={lapSelectStyles} components={selectComponents}
+                    styles={layerSelectStyles} components={selectComponents}
                     isSearchable={false} menuPortalTarget={document.body}
                   />
                 </div>

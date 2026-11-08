@@ -76,6 +76,8 @@ set(SOURCES
     src/IdleMemory.cpp
     src/IdleMemory.h
     src/SampleRange.h
+    src/TrackMapService.cpp
+    src/TrackMapService.h
     src/UpdateChecker.cpp
     src/UpdateChecker.h
     src/CompactSettings.h
@@ -104,8 +106,8 @@ set(SOURCES
     src/components/PageUiHelpers.h
     src/components/Toast.cpp
     src/components/Toast.h
-    src/components/XlsxExportWorker.cpp
-    src/components/XlsxExportWorker.h
+    src/components/ParquetExportWorker.cpp
+    src/components/ParquetExportWorker.h
     src/components/ToastEnums.h
     src/components/ToastEvents.cpp
     src/components/ToastEvents.h
@@ -127,6 +129,8 @@ set(SOURCES
     src/components/AnalyzeMetrics.cpp
     src/components/AnalyzeChart.h
     src/components/AnalyzeChart.cpp
+    src/components/analysis/AnalysisBrakingZones.h
+    src/components/analysis/AnalysisBrakingZones.cpp
     src/components/analysis/AnalysisInputCard.h
     src/components/analysis/AnalysisInputCard.cpp
     src/components/analysis/AnalysisLapSlot.h
@@ -136,6 +140,8 @@ set(SOURCES
     src/components/analysis/AnalysisMetricPicker.cpp
     src/components/analysis/AnalysisMapView.cpp
     src/components/analysis/AnalysisPage.h
+    src/components/analysis/AnalysisPanels.h
+    src/components/analysis/AnalysisPanels.cpp
     src/components/analysis/AnalysisPage.cpp
     src/components/analysis/AnalysisRecording.h
     src/components/analysis/AnalysisRecording.cpp
@@ -147,6 +153,14 @@ set(SOURCES
     src/components/analysis/AnalysisWidgets.cpp
     src/components/SettingsDialog.h
     src/components/SettingsDialog.cpp
+    src/components/FirstTimeSetup.h
+    src/components/FirstTimeSetup.cpp
+    src/components/SegmentedControl.h
+    src/components/PcAddressList.h
+    src/components/PcAddressList.cpp
+    src/components/ConnectionCheck.h
+    src/components/ConnectionCheck.cpp
+    src/components/SetupUi.h
     src/components/UnderlineTabBar.h
     src/components/UnderlineTabBar.cpp
     src/components/PairingQrCode.h
@@ -179,6 +193,8 @@ set(SOURCES
     src/components/StandingsPage.cpp
     src/components/DriverLapsDialog.h
     src/components/DriverLapsDialog.cpp
+    src/components/EditMapDialog.h
+    src/components/EditMapDialog.cpp
     src/components/SessionPage.h
     src/components/SessionPage.cpp
     src/components/InputPage.h
