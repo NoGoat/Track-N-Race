@@ -30,8 +30,9 @@ class TrackMapWidget;
 // The map can be painted with one of libtnrp's layers (tnrp/AnalysisMap.h):
 // Track Dominance on one map, or ERS Usage, ERS Harvest, Driver Inputs and
 // Speed on a map per lap, side by side on a wide pane and stacked on a tall
-// one. Braking zones are highlighted over any layer, with both laps' detail on
-// hover.
+// one. Braking zones are highlighted over any of those, with both laps' detail
+// on hover. Racing Line needs nothing from libtnrp: it strips the map to its
+// sector boundaries and draws both laps' recorded positions.
 class AnalysisMapView : public QWidget {
     Q_OBJECT
 public:
@@ -44,11 +45,20 @@ public:
     void setLabels(const QString& current, const QString& comparison);
     void setMapAppearance(bool sectorColors, int opacityPercent);
     void setAeroMode(bool slm);
+    // Repaints the maps and their layers for the current theme.
+    void refreshTheme();
     void setCurrentTime(float sessionTime);
     // Moves the cursor to a lap-relative time and holds it there.
     void focusElapsed(double seconds);
     void setReadoutVisible(bool visible);
-    // `mode`: "none", "dominance", "inputs", "speed", "ers" or "harvest". The
+    // Map zoom: every map on show follows the same view.
+    void zoomIn();
+    void zoomOut();
+    void fitCircuit();
+    bool isZoomed() const;
+    bool isAtMaxZoom() const;
+    double zoom() const;
+    // `mode`: "none", "dominance", "racing", "inputs", "speed", "ers" or "harvest". The
     // layout follows the selection (`comparisonSelected`: a comparison lap is
     // chosen, loaded or not), so switching laps does not drop to one map
     // while the next result is on its way.
@@ -68,6 +78,7 @@ public:
 
 signals:
     void cursorElapsedChanged(double seconds);
+    void zoomChanged(double zoom);
 
 protected:
     void hideEvent(QHideEvent* event) override;

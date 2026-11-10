@@ -1,4 +1,5 @@
 #include "tnrp/TnrdReader.h"
+#include "tnrp/AnyRow.h"
 
 #include <algorithm>
 #include <cmath>
@@ -350,6 +351,25 @@ bool TnrdReader::getAnalysisInputSamples(int lapNum, std::vector<InputSample>& o
 bool TnrdReader::getAnalysisPositionSamples(int lapNum, std::vector<PlayerPositionPoint>& out,
                                             int driverIndex) const {
     return backend_ && backend_->getAnalysisPositionSamples(lapNum, out, driverIndex);
+}
+
+std::vector<float> TnrdReader::trackLimitTimes(int driverIndex) const {
+    std::vector<float> times;
+    if (!backend_) return times;
+    // Infringement types for corner cutting and running wide; the same codes
+    // in the F1 24, F1 25 and 2026 specifications.
+    const auto isTrackLimit = [](int type) {
+        return (type >= 7 && type <= 9) || (type >= 25 && type <= 29);
+    };
+    const int car = analysisCarIndex(driverIndex);
+    for (const std::string& line : backend_->raceEventLines()) {
+        const std::optional<AnyRow> row = parseRow(line);
+        const RaceEventRow* event = row ? std::get_if<RaceEventRow>(&*row) : nullptr;
+        if (event && event->code == "PENA" && event->car_idx == car &&
+            event->infringement_type && isTrackLimit(*event->infringement_type))
+            times.push_back(event->session_time);
+    }
+    return times;
 }
 
 std::vector<TrackStatusChange> TnrdReader::aeroTrackStatusTimeline() const {

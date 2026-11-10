@@ -30,14 +30,25 @@ public:
     struct Marker { double x = 0; double z = 0; QString label; QColor color; };
     // A stretch of the lap line between two fractions of the lap from the
     // timing line (`to` below `from` crosses the line), drawn over the track.
-    // Hovering it shows `tooltip` (rich text) when set.
+    // Hovering it shows `tooltip` (rich text) when set. With `caret`, a caret on
+    // the inside of the bend at the stretch's middle is drawn instead.
     struct Mark {
         double from = 0;
         double to = 0;
         QColor color;
         double opacity = 1.0;
         QString tooltip;
+        bool caret = false;
+        // On the Racing Line layer: the stretch along a lap's own path, as
+        // world x and z, since there is no lap line to follow.
+        QPolygonF world;
     };
+    // One lap's recorded path, as world x and z.
+    struct RacingLine { QPolygonF world; QColor color; };
+    // How far the map is zoomed (1 is the whole circuit) and the map point at
+    // its centre.
+    struct View { double zoom = 1; double cx = 0; double cy = 0; };
+    static constexpr double kMaxViewZoom = 16.0;
 
     explicit TrackMapWidget(QWidget* parent = nullptr);
 
@@ -51,6 +62,16 @@ public:
     // an empty paint restores them.
     void setPaint(const tnrp::AnalysisMapPaint& paint);
     void setMarks(const QVector<Mark>& marks);
+    // While on, draws these paths on a map stripped to its sector boundaries.
+    void setRacingLines(bool on, const QVector<RacingLine>& lines);
+    // Scroll zooms about the pointer, dragging pans and double-clicking fits
+    // the circuit. Changes made here are announced by viewChanged; setView is
+    // for following another map and announces nothing.
+    void setViewEnabled(bool on);
+    const View& view() const { return view_; }
+    void setView(const View& view);
+    void zoomBy(double factor);
+    void fitView();
     void setPositions(const PositionsRow& positions);
     void setParticipants(const tnrp::ParticipantsRow& participants);
     void setDark(bool dark);
@@ -84,10 +105,15 @@ signals:
     // The overlay fullscreen button was clicked; the host (SessionPage) maximises
     // the map to fill the session view, or restores it.
     void fullscreenToggled();
+    void viewChanged(const TrackMapWidget::View& view);
 
 protected:
     void paintEvent(QPaintEvent*) override;
     void resizeEvent(QResizeEvent*) override;
+    void wheelEvent(QWheelEvent*) override;
+    void mousePressEvent(QMouseEvent*) override;
+    void mouseReleaseEvent(QMouseEvent*) override;
+    void mouseDoubleClickEvent(QMouseEvent*) override;
     void mouseMoveEvent(QMouseEvent*) override;
     void leaveEvent(QEvent*) override;
     void showEvent(QShowEvent*) override;
@@ -136,7 +162,12 @@ private:
     void refreshMapPicker();
     QPointF lapPointAt(double fraction) const;
     void drawPaintedTrack(QPainter& p, const Layout& l, double width) const;
+    void drawRacingLines(QPainter& p, const Layout& l) const;
+    void clampView(View& view) const;
+    bool moveView(const View& view);   // true when the view changed
+    void refreshViewCursor();
     std::vector<QPolygonF> drawMarks(QPainter& p, const Layout& l, double tzf) const;
+    QPointF drawCaret(QPainter& p, const Layout& l, double tzf, const Mark& mark, double to) const;
     void showHoveredMark(int index, const QPointF& at);
     void rebuildPrepared();
     void rebuildStaticLayer();
@@ -161,6 +192,13 @@ private:
     double      paintTrackLengthM_ = 0;
     QColor      paintColorAt(double fraction) const;
     QVector<Mark> marks_;
+    bool        racingLinesOn_ = false;
+    QVector<RacingLine> racingLines_;
+    bool        viewEnabled_ = false;
+    View        view_;
+    bool        dragging_ = false;
+    QPointF     dragStart_;
+    View        dragView_;
     std::vector<QPolygonF> markPaths_;   // device points along each mark, for hover
     int         hoveredMark_ = -1;
     QLabel*     markCard_ = nullptr;

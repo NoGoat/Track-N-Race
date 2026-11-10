@@ -61,7 +61,24 @@ constexpr float kObserveHarvestKj = 20.0f;
 constexpr float kObserveHarvestShare = 0.05f;
 constexpr float kLowBatteryMj = 0.2f;
 constexpr float kObserveExitM = 5.0f;
+constexpr float kObserveLevelS = 0.01f;
 constexpr size_t kMaxBrakingObservations = 4;
+// Lines at a corner. Closer than kLineLevelM counts as the same line; a verdict
+// needs kObserveLineM. The bend's inside comes from the lap's path
+// kLineChordM either side of the apex, and is not trusted below kLineMinTurn
+// (the two unit tangents' difference: about 3 degrees of turn). The other lap
+// is searched kLineSearchM either side, and is too far away to compare beyond
+// kLineMaxGapM. Apexes this close on two laps are the same corner.
+constexpr float kLineLevelM = 0.5f;
+constexpr float kObserveLineM = 1.0f;
+constexpr float kLineChordM = 25.0f;
+constexpr double kLineMinTurn = 0.05;
+constexpr float kLineSearchM = 60.0f;
+constexpr double kLineMaxGapM = 30.0;
+constexpr float kLineCornerMatchM = 80.0f;
+// A track-limits penalty event can follow the corner it is for; it counts for
+// a zone up to this long after the zone ends.
+constexpr float kTrackLimitLagS = 2.0f;
 // Wheelspin: in one gear, engine speed over road speed is fixed while the
 // rear tyres grip. Each gear's ratio is the median over the lap's on-throttle,
 // off-brake samples above kRatioMinKph (at least kRatioMinSamples of them),
@@ -454,6 +471,10 @@ struct LapRead {
     ErsPeaks peaks;
     // The recording's track corners, when its sweep found them.
     std::optional<TrackCorners> corners;
+    // For comparing braking zones: the lap's world positions, and when this
+    // driver was called for track limits anywhere in the recording.
+    std::vector<PlayerPositionPoint> positions;
+    std::vector<float> trackLimits;
     bool ok{};
 };
 
@@ -614,15 +635,108 @@ std::pair<float, float> zoneEnergy(const LapRead& lap, float fromM, float toM) {
     return {lap.harvest.empty() ? -1.0f : static_cast<float>(gained / 1000.0), store};
 }
 
-// Each matched braking zone's ERS figures and observations.
+struct WorldPoint { double x{}; double z{}; };
+
+// A lap's world position at a session time; nullopt outside its samples.
+std::optional<WorldPoint> positionAtTime(const std::vector<PlayerPositionPoint>& points, float time) {
+    if (points.size() < 2 || !std::isfinite(time) || time < points.front().session_time ||
+        time > points.back().session_time) return std::nullopt;
+    const auto after = std::lower_bound(
+        std::next(points.begin()), points.end(), time,
+        [](const PlayerPositionPoint& point, float value) { return point.session_time < value; });
+    if (after == points.end()) return WorldPoint{points.back().x, points.back().z};
+    const auto& before = *std::prev(after);
+    const float span = after->session_time - before.session_time;
+    const double ratio = span > 0.0f ? (time - before.session_time) / span : 1.0;
+    return WorldPoint{before.x + (after->x - before.x) * ratio, before.z + (after->z - before.z) * ratio};
+}
+
+// How much further inside the bend lap `a` runs than lap `b` at a corner, in
+// metres (negative when wider). The inside is where lap `a`'s path turns
+// towards, and the gap is to the nearest point of lap `b`'s path, because equal
+// lap distances are not level with each other on different lines. Nullopt
+// where the positions do not cover the corner or it barely turns.
+std::optional<float> lineGap(const LapRead& a, const detail::ProgressMap& progressA, float apexA,
+                             const LapRead& b, const detail::ProgressMap& progressB, float apexB) {
+    const auto at = [&](float distance) { return positionAtTime(a.positions, timeAtDistance(progressA, distance)); };
+    const auto before = at(apexA - kLineChordM);
+    const auto apex = at(apexA);
+    const auto after = at(apexA + kLineChordM);
+    if (!before || !apex || !after) return std::nullopt;
+    const auto heading = [](const WorldPoint& from, const WorldPoint& to) -> std::optional<WorldPoint> {
+        const double dx = to.x - from.x, dz = to.z - from.z, length = std::hypot(dx, dz);
+        if (!(length > 0.0)) return std::nullopt;
+        return WorldPoint{dx / length, dz / length};
+    };
+    const auto in = heading(*before, *apex);
+    const auto out = heading(*apex, *after);
+    if (!in || !out) return std::nullopt;
+    WorldPoint inside{out->x - in->x, out->z - in->z};
+    const double turn = std::hypot(inside.x, inside.z);
+    if (turn < kLineMinTurn) return std::nullopt;
+    inside = {inside.x / turn, inside.z / turn};
+
+    const float t0 = timeAtDistance(progressB, apexB - kLineSearchM);
+    const float t1 = timeAtDistance(progressB, apexB + kLineSearchM);
+    if (!std::isfinite(t0) || !std::isfinite(t1)) return std::nullopt;
+    double nearest = kLineMaxGapM;
+    std::optional<WorldPoint> closest;
+    for (size_t i = 0; i + 1 < b.positions.size(); ++i) {
+        const auto& p = b.positions[i];
+        const auto& q = b.positions[i + 1];
+        if (q.session_time < t0 || p.session_time > t1) continue;
+        const double dx = q.x - p.x, dz = q.z - p.z, lengthSq = dx * dx + dz * dz;
+        const double t = lengthSq > 0.0
+            ? std::clamp(((apex->x - p.x) * dx + (apex->z - p.z) * dz) / lengthSq, 0.0, 1.0) : 0.0;
+        const WorldPoint point{p.x + dx * t, p.z + dz * t};
+        const double distance = std::hypot(apex->x - point.x, apex->z - point.z);
+        if (distance <= nearest) { nearest = distance; closest = point; }
+    }
+    if (!closest) return std::nullopt;
+    return static_cast<float>((apex->x - closest->x) * inside.x + (apex->z - closest->z) * inside.z);
+}
+
+// The corners of a zone a lap was called for track limits at, as indices into
+// its apexes: the last corner reached before each call. A call counts from the
+// zone's start to kTrackLimitLagS after its end; one falling in that tail of
+// the previous zone stays with that zone. `previousToM` is -1 for the first zone.
+std::vector<int> trackLimitCorners(const LapRead& lap, const detail::ProgressMap& progress,
+                                   const BrakingPoint& point, const BrakingPointPair& pair, float previousToM) {
+    std::vector<int> corners;
+    float from = timeAtDistance(progress, pair.fromM);
+    const float end = timeAtDistance(progress, pair.toM);
+    if (!std::isfinite(from) || !std::isfinite(end) || progress.points.empty()) return corners;
+    if (previousToM >= 0.0f) {
+        const float previous = timeAtDistance(progress, previousToM);
+        if (std::isfinite(previous)) from = std::max(from, previous + kTrackLimitLagS);
+    }
+    for (const float time : lap.trackLimits) {
+        if (time < from || time > end + kTrackLimitLagS) continue;
+        const auto reached = std::lower_bound(
+            progress.points.begin(), progress.points.end(), time,
+            [](const LapProgressPoint& sample, float value) { return sample.session_time < value; });
+        const float distance = reached == progress.points.end()
+            ? progress.points.back().lap_distance_m : reached->lap_distance_m;
+        int corner = 0;
+        for (size_t i = 0; i < point.apexes.size(); ++i)
+            if (point.apexes[i].distanceM <= distance) corner = static_cast<int>(i);
+        corners.push_back(corner);
+    }
+    return corners;
+}
+
+// Each matched braking zone's ERS figures, line comparison and observations.
 void describeBrakingZones(BrakingPointsMap& braking, const LapRead& current, const LapRead& comparison) {
-    for (auto& pair : braking.pairs) {
+    const auto progressA = detail::buildProgressMap(current.progress);
+    const auto progressB = detail::buildProgressMap(comparison.progress);
+    for (size_t zone = 0; zone < braking.pairs.size(); ++zone) {
+        auto& pair = braking.pairs[zone];
         // Harvest is under braking: over the braking half when the zone splits.
         const float harvestTo = pair.splitM >= 0.0f ? pair.splitM : pair.toM;
         std::tie(pair.currentHarvestKj, pair.currentStoreMj) = zoneEnergy(current, pair.fromM, harvestTo);
         std::tie(pair.comparisonHarvestKj, pair.comparisonStoreMj) = zoneEnergy(comparison, pair.fromM, harvestTo);
-        const auto& a = braking.current[static_cast<size_t>(pair.current)];
-        const auto& b = braking.comparison[static_cast<size_t>(pair.comparison)];
+        auto& a = braking.current[static_cast<size_t>(pair.current)];
+        auto& b = braking.comparison[static_cast<size_t>(pair.comparison)];
         auto& out = pair.observations;
         const bool timed = pair.currentTimeS >= 0.0f && pair.comparisonTimeS >= 0.0f;
         const int quicker = !timed || pair.currentTimeS == pair.comparisonTimeS ? -1
@@ -630,6 +744,74 @@ void describeBrakingZones(BrakingPointsMap& braking, const LapRead& current, con
         const float gainS = timed ? std::abs(pair.comparisonTimeS - pair.currentTimeS) : 0.0f;
         const auto& quick = quicker == 0 ? a : b;
         const auto& slow = quicker == 0 ? b : a;
+
+        // Each corner's lines, and the corner where they differ most.
+        float widestGap = 0.0f;   // > 0: the current lap is on the tighter line
+        int widestA = -1, widestB = -1;
+        for (size_t i = 0; i < a.apexes.size(); ++i) {
+            auto& apex = a.apexes[i];
+            int match = -1;
+            float nearest = kLineCornerMatchM;
+            for (size_t j = 0; j < b.apexes.size(); ++j) {
+                const float apart = std::abs(b.apexes[j].distanceM - apex.distanceM);
+                if (apart <= nearest) { nearest = apart; match = static_cast<int>(j); }
+            }
+            if (match < 0) continue;
+            auto& other = b.apexes[static_cast<size_t>(match)];
+            const auto gap = lineGap(current, progressA, apex.distanceM, comparison, progressB, other.distanceM);
+            if (!gap) continue;
+            const float shown = std::abs(*gap) < kLineLevelM ? 0.0f : *gap;
+            apex.hasLine = other.hasLine = true;
+            apex.lineGapM = shown;
+            other.lineGapM = -shown;
+            if (std::abs(shown) > std::abs(widestGap)) {
+                widestGap = shown;
+                widestA = static_cast<int>(i);
+                widestB = match;
+            }
+        }
+
+        // Whether the tighter line helped or hurt. A track-limits call at that
+        // corner decides it; otherwise the time through the zone does, and a
+        // lap that lost time is told why.
+        const float previousToM = zone > 0 ? braking.pairs[zone - 1].toM : -1.0f;
+        const auto limitsA = trackLimitCorners(current, progressA, a, pair, previousToM);
+        const auto limitsB = trackLimitCorners(comparison, progressB, b, pair, previousToM);
+        bool limitsSaid[2] = {false, false};
+        if (std::abs(widestGap) >= kObserveLineM) {
+            const int lap = widestGap > 0.0f ? 0 : 1;
+            const float metres = std::abs(widestGap);
+            const auto& tight = lap == 0 ? a : b;
+            const auto& rival = lap == 0 ? b : a;
+            const auto& limits = lap == 0 ? limitsA : limitsB;
+            const int corner = lap == 0 ? widestA : widestB;
+            const int rivalCorner = lap == 0 ? widestB : widestA;
+            if (std::find(limits.begin(), limits.end(), corner) != limits.end()) {
+                out.push_back({"tighter_track_limits", lap, metres, 0.0f});
+                limitsSaid[lap] = true;
+            } else if (timed) {
+                const float gained = lap == 0 ? pair.comparisonTimeS - pair.currentTimeS
+                                              : pair.currentTimeS - pair.comparisonTimeS;
+                const float apexLoss = rival.apexes[static_cast<size_t>(rivalCorner)].speedKph -
+                                       tight.apexes[static_cast<size_t>(corner)].speedKph;
+                const auto laterBy = [](float mine, float theirs) {
+                    return mine >= 0.0f && theirs >= 0.0f ? mine - theirs : 0.0f;
+                };
+                const float exitLoss = std::max(laterBy(tight.throttleOnM, rival.throttleOnM),
+                                                laterBy(tight.fullThrottleM, rival.fullThrottleM));
+                if (std::abs(gained) < kObserveLevelS) out.push_back({"tighter_no_gain", lap, metres, 0.0f});
+                else if (gained > 0.0f) out.push_back({"tighter_helped", lap, metres, gained});
+                else if (apexLoss >= kObserveApexKph) out.push_back({"tighter_lost_speed", lap, metres, apexLoss});
+                else if (tight.wheelspin && !rival.wheelspin)
+                    out.push_back({"tighter_wheelspin", lap, metres, tight.wheelspinPct});
+                else if (exitLoss >= kObserveExitM) out.push_back({"tighter_slower_exit", lap, metres, exitLoss});
+                else out.push_back({"tighter_slower", lap, metres, -gained});
+            }
+        }
+        for (int lap = 0; lap < 2; ++lap)
+            if (!limitsSaid[lap] && !(lap == 0 ? limitsA : limitsB).empty())
+                out.push_back({"track_limits", lap, 0.0f, 0.0f});
+
         // One lap takes it on a lift where the other brakes.
         if (a.liftOnly != b.liftOnly) out.push_back({"lift_only", a.liftOnly ? 0 : 1, 0.0f, 0.0f});
         // Quicker despite coasting longer: the lift cost nothing.
@@ -689,7 +871,8 @@ void describeBrakingZones(BrakingPointsMap& braking, const LapRead& current, con
         // corner exit.
         const auto exitKind = [](const BrakingObservation& o) {
             return o.kind == "wheelspin" || o.kind == "earlier_throttle_spin" ||
-                   o.kind == "earlier_throttle" || o.kind == "faster_to_full";
+                   o.kind == "earlier_throttle" || o.kind == "faster_to_full" ||
+                   o.kind == "tighter_wheelspin" || o.kind == "tighter_slower_exit";
         };
         size_t entries = 0, exits = 0;
         out.erase(std::remove_if(out.begin(), out.end(), [&](const BrakingObservation& o) {
@@ -1575,7 +1758,17 @@ AnalysisMapResult buildAnalysisMap(const std::string& mode, const AnalysisMapLap
                 result.hasComparison ? &b->progress : nullptr,
                 result.hasComparison ? &b->inputs : nullptr,
                 currentCorners, comparisonCorners);
-        if (result.hasCurrent && result.hasComparison) describeBrakingZones(result.braking, a, *b);
+        if (result.hasCurrent && result.hasComparison) {
+            const auto readLine = [](LapRead& lap, const AnalysisMapLap& request) {
+                (void)request.recording([&](const TnrdReader& reader) {
+                    (void)reader.getAnalysisPositionSamples(request.lapNum, lap.positions, request.driverIndex);
+                    lap.trackLimits = reader.trackLimitTimes(request.driverIndex);
+                });
+            };
+            readLine(a, current);
+            readLine(*b, *comparison);
+            describeBrakingZones(result.braking, a, *b);
+        }
         return result;
     }
     if (inputs) {

@@ -10,7 +10,7 @@ import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 import { useLabels } from '../lib/labels'
 import DriverSelect from './DriverSelect'
 import { buildDriverOptions, type DriverOption } from '../lib/driverOptions'
-import type { TrackPaint } from '../lib/analyzeMapPaint'
+import { MAP_ZOOM_MAX, type TrackMapView, type TrackPaint } from '../lib/analyzeMapPaint'
 import type { CarPosition, ParticipantsMsg, PositionsMsg, TrackMapResolution } from '../types'
 import { useResolvedTrackMap, useTrackMapStore } from '../stores/trackMapStore'
 import EditMapModal from './EditMapModal'
@@ -30,6 +30,18 @@ export interface TrackMark {
   /** 0-1; 1 when left out. Dims a stretch against its neighbours. */
   opacity?: number
   tooltip?: ReactNode
+  /** Draws a caret on the inside of the bend at the stretch's middle instead
+   *  of painting the stretch. */
+  caret?: boolean
+  /** On the Racing Line layer: the stretch along a lap's own path, in world
+   *  coordinates, since there is no lap line to follow. */
+  points?: readonly { x: number; z: number }[]
+}
+
+/** One lap's recorded path, in world coordinates. */
+export interface RacingLine {
+  points: readonly { x: number; z: number }[]
+  color: string
 }
 
 export interface TrackMapMarker {
@@ -78,6 +90,9 @@ const OVERTAKE_COLOR_DARK  = '#95E7F0'
 const OVERTAKE_COLOR_LIGHT = '#397F88'
 
 const TRACK_PX   = 5
+const RACING_LINE_PX = 1.5
+const RACING_MARK_PX = 9
+const RACING_MARK_ALPHA = 0.4
 const DRS_PX     = 6
 const DRS_OFFSET = 18
 const TRAP_R     = 9
@@ -339,6 +354,7 @@ interface PreparedMap {
   lapLine:     [number, number][]
   lapFraction: Float64Array
   bounds:      { minX: number; minY: number; w: number; h: number }
+  transform:   TrackMapData['transform']
   rotCos:      number
   rotSin:      number
   rotCx:       number
@@ -430,6 +446,7 @@ function prepareMap(map: TrackMapData): PreparedMap {
     sectors, drsZones, slmDry, slmWet, speedTraps, startFinish,
     overtakeDetection, overtakeActivation, s1pts, sfIdx, junctions, lapLine, lapFraction,
     bounds: { minX, minY, w: maxX - minX, h: maxY - minY },
+    transform: map.transform,
     rotCos: cos, rotSin: sin, rotCx: cx, rotCy: cy,
   }
 }
@@ -441,6 +458,16 @@ function buildLayout(prep: PreparedMap, cw: number, ch: number) {
   const ox = (cw - w * scale) / 2 - minX * scale
   const oy = (ch - h * scale) / 2 - minY * scale
   return { scale, ox, oy }
+}
+
+/** Keeps a zoomed view inside what the whole-circuit layout shows. */
+function clampView(view: TrackMapView, base: { scale: number; ox: number; oy: number }, cw: number, ch: number) {
+  view.zoom = Math.min(MAP_ZOOM_MAX, Math.max(1, view.zoom))
+  const room = (1 - 1 / view.zoom) / (2 * base.scale)
+  const midX = (cw / 2 - base.ox) / base.scale
+  const midY = (ch / 2 - base.oy) / base.scale
+  view.cx = Math.min(midX + cw * room, Math.max(midX - cw * room, view.cx))
+  view.cy = Math.min(midY + ch * room, Math.max(midY - ch * room, view.cy))
 }
 
 // ── Drawing primitives ────────────────────────────────────────────────────────
@@ -728,6 +755,62 @@ function drawPaintedTrack(
   flush()
 }
 
+function worldToCanvas(prep: PreparedMap, wx: number, wz: number, scale: number, ox: number, oy: number): [number, number] {
+  const [vx, vy] = rawToViewBox(wx, wz, prep.transform)
+  const [rx, ry] = rotatePoint(vx, vy, prep.rotCos, prep.rotSin, prep.rotCx, prep.rotCy)
+  return toCanvas([rx, ry], scale, ox, oy)
+}
+
+/** Braking zones as translucent bands along a lap's path, for under the lines
+ *  so both stay readable. Returns the canvas points along each mark, for hover. */
+function drawRacingLineMarks(
+  ctx: CanvasRenderingContext2D,
+  prep: PreparedMap,
+  marks: readonly TrackMark[],
+  scale: number, ox: number, oy: number,
+): Array<Array<[number, number]>> {
+  ctx.lineWidth = RACING_MARK_PX
+  ctx.lineCap   = 'butt'
+  ctx.lineJoin  = 'round'
+  return marks.map(mark => {
+    const path = (mark.points ?? []).map(point => worldToCanvas(prep, point.x, point.z, scale, ox, oy))
+    if (path.length < 2) return path
+    ctx.beginPath()
+    path.forEach(([x, y], index) => (index === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)))
+    ctx.save()
+    ctx.globalAlpha = (mark.opacity ?? 1) * RACING_MARK_ALPHA
+    ctx.strokeStyle = mark.color
+    ctx.stroke()
+    ctx.restore()
+    return path
+  })
+}
+
+/** Each lap's path through every recorded position. */
+function drawRacingLines(
+  ctx: CanvasRenderingContext2D,
+  prep: PreparedMap,
+  lines: readonly RacingLine[],
+  scale: number, ox: number, oy: number,
+) {
+  ctx.lineWidth = RACING_LINE_PX
+  ctx.lineCap   = 'round'
+  ctx.lineJoin  = 'round'
+  for (const line of lines) {
+    ctx.beginPath()
+    let started = false
+    for (const point of line.points) {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.z)) continue
+      const [x, y] = worldToCanvas(prep, point.x, point.z, scale, ox, oy)
+      if (started) ctx.lineTo(x, y)
+      else ctx.moveTo(x, y)
+      started = true
+    }
+    ctx.strokeStyle = line.color
+    ctx.stroke()
+  }
+}
+
 // How close the pointer must be to a highlight to show its tooltip, in CSS pixels.
 const MARK_HOVER_PX = 8
 
@@ -750,9 +833,64 @@ function lapPointAt(prep: PreparedMap, fraction: number): [number, number] {
   return [pts[lo][0] + (pts[next][0] - pts[lo][0]) * t, pts[lo][1] + (pts[next][1] - pts[lo][1]) * t]
 }
 
-/** Each mark's stretch of the lap line drawn over the track, a little wider
- *  than it, in the mark's colour. Returns the canvas points along each
- *  stretch, for hover. */
+// A caret mark, in pixels at 1x zoom: the gap from the track's edge to its tip,
+// its length, and half its base.
+const CARET_GAP_PX = 1.6
+const CARET_LENGTH_PX = 7
+const CARET_HALF_BASE_PX = 3.8
+
+/** A caret on the inside of the bend at a stretch's middle, pointing at the
+ *  track. The inside comes from the drawn line, over twice the stretch's length
+ *  either side. Returns the caret's centre, for hover. */
+function drawCaret(
+  ctx: CanvasRenderingContext2D,
+  prep: PreparedMap,
+  mark: TrackMark,
+  to: number,
+  scale: number, ox: number, oy: number,
+  trackZoomFactor: number,
+): [number, number] {
+  const from = mark.fromFraction
+  const middle = (from + to) / 2
+  const reach = (to - from) * 2
+  const at = (fraction: number) => toCanvas(lapPointAt(prep, fraction), scale, ox, oy)
+  const [x, y] = at(middle)
+  const [beforeX, beforeY] = at(middle - reach)
+  const [afterX, afterY] = at(middle + reach)
+  const [startX, startY] = at(from)
+  const [endX, endY] = at(to)
+  const length = Math.hypot(endX - startX, endY - startY) || 1
+  const tangentX = (endX - startX) / length
+  const tangentY = (endY - startY) / length
+  // Canvas y runs down, so a positive cross product is a clockwise bend, whose
+  // inside is on the right of the direction of travel.
+  const bend = (x - beforeX) * (afterY - y) - (y - beforeY) * (afterX - x)
+  const inward = bend >= 0 ? 1 : -1
+  const normalX = -tangentY * inward
+  const normalY = tangentX * inward
+  const trackEdge = TRACK_PX * trackZoomFactor / 2
+  const tip = trackEdge + CARET_GAP_PX * trackZoomFactor
+  const base = tip + CARET_LENGTH_PX * trackZoomFactor
+  const halfBase = CARET_HALF_BASE_PX * trackZoomFactor
+  const baseX = x + normalX * base
+  const baseY = y + normalY * base
+  ctx.save()
+  ctx.globalAlpha = mark.opacity ?? 1
+  ctx.fillStyle = mark.color
+  ctx.beginPath()
+  ctx.moveTo(x + normalX * tip, y + normalY * tip)
+  ctx.lineTo(baseX + tangentX * halfBase, baseY + tangentY * halfBase)
+  ctx.lineTo(baseX - tangentX * halfBase, baseY - tangentY * halfBase)
+  ctx.closePath()
+  ctx.fill()
+  ctx.restore()
+  const centre = (tip + base) / 2
+  return [x + normalX * centre, y + normalY * centre]
+}
+
+/** Each mark drawn over the track: its stretch of the lap line, a little wider
+ *  than the track, in the mark's colour, or its caret. Returns the canvas
+ *  points along each mark, for hover. */
 function drawTrackMarks(
   ctx: CanvasRenderingContext2D,
   prep: PreparedMap,
@@ -777,6 +915,11 @@ function drawTrackMarks(
       }
     steps.push(to)
     const path = steps.map(f => toCanvas(lapPointAt(prep, f), scale, ox, oy))
+    if (mark.caret) {
+      path.push(drawCaret(ctx, prep, mark, to, scale, ox, oy, trackZoomFactor))
+      paths.push(path)
+      continue
+    }
     const trace = () => {
       ctx.beginPath()
       path.forEach(([x, y], k) => (k === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)))
@@ -816,6 +959,7 @@ function renderBackgroundFrame(
   slmTrackStatus: number = -1,   // 0 = Full, 1 = Partial, -1 = unknown
   paint: TrackPaint | null = null,
   marks: readonly TrackMark[] | null = null,
+  racingLines: readonly RacingLine[] | null = null,
 ): Array<Array<[number, number]>> {
   ctx.clearRect(0, 0, cw, ch)
   const { scale, ox, oy } = layout
@@ -830,6 +974,18 @@ function renderBackgroundFrame(
   const slmWetColor = isDark ? SLM_WET_COLOR_DARK : SLM_WET_COLOR_LIGHT
   const trapColor = isDark ? TRAP_COLOR_DARK : TRAP_COLOR_LIGHT
   const overtakeColor = isDark ? OVERTAKE_COLOR_DARK : OVERTAKE_COLOR_LIGHT
+
+  // Racing Line: the sector boundaries are all that is left of the map.
+  if (racingLines) {
+    const markPaths = marks ? drawRacingLineMarks(ctx, prep, marks, scale, ox, oy) : []
+    drawRacingLines(ctx, prep, racingLines, scale, ox, oy)
+    prep.junctions.forEach((junction, idx) =>
+      drawSectorJunction(ctx, junction, scale, ox, oy, colors[idx + 1] ?? trackColor, zoomFactor, trackZoomFactor))
+    if (prep.startFinish) {
+      drawStartFinish(ctx, prep.startFinish, prep.s1pts, prep.sfIdx, scale, ox, oy, zoomFactor, trackZoomFactor)
+    }
+    return markPaths
+  }
 
   if (paint) {
     drawPaintedTrack(ctx, prep, paint, scale, ox, oy, TRACK_PX * trackZoomFactor)
@@ -1112,6 +1268,14 @@ interface Props {
   trackPaint?:         TrackPaint | null
   /** Ticks drawn across the track, such as braking points. */
   trackMarks?:         readonly TrackMark[] | null
+  /** Draws these paths on a map stripped to its sector boundaries. */
+  racingLines?:        readonly RacingLine[] | null
+  /** Turns on scroll to zoom and drag to pan, read and written here. */
+  view?:               TrackMapView
+  /** The user zoomed or started panning; receives the zoom. */
+  onViewChange?:       (zoom: number) => void
+  /** Double-click: back to the whole circuit. */
+  onViewFit?:          () => void
   /** The engine's map choice for this track (Modded Maps). */
   mapResolution?:      TrackMapResolution | null
   /** Called after the user picks a map, for a choice the engine does not
@@ -1121,7 +1285,7 @@ interface Props {
   mapOverride?:        TrackMapData | null
 }
 
-export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1, markerSource, trackPaint = null, trackMarks = null, mapResolution = null, onMapPinned, mapOverride = null }: Props) {
+export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1, markerSource, trackPaint = null, trackMarks = null, racingLines = null, view, onViewChange, onViewFit, mapResolution = null, onMapPinned, mapOverride = null }: Props) {
   const { ref: wrapRef, width, height } = useSize()
   const { raw: labels } = useLabels()
   const backgroundCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -1142,12 +1306,15 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const markerSourceRef = useRef(markerSource)
   const trackPaintRef = useRef<TrackPaint | null>(trackPaint)
   const trackMarksRef = useRef<readonly TrackMark[] | null>(trackMarks)
+  const racingLinesRef = useRef<readonly RacingLine[] | null>(racingLines)
+  const baseLayoutRef = useRef<{ scale: number; ox: number; oy: number } | null>(null)
+  const dragRef = useRef<{ x: number; y: number; cx: number; cy: number } | null>(null)
   // Where the background last drew each mark, and the one under the pointer.
   const markPositionsRef = useRef<Array<Array<[number, number]>>>([])
   const [hoveredMark, setHoveredMark] = useState<{ index: number; x: number; y: number } | null>(null)
   const handleMarkHover = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const marks = trackMarksRef.current
-    if (!marks?.some(mark => mark.tooltip)) return
+    if (dragRef.current || !marks?.some(mark => mark.tooltip)) return
     const rect = event.currentTarget.getBoundingClientRect()
     const px = event.clientX - rect.left
     const py = event.clientY - rect.top
@@ -1157,10 +1324,15 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     let bestPoint: [number, number] = [px, py]
     markPositionsRef.current.forEach((path, index) => {
       if (!marks[index]?.tooltip) return
-      for (const [x, y] of path) {
+      // Along each segment, not just at its ends: zoomed in they are far apart.
+      path.forEach(([x1, y1], k) => {
+        const [x2, y2] = path[Math.min(k + 1, path.length - 1)]
+        const dx = x2 - x1, dy = y2 - y1, lengthSq = dx * dx + dy * dy
+        const t = lengthSq > 0 ? Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lengthSq)) : 0
+        const x = x1 + dx * t, y = y1 + dy * t
         const distance = Math.hypot(x - px, y - py)
         if (distance <= bestDistance) { best = index; bestDistance = distance; bestPoint = [x, y] }
-      }
+      })
     })
     setHoveredMark(previous => {
       if (best < 0) return previous === null ? previous : null
@@ -1233,6 +1405,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     reduceAnimationsRef.current = reduceAnimations
     trackPaintRef.current       = trackPaint
     trackMarksRef.current       = trackMarks
+    racingLinesRef.current      = racingLines
   })
 
   // Precompute rotated geometry whenever the map changes
@@ -1334,7 +1507,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   // as the camera moves.
   useEffect(() => {
     backgroundDirtyRef.current = true
-  }, [isDark, sectorColors, mapDimmed, effectiveAeroMode, effectiveSlmTrackStatus, trackPaint, trackMarks])
+  }, [isDark, sectorColors, mapDimmed, effectiveAeroMode, effectiveSlmTrackStatus, trackPaint, trackMarks, racingLines])
 
   useEffect(() => {
     if (map) return
@@ -1427,6 +1600,17 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
             layout = camRef.current ?? baseLayout
           }
 
+          baseLayoutRef.current = baseLayout
+          if (view) {
+            clampView(view, baseLayout, width, height)
+            if (!camRef.current && view.zoom > 1) {
+              const scale = baseLayout.scale * view.zoom
+              layout = { scale, ox: width / 2 - view.cx * scale, oy: height / 2 - view.cy * scale }
+            }
+            const cursor = view.zoom <= 1 ? '' : dragRef.current ? 'grabbing' : 'grab'
+            if (backgroundCanvas.style.cursor !== cursor) backgroundCanvas.style.cursor = cursor
+          }
+
           const effectiveZoom = layout.scale / baseLayout.scale
           const previousLayout = backgroundLayoutRef.current
           const layoutChanged = !previousLayout
@@ -1434,7 +1618,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
             || previousLayout.ox !== layout.ox
             || previousLayout.oy !== layout.oy
           if (backgroundDirtyRef.current || layoutChanged) {
-            markPositionsRef.current = renderBackgroundFrame(backgroundCtx, width, height, prep, isDarkRef.current, sectorColorsRef.current, layout, effectiveZoom, mapDimmedRef.current, aeroModeRef.current, slmTrackStatusRef.current, trackPaintRef.current, trackMarksRef.current)
+            markPositionsRef.current = renderBackgroundFrame(backgroundCtx, width, height, prep, isDarkRef.current, sectorColorsRef.current, layout, effectiveZoom, mapDimmedRef.current, aeroModeRef.current, slmTrackStatusRef.current, trackPaintRef.current, trackMarksRef.current, racingLinesRef.current)
             backgroundLayoutRef.current = { ...layout }
             backgroundDirtyRef.current = false
           }
@@ -1454,7 +1638,52 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
       active = false
       cancelAnimationFrame(rafRef.current)
     }
-  }, [map, width, height])
+  }, [map, width, height, view])
+
+  // Scroll zooms about the pointer. A native listener, because React's wheel
+  // handlers are passive and could not stop the page scrolling too.
+  useEffect(() => {
+    const canvas = backgroundCanvasRef.current
+    if (!view || !canvas) return
+    const handleWheel = (event: WheelEvent) => {
+      const base = baseLayoutRef.current
+      if (!base) return
+      event.preventDefault()
+      const rect = canvas.getBoundingClientRect()
+      const px = event.clientX - rect.left - rect.width / 2
+      const py = event.clientY - rect.top - rect.height / 2
+      const before = base.scale * view.zoom
+      const zoom = Math.min(MAP_ZOOM_MAX, Math.max(1, view.zoom * Math.exp(-event.deltaY * 0.0015)))
+      const after = base.scale * zoom
+      view.cx += px / before - px / after
+      view.cy += py / before - py / after
+      view.zoom = zoom
+      onViewChange?.(zoom)
+    }
+    canvas.addEventListener('wheel', handleWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', handleWheel)
+  }, [onViewChange, view])
+
+  const handleViewPointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!view || view.zoom <= 1 || event.button !== 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dragRef.current = { x: event.clientX, y: event.clientY, cx: view.cx, cy: view.cy }
+    setHoveredMark(null)
+    onViewChange?.(view.zoom)
+  }, [onViewChange, view])
+
+  const handleViewPointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current
+    const base = baseLayoutRef.current
+    if (!view || !drag || !base) return
+    const scale = base.scale * view.zoom
+    view.cx = drag.cx - (event.clientX - drag.x) / scale
+    view.cy = drag.cy - (event.clientY - drag.y) / scale
+  }, [view])
+
+  const handleViewPointerEnd = useCallback(() => {
+    dragRef.current = null
+  }, [])
 
   const driverOptions = useMemo(() => buildDriverOptions(participants?.drivers ?? []), [participants])
 
@@ -1486,7 +1715,15 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
           top: Math.min(hoveredMark.y + 12, Math.max(0, height - 400)),
         }}
       >{trackMarks[hoveredMark.index].tooltip}</div>}
-      <canvas ref={backgroundCanvasRef} className="absolute inset-0" />
+      <canvas
+        ref={backgroundCanvasRef}
+        className="absolute inset-0"
+        onPointerDown={handleViewPointerDown}
+        onPointerMove={handleViewPointerMove}
+        onPointerUp={handleViewPointerEnd}
+        onPointerCancel={handleViewPointerEnd}
+        onDoubleClick={onViewFit}
+      />
       <canvas ref={foregroundCanvasRef} className="absolute inset-0 pointer-events-none" />
       {import.meta.env.MODE === 'debug' && (
         <TestMapControls

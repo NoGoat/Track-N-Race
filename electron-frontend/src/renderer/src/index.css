@@ -361,6 +361,51 @@ body {
   }
 }
 
+/* The Analysis toolbar narrows with both side panels. Sheds text and spacing
+   in steps so every control and delta value stays on screen. */
+.analysis-toolbar {
+  container-name: analysis-toolbar;
+  container-type: inline-size;
+}
+
+@container analysis-toolbar (max-width: 750px) {
+  .analysis-toolbar[data-chart-controls] .analysis-toolbar__label {
+    display: none;
+  }
+}
+
+@container analysis-toolbar (max-width: 664px) {
+  .analysis-toolbar[data-chart-controls] .analysis-toolbar__divider {
+    display: none;
+  }
+
+  .analysis-toolbar[data-chart-controls] .analysis-toolbar__end {
+    gap: 0.25rem;
+  }
+
+  .analysis-toolbar[data-chart-controls] .analysis-toolbar__zones {
+    margin-left: 0;
+  }
+
+  .analysis-toolbar[data-chart-controls] .analysis-delta-readout {
+    gap: 0.5rem;
+  }
+
+  .analysis-toolbar[data-chart-controls] .analysis-delta-readout__item {
+    gap: 0.25rem;
+  }
+
+  .analysis-toolbar[data-chart-controls] .analysis-delta-readout__value {
+    width: 3rem;
+  }
+}
+
+@container analysis-toolbar (max-width: 570px) {
+  .analysis-toolbar[data-chart-controls] .analysis-delta-readout__caption {
+    display: none;
+  }
+}
+
 /* Titlebar mode changes are low-frequency. Animate their intrinsic layout
    without putting animation work on the telemetry update path. */
 .titlebar-auto-width {

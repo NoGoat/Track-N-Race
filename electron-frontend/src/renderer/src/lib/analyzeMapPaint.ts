@@ -11,6 +11,17 @@ export interface TrackPaint {
   translucent: boolean
 }
 
+/** How far the Analysis map is zoomed (1 is the whole circuit) and the map
+ *  point at its centre. Mutable: the maps read it every frame, and maps shown
+ *  side by side share one. */
+export interface TrackMapView {
+  zoom: number
+  cx: number
+  cy: number
+}
+
+export const MAP_ZOOM_MAX = 16
+
 // Colour steps; equal neighbours share one stroke.
 const ERS_STEPS = 20
 // ERS Usage runs from no deployment to the cap: navy to aqua-mint on the dark
@@ -137,11 +148,17 @@ export interface ErsHarvestResult {
   peakKw: number
 }
 
+export const formatM = (m: number) => `${Math.round(m).toLocaleString()} m`
+/** Laps this close through a braking zone count as level. */
+export const BRAKING_LEVEL_S = 0.01
+
 /** Something worth pointing out about a braking zone, as facts to word.
  *  `lap` 0 is the current lap, 1 the comparison lap. */
 export interface BrakingObservation {
   kind: 'quicker_despite_coast' | 'apex_speed' | 'later_but_slower' | 'more_harvest' | 'low_battery'
     | 'wheelspin' | 'earlier_throttle_spin' | 'earlier_throttle' | 'faster_to_full' | 'lift_only'
+    | 'tighter_track_limits' | 'tighter_helped' | 'tighter_no_gain' | 'tighter_lost_speed'
+    | 'tighter_wheelspin' | 'tighter_slower_exit' | 'tighter_slower' | 'track_limits'
   lap: 0 | 1
   value: number
   other: number
@@ -194,8 +211,10 @@ export interface BrakingPointResult {
   minSpeedM: number
   /** Each corner in the zone, found from the steering so flat-out corners
    *  count: where half its steering is done, the slowest speed through it,
-   *  and which way it turns (-1 left, 1 right, 0 when found from speed alone). */
-  apexes: { distanceM: number; speedKph: number; side: number }[]
+   *  and which way it turns (-1 left, 1 right, 0 when found from speed alone).
+   *  With two laps, `lineGapM` is metres further inside the bend than the
+   *  other lap when `hasLine`: negative when wider, 0 when level. */
+  apexes: { distanceM: number; speedKph: number; side: number; hasLine: boolean; lineGapM: number }[]
   /** Where the zone ends: full throttle, else the next braking point. */
   endM: number
   /** Corner exit; -1 where it did not happen before the next braking zone. */

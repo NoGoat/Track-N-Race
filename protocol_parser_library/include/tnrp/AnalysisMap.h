@@ -178,6 +178,17 @@ struct DriverInputsMap {
 //   earlier_throttle       value = m earlier on the throttle, without wheelspin
 //   faster_to_full         value = m earlier to full throttle, without wheelspin
 //   lift_only              `lap` takes the zone on a lift where the other lap brakes
+// Where the laps' lines differ at a corner, `lap` is the one on the tighter
+// line and `value` is how many metres tighter:
+//   tighter_track_limits   the same corner brought `lap` a track-limits call
+//   tighter_helped         other = s quicker through the zone
+//   tighter_no_gain        level through the zone
+//   tighter_lost_speed     slower through the zone; other = km/h lost at the apex
+//   tighter_wheelspin      slower through the zone; other = peak slip % on the exit
+//   tighter_slower_exit    slower through the zone; other = m later on the throttle
+//   tighter_slower         slower through the zone; other = s slower
+// And without the line:
+//   track_limits           `lap` got a track-limits call in the zone
 struct BrakingObservation {
     std::string kind;
     int lap{};
@@ -230,6 +241,11 @@ struct CornerApex {
     float distanceM{};
     float speedKph{};
     int side{};
+    // With two laps: this lap's line against the other's at this corner, when
+    // both recorded positions there. Metres further inside the bend (negative
+    // when wider); 0 when they are level.
+    bool hasLine{};
+    float lineGapM{};
 };
 
 // One braking zone of one lap: from a braking point to full throttle, or to

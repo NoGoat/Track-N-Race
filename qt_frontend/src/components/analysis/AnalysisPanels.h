@@ -78,6 +78,8 @@ public:
     explicit AnalysisToolStrip(const QString& accessibleName, QWidget* parent = nullptr);
 
     void addTool(QAction* action);
+    // Two icon-only tools sharing one row.
+    void addToolPair(QAction* first, QAction* second);
     void addSeparator();
     void addCaption(const QString& text);
 

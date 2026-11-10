@@ -288,6 +288,10 @@ public:
     // One lap's world positions for this driver, in time order.
     bool getAnalysisPositionSamples(int lapNum, std::vector<PlayerPositionPoint>& out,
                                     int driverIndex = -1) const;
+    // When this driver was penalised or warned for track limits (corner
+    // cutting or running wide), from the recording's penalty events, in the
+    // recording's order.
+    std::vector<float> trackLimitTimes(int driverIndex = -1) const;
     // Track corners found without a sweep, from the playback car's own laps,
     // kept once found (an empty list when there were none). `serial` is
     // loadSerial() when the scan began.

@@ -320,6 +320,7 @@ public:
                                  int driverIndex) const override;
     bool getAnalysisPositionSamples(int lapNum, std::vector<PlayerPositionPoint>& out,
                                     int driverIndex) const override;
+    const std::vector<std::string>& raceEventLines() const override { return scannedEvents_; }
 
     ~TnrdV3Reader() override;
 

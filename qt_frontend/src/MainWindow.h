@@ -123,6 +123,7 @@ public:
     void    setTheme(const QString& theme);
     QString currentStyleName() const { return settings.value("style", "system").toString(); }
     void    setStyleName(const QString& name);
+    void    refreshAnalysisMapTheme();
     bool    toolbarLabelsEnabled() const { return settings.value("ui/toolbarShowLabels", false).toBool(); }
     void    setToolbarLabels(bool checked);
     bool    verticalChartLayout(Page page) const;

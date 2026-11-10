@@ -228,6 +228,10 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
     connect(chart_, &ChartView::inspectionRequested, this,
             [this](double coordinate, bool distance) { inspectMap(coordinate, distance); });
     connect(map_, &AnalysisMapView::cursorElapsedChanged, chart_, &AnalyzeChart::setMapCursorElapsed);
+    connect(mapZoomInAction_, &QAction::triggered, map_, &AnalysisMapView::zoomIn);
+    connect(mapZoomOutAction_, &QAction::triggered, map_, &AnalysisMapView::zoomOut);
+    connect(mapFitAction_, &QAction::triggered, map_, &AnalysisMapView::fitCircuit);
+    connect(map_, &AnalysisMapView::zoomChanged, this, &AnalysisPage::refreshMapZoomActions);
     // A chosen braking zone puts the cursors at its braking point, without
     // changing the view.
     connect(zones_, &AnalysisBrakingZones::zoneActivated, this,
@@ -481,6 +485,8 @@ void AnalysisPage::buildToolBar() {
          "Draws the track plain."},
         {"dominance", "Track Dominance", "Dominance", "flag", "flag-green", QStyle::SP_DialogApplyButton,
          "Colours each mini-sector by the lap that was faster through it."},
+        {"racing", "Racing Line", "Line", "draw-path", "draw-bezier-curves", QStyle::SP_ArrowForward,
+         "Both laps' raw paths, with only the sector boundaries of the map."},
         {"inputs", "Driver Inputs", "Inputs", "input-gaming", "games-config-options", QStyle::SP_ComputerIcon,
          "Each lap's own map, coloured by braking, coasting, partial and full throttle."},
         {"speed", "Speed", "Speed", "speedometer", "chronometer", QStyle::SP_MediaSeekForward,
@@ -511,6 +517,13 @@ void AnalysisPage::buildToolBar() {
                                                "for both laps' braking, corners and exit."));
     strip(brakingAction_, QStringLiteral("Braking"), QKeySequence(Qt::Key_B));
     strip(inputsAction_, QStringLiteral("Data"), QKeySequence(Qt::Key_D));
+    // The graphs have Ctrl with these keys, across the whole page.
+    mapZoomInAction_ = plain({"zoom-in"}, QStyle::SP_ArrowUp, QStringLiteral("Map Zoom In"));
+    mapZoomOutAction_ = plain({"zoom-out"}, QStyle::SP_ArrowDown, QStringLiteral("Map Zoom Out"));
+    mapFitAction_ = plain({"zoom-fit-best", "zoom-original"}, QStyle::SP_BrowserReload, QStringLiteral("Fit Circuit"));
+    strip(mapZoomInAction_, QStringLiteral("In"), QKeySequence(Qt::ALT | Qt::Key_Plus));
+    strip(mapZoomOutAction_, QStringLiteral("Out"), QKeySequence(Qt::ALT | Qt::Key_Minus));
+    strip(mapFitAction_, QStringLiteral("100 %"), QKeySequence(Qt::ALT | Qt::Key_0));
 
     // ── Panels ──
     edgeTabsAction_ = new QAction(QStringLiteral("Closed Panels as Edge Tabs"), this);
@@ -545,7 +558,8 @@ void AnalysisPage::buildToolBar() {
     helpAction_->setToolTip(QStringLiteral("What the Analysis controls do"));
     addButton(panelControls_, helpAction_, Qt::ToolButtonIconOnly);
 
-    for (QAction* action : {zoomInAction_, zoomOutAction_, resetZoomAction_, brakingAction_, inputsAction_})
+    for (QAction* action : {zoomInAction_, zoomOutAction_, resetZoomAction_, brakingAction_, inputsAction_,
+                            mapZoomInAction_, mapZoomOutAction_, mapFitAction_})
         addAction(action);   // their shortcuts work anywhere on the page
     connect(zoomInAction_, &QAction::triggered, this, &AnalysisPage::zoomIn);
     connect(zoomOutAction_, &QAction::triggered, this, &AnalysisPage::zoomOut);
@@ -626,6 +640,10 @@ QWidget* AnalysisPage::buildMapPane() {
     mapStrip_->addSeparator();
     mapStrip_->addTool(brakingAction_);
     mapStrip_->addTool(inputsAction_);
+    mapStrip_->addSeparator();
+    mapStrip_->addCaption(QStringLiteral("Zoom"));
+    mapStrip_->addToolPair(mapZoomOutAction_, mapZoomInAction_);
+    mapStrip_->addTool(mapFitAction_);
     row->addWidget(mapStrip_);
     return pane;
 }
@@ -1388,6 +1406,7 @@ void AnalysisPage::applyState() {
     layerGroup_->setEnabled(showMap);
     const bool navigation = showChart && fixed && lapA.isValid();
     for (QAction* action : {zoomInAction_, zoomOutAction_, resetZoomAction_}) action->setEnabled(navigation);
+    refreshMapZoomActions();
 
     // ── Sidebar ──
     const bool haveLaps = playback_ && !model_->data().laps.isEmpty();
@@ -1548,10 +1567,20 @@ void AnalysisPage::requestMapLayers() {
             }, Qt::QueuedConnection);
         });
     };
-    issue(active && layer != QLatin1String("none") ? layer : QString(), layerKey_, false);
+    // Racing Line draws the laps' recorded positions; libtnrp has nothing to add.
+    const bool layerFromLibrary = layer != QLatin1String("none") && layer != QLatin1String("racing");
+    issue(active && layerFromLibrary ? layer : QString(), layerKey_, false);
     issue(zonesWanted ? QStringLiteral("braking") : QString(), brakingKey_, true);
     // Braking Points only decides whether the map shows the zones.
     map_->setBrakingResult(brakingAction_->isChecked() ? brakingResult_ : nullptr);
+}
+
+void AnalysisPage::refreshMapZoomActions() {
+    const bool mapShown = effectiveView() != View::Graphs;
+    mapZoomInAction_->setEnabled(mapShown && !map_->isAtMaxZoom());
+    mapZoomOutAction_->setEnabled(mapShown && map_->isZoomed());
+    mapFitAction_->setEnabled(mapShown && map_->isZoomed());
+    mapFitAction_->setIconText(QStringLiteral("%1 %").arg(qRound(map_->zoom() * 100)));
 }
 
 QString AnalysisPage::layerMode() const {
@@ -1807,6 +1836,10 @@ void AnalysisPage::setAeroMode(bool slm) {
     map_->setAeroMode(slm);
 }
 
+void AnalysisPage::refreshMapTheme() {
+    map_->refreshTheme();
+}
+
 void AnalysisPage::resetPlaybackSelections() {
     modeTabs_->setCurrentIndex(kPlaybackTab);
     showSlotPage(kPlaybackTab);
@@ -1987,7 +2020,10 @@ void AnalysisPage::showControlsHelp() {
         row(views, action->icon(), action->text(), action->whatsThis());
     row(views, {}, QStringLiteral("Layer"),
         QStringLiteral("Paints the map: Track Dominance shows the faster lap per mini-sector; "
+                       "Racing Line draws both laps' paths; "
                        "Driver Inputs, Speed, ERS Usage and ERS Harvest give each lap its own map."));
+    row(views, mapZoomInAction_->icon(), QStringLiteral("Map Zoom"),
+        QStringLiteral("Scroll over the map to zoom, drag to pan, double-click to fit the circuit."));
 
     QFormLayout* panels = section(QStringLiteral("Panels"));
     row(panels, {}, QStringLiteral("Panels"),

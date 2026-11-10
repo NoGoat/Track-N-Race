@@ -7,6 +7,7 @@
 #include <QDockWidget>
 #include <QEnterEvent>
 #include <QFrame>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
@@ -168,6 +169,26 @@ void AnalysisToolStrip::addTool(QAction* action) {
     button->setFixedWidth(kStripWidth - 6);
     button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     layout_->insertWidget(layout_->count() - 1, button, 0, Qt::AlignHCenter);
+}
+
+void AnalysisToolStrip::addToolPair(QAction* first, QAction* second) {
+    constexpr int kGap = 2;
+    auto* row = new QWidget(body_);
+    auto* rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(kGap);
+    const int icon = style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, this);
+    for (QAction* action : {first, second}) {
+        auto* button = new AnalysisToggleButton(row);
+        button->setDefaultAction(action);
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setAutoRaise(true);
+        button->setIconSize(QSize(icon, icon));
+        button->setFixedWidth((kStripWidth - 6 - kGap) / 2);
+        button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        rowLayout->addWidget(button);
+    }
+    layout_->insertWidget(layout_->count() - 1, row, 0, Qt::AlignHCenter);
 }
 
 void AnalysisToolStrip::addSeparator() {

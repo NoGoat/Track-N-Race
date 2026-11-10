@@ -1275,6 +1275,15 @@ void MainWindow::setTheme(const QString& theme) {
     // Re-evaluate whether the toolbar needs the window-colour override for the new
     // mode (forced light/dark over an opposite OS scheme).
     if (toolbar_) toolbar_->updateColorScheme();
+    refreshAnalysisMapTheme();
+}
+
+// Tells the Analysis map directly once the palette is in place, and again on
+// the next event-loop pass for styles whose palette follows the theme later.
+void MainWindow::refreshAnalysisMapTheme() {
+    if (!analyzePage_) return;
+    analyzePage_->refreshMapTheme();
+    QTimer::singleShot(0, this, [this] { analyzePage_->refreshMapTheme(); });
 }
 
 void MainWindow::setStyleName(const QString& name) {
@@ -1323,6 +1332,7 @@ void MainWindow::setStyleName(const QString& name) {
     }
     // The toolbar override only applies under Breeze, so re-evaluate on style change.
     if (toolbar_) toolbar_->updateColorScheme();
+    refreshAnalysisMapTheme();
 }
 
 void MainWindow::setToolbarLabels(bool checked) {

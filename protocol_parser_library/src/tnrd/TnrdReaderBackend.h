@@ -91,6 +91,8 @@ public:
                                          int driverIndex) const = 0;
     virtual bool getAnalysisPositionSamples(int lapNum, std::vector<PlayerPositionPoint>& out,
                                             int driverIndex) const = 0;
+    // Every race_event row in the recording, as its raw JSON line.
+    virtual const std::vector<std::string>& raceEventLines() const = 0;
     virtual std::vector<TrackStatusChange> aeroTrackStatusTimeline() const = 0;
     virtual std::shared_ptr<ErsPeakSweep> startErsPeakSweep() = 0;
     virtual std::shared_ptr<TrackCornerSweep> startTrackCornerSweep() = 0;

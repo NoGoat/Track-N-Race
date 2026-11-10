@@ -44,7 +44,9 @@ double damageValue(const DamageSample& s,const QString& f){const float* p=&s.wea
 int cornerIndexOf(const QString& key){const auto&corners=analyzeTyreCorners();for(int i=0;i<corners.size();++i)if(corners[i].key==key)return i;return -1;}
 float lapStart(const LapBlock& lap){if(!lap.tel.isEmpty())return lap.tel.first().t;if(!lap.sts.isEmpty())return lap.sts.first().t;return lap.startSessionTime;}
 float lapEnd(const LapBlock& lap){if(!lap.tel.isEmpty())return lap.tel.last().t;if(!lap.sts.isEmpty())return lap.sts.last().t;return lap.endSessionTime;}
+} // namespace
 double elapsedAtDistance(const LapBlock*lap,double distance){if(!lap||lap->progress.isEmpty())return qQNaN();const auto&p=lap->progress;auto it=std::lower_bound(p.cbegin(),p.cend(),distance,[](const auto&s,double d){return s.distanceM<d;});if(it==p.cbegin())return distance>=it->distanceM?it->currentLapMs/1000.0:qQNaN();if(it==p.cend())return distance<=p.last().distanceM?p.last().currentLapMs/1000.0:qQNaN();const auto&a=*(it-1);const auto&b=*it;const double span=b.distanceM-a.distanceM,r=span>0?(distance-a.distanceM)/span:1;return (a.currentLapMs+(b.currentLapMs-a.currentLapMs)*r)/1000.0;}
+namespace {
 QVector<LapProgressSample> resolvedSectorSplits(const SessionData*primaryData,const LapBlock*primary,const SessionData*comparisonData,const LapBlock*comparison){
     QVector<LapProgressSample> result(2);QVector<bool>found(2,false);
     auto merge=[&](const SessionData*owner,const LapBlock*lap){if(!owner||!lap)return;for(const auto&split:owner->sectorSplits(lap)){const int index=split.sector-1;if(index>=0&&index<2){result[index]=split;found[index]=true;}}};

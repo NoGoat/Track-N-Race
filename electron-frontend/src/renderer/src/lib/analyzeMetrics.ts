@@ -45,6 +45,12 @@ export interface AnalyzeConfig {
   brakingPoints: boolean
   /** Map: show the Data Comparison panel. */
   inputPanel: boolean
+  /** Show the Braking Zones sidebar. */
+  zonesPanel: boolean
+  /** The Braking Zones sidebar's width, in pixels. */
+  zonesWidth: number
+  /** The Braking Zones sidebar: the zone list's share of the height above the detail card. */
+  zonesListRatio: number
   syncedTooltip: boolean
   sectorBoundaries: boolean
   sectorDelta: boolean
@@ -59,7 +65,7 @@ export interface AnalyzeConfig {
 }
 
 /** How the Analysis map paints the track. */
-export type AnalyzeMapColoring = 'none' | 'dominance' | 'ers' | 'harvest' | 'inputs' | 'speed'
+export type AnalyzeMapColoring = 'none' | 'dominance' | 'racing' | 'ers' | 'harvest' | 'inputs' | 'speed'
 
 export const DEFAULT_MAP_CURRENT_COLOR = '#5794F2'
 export const DEFAULT_SPLIT_RATIO = 0.5
@@ -70,6 +76,13 @@ export const MAX_SPLIT_RATIO = 0.8
 export function clampSplitRatio(value: number): number {
   return Math.min(MAX_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, value))
 }
+// The detail card's table needs the minimum width.
+export const DEFAULT_ZONES_WIDTH = 300
+export const MIN_ZONES_WIDTH = 300
+export const MAX_ZONES_WIDTH = 640
+export const DEFAULT_ZONES_LIST_RATIO = 0.45
+export const MIN_ZONES_LIST_RATIO = 0.15
+export const MAX_ZONES_LIST_RATIO = 0.85
 export const DEFAULT_MAP_COMPARISON_COLOR = '#C4162A'
 
 export const DEFAULT_DELTA_POSITIVE_COLOR = '#C4162A'
@@ -241,6 +254,9 @@ export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
   splitCursors: true,
   brakingPoints: false,
   inputPanel: true,
+  zonesPanel: true,
+  zonesWidth: DEFAULT_ZONES_WIDTH,
+  zonesListRatio: DEFAULT_ZONES_LIST_RATIO,
   syncedTooltip: false,
   sectorBoundaries: false,
   sectorDelta: false,
@@ -317,6 +333,13 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
     splitCursors: value?.splitCursors !== false,
     brakingPoints: value?.brakingPoints === true,
     inputPanel: value?.inputPanel !== false,
+    zonesPanel: value?.zonesPanel !== false,
+    zonesWidth: typeof value?.zonesWidth === 'number' && Number.isFinite(value.zonesWidth)
+      ? Math.min(MAX_ZONES_WIDTH, Math.max(MIN_ZONES_WIDTH, value.zonesWidth))
+      : DEFAULT_ZONES_WIDTH,
+    zonesListRatio: typeof value?.zonesListRatio === 'number' && Number.isFinite(value.zonesListRatio)
+      ? Math.min(MAX_ZONES_LIST_RATIO, Math.max(MIN_ZONES_LIST_RATIO, value.zonesListRatio))
+      : DEFAULT_ZONES_LIST_RATIO,
     syncedTooltip: value?.syncedTooltip === true,
     sectorBoundaries,
     sectorDelta: value?.sectorDelta === true,
@@ -326,7 +349,7 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
     lapBLabel: label(value?.lapBLabel, DEFAULT_LAP_B_LABEL),
     mapCurrentColor: /^#[0-9a-f]{6}$/i.test(value?.mapCurrentColor ?? '') ? value!.mapCurrentColor! : DEFAULT_MAP_CURRENT_COLOR,
     mapComparisonColor: /^#[0-9a-f]{6}$/i.test(value?.mapComparisonColor ?? '') ? value!.mapComparisonColor! : DEFAULT_MAP_COMPARISON_COLOR,
-    mapColoring: (['dominance', 'ers', 'harvest', 'inputs', 'speed'] as const).find(mode => mode === value?.mapColoring) ?? 'none',
+    mapColoring: (['dominance', 'racing', 'ers', 'harvest', 'inputs', 'speed'] as const).find(mode => mode === value?.mapColoring) ?? 'none',
     series: hasSeries ? series : DEFAULT_ANALYZE_CONFIG.series.map(item => ({ ...item })),
   }
 }

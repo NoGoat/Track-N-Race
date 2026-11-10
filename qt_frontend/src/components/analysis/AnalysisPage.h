@@ -86,6 +86,7 @@ public:
     void setCurrentTime(float t);
     void setMapAppearance(bool sectorColors, int opacityPercent);
     void setAeroMode(bool slm);   // false = DRS (F1 24/25), true = SLM (F1 26)
+    void refreshMapTheme();
     // Reads the playback recording for the map layers (tnrp/AnalysisMap.h).
     void setPrimaryRecordingAccess(tnrp::RecordingAccess access);
     // Shows the Braking Zones panel again if it was closed.
@@ -151,6 +152,9 @@ private:
     QAction* zoomInAction_ = nullptr;
     QAction* zoomOutAction_ = nullptr;
     QAction* resetZoomAction_ = nullptr;
+    QAction* mapZoomInAction_ = nullptr;
+    QAction* mapZoomOutAction_ = nullptr;
+    QAction* mapFitAction_ = nullptr;
     QAction* helpAction_ = nullptr;
     QToolButton* panelsButton_ = nullptr;
     QAction* edgeTabsAction_ = nullptr;
@@ -271,6 +275,7 @@ private:
     void showFollowedLap(const LapBlock* lap);
     void refreshDelta();
     void requestMapLayers();
+    void refreshMapZoomActions();
     QString layerMode() const;
 
     // Panels: the Panels menu (also the docks' right-click menu), edge tabs

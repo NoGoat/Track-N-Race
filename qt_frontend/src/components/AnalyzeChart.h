@@ -11,6 +11,9 @@ class SessionModel;
 struct LapBlock;
 struct SessionData;
 
+// Seconds into the lap at a lap distance; NaN off the lap's recorded range.
+double elapsedAtDistance(const LapBlock* lap, double distance);
+
 class AnalyzeChart : public ChartView {
     Q_OBJECT
 public:

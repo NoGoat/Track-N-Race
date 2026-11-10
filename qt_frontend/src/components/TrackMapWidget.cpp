@@ -15,6 +15,7 @@
 #include <QShowEvent>
 #include <QHideEvent>
 #include <QResizeEvent>
+#include <QWheelEvent>
 #include <QRegularExpression>
 #include <QSignalBlocker>
 #include <cmath>
@@ -32,6 +33,9 @@
 // ── Styling constants (ported 1:1 from the Electron TrackMap) ──────────────
 namespace {
 constexpr double TRACK_PX  = 5.0;
+constexpr double RACING_LINE_PX = 1.5;
+constexpr double RACING_MARK_PX = 9.0;
+constexpr double RACING_MARK_ALPHA = 0.4;
 constexpr double DOT_R     = 7.0;
 constexpr double MAP_PAD   = 24.0;  // visible padding outside every rendered map element
 constexpr double DRS_PX    = 6.0;
@@ -58,6 +62,11 @@ constexpr int    LABEL_GAP = 5;
 constexpr int    LABEL_R   = 3;
 constexpr int    ACCENT_W  = 3;
 constexpr double MARK_HOVER_PX = 8.0;   // how close the pointer must be to a mark
+// A caret mark, in pixels at 1x zoom: the gap from the track's edge to its tip,
+// its length, and half its base.
+constexpr double CARET_GAP_PX = 1.6;
+constexpr double CARET_LENGTH_PX = 7.0;
+constexpr double CARET_HALF_BASE_PX = 3.8;
 
 const char* SECTOR_DARK[3]  = { "#E8002D", "#0090D0", "#FFD700" };
 const char* SECTOR_LIGHT[3] = { "#D32F2F", "#0D47A1", "#B7950B" };
@@ -340,6 +349,8 @@ bool TrackMapWidget::setTrack(int trackId) {
     if (trackSet_ && trackId == trackId_) return loaded_;
     trackSet_ = true;
     trackId_ = trackId;
+    // Another circuit starts from the whole lap.
+    if (view_.zoom > 1.0 && moveView(View{})) emit viewChanged(view_);
     reloadMap();
     return loaded_;
 }
@@ -616,11 +627,14 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
     // step with the active palette rather than hard-coded white/black.
     const QColor lineCol = palette().color(QPalette::Text);
 
-    const bool painted = !paintColors_.empty();
+    // Racing Line leaves only the sector boundaries and start/finish of the map.
+    const bool racing = racingLinesOn_;
+    const bool painted = !paintColors_.empty() || racing;
     // With the track in sector colours the boundary ticks are plain; otherwise,
     // including a painted track that hides the sector colours, the ticks carry them.
     const bool sectorTrack = sectorColors_ && !painted;
-    if (painted) drawPaintedTrack(p, l, TRACK_PX * tzf);
+    if (racing) drawRacingLines(p, l);
+    else if (painted) drawPaintedTrack(p, l, TRACK_PX * tzf);
     if (!painted) for (size_t si = 0; si < prep_.sectors.size(); ++si) {
         const QPolygonF& poly = prep_.sectors[si];
         if (poly.size() < 2) continue;
@@ -683,7 +697,7 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
             p.drawPolyline(poly);
         }
     };
-    if (aeroSlm_) {
+    if (aeroSlm_ && !racing) {
         const bool partial = (slmTrackStatus_ == 1);
         drawOffsetZones(partial ? prep_.slmWet : prep_.slmDry,
                         partial ? slmWetColor : slmDryColor);
@@ -709,7 +723,7 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
             p.drawLine(QPointF(c.x() - jc.nx * half, c.y() - jc.ny * half),
                        QPointF(c.x() + jc.nx * half, c.y() + jc.ny * half));
         }
-    } else {
+    } else if (!racing) {
         drawOffsetZones(prep_.drsZones, drsColor);
     }
 
@@ -793,6 +807,149 @@ void TrackMapWidget::drawPaintedTrack(QPainter& p, const Layout& l, double width
     flush();
 }
 
+void TrackMapWidget::setRacingLines(bool on, const QVector<RacingLine>& lines) {
+    if (!on && !racingLinesOn_) return;
+    racingLinesOn_ = on;
+    racingLines_ = lines;
+    rebuildStaticLayer();
+    update();
+}
+
+void TrackMapWidget::setViewEnabled(bool on) {
+    viewEnabled_ = on;
+    refreshViewCursor();
+}
+
+// Keeps a zoomed view inside what the whole-circuit layout shows.
+void TrackMapWidget::clampView(View& view) const {
+    view.zoom = std::clamp(view.zoom, 1.0, kMaxViewZoom);
+    if (!loaded_) return;
+    const Layout base = buildLayout(width(), height());
+    if (!(base.scale > 0)) return;
+    const double room = (1.0 - 1.0 / view.zoom) / (2.0 * base.scale);
+    const double midX = (width() / 2.0 - base.ox) / base.scale;
+    const double midY = (height() / 2.0 - base.oy) / base.scale;
+    view.cx = std::clamp(view.cx, midX - width() * room, midX + width() * room);
+    view.cy = std::clamp(view.cy, midY - height() * room, midY + height() * room);
+}
+
+bool TrackMapWidget::moveView(const View& view) {
+    View next = view;
+    clampView(next);
+    if (next.zoom == view_.zoom && next.cx == view_.cx && next.cy == view_.cy) return false;
+    view_ = next;
+    showHoveredMark(-1, {});
+    refreshViewCursor();
+    update();
+    return true;
+}
+
+void TrackMapWidget::setView(const View& view) {
+    moveView(view);
+}
+
+void TrackMapWidget::zoomBy(double factor) {
+    View next = view_;
+    clampView(next);
+    next.zoom *= factor;
+    if (moveView(next)) emit viewChanged(view_);
+}
+
+void TrackMapWidget::fitView() {
+    View next = view_;
+    next.zoom = 1.0;
+    if (moveView(next)) emit viewChanged(view_);
+}
+
+void TrackMapWidget::refreshViewCursor() {
+    if (!viewEnabled_ || view_.zoom <= 1.0) unsetCursor();
+    else setCursor(dragging_ ? Qt::ClosedHandCursor : Qt::OpenHandCursor);
+}
+
+void TrackMapWidget::wheelEvent(QWheelEvent* event) {
+    if (!viewEnabled_ || !loaded_) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+    View next = view_;
+    clampView(next);
+    const Layout base = buildLayout(width(), height());
+    const QPointF at = event->position() - QPointF(width() / 2.0, height() / 2.0);
+    const double before = base.scale * next.zoom;
+    next.zoom = std::clamp(next.zoom * std::exp(event->angleDelta().y() * 0.0015), 1.0, kMaxViewZoom);
+    const double after = base.scale * next.zoom;
+    next.cx += at.x() / before - at.x() / after;
+    next.cy += at.y() / before - at.y() / after;
+    if (moveView(next)) emit viewChanged(view_);
+    event->accept();
+}
+
+void TrackMapWidget::mousePressEvent(QMouseEvent* event) {
+    if (!viewEnabled_ || view_.zoom <= 1.0 || event->button() != Qt::LeftButton) {
+        QWidget::mousePressEvent(event);
+        return;
+    }
+    dragging_ = true;
+    dragStart_ = event->position();
+    dragView_ = view_;
+    showHoveredMark(-1, {});
+    refreshViewCursor();
+}
+
+void TrackMapWidget::mouseReleaseEvent(QMouseEvent* event) {
+    if (!dragging_ || event->button() != Qt::LeftButton) {
+        QWidget::mouseReleaseEvent(event);
+        return;
+    }
+    dragging_ = false;
+    refreshViewCursor();
+}
+
+void TrackMapWidget::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (!viewEnabled_ || event->button() != Qt::LeftButton) {
+        QWidget::mouseDoubleClickEvent(event);
+        return;
+    }
+    dragging_ = false;
+    fitView();
+    refreshViewCursor();
+}
+
+// Each lap's path through every recorded position, over its braking zones:
+// translucent bands along the path, under the lines so both stay readable.
+void TrackMapWidget::drawRacingLines(QPainter& p, const Layout& l) const {
+    p.setBrush(Qt::NoBrush);
+    QPen band;
+    band.setWidthF(RACING_MARK_PX);
+    band.setCapStyle(Qt::FlatCap);
+    band.setJoinStyle(Qt::RoundJoin);
+    for (const Mark& mark : marks_) {
+        if (mark.world.size() < 2) continue;
+        QPolygonF path;
+        path.reserve(mark.world.size());
+        for (const QPointF& world : mark.world) path << project(world.x(), world.y(), l);
+        band.setColor(mark.color);
+        p.save();
+        p.setOpacity(p.opacity() * mark.opacity * RACING_MARK_ALPHA);
+        p.setPen(band);
+        p.drawPolyline(path);
+        p.restore();
+    }
+
+    QPen pen;
+    pen.setWidthF(RACING_LINE_PX);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    for (const RacingLine& line : racingLines_) {
+        QPolygonF path;
+        path.reserve(line.world.size());
+        for (const QPointF& world : line.world) path << project(world.x(), world.y(), l);
+        pen.setColor(line.color);
+        p.setPen(pen);
+        p.drawPolyline(path);
+    }
+}
+
 // The lap line at a fraction of the lap.
 QPointF TrackMapWidget::lapPointAt(double fraction) const {
     const auto& pts = prep_.lapLine;
@@ -812,16 +969,62 @@ QPointF TrackMapWidget::lapPointAt(double fraction) const {
 void TrackMapWidget::setMarks(const QVector<Mark>& marks) {
     marks_ = marks;
     showHoveredMark(-1, {});
+    if (racingLinesOn_) rebuildStaticLayer();   // their bands are under the lines
     update();
 }
 
-// Each mark's stretch of the lap line over the track, a little wider than it,
-// with square ends cut where it starts and stops, edged in the background
-// colour so it stays distinct from the track under it. Returns the device
-// points along each stretch, for hover.
+// A caret on the inside of the bend at a stretch's middle, pointing at the
+// track. The inside comes from the drawn line, over twice the stretch's length
+// either side. Returns the caret's centre, for hover.
+QPointF TrackMapWidget::drawCaret(QPainter& p, const Layout& l, double tzf, const Mark& mark, double to) const {
+    const auto at = [&](double fraction) {
+        const QPointF vb = lapPointAt(fraction);
+        return QPointF(vb.x() * l.scale + l.ox, vb.y() * l.scale + l.oy);
+    };
+    const double middle = (mark.from + to) / 2.0;
+    const double reach = (to - mark.from) * 2.0;
+    const QPointF centre = at(middle);
+    const QPointF before = at(middle - reach);
+    const QPointF after = at(middle + reach);
+    const QPointF chord = at(to) - at(mark.from);
+    const double length = std::hypot(chord.x(), chord.y());
+    const QPointF tangent = length > 0 ? chord / length : QPointF(1.0, 0.0);
+    // Device y runs down, so a positive cross product is a clockwise bend,
+    // whose inside is on the right of the direction of travel.
+    const QPointF in = centre - before;
+    const QPointF out = after - centre;
+    const double inward = in.x() * out.y() - in.y() * out.x() >= 0 ? 1.0 : -1.0;
+    const QPointF normal(-tangent.y() * inward, tangent.x() * inward);
+    const double tip = TRACK_PX * tzf / 2.0 + CARET_GAP_PX * tzf;
+    const double base = tip + CARET_LENGTH_PX * tzf;
+    const QPointF baseCentre = centre + normal * base;
+    const QPointF halfBase = tangent * (CARET_HALF_BASE_PX * tzf);
+    p.save();
+    p.setOpacity(p.opacity() * mark.opacity);
+    p.setPen(Qt::NoPen);
+    p.setBrush(mark.color);
+    p.drawPolygon(QPolygonF{centre + normal * tip, baseCentre + halfBase, baseCentre - halfBase});
+    p.restore();
+    return centre + normal * ((tip + base) / 2.0);
+}
+
+// Each mark over the track: its caret, or its stretch of the lap line, a little
+// wider than the track, with square ends cut where it starts and stops, edged
+// in the background colour so it stays distinct from the track under it.
+// Returns the device points along each mark, for hover.
 std::vector<QPolygonF> TrackMapWidget::drawMarks(QPainter& p, const Layout& l, double tzf) const {
     std::vector<QPolygonF> paths;
     if (prep_.lapLine.size() < 2 || marks_.isEmpty()) return paths;
+    if (racingLinesOn_) {   // drawRacingLines paints them; these are for hover
+        paths.reserve(size_t(marks_.size()));
+        for (const Mark& mark : marks_) {
+            QPolygonF path;
+            path.reserve(mark.world.size());
+            for (const QPointF& world : mark.world) path << project(world.x(), world.y(), l);
+            paths.push_back(std::move(path));
+        }
+        return paths;
+    }
     const double width = TRACK_PX * tzf + 3;
     const auto tc = [&](const QPointF& vb) { return QPointF(vb.x() * l.scale + l.ox, vb.y() * l.scale + l.oy); };
     const QColor edge = palette().color(QPalette::Window);
@@ -837,6 +1040,11 @@ std::vector<QPolygonF> TrackMapWidget::drawMarks(QPainter& p, const Layout& l, d
                 if (f > from && f < to) path << tc(lapPointAt(f));
             }
         path << tc(lapPointAt(to));
+        if (mark.caret) {
+            path << drawCaret(p, l, tzf, mark, to);
+            paths.push_back(std::move(path));
+            continue;
+        }
         QPen pen(edge);
         pen.setCapStyle(Qt::FlatCap);
         pen.setJoinStyle(Qt::RoundJoin);
@@ -858,6 +1066,15 @@ std::vector<QPolygonF> TrackMapWidget::drawMarks(QPainter& p, const Layout& l, d
 
 void TrackMapWidget::mouseMoveEvent(QMouseEvent* event) {
     QWidget::mouseMoveEvent(event);
+    if (dragging_) {
+        const double scale = buildLayout(width(), height()).scale * dragView_.zoom;
+        const QPointF moved = event->position() - dragStart_;
+        View next = dragView_;
+        next.cx -= moved.x() / scale;
+        next.cy -= moved.y() / scale;
+        if (moveView(next)) emit viewChanged(view_);
+        return;
+    }
     const QPointF pointer = event->position();
     // The nearest highlighted stretch, by its closest point to the pointer.
     int best = -1;
@@ -865,7 +1082,15 @@ void TrackMapWidget::mouseMoveEvent(QMouseEvent* event) {
     QPointF bestPoint = pointer;
     for (size_t index = 0; index < markPaths_.size() && index < size_t(marks_.size()); ++index) {
         if (marks_[int(index)].tooltip.isEmpty()) continue;
-        for (const QPointF& point : markPaths_[index]) {
+        // Along each segment, not just at its ends: zoomed in they are far apart.
+        const QPolygonF& path = markPaths_[index];
+        for (int k = 0; k < path.size(); ++k) {
+            const QPointF a = path[k];
+            const QPointF d = path[std::min(k + 1, int(path.size()) - 1)] - a;
+            const double lengthSq = d.x() * d.x() + d.y() * d.y();
+            const double t = lengthSq > 0
+                ? std::clamp(QPointF::dotProduct(pointer - a, d) / lengthSq, 0.0, 1.0) : 0.0;
+            const QPointF point = a + d * t;
             const double distance = std::hypot(point.x() - pointer.x(), point.y() - pointer.y());
             if (distance <= bestDistance) { best = int(index); bestDistance = distance; bestPoint = point; }
         }
@@ -1127,12 +1352,18 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
         if (diff < 0.5) hasCam_ = false;
         else            layout = cam_;
     }
+    if (viewEnabled_) clampView(view_);   // the size or the map may have changed
+    const bool viewZoomed = viewEnabled_ && !hasCam_ && view_.zoom > 1.0;
+    if (viewZoomed) {
+        const double scale = base.scale * view_.zoom;
+        layout = { scale, width() / 2.0 - view_.cx * scale, height() / 2.0 - view_.cy * scale };
+    }
     const double effZoom = base.scale > 0 ? layout.scale / base.scale : 1.0;
 
     // ── Track: cached pixmap when idle, live vector render when zoomed ───
     // Opacity dims only the track outline; driver dots/labels stay full strength.
-    p.setOpacity(paintColors_.empty() ? mapOpacity_ : 1.0);
-    if (!hasCam_) {
+    p.setOpacity(paintColors_.empty() && !racingLinesOn_ ? mapOpacity_ : 1.0);
+    if (!hasCam_ && !viewZoomed) {
         if (staticLayer_.isNull() || staticLayerSize_ != size())
             rebuildStaticLayer();
         p.drawPixmap(0, 0, staticLayer_);

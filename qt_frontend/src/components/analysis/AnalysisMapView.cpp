@@ -1,6 +1,8 @@
 #include "AnalysisMapView.h"
 #include "AnalysisInputCard.h"
 
+#include "../AnalyzeChart.h"
+#include "../CardColors.h"
 #include "../TrackMapWidget.h"
 #include "../../IconUtils.h"
 
@@ -131,6 +133,9 @@ namespace {
 
 using LegendItem = AnalysisMapLegend::Item;
 
+// How much one press of Zoom In or Zoom Out changes the map's zoom.
+constexpr double kMapZoomStep = 1.5;
+
 QIcon themed(const QWidget* widget, const char* name, QStyle::StandardPixmap fallback) {
     return adaptThemeIcon(QIcon::fromTheme(QString::fromLatin1(name)),
                           widget->palette().color(QPalette::WindowText),
@@ -193,7 +198,8 @@ constexpr double kBrakingHalfOpacity = 0.45;
 constexpr double kPhaseMinM = 30.0;
 // Apexes this close on two laps are the same corner.
 constexpr double kCornerMatchM = 80.0;
-// Each corner's apex is marked this far either side of it on the Speed map.
+// The stretch either side of a corner's apex that its caret on the Speed map
+// is placed from and hovered along.
 constexpr double kApexMarkM = 6.0;
 
 // Which half of a braking zone: up to the slowest point, or after it.
@@ -236,12 +242,33 @@ QString observationText(const tnrp::BrakingObservation& o, const Labels& labels)
         return QStringLiteral("%1 is flat out %2 m sooner than %3").arg(lap).arg(qRound(o.value)).arg(other);
     if (k == "lift_only")
         return QStringLiteral("%1 takes it on a lift where %2 brakes").arg(lap, other);
+    if (k == "tighter_track_limits")
+        return QStringLiteral("%1 takes a %2 m tighter line but breaks track limits").arg(lap).arg(o.value, 0, 'f', 1);
+    if (k == "tighter_helped")
+        return QStringLiteral("%1 takes a %2 m tighter line and is %3 s quicker")
+            .arg(lap).arg(o.value, 0, 'f', 1).arg(o.other, 0, 'f', 3);
+    if (k == "tighter_no_gain")
+        return QStringLiteral("%1's %2 m tighter line gains no time").arg(lap).arg(o.value, 0, 'f', 1);
+    if (k == "tighter_lost_speed")
+        return QStringLiteral("%1 takes a %2 m tighter line but loses %3 km/h through the apex")
+            .arg(lap).arg(o.value, 0, 'f', 1).arg(qRound(o.other));
+    if (k == "tighter_wheelspin")
+        return QStringLiteral("%1 takes a %2 m tighter line but spins the rears on exit (%3%)")
+            .arg(lap).arg(o.value, 0, 'f', 1).arg(qRound(o.other));
+    if (k == "tighter_slower_exit")
+        return QStringLiteral("%1 takes a %2 m tighter line but is on the power %3 m later")
+            .arg(lap).arg(o.value, 0, 'f', 1).arg(qRound(o.other));
+    if (k == "tighter_slower")
+        return QStringLiteral("%1 takes a %2 m tighter line but is %3 s slower")
+            .arg(lap).arg(o.value, 0, 'f', 1).arg(o.other, 0, 'f', 3);
+    if (k == "track_limits")
+        return QStringLiteral("%1 breaks track limits here").arg(lap);
     return {};
 }
 
 bool exitObservation(const std::string& kind) {
     return kind == "wheelspin" || kind == "earlier_throttle_spin" || kind == "earlier_throttle" ||
-           kind == "faster_to_full";
+           kind == "faster_to_full" || kind == "tighter_wheelspin" || kind == "tighter_slower_exit";
 }
 
 // Two laps' corners lined up: each current-lap apex with the comparison lap's
@@ -278,6 +305,11 @@ QString brakeAtText(const tnrp::BrakingPoint& point) {
 QString coastText(const tnrp::BrakingPoint& point) {
     return point.coastS > 0 ? QStringLiteral("%1 s · %2 m").arg(point.coastS, 0, 'f', 1).arg(qRound(point.coastM))
                             : QStringLiteral("none");
+}
+// A lap's line against the other's at a corner, named on the tighter lap.
+QString lineText(float gapM) {
+    return gapM == 0.0f ? QStringLiteral("level")
+        : gapM > 0.0f ? QStringLiteral("%1 m tighter").arg(gapM, 0, 'f', 1) : QStringLiteral("—");
 }
 QString spinText(const tnrp::BrakingPoint& point) {
     return point.wheelspin ? QStringLiteral("%1% · %2 s").arg(qRound(point.wheelspinPct)).arg(point.wheelspinS, 0, 'f', 1)
@@ -356,6 +388,10 @@ QString brakingCard(int zone, Phase phase, double fromM, double splitM, double t
         rows.push_back({name, opt(current, a ? kph(a->speedKph) : QStringLiteral("—")),
                         opt(comparison, b ? kph(b->speedKph) : QStringLiteral("—")),
                         a && b ? pick(a->speedKph, b->speedKph, true, 0.5) : -1});
+        // Which lap took the tighter line there, when both recorded positions.
+        if (a && b && a->hasLine && b->hasLine)
+            rows.push_back({corners.size() > 1 ? QStringLiteral("Line %1").arg(i + 1) : QStringLiteral("Line"),
+                            lineText(a->lineGapM), lineText(b->lineGapM)});
     }
     if (braking && pair) {
         const auto harvest = [](float kj) {
@@ -517,6 +553,29 @@ QVector<TrackMapWidget::Mark> brakingMarks(const tnrp::AnalysisMapResult* result
     return marks;
 }
 
+// Braking zone highlights along a lap's own path, for the Racing Line layer.
+QVector<TrackMapWidget::Mark> marksOnLap(const QVector<TrackMapWidget::Mark>& marks, const LapBlock& lap,
+                                         double trackLengthM) {
+    QVector<TrackMapWidget::Mark> out;
+    out.reserve(marks.size());
+    for (TrackMapWidget::Mark mark : marks) {
+        const double from = elapsedAtDistance(&lap, mark.from * trackLengthM);
+        const double to = elapsedAtDistance(&lap, mark.to * trackLengthM);
+        double x = 0;
+        double z = 0;
+        if (!std::isfinite(from) || !std::isfinite(to) || !positionAt(lap, from, x, z)) continue;
+        mark.world << QPointF(x, z);
+        const double start = lap.startSessionTime + from;
+        const double end = lap.startSessionTime + to;
+        for (const LapPositionSample& sample : lap.positions)
+            if (sample.t > start && sample.t < end && std::isfinite(sample.x) && std::isfinite(sample.z))
+                mark.world << QPointF(sample.x, sample.z);
+        if (positionAt(lap, to, x, z)) mark.world << QPointF(x, z);
+        out.push_back(std::move(mark));
+    }
+    return out;
+}
+
 // Each corner's apex on a lap's Speed map, with its slowest speed on hover.
 QVector<TrackMapWidget::Mark> apexMarks(const tnrp::SpeedMap* speed, bool dark, const QPalette& palette) {
     QVector<TrackMapWidget::Mark> marks;
@@ -526,12 +585,13 @@ QVector<TrackMapWidget::Mark> apexMarks(const tnrp::SpeedMap* speed, bool dark, 
     const QString muted = palette.color(QPalette::PlaceholderText).name();
     for (size_t i = 0; i < speed->apexes.size(); ++i) {
         const tnrp::CornerApex& apex = speed->apexes[i];
-        marks.push_back({std::max(0.0, apex.distanceM - kApexMarkM) / length,
-                         std::min(length, apex.distanceM + kApexMarkM) / length, color, 1.0,
+        marks.push_back({(apex.distanceM - kApexMarkM) / length,
+                         (apex.distanceM + kApexMarkM) / length, color, 1.0,
                          QStringLiteral("<div style='white-space:nowrap'><small style='color:%1'>APEX %2%3 · %4</small>"
                                         "<br><b>%5</b></div>")
                              .arg(muted).arg(i + 1).arg(sideText(apex.side), metres(apex.distanceM),
-                                                        kph(apex.speedKph))});
+                                                        kph(apex.speedKph)),
+                         true});
     }
     return marks;
 }
@@ -581,8 +641,14 @@ AnalysisMapView::AnalysisMapView(QWidget* parent) : QWidget(parent) {
         (*map)->setSectorColors(settings.value("ui/trackMapSectorColors", false).toBool());
         (*map)->setMapOpacity(settings.value("ui/trackMapOpacity", 100).toInt() / 100.0);
         (*map)->setDark(dark());
+        (*map)->setViewEnabled(true);
         (*map)->installEventFilter(this);
     }
+    for (auto [from, to] : {std::pair{map_, comparisonMap_}, std::pair{comparisonMap_, map_}})
+        connect(from, &TrackMapWidget::viewChanged, this, [this, other = to](const TrackMapWidget::View& view) {
+            other->setView(view);
+            emit zoomChanged(view.zoom);
+        });
     mapDivider_ = new QFrame(mapArea_);
     mapDivider_->setFrameShape(QFrame::VLine);
     mapDivider_->setFrameShadow(QFrame::Plain);
@@ -666,7 +732,7 @@ AnalysisMapView::AnalysisMapView(QWidget* parent) : QWidget(parent) {
 AnalysisMapView::~AnalysisMapView() = default;
 
 bool AnalysisMapView::dark() const {
-    return palette().color(QPalette::Window).lightness() < 128;
+    return tnr::isDarkTheme();
 }
 
 bool AnalysisMapView::separateMaps() const {
@@ -699,6 +765,8 @@ void AnalysisMapView::setLaps(const LapBlock* current, const LapBlock* compariso
         cursor_ = 0;
         focused_ = false;
         setPlaying(false);
+        // No result follows new laps on this layer; it draws them directly.
+        if (layerMode_ == QLatin1String("racing")) refreshLayers();
     }
     fixed_ = fixedMode;
     transport_->setVisible(fixed_);
@@ -743,8 +811,9 @@ void AnalysisMapView::setLayerMode(const QString& mode, bool comparisonSelected)
     requestedLayerMode_ = mode;
     requestedComparisonSelected_ = comparisonSelected;
     // A coloured layer waits for its result with the old one still painted;
-    // switching at once would show the bare map in between.
-    if (mode == QLatin1String("none") || !layer_) applyRequestedLayer();
+    // switching at once would show the bare map in between. Racing Line has
+    // no result to wait for.
+    if (mode == QLatin1String("none") || mode == QLatin1String("racing") || !layer_) applyRequestedLayer();
 }
 
 void AnalysisMapView::setLayerResult(std::shared_ptr<const tnrp::AnalysisMapResult> result) {
@@ -773,6 +842,7 @@ void AnalysisMapView::refreshLayers() {
     const bool separate = separateMaps();
     comparisonMap_->setVisible(separate);
     mapDivider_->setVisible(separate);
+    if (separate) comparisonMap_->setView(map_->view());
 
     // libtnrp's result for the layer on show, once it has arrived.
     const tnrp::AnalysisMapResult* result =
@@ -784,14 +854,35 @@ void AnalysisMapView::refreshLayers() {
     comparisonMap_->setPaint(result && separate
         ? tnrp::analysisMapPaint(*result, 1, isDark, currentColor, comparisonColor) : tnrp::AnalysisMapPaint{});
 
+    // Racing Line: both laps' recorded positions on the one map, as they are.
+    const bool racing = layerMode_ == QLatin1String("racing");
+    QVector<TrackMapWidget::RacingLine> racingLines;
+    if (racing) {
+        const auto addLine = [&](const LapBlock& lap, const QColor& lineColor) {
+            QPolygonF world;
+            world.reserve(lap.positions.size());
+            for (const LapPositionSample& sample : lap.positions)
+                if (std::isfinite(sample.x) && std::isfinite(sample.z)) world << QPointF(sample.x, sample.z);
+            racingLines.push_back({world, lineColor});
+        };
+        if (hasCurrent_) addLine(current_, currentColor_);
+        if (hasComparison_) addLine(comparison_, comparisonColor_);
+    }
+    map_->setRacingLines(racing, racingLines);
+
     // Legends.
     const tnrp::AnalysisMapPalette& palette = tnrp::analysisMapPalette(isDark);
     const auto legendFor = [&](int lap) {
         QVector<LegendItem> items;
+        using Kind = LegendItem::Kind;
+        if (racing) {
+            if (hasCurrent_) items.push_back({Kind::Swatch, currentLabel_, currentColor_});
+            if (hasComparison_) items.push_back({Kind::Swatch, comparisonLabel_, comparisonColor_});
+            return items;
+        }
         if (!result) return items;
         const bool has = lap == 0 ? result->hasCurrent : result->hasComparison;
         if (!has) return items;
-        using Kind = LegendItem::Kind;
         if (layerMode_ == QLatin1String("ers")) {
             const tnrp::ErsUsageMap& usage = lap == 0 ? result->current : result->comparison;
             if (!usage.restricted && !usage.usesNormal && !usage.usesReduced) return items;
@@ -852,9 +943,14 @@ void AnalysisMapView::refreshLayers() {
     mismatch_->adjustSize();
 
     // Braking zones on every map, and each lap's corners on its Speed map.
+    // Racing Line has no track, so its zones follow a lap's own path.
     const Labels labels{currentLabel_, comparisonLabel_, currentColor_, comparisonColor_};
-    const QVector<TrackMapWidget::Mark> zones = brakingMarks(
-        braking_ && braking_->mode == "braking" ? braking_.get() : nullptr, labels, isDark, this->palette());
+    const tnrp::AnalysisMapResult* zoneResult = braking_ && braking_->mode == "braking" ? braking_.get() : nullptr;
+    QVector<TrackMapWidget::Mark> zones = brakingMarks(zoneResult, labels, isDark, this->palette());
+    if (racing)
+        zones = zoneResult && (hasCurrent_ || hasComparison_)
+            ? marksOnLap(zones, hasCurrent_ ? current_ : comparison_, zoneResult->braking.trackLengthM)
+            : QVector<TrackMapWidget::Mark>{};
     const bool speed = result && layerMode_ == QLatin1String("speed");
     map_->setMarks(zones + apexMarks(speed && result->hasCurrent ? &result->currentSpeed : nullptr, isDark,
                                      this->palette()));
@@ -891,11 +987,15 @@ void AnalysisMapView::resizeEvent(QResizeEvent* event) {
 
 void AnalysisMapView::changeEvent(QEvent* event) {
     QWidget::changeEvent(event);
-    if (event->type() == QEvent::PaletteChange) {
-        map_->setDark(dark());
-        comparisonMap_->setDark(dark());
-        refreshLayers();
-    }
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange ||
+        event->type() == QEvent::ThemeChange)
+        refreshTheme();
+}
+
+void AnalysisMapView::refreshTheme() {
+    map_->setDark(dark());
+    comparisonMap_->setDark(dark());
+    refreshLayers();
 }
 
 void AnalysisMapView::setCurrentTime(float sessionTime) {
@@ -910,6 +1010,13 @@ void AnalysisMapView::focusElapsed(double seconds) {
     refresh();
     refreshTransport();
 }
+
+void AnalysisMapView::zoomIn() { map_->zoomBy(kMapZoomStep); }
+void AnalysisMapView::zoomOut() { map_->zoomBy(1.0 / kMapZoomStep); }
+void AnalysisMapView::fitCircuit() { map_->fitView(); }
+double AnalysisMapView::zoom() const { return map_->view().zoom; }
+bool AnalysisMapView::isZoomed() const { return zoom() > 1.0; }
+bool AnalysisMapView::isAtMaxZoom() const { return zoom() >= TrackMapWidget::kMaxViewZoom; }
 
 void AnalysisMapView::setReadoutVisible(bool visible) {
     inputs_->setVisible(visible);
