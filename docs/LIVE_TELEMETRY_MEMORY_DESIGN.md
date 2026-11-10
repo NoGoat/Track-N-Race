@@ -30,7 +30,8 @@ Driver (every participating car, by vehicle index)
   `SampleColumns` builders: typed columns at their encoded widths.
 - When a lap's delay passes it is committed exactly as a file commits it: lap
   clock, V6C1 column chunks, Zstandard level 9. The frames stay in memory,
-  indexed by `V6ChunkInfo::offset`.
+  indexed by `V6ChunkInfo::offset`, unless a recording file holds them (see
+  Recording).
 - Shared records (session, participants, race events) are deduplicated and
   delayed as in a file. Committed ones stay plain JSON in memory rather than
   zstd-chained, so a deep rewind can drop them without re-decoding the chain.
@@ -47,8 +48,16 @@ used to be opened:
   the shared records compressed and chained as a file holds them. A recording
   switched on part-way through a session therefore starts at the session's
   beginning.
-- Each later commit is compressed once and kept in memory, and the same frame is
-  appended to the file.
+- Each later commit is compressed once and appended to the file. A frame the
+  file holds, flushed, is not kept in memory as well (2026-11-10): its slot
+  records the file and offset (`memoryBacking`), and reads fetch it from
+  there. Attaching a file part-way releases the frames it has just been given.
+  With two files attached, the first that takes a driver's chunk holds it. A
+  session that is not recording keeps every frame in memory, as before.
+- A file that closes while the session carries on (`detachFile`, a failed
+  write) first hands its frames back to memory (`reclaimFrom`). A frame that
+  cannot be read back is lost to the session. `finish()` skips this, since
+  nothing reads the session afterwards.
 - `detachFile` (recording switched off, session end, a new session, playback
   opening the file) writes the laps still being built and the pending shared
   records to the file alone, open laps as partial, then the index, as
@@ -82,16 +91,18 @@ only there.
   builders, returns it to its driver's pending laps, and drops committed shared
   records and restriction changes from the target on. The normal rewind then
   reopens or drops those laps, and each affected driver's committed state is
-  replayed from the laps that remain. An attached file is then rewritten from
-  memory beside the original and swapped in, so it never holds the abandoned
-  timeline.
+  replayed from the laps that remain. An attached file is then rewritten
+  beside the original and swapped in, so it never holds the abandoned
+  timeline. Frames the file alone holds are read from the original while the
+  new one is written, and take their new offsets once it is in place.
 - A new session UID drops the retained session (`TnrdWriter::resetSession`),
   finishing its file.
 
 ## Reads
 
 `LiveV6Store` is the read side. It asks the writer thread for a
-`V6MemoryImage` (committed chunk frames shared by pointer, laps still being
+`V6MemoryImage` (committed chunk frames shared by pointer, or read from the
+recording file for that image alone when the file holds them; laps still being
 built encoded for the image, lap summaries, driver headers and the requested
 shared records), built after every event queued before the request. Its own
 read thread opens the image with `TnrdV6Archive::openMemory()` and reads it as

@@ -23,6 +23,15 @@ namespace {
 JavaVM* gVm = nullptr;
 std::mutex gMutex;
 
+// Detaches a native thread this file attached, when that thread exits.
+struct ThreadAttachment {
+    bool attached = false;
+    ~ThreadAttachment() {
+        if (attached && gVm) gVm->DetachCurrentThread();
+    }
+};
+thread_local ThreadAttachment tAttachment;
+
 class AndroidSink final : public tnrp::Sink {
 public:
     AndroidSink(JNIEnv* env, jobject receiver)
@@ -34,10 +43,8 @@ public:
     }
 
     ~AndroidSink() override {
-        bool attached = false;
-        JNIEnv* env = environment(attached);
+        JNIEnv* env = environment();
         if (env && receiver_) env->DeleteGlobalRef(receiver_);
-        if (attached) gVm->DetachCurrentThread();
     }
 
     void onRow(const std::string& json) override {
@@ -52,8 +59,7 @@ public:
     }
 
     void deliver(const std::string& json) {
-        bool attached = false;
-        JNIEnv* env = environment(attached);
+        JNIEnv* env = environment();
         if (!env || !receiver_ || !onRow_) return;
 
         jstring value = env->NewStringUTF(json.c_str());
@@ -62,7 +68,6 @@ public:
             env->DeleteLocalRef(value);
         }
         if (env->ExceptionCheck()) env->ExceptionClear();
-        if (attached) gVm->DetachCurrentThread();
     }
 
     void onBinary(const uint8_t* data, size_t len) override {
@@ -109,8 +114,7 @@ public:
     }
 
     void deliverBinary(const uint8_t* data, size_t len) {
-        bool attached = false;
-        JNIEnv* env = environment(attached);
+        JNIEnv* env = environment();
         if (!env || !receiver_ || !onBinary_) return;
 
         jbyteArray value = env->NewByteArray(static_cast<jsize>(len));
@@ -121,17 +125,18 @@ public:
             env->DeleteLocalRef(value);
         }
         if (env->ExceptionCheck()) env->ExceptionClear();
-        if (attached) gVm->DetachCurrentThread();
     }
 
 private:
-    JNIEnv* environment(bool& attached) const {
+    // An engine thread delivers many rows, so it attaches to the VM once and
+    // stays attached until it exits, rather than around every row.
+    JNIEnv* environment() const {
         JNIEnv* env = nullptr;
         const jint state = gVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
         if (state == JNI_OK) return env;
         if (state != JNI_EDETACHED ||
             gVm->AttachCurrentThread(&env, nullptr) != JNI_OK) return nullptr;
-        attached = true;
+        tAttachment.attached = true;
         return env;
     }
 

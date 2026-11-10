@@ -357,7 +357,7 @@ let latestSeekRequestId = 0
 type SeekForwardPhase = 'idle' | 'waiting-flush' | 'waiting-renderer'
 let seekForwardPhase: SeekForwardPhase = 'idle'
 let seekForwardRequestId = 0
-let seekBufferedBinary: Buffer[] = []
+let seekBufferedBinary: Uint8Array[] = []
 let seekBufferedJson: string[] = []
 let seekBufferedBytes = 0
 const MAX_SEEK_FORWARD_BYTES = 64 * 1024 * 1024
@@ -388,9 +388,9 @@ function bufferSeekJson(batch: string): void {
 }
 
 function bufferSeekBinary(batch: Uint8Array): void {
-  const retained = Buffer.from(batch)
-  seekBufferedBinary.push(retained)
-  seekBufferedBytes += retained.byteLength
+  // Each batch is its own Buffer from the addon, so it is kept as it is.
+  seekBufferedBinary.push(batch)
+  seekBufferedBytes += batch.byteLength
   trimSeekForwardBuffer()
 }
 
@@ -482,8 +482,8 @@ function emitPlaybackState(state: Partial<PlaybackState>): void {
 // flight. Forward each real batch unchanged so display data keeps the engine's
 // session_time values and no synthetic samples can cross lap boundaries.
 function forwardBinary(batch: Uint8Array): void {
-  const buffer = Buffer.from(batch)
   if (additionalLoggingEnabled) {
+    const buffer = Buffer.from(batch)
     const inspection = inspectBinaryBatch(buffer)
     bridgeDiagnostics.binaryCallbacks++
     bridgeDiagnostics.binaryBytes += buffer.length

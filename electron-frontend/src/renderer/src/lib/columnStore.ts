@@ -1003,8 +1003,13 @@ function tablesOfDecoded(decoded: DecodedV6History): V6HistoryTables {
   return { mask: decoded.mask, tables, typeCounts: decoded.typeCounts }
 }
 
-/** Decodes payloads elsewhere (a worker); throws to fall back to this thread. */
+/**
+ * Decodes payloads elsewhere (a worker); throws to fall back to this thread.
+ * A decoder may take ownership of `bytes` (leaving it detached); its failure
+ * then carries the payload back as `bytes`.
+ */
 export type HistoryDecoder = (bytes: Uint8Array) => Promise<DecodedV6History>
+export type HistoryDecodeError = Error & { bytes?: Uint8Array }
 let historyDecoder: HistoryDecoder | null = null
 
 export function setHistoryDecoder(decoder: HistoryDecoder | null): void {
@@ -1020,12 +1025,17 @@ export function setHistoryDecoder(decoder: HistoryDecoder | null): void {
 export async function decodeV6History(bytes: Uint8Array, pause?: DecodePause): Promise<V6HistoryTables | null> {
   if (historyDecoder) {
     let decoded: DecodedV6History | null = null
+    const payloadBytes = bytes.byteLength
     try {
       decoded = await historyDecoder(bytes)
     } catch (error) {
       // A decoder failure (or a bad payload) falls back to the in-thread
       // decode below, which reports a bad payload the way it always did.
       console.warn('[history-decode] worker decode failed; decoding in-thread:', error)
+      const returned = (error as HistoryDecodeError).bytes
+      if (returned) bytes = returned
+      // The decoder took the payload and died with it: nothing left to decode.
+      if (bytes.byteLength !== payloadBytes) throw error
     }
     if (decoded) {
       if (pause && !(await pause())) return null

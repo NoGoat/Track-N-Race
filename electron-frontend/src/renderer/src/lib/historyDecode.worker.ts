@@ -11,6 +11,8 @@ self.onmessage = async (event: MessageEvent<DecodeRequest>) => {
     const decoded = await decodeV6HistoryChunks(bytes)
     self.postMessage({ id, decoded }, { transfer: decodedV6HistoryBuffers(decoded) })
   } catch (error) {
-    self.postMessage({ id, error: error instanceof Error ? error.message : String(error) })
+    // Hand the payload back so the caller can decode it in-thread.
+    self.postMessage({ id, error: error instanceof Error ? error.message : String(error), bytes },
+                     { transfer: [bytes.buffer as ArrayBuffer] })
   }
 }

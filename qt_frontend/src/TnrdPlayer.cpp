@@ -994,13 +994,15 @@ TnrdPlayer::decodeHistory(const std::shared_ptr<EngineSeekFlush>& flush,
         });
     }
 
-    qsizetype offset = 0;
+    size_t offset = 0;
+    const std::string& coldJson = flush->coldJson;
     PlaybackPatchMerger patchMerger;
-    while (offset < flush->coldJson.size()) {
-        qsizetype end = flush->coldJson.indexOf('\n', offset);
-        if (end < 0) end = flush->coldJson.size();
+    while (offset < coldJson.size()) {
+        size_t end = coldJson.find('\n', offset);
+        if (end == std::string::npos) end = coldJson.size();
         if (end > offset) {
-            const QByteArray line = flush->coldJson.mid(offset, end - offset);
+            const QByteArray line(coldJson.data() + offset,
+                                  static_cast<qsizetype>(end - offset));
             if (auto decoded = patchMerger.decode(line))
                 appendHistoryRow(*result, decoded->row, decoded->sparse);
         }

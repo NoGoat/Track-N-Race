@@ -1278,6 +1278,20 @@ struct TnrdV6Writer::Impl {
     // fileErrors instead of failing the session.
     bool memory{};
     std::vector<std::shared_ptr<const std::vector<uint8_t>>> memoryPayloads;
+    // A committed frame an attached file holds is not kept here as well: its
+    // memoryPayloads slot is null and this entry, at the same index, names the
+    // file (AttachedFile::id) and the frame's offset in it. Reads fetch it
+    // from there. A file that closes (detached, failed) first hands its frames
+    // back to memory, so the session never depends on a closed file.
+    struct FileBacked { uint32_t fileId{}; uint64_t offset{}; };
+    std::vector<FileBacked> memoryBacking;
+    uint32_t nextFileId{1};
+    // rewriteFile(): the file being replaced, whose frames are read through
+    // this handle while the new one is written.
+    uint32_t rewriteSourceId{};
+    std::FILE* rewriteSource{};
+    // Off while finish() closes the session: nothing reads it afterwards.
+    bool reclaimOnDetach{true};
     std::vector<V6SharedRecord> memoryShared;
     size_t memoryPayloadBytes{}, memorySharedBytes{};
     uint64_t uncommittedLaps{};
@@ -1286,6 +1300,7 @@ struct TnrdV6Writer::Impl {
     // every file.
     struct AttachedFile {
         std::FILE* file{};
+        uint32_t id{};              // what memoryBacking names it by
         std::string path;
         bool playerOnly{};
         std::vector<V6ChunkInfo> chunks;
@@ -1521,11 +1536,72 @@ struct TnrdV6Writer::Impl {
         for (const auto& lap : from) if (accepts(target, lap.driverIndex)) out.push_back(lap);
         return out;
     }
+    // Memory mode: the open handle of the file memoryBacking names by `id`.
+    std::FILE* backingFile(uint32_t id) const {
+        if (id == 0) return nullptr;
+        if (id == rewriteSourceId) return rewriteSource;
+        for (const auto& target : files) if (target.id == id) return target.file;
+        return nullptr;
+    }
+    // Memory mode: a committed chunk's frame, from memory or read from the
+    // file that holds it. Null for an uncommitted chunk, or when the read fails.
+    std::shared_ptr<const std::vector<uint8_t>> payloadOf(const V6ChunkInfo& chunk) const {
+        if (chunk.offset >= memoryPayloads.size()) return nullptr;
+        if (memoryPayloads[chunk.offset]) return memoryPayloads[chunk.offset];
+        const FileBacked& backing = memoryBacking[chunk.offset];
+        std::FILE* source = backingFile(backing.fileId);
+        if (!source) return nullptr;
+        auto frame = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(chunk.compressedSize));
+        const bool read = readAt(source, backing.offset, frame->data(), frame->size());
+        if (!read) std::clearerr(source);
+        // An attached file is appended to; leave it where the next write goes.
+        if (source != rewriteSource) (void)seekEnd(source);
+        return read ? frame : nullptr;
+    }
+    bool fileBacked(const V6ChunkInfo& chunk) const {
+        return chunk.offset < memoryBacking.size() && memoryBacking[chunk.offset].fileId != 0;
+    }
+    // Memory mode: brings back into memory every frame the file `id` alone
+    // holds, read through `source`. One that cannot be read is lost.
+    void reclaimFrom(uint32_t id, std::FILE* source) {
+        if (id == 0) return;
+        for (const auto& chunk : chunks) {
+            if (chunk.offset >= memoryBacking.size() || memoryBacking[chunk.offset].fileId != id) continue;
+            auto frame = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(chunk.compressedSize));
+            if (source && readAt(source, memoryBacking[chunk.offset].offset, frame->data(), frame->size())) {
+                memoryPayloadBytes += frame->size();
+                memoryPayloads[chunk.offset] = std::move(frame);
+            } else if (source) {
+                std::clearerr(source);
+            }
+            memoryBacking[chunk.offset] = {};
+        }
+        if (source) (void)seekEnd(source);
+    }
+    // Memory mode: `target` now holds these frames (memory index, file
+    // offset). Those still in memory are released to it, and those it already
+    // held take their new offsets.
+    void adoptPlaced(const AttachedFile& target, const std::vector<std::pair<uint64_t, uint64_t>>& placed) {
+        for (const auto& [index, offset] : placed) {
+            auto& payload = memoryPayloads[index];
+            if (payload) {
+                memoryPayloadBytes -= std::min(memoryPayloadBytes, payload->size());
+                payload.reset();
+                memoryBacking[index] = {target.id, offset};
+            } else if (memoryBacking[index].fileId == target.id) {
+                memoryBacking[index].offset = offset;
+            }
+        }
+    }
     // Memory mode: an attached file failed. It is closed where it stands (a
     // reader's recovery scan still finds what reached it) and the session
     // carries on without it.
     void fileFailed(AttachedFile& target, std::string why) {
-        if (target.file) std::fclose(target.file);
+        // Its frames come back to memory first, through a fresh handle when
+        // its own is already closed.
+        std::FILE* source = target.file ? target.file : openTnrdFile(target.path, "rb");
+        reclaimFrom(target.id, source);
+        if (source) std::fclose(source);
         target.file = nullptr; fileErrors.emplace_back(target.path, std::move(why));
         target.chunks.clear(); target.shared.clear(); target.lastSharedByType.clear();
     }
@@ -1556,15 +1632,24 @@ struct TnrdV6Writer::Impl {
             fileOnly->directory->push_back(info);
         } else if (memory) {
             info.offset = memoryPayloads.size();
-            memoryPayloads.push_back(std::make_shared<const std::vector<uint8_t>>(
-                scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(size)));
-            memoryPayloadBytes += size;
+            memoryPayloads.emplace_back(); memoryBacking.emplace_back();
+            // The first file that takes the frame, and has it past its own
+            // buffer, keeps it for the session; otherwise memory does.
+            FileBacked backing;
             for (auto& target : files) {
                 if (!target.file || !accepts(target, driver)) continue;
                 V6ChunkInfo stored = info;
-                if (writeChunkRecord(target.file, stored, scratch.data(), size, stored.offset))
+                if (writeChunkRecord(target.file, stored, scratch.data(), size, stored.offset)) {
                     target.chunks.push_back(stored);
-                else fileFailed(target, "failed while appending V6 chunk");
+                    if (!backing.fileId && std::fflush(target.file) == 0) backing = {target.id, stored.offset};
+                } else fileFailed(target, "failed while appending V6 chunk");
+            }
+            if (backing.fileId && backingFile(backing.fileId)) {
+                memoryBacking[info.offset] = backing;
+            } else {
+                memoryPayloads[info.offset] = std::make_shared<const std::vector<uint8_t>>(
+                    scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(size));
+                memoryPayloadBytes += size;
             }
         } else if (!writeChunkRecord(file, info, scratch.data(), size, info.offset)) {
             fail(errorOut, "failed while appending V6 chunk"); return false;
@@ -1920,7 +2005,7 @@ struct TnrdV6Writer::Impl {
     // clock's times, for a chunk that keeps its times there.
     bool decodeCommitted(const V6ChunkInfo& chunk, const std::vector<float>* clock, ChunkData& out,
                          std::string* errorOut) const {
-        const auto& payload = chunk.offset < memoryPayloads.size() ? memoryPayloads[chunk.offset] : nullptr;
+        const auto payload = payloadOf(chunk);
         std::string plain(chunk.uncompressedSize, '\0');
         if (!payload || !inflate(payload->data(), payload->size(), plain.data(), plain.size()) ||
             !decodeChunk(std::move(plain), chunk.flags, chunk.sampleCount, out, clock)) {
@@ -1958,10 +2043,12 @@ struct TnrdV6Writer::Impl {
             return type == CLOCK_TYPE_ID || filter.types.empty() || contains(filter.types, type);
         };
         for (const auto& chunk : chunks) {
-            if (!wantDriver(chunk.driverIndex) || !wantType(chunk.typeId) ||
-                chunk.offset >= memoryPayloads.size() || !memoryPayloads[chunk.offset]) continue;
+            if (!wantDriver(chunk.driverIndex) || !wantType(chunk.typeId)) continue;
+            // A frame its file holds is read for this image alone.
+            auto payload = payloadOf(chunk);
+            if (!payload) continue;
             V6ChunkInfo info = chunk; info.offset = out->payloads.size();
-            out->payloads.push_back({memoryPayloads[chunk.offset], true});
+            out->payloads.push_back({std::move(payload), true});
             out->chunks.push_back(info);
         }
         out->laps = committedLaps;
@@ -2008,7 +2095,8 @@ struct TnrdV6Writer::Impl {
     bool appendRow(std::string_view, float, std::string*);
     bool rewind(float, std::string*);
     bool uncommit(float, std::string*);
-    bool writeFileBacklog(AttachedFile&, std::string*);
+    bool writeFileBacklog(AttachedFile&, std::string*,
+                          std::vector<std::pair<uint64_t, uint64_t>>* placed = nullptr);
     bool attachFile(const std::string&, const HeaderRow&, bool playerOnly, std::string*);
     bool detachOne(AttachedFile&, std::string*);
     bool detachFile(std::string*);
@@ -2418,6 +2506,7 @@ bool TnrdV6Writer::Impl::uncommit(float time, std::string* errorOut) {
         auto& payload = memoryPayloads[chunk.offset];
         if (payload) memoryPayloadBytes -= std::min(memoryPayloadBytes, payload->size());
         payload.reset();
+        memoryBacking[chunk.offset] = {};
     }
     chunks.erase(std::remove_if(chunks.begin(), chunks.end(),
         [&](const V6ChunkInfo& chunk) { return reopen.contains(chunk.lapId); }), chunks.end());
@@ -2482,19 +2571,27 @@ bool TnrdV6Writer::Impl::uncommit(float time, std::string* errorOut) {
 // Memory mode: a newly opened file's opening and everything committed so
 // far that it takes, in commit order, so the file reads as if it had been
 // attached from the session's start.
-bool TnrdV6Writer::Impl::writeFileBacklog(AttachedFile& target, std::string* errorOut) {
+// `placed` receives each chunk written, as (memory index, offset in this file).
+bool TnrdV6Writer::Impl::writeFileBacklog(AttachedFile& target, std::string* errorOut,
+                                          std::vector<std::pair<uint64_t, uint64_t>>* placed) {
     target.chunks.clear(); target.shared.clear(); target.lastSharedByType.clear();
     const auto sentinel = makeHeader(0, 0, 0, 0, 0, 0, 0);
     if (!writeAll(target.file, sentinel.data(), sentinel.size())) { fail(errorOut, "could not initialize V6 file"); return false; }
     if (!writeSessionRecord(target.file, errorOut)) return false;
     for (const auto& chunk : chunks) {
-        const auto& payload = chunk.offset < memoryPayloads.size() ? memoryPayloads[chunk.offset] : nullptr;
-        if (!payload || !accepts(target, chunk.driverIndex)) continue;
+        if (!accepts(target, chunk.driverIndex)) continue;
+        const auto payload = payloadOf(chunk);
+        if (!payload) {
+            // A frame another file holds could not be read back from it.
+            if (fileBacked(chunk)) { fail(errorOut, "could not read back a recorded V6 chunk"); return false; }
+            continue;
+        }
         V6ChunkInfo stored = chunk;
         if (!writeChunkRecord(target.file, stored, payload->data(), payload->size(), stored.offset)) {
             fail(errorOut, "failed while appending V6 chunk"); return false;
         }
         target.chunks.push_back(stored);
+        if (placed) placed->emplace_back(chunk.offset, stored.offset);
     }
     for (const auto& record : memoryShared) {
         V6Metadata::StoredShared stored;
@@ -2516,14 +2613,17 @@ bool TnrdV6Writer::Impl::attachFile(const std::string& filePath, const HeaderRow
     AttachedFile target;
     target.file = openTnrdFile(filePath, "w+b");
     if (!target.file) { fail(errorOut, "could not create V6 file: " + std::string(std::strerror(errno))); return false; }
-    target.path = filePath; target.playerOnly = playerOnly;
+    target.path = filePath; target.playerOnly = playerOnly; target.id = nextFileId++;
     // Car Telemetry 2 may already have told the session its regulations.
     const auto regulations = session.regulations_2026;
     session = header; session.magic = "TNRD_V6"; session.compression = "zstd";
     if (header.session_type != 0) sessionType = header.session_type;
     if (!session.regulations_2026) session.regulations_2026 = regulations;
-    if (!writeFileBacklog(target, errorOut)) { std::fclose(target.file); return false; }
+    std::vector<std::pair<uint64_t, uint64_t>> placed;
+    if (!writeFileBacklog(target, errorOut, &placed)) { std::fclose(target.file); return false; }
     files.push_back(std::move(target));
+    // The file holds everything committed so far that it takes, flushed.
+    adoptPlaced(files.back(), placed);
     return true;
 }
 
@@ -2548,6 +2648,8 @@ bool TnrdV6Writer::Impl::detachFile(std::string* errorOut) {
 // partial; the shared records still pending follow; and the index lists them
 // beside the committed ones.
 bool TnrdV6Writer::Impl::detachOne(AttachedFile& target, std::string* errorOut) {
+    // The session carries on in memory, so it takes back what this file held.
+    if (reclaimOnDetach) reclaimFrom(target.id, target.file);
     auto directory = target.chunks;
     auto shared = target.shared;
     std::vector<V6LapSummary> laps = lapsFor(target, committedLaps);
@@ -2600,15 +2702,23 @@ void TnrdV6Writer::Impl::rewriteFile(AttachedFile& target) {
     std::fclose(target.file); target.file = nullptr;
     const std::string rewritePath = target.path + ".rewrite.tmp";
     std::string error;
+    // The frames this file alone holds are read from it as the new one is
+    // written. Until the new one is in place they keep their old offsets, so
+    // a failure below still reclaims them from the original.
+    rewriteSourceId = target.id; rewriteSource = openTnrdFile(target.path, "rb");
+    std::vector<std::pair<uint64_t, uint64_t>> placed;
     target.file = openTnrdFile(rewritePath, "w+b");
-    bool written = target.file && writeFileBacklog(target, &error);
+    bool written = target.file && writeFileBacklog(target, &error, &placed);
     if (target.file && std::fclose(target.file) != 0 && written) { written = false; error = "could not write V6 file"; }
     target.file = nullptr;
+    if (rewriteSource) std::fclose(rewriteSource);
+    rewriteSource = nullptr; rewriteSourceId = 0;
     if (!written || !replaceFile(rewritePath, target.path)) {
         removeFile(rewritePath);
         fileFailed(target, error.empty() ? "could not rewrite the V6 file after a flashback" : error);
         return;
     }
+    adoptPlaced(target, placed);
     target.file = openTnrdFile(target.path, "r+b");
     if (!target.file || !seekEnd(target.file)) fileFailed(target, "could not reopen the V6 file after a flashback");
 }
@@ -2711,7 +2821,10 @@ void TnrdV6Writer::abort() {
 bool TnrdV6Writer::finish(std::string* errorOut) {
     if (!isOpen()) return true;
     // A memory session finishes its attached file, if any, and closes.
-    if (impl_->memory) { const bool ok = impl_->detachFile(errorOut); impl_->memory = false; return ok; }
+    if (impl_->memory) {
+        impl_->reclaimOnDetach = false;
+        const bool ok = impl_->detachFile(errorOut); impl_->memory = false; return ok;
+    }
     const float time = std::max(0.0f,impl_->now());
     for (uint8_t index=0;index<Impl::kDriverSlots;++index) if (impl_->drivers[index].open)
         impl_->closeLap(index,time,0,0,0,0,false,!impl_->drivers[index].currentInvalid,false);

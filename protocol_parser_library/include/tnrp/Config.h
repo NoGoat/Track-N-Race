@@ -68,6 +68,12 @@ struct Config {
     // from it as V6 column blocks (detail::LiveV6Store).
     bool        binaryPlayback = false;
 
+    // Whether a binaryPlayback host keeps the live session in memory as above.
+    // On by default. A host that turns it off has no live history: no chart
+    // backfill or host restore, no liveGetLapData, no deep Strategy rollback
+    // and no live track-map matching or generation.
+    bool        retainLiveSession = true;
+
     // Electron understands TNRD V6's independently updated compatibility
     // patches and merges them at the renderer boundary. Other hosts keep the
     // legacy aggregate projection unless they opt in explicitly.

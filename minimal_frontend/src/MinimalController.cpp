@@ -79,6 +79,9 @@ bool MinimalController::start(std::string& error) {
     // standard-library template, where the private base is inaccessible on MSVC.
     auto* sink = static_cast<tnrp::Sink*>(this);
     engine_ = std::make_unique<tnrp::Engine>(config, sink);
+    // onRow() reads session rows only (row id 5), so ask for nothing else.
+    // Recording ignores this and stays complete; control rows are never masked.
+    engine_->setDataRequirements(1u << 5, 0, 0.0f);
     beginRecordingWatch();
     if (!engine_->startUdp()) {
         error = engine_->udpLastError();

@@ -23,7 +23,7 @@ struct EngineSeekFlush {
     std::shared_ptr<const std::vector<uint8_t>> binaryStore;
     size_t binaryBegin = 0;
     size_t binaryEnd = 0;
-    QByteArray coldJson;
+    std::string coldJson;   // newline-delimited rows, as the engine handed them over
     float currentLapStart = 0.0f;
     int lapNum = 0;
     bool allHistory = false;
@@ -83,7 +83,7 @@ public:
         flush->binaryStore = std::move(binStore);
         flush->binaryBegin = binBegin;
         flush->binaryEnd = binEnd;
-        flush->coldJson = QByteArray(coldJson.data(), static_cast<qsizetype>(coldJson.size()));
+        flush->coldJson = std::move(coldJson);
         flush->currentLapStart = currentLapStart;
         flush->lapNum = lapNum;
         flush->allHistory = allHistory;

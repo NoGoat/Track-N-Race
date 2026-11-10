@@ -189,8 +189,9 @@ Engine::Engine(const Config& config, Sink* sink)
     // Only the desktop hosts read live history. There the recorder's V6 writer
     // keeps the whole session in memory, recording or not, and live reads
     // take images of it; elsewhere it runs only while recording, as a file.
-    writer_.setRetainSession(config_.binaryPlayback);
-    if (config_.binaryPlayback) {
+    const bool retainLiveSession = config_.binaryPlayback && config_.retainLiveSession;
+    writer_.setRetainSession(retainLiveSession);
+    if (retainLiveSession) {
         liveV6_ = std::make_unique<detail::LiveV6Store>(
             [this](const detail::V6ImageFilter& filter, detail::LiveV6Store::ImageCallback done) {
                 writer_.requestMemoryImage(filter, std::move(done));

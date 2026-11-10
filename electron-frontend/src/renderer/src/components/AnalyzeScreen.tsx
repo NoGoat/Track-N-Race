@@ -107,6 +107,27 @@ const analysisDriverKey = (selection: AnalysisDriverSelection) =>
   `${selection.source}:${selection.driverIndex}`
 const analysisLapKey = (selection: AnalysisDriverSelection, lapNum: number) =>
   `${analysisDriverKey(selection)}:${lapNum}`
+// Comparison laps held at once, as the store's current-lap cache.
+const MAX_ANALYSIS_LAP_CACHE = 6
+// `cache` with `lap` as its newest entry. Past the limit the oldest laps go,
+// except those in `keep` (the laps on screen); `forget` is told of each.
+function withAnalysisLap(
+  cache: Record<string, AnalyzeLapData>, key: string, lap: AnalyzeLapData,
+  keep: ReadonlySet<string>, forget: (key: string) => void,
+): Record<string, AnalyzeLapData> {
+  const next = { ...cache }
+  delete next[key]
+  next[key] = lap
+  let excess = Object.keys(next).length - MAX_ANALYSIS_LAP_CACHE
+  for (const held of Object.keys(next)) {
+    if (excess <= 0) break
+    if (held === key || keep.has(held)) continue
+    delete next[held]
+    forget(held)
+    excess--
+  }
+  return next
+}
 const ANALYZE_TOGGLE_BUTTON_CLASS = 'analyze-toggle-button flex h-8 min-w-0 flex-1 items-center justify-center rounded focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35'
 const ANALYZE_COMPARISON_COLOR_CLASS = 'h-5 w-5 shrink-0 cursor-pointer rounded border border-[var(--border)] shadow-inner'
 const EMPTY_LAP_OPTION_GROUPS: GroupBase<ComparisonLapOption>[] = []
@@ -1015,6 +1036,7 @@ export default function AnalyzeScreen({
   const activeAnalysisViewTransitionRef = useRef<AnalysisViewTransition | null>(null)
   const requestedRef = useRef(new Map<number, number>())
   const analysisRequestedRef = useRef(new Map<string, number>())
+  const analysisWantedRef = useRef<ReadonlySet<string>>(new Set())
   const graphControlsRef = useRef<AnalyzeChartControls | null>(null)
   const stackedControlsRef = useRef<AnalyzeChartControls | null>(null)
   const seriesRowRefs = useRef(new Map<string, HTMLDivElement>())
@@ -1661,12 +1683,27 @@ export default function AnalyzeScreen({
           { selection: lapBDriver, lapNum: fixedLapMode.lapB },
         ]
       : [{ selection: compareDriver, lapNum: selectedCompareLapNum }]
+    const wanted = new Set<string>()
+    for (const { selection, lapNum } of targets) {
+      if (selection && lapNum !== null) wanted.add(analysisLapKey(selection, lapNum))
+    }
+    analysisWantedRef.current = wanted
+    const forget = (key: string) => { analysisRequestedRef.current.delete(key) }
     for (const { selection, lapNum } of targets) {
       if (!selection || lapNum === null) continue
       const key = analysisLapKey(selection, lapNum)
       const loadedMask = analysisLapCache[key]?.rowTypeMask ?? 0
-      if ((loadedMask & dataMask) === dataMask ||
-          (((analysisRequestedRef.current.get(key) ?? 0) & dataMask) === dataMask)) continue
+      if ((loadedMask & dataMask) === dataMask) continue
+      // The playback driver's lap may already be held as the store's current
+      // lap: the same read of the same recording, so it is shared, not fetched.
+      const shared = selection.source === 'file1' && selection.driverIndex === playbackDriverIndex
+        ? lapCache[lapNum] : undefined
+      if (shared && ((shared.rowTypeMask ?? 0) & dataMask) === dataMask) {
+        setAnalysisLapCache(cache => cache[key] === shared ? cache
+          : withAnalysisLap(cache, key, shared, analysisWantedRef.current, forget))
+        continue
+      }
+      if (((analysisRequestedRef.current.get(key) ?? 0) & dataMask) === dataMask) continue
       analysisRequestedRef.current.set(key, dataMask)
       window.analysisBridge.getLapData(
         lapNum, dataMask, selection.source, selection.driverIndex,
@@ -1674,12 +1711,13 @@ export default function AnalyzeScreen({
         const lapData = parseAnalyzeLapData(payload)
         if (lapData) setAnalysisLapCache(cache => {
           const prior = cache[key]
-          return { ...cache, [key]: prior ? mergeAnalyzeLapData(prior, lapData) : lapData }
+          return withAnalysisLap(cache, key, prior ? mergeAnalyzeLapData(prior, lapData) : lapData,
+            analysisWantedRef.current, forget)
         })
         else analysisRequestedRef.current.delete(key)
       })
     }
-  }, [analysisLapCache, compareDriver, dataMask, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapADriver, lapBDriver, selectedCompareLapNum])
+  }, [analysisLapCache, compareDriver, dataMask, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapADriver, lapBDriver, lapCache, playbackDriverIndex, selectedCompareLapNum])
 
   const setMetricsSelected = useCallback((metricIds: string[], selected: boolean) => {
     if (!selected) {

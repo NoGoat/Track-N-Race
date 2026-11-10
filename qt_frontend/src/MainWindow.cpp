@@ -2438,6 +2438,17 @@ void MainWindow::bufferSeekReplay(const QByteArray& data, bool binary) {
     if (drop > 0) playbackSeekReplay_.remove(0, drop);
 }
 
+// The value of a row's "type", which every engine row starts with.
+static std::string_view engineRowType(const QByteArray& json) {
+    const std::string_view source(json.constData(), static_cast<size_t>(json.size()));
+    constexpr std::string_view key = "\"type\":\"";
+    const size_t begin = source.find(key);
+    if (begin == std::string_view::npos) return {};
+    const size_t value = begin + key.size();
+    const size_t end = source.find('"', value);
+    return end == std::string_view::npos ? std::string_view{} : source.substr(value, end - value);
+}
+
 void MainWindow::onEngineRow(const QByteArray& json) {
     // EngineSink coalesces cold/control traffic into JSONL. Process each row in
     // order while retaining only one GUI callback for the whole producer burst.
@@ -2482,10 +2493,13 @@ void MainWindow::onEngineRow(const QByteArray& json) {
         ++diagnosticJsonRows_;
         diagnosticJsonBytes_ += static_cast<quint64>(json.size());
     }
-    if (handleRecordingErrorRow(json)) return;
-    if (handleRecordingFinishedRow(json)) return;
+    // Read the type once rather than searching the row for each kind below.
+    const std::string_view type = engineRowType(json);
+    if (type == "recording_error" && handleRecordingErrorRow(json)) return;
+    if (type == "recording_finished" && handleRecordingFinishedRow(json)) return;
     // Modded maps: the session's map choice, and changes to the saved maps.
-    if (TrackMapService::instance().handleRow(json)) return;
+    if ((type == "track_map" || type == "track_maps_changed") &&
+        TrackMapService::instance().handleRow(json)) return;
 
     // Playback lifecycle/state payloads belong to the engine-backed player
     // facade, not AnyRow. Handling playback_loaded synchronously flips
@@ -2496,7 +2510,7 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     // the loaded file, not the cursor, and are never held back.
     // Pushed for the lap-history claims (the lap-times dialog, the Trends
     // page); it describes one car, not a panel. Each ignores other cars.
-    if (json.contains("\"type\":\"driver_lap_history\"")) {
+    if (type == "driver_lap_history") {
         tnrp::DriverLapHistoryRow history;
         if ((lapsDialog_ || trendsPage_) && !glz::read<glz::opts{.error_on_unknown_keys = false}>(
                 history, std::string_view(json.constData(), static_cast<size_t>(json.size())))) {
@@ -2506,7 +2520,7 @@ void MainWindow::onEngineRow(const QByteArray& json) {
         return;
     }
     // The streamed driver's per-lap ERS and fuel, pushed when a lap completes.
-    if (json.contains("\"type\":\"lap_measures\"")) {
+    if (type == "lap_measures") {
         tnrp::LapMeasuresRow measures;
         if (trendsPage_ && !glz::read<glz::opts{.error_on_unknown_keys = false}>(
                 measures, std::string_view(json.constData(), static_cast<size_t>(json.size()))))
@@ -2515,9 +2529,8 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     }
 
     if (inPlayback_ && playbackSeekInstalling_ &&
-        !json.contains("\"type\":\"protocol_status\"") &&
-        !json.contains("\"type\":\"protocol_warning\"")) {
-        if (json.contains("\"type\":\"strategy\""))   // TEMP strategy trace
+        type != "protocol_status" && type != "protocol_warning") {
+        if (type == "strategy")   // TEMP strategy trace
             qInfo("[strategy-trace] strategy row at seek gate: %s",
                   playbackSeekFlushReceived_ ? "buffered" : "DROPPED (before flush)");
         if (playbackSeekFlushReceived_) bufferSeekReplay(json, false);

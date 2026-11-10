@@ -357,6 +357,8 @@ let seekRendererPending = false
 // authoritative flush then replaces it. Each entry holds a full race of
 // columns for the requested families, so only a few drivers are kept.
 const MAX_CACHED_DRIVERS = 3
+// ...and no more than this many bytes of column chunks between them.
+const MAX_CACHED_DRIVER_BYTES = 64 * 1024 * 1024
 type FamilyViews = Record<HistoryFamily, ColumnView>
 const allLapsDriverCache = new Map<number, FamilyViews>()
 // The complete AL history captured at a seek start, before it is cleared.
@@ -372,10 +374,21 @@ function snapshotTables(): FamilyViews {
   return views
 }
 
+function driverCacheBytes(): number {
+  const seen = new Set<object>()
+  let bytes = 0
+  for (const views of allLapsDriverCache.values()) {
+    for (const view of Object.values(views)) bytes += columnStorageBytes(view, seen)
+  }
+  return bytes
+}
+
 function rememberDriverHistory(driver: number, views: FamilyViews): void {
   allLapsDriverCache.delete(driver)
   allLapsDriverCache.set(driver, views)
-  while (allLapsDriverCache.size > MAX_CACHED_DRIVERS) {
+  // The newest entry always stays, whatever its size.
+  while (allLapsDriverCache.size > MAX_CACHED_DRIVERS ||
+         (allLapsDriverCache.size > 1 && driverCacheBytes() > MAX_CACHED_DRIVER_BYTES)) {
     const oldest = allLapsDriverCache.keys().next().value
     if (oldest === undefined) break
     allLapsDriverCache.delete(oldest)
@@ -901,6 +914,7 @@ function resetSession(): void {
   fastestLapTime = Infinity; fastestLapSet = false
   cancelFastestRecovery()
   forgetStoredLaps()
+  invalidateWholeLiveLap()
   sessionHistoryBest.clear()
   liveTyreSetsByCar.clear()
   raceEventsArr = []
@@ -1152,6 +1166,7 @@ function applyLiveRewind(target: number): void {
   const previousLapNum = liveLapBoundaries[liveLapBoundaries.length - 2]?.lapNum
   const oldCurrentLapNum = lapNum
 
+  invalidateWholeLiveLap()
   for (const table of Object.values(TABLE_OF_FAMILY)) table.truncateAt(target)
   raceEventsArr = raceEventsArr.filter(e => e.session_time == null || e.session_time <= target)
   liveLapBoundaries = liveLapBoundaries.filter(boundary => boundary.sessionTime <= target)
@@ -1232,6 +1247,7 @@ function learnLiveSectorSplits(completed: AnalyzeLapData): void {
 // and update live lap times / fastest lap. Runs in the 'lap' handler now.
 function onLap(lap: LapRow): void {
   if (Number.isFinite(lap.lap_distance_m)) appendRow(lapProgressTable, lap, MAX_ROWS)
+  const priorLapRow = lapState
   lapState = lap
   set({ lap })
   const packetLapStart = lap.session_time - Math.max(0, lap.current_lap_ms) / 1000
@@ -1241,6 +1257,7 @@ function onLap(lap: LapRow): void {
   const garageAware = timedSession && hasDriverStatus
 
   if (garageAware && lap.driver_status !== 1) {
+    liveLapWholeMask = 0
     if (lapTrackingActive) {
       liveLapBoundaries = liveLapBoundaries.filter(boundary => boundary.lapNum !== lapNum)
       if (allLapsMode && lapNum !== null) {
@@ -1263,6 +1280,7 @@ function onLap(lap: LapRow): void {
   }
 
   if (garageAware && !lapTrackingActive) {
+    liveLapWholeMask = 0
     lapNum = lap.lap_num
     lapStartTime = packetLapStart
     lapTrackingActive = true
@@ -1293,6 +1311,8 @@ function onLap(lap: LapRow): void {
   lapTrackingActive = true
 
   if (prevLapNum === null) {
+    // Joined part-way through this lap.
+    liveLapWholeMask = 0
     lapStartTime = packetLapStart
     liveLapBoundaries = [{ lapNum: lap.lap_num, sessionTime: packetLapStart }]
     upsertAllLapsBoundary(liveLapBoundaries[0])
@@ -1303,6 +1323,12 @@ function onLap(lap: LapRow): void {
     return
   }
   if (lap.lap_num === prevLapNum) return
+
+  // The lap just completed, and whether the new one was seen from its start.
+  const completedWholeMask = liveLapWholeMask
+  const sawLapStart = !isPlaybackFlag && priorLapRow !== null && lap.lap_num === prevLapNum + 1 &&
+    lap.session_time - priorLapRow.session_time < WHOLE_LAP_MAX_ROW_GAP_S
+  liveLapWholeMask = sawLapStart ? historyRowMask & CHART_FAMILY_MASK : 0
 
   liveLapBoundaries = [
     ...liveLapBoundaries.filter(boundary => boundary.lapNum !== lap.lap_num),
@@ -1351,8 +1377,11 @@ function onLap(lap: LapRow): void {
       cancelFastestRecovery()
       set({ fastestLapNum: prevLapNum, liveFastestLapData: completedLapData })
     }
-    // The snapshots above are what this window happened to receive; the
-    // store's copies replace them.
+    // The snapshots above are what this window happened to receive. A lap
+    // received whole is cut again from the tables once its last rows are in;
+    // any other is replaced by the store's copy.
+    if (completedWholeMask !== 0)
+      scheduleWholeLapSnapshot(prevLapNum, lapStartTime, packetLapStart, completedWholeMask)
     requestStoredLiveLaps()
   }
   lapStartTime = packetLapStart
@@ -1374,6 +1403,90 @@ function forgetStoredLaps(): void {
   pendingStoredLaps.clear()
 }
 
+// A lap this window received whole needs no copy from the store: its snapshot
+// is a view of the tables, sharing their chunks. A lap is whole for a family
+// when that family was wanted from the lap's first row to its last and no row
+// was dropped on the way (the window hidden, a rewind, a restore, a session
+// change). Anything less is asked of the store as before.
+const CHART_FAMILY_MASK = HISTORY_ROW.telemetry | HISTORY_ROW.status | HISTORY_ROW.damage |
+  HISTORY_ROW.lap | HISTORY_ROW.motion | HISTORY_ROW.motionEx
+// Lap rows further apart than this mean rows were missed between them.
+const WHOLE_LAP_MAX_ROW_GAP_S = 1
+// Rows of a lap's last moments can arrive just after the lap row that ends it
+// (they travel on another channel), so the snapshot is cut once they are in.
+const WHOLE_LAP_SETTLE_MS = 1000
+// The families received whole for the current live lap so far.
+let liveLapWholeMask = 0
+let liveLapWholeGeneration = 0
+// Snapshots cut from the tables, with the families they hold whole.
+const wholeLapSnapshots = new WeakMap<AnalyzeLapData, number>()
+let pendingWholeLap: { lapNum: number; mask: number; timer: ReturnType<typeof setTimeout> } | null = null
+
+function invalidateWholeLiveLap(): void {
+  liveLapWholeMask = 0
+  liveLapWholeGeneration++
+  if (pendingWholeLap) clearTimeout(pendingWholeLap.timer)
+  pendingWholeLap = null
+}
+
+// Whether `mask` covers every family the charts want now. Without lap rows a
+// lap has no distance axis or sector splits, so it is never taken as whole.
+function coversWantedFamilies(mask: number): boolean {
+  const wanted = historyRowMask & CHART_FAMILY_MASK
+  return (mask & HISTORY_ROW.lap) !== 0 && (wanted & ~mask) === 0
+}
+
+// The lap's rows as views of the tables. Status and damage keep the row before
+// the lap, as the published lap slices do, so the lap starts from a known state.
+function wholeLapData(lapNumber: number, start: number, end: number): AnalyzeLapData {
+  const range = <T extends { session_time: number }>(table: ColumnTable<T>, withPredecessor = false): ColumnView<T> => {
+    const first = table.lowerBound(start, true)
+    return table.frozen(withPredecessor ? Math.max(0, first - 1) : first, table.lowerBound(end, false))
+  }
+  return {
+    lapNum: lapNumber,
+    startSessionTime: start,
+    endSessionTime: end,
+    telemetry: range(telTable),
+    motion: range(motTable),
+    motionEx: range(motExTable),
+    statusHistory: range(stsTable, true),
+    damageHistory: range(dmgTable, true),
+    lapProgress: range(lapProgressTable),
+    playerPositions: [],
+  }
+}
+
+function scheduleWholeLapSnapshot(lapNumber: number, start: number, end: number, mask: number): void {
+  if (pendingWholeLap) clearTimeout(pendingWholeLap.timer)
+  const generation = liveLapWholeGeneration
+  const pending = {
+    lapNum: lapNumber,
+    mask,
+    timer: setTimeout(() => {
+      if (pendingWholeLap !== pending) return
+      pendingWholeLap = null
+      const data = !isPlaybackFlag && generation === liveLapWholeGeneration && pending.mask !== 0
+        ? wholeLapData(lapNumber, start, end)
+        : null
+      if (data && data.lapProgress.length > 0) {
+        wholeLapSnapshots.set(data, pending.mask)
+        const state = useTelemetryStore.getState()
+        const current = state.lap?.lap_num ?? null
+        const update: Partial<TelemetryStoreState> = {}
+        if (current !== null && lapNumber === current - 1) update.livePreviousLapData = data
+        const fastest = state.liveFastestLapData
+        if (state.fastestLapNum === lapNumber && fastest?.lapNum === lapNumber && !storedLapSnapshots.has(fastest))
+          update.liveFastestLapData = data
+        if (update.livePreviousLapData || update.liveFastestLapData) set(update)
+      }
+      // Whatever the snapshot does not cover is still read from the store.
+      requestStoredLiveLaps()
+    }, WHOLE_LAP_SETTLE_MS),
+  }
+  pendingWholeLap = pending
+}
+
 export function requestStoredLiveLaps(): void {
   if (isPlaybackFlag) return
   const state = useTelemetryStore.getState()
@@ -1386,6 +1499,10 @@ export function requestStoredLiveLaps(): void {
   for (const [wantedLap, held] of wanted) {
     if (wantedLap === null || wantedLap <= 0) continue
     if (held && held.lapNum === wantedLap && storedLapSnapshots.has(held)) continue
+    // Held whole from the tables, or about to be.
+    const heldWhole = held && held.lapNum === wantedLap ? wholeLapSnapshots.get(held) : undefined
+    if (heldWhole !== undefined && coversWantedFamilies(heldWhole)) continue
+    if (pendingWholeLap?.lapNum === wantedLap && coversWantedFamilies(pendingWholeLap.mask)) continue
     const askedAt = pendingStoredLaps.get(wantedLap)
     if (askedAt !== undefined && now - askedAt < STORED_LAP_RETRY_MS) continue
     pendingStoredLaps.set(wantedLap, now)
@@ -1969,6 +2086,7 @@ function tableSpan(table: ColumnTable): { rows: number; first: number | null; la
 // a restore. Rebuild it from the engine's lap position and the restored lap
 // rows, the same way applyLiveRewind does after a flashback.
 function applyRestoredLapState(payload: PlaybackSeekFlushBinMsg, restore: HostRestoreRanges): void {
+  invalidateWholeLiveLap()
   const restoredLapNum = Number(payload.lapNum)
   const restoredLapStart = Number(payload.currentLapStart)
   const restoredLapRows = Number(payload.rowTypeMask) & HISTORY_ROW.lap
@@ -2558,6 +2676,9 @@ export function setHistoryRowMask(
   const normalizedFullSession = (fullSessionMask & normalized) >>> 0
   const disabled = historyRowMask & ~normalized
   historyRowMask = normalized
+  // A family dropped now loses its rows; one added now starts part-way through.
+  liveLapWholeMask &= normalized
+  if (pendingWholeLap) pendingWholeLap.mask &= normalized
   fullSessionHistoryRowMask = normalizedFullSession
   secondaryFiniteHistoryRowMask = (finiteWindowMask & normalized & ~normalizedFullSession) >>> 0
   secondaryLapHistoryRowMask = (lapWindowMask & normalized & ~normalizedFullSession) >>> 0
@@ -2798,7 +2919,11 @@ export function startTelemetryBridge(): void {
   // The lap the window was on when hidden; a restore that finds a different
   // lap knows laps were completed while hidden.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') lapNumAtHide = lapNum
+    if (document.visibilityState === 'hidden') {
+      lapNumAtHide = lapNum
+      // Main stops forwarding rows to a hidden window.
+      invalidateWholeLiveLap()
+    }
   })
 
 }
