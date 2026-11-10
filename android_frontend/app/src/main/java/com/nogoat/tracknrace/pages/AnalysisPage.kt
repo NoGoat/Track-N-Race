@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,7 +22,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -79,6 +77,7 @@ import com.nogoat.tracknrace.AnalysisController
 import com.nogoat.tracknrace.AnalysisDeltaCurve
 import com.nogoat.tracknrace.AnalysisDeltaSummary
 import com.nogoat.tracknrace.AnalysisLap
+import com.nogoat.tracknrace.AnalysisLapKey
 import com.nogoat.tracknrace.AnalysisView
 import com.nogoat.tracknrace.DEFAULT_COMPARE_LABEL
 import com.nogoat.tracknrace.DEFAULT_CURRENT_LABEL
@@ -87,11 +86,11 @@ import com.nogoat.tracknrace.DEFAULT_DELTA_POSITIVE_COLOR
 import com.nogoat.tracknrace.DEFAULT_LAP_A_LABEL
 import com.nogoat.tracknrace.DEFAULT_LAP_B_LABEL
 import com.nogoat.tracknrace.PairedTelemetryClient
-import com.nogoat.tracknrace.PlaybackCatalog
 import com.nogoat.tracknrace.R
 import com.nogoat.tracknrace.TelemetryStore
 import com.nogoat.tracknrace.formatDelta
 import com.nogoat.tracknrace.formatLapTimeMs
+import com.nogoat.tracknrace.parseColor
 import com.nogoat.tracknrace.summarizeDelta
 import java.util.Locale
 import kotlin.math.abs
@@ -176,28 +175,68 @@ internal fun AnalysisScreen(
     val fixed = analysis.fixedMode
     val currentLapNumber = if (fixed) analysis.lapA else store.playbackSelectedLap
     val comparisonLapNumber = if (fixed) analysis.lapB else analysis.compareLap
+    // Each lap's driver; the followed lap is always the driver playing.
+    val currentDriver = if (fixed) analysis.lapADriver else -1
+    val comparisonDriver = if (fixed) analysis.lapBDriver else analysis.compareDriver
+    val currentKey = AnalysisLapKey(currentDriver, currentLapNumber)
+    val comparisonKey = AnalysisLapKey(comparisonDriver, comparisonLapNumber)
     val channels = remember(config.series) { requiredChannels(config) }
     val sectorDelta = config.sectorBoundaries && config.sectorDelta
     val distanceMode = catalog.deltaAvailable
 
+    // The Map view's braking zones: hidden behind their chip, listed, or one
+    // zone's head to head. They are fetched only while shown.
+    var brakingPanel by rememberSaveable { mutableStateOf(BrakingPanel.CLOSED) }
+    var brakingZoneIndex by rememberSaveable { mutableIntStateOf(0) }
+    val brakingShown = config.view == AnalysisView.MAP && brakingPanel != BrakingPanel.CLOSED
+
     // Fetch the shown laps, and ask again on a slow tick if a reply went missing.
-    LaunchedEffect(active, catalog, currentLapNumber, comparisonLapNumber, channels, sectorDelta) {
+    LaunchedEffect(active, catalog, currentKey, comparisonKey, channels, sectorDelta, brakingShown) {
         if (!active) return@LaunchedEffect
         while (true) {
-            analysis.sync(catalog, listOf(currentLapNumber, comparisonLapNumber), channels)
-            analysis.syncDelta(catalog, currentLapNumber, comparisonLapNumber, sectorDelta)
+            analysis.syncDriverLaps(catalog, listOf(currentDriver, comparisonDriver))
+            analysis.sync(catalog, listOf(currentKey, comparisonKey), channels)
+            analysis.syncDelta(catalog, currentKey, comparisonKey, sectorDelta)
+            analysis.syncBraking(catalog, currentKey, comparisonKey, brakingShown)
             delay(LAP_SYNC_INTERVAL_MS)
         }
     }
 
-    val current = analysis.laps[currentLapNumber]
-    val comparison = analysis.laps[comparisonLapNumber]
+    // The recording's drivers, for the lap sheets and the lap bar, while each
+    // lap can have its own. Read through derived state: the timing tower's
+    // cars change several times a second.
+    val roster by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.timing.drivers } }
+    val rosterPlayer by remember(store) { derivedStateOf { store.timing.playerIndex } }
+    val driverChoice = analysis.driverChoiceAvailable(catalog)
+    val sheetDrivers = remember(roster, rosterPlayer, driverChoice, catalog.driverIndex) {
+        if (!driverChoice) {
+            emptyList()
+        } else {
+            // During playback the recording's player is the one car always readable.
+            val player = if (rosterPlayer >= 0) rosterPlayer else catalog.driverIndex
+            roster.values
+                .filter { it.name.isNotBlank() }
+                .sortedWith(compareBy({ it.raceNumber }, { it.index }))
+                .map { driver ->
+                    LapSheetDriver(
+                        index = driver.index,
+                        name = driver.name,
+                        raceNumber = driver.raceNumber,
+                        teamColor = parseColor(driver.teamColor)?.let { Color(it) } ?: Color.Gray,
+                        restricted = driver.index != player && driver.yourTelemetry?.let { it != 1 } == true,
+                    )
+                }
+        }
+    }
+
+    val current = analysis.laps[currentKey]
+    val comparison = analysis.laps[comparisonKey]
+    val currentInfo = analysis.lapsOf(catalog, currentDriver)?.firstOrNull { it.lapNumber == currentLapNumber }
+    val comparisonInfo = analysis.lapsOf(catalog, comparisonDriver)?.firstOrNull { it.lapNumber == comparisonLapNumber }
     val comparisonSelected = currentLapNumber > 0 && comparisonLapNumber > 0
     val deltaSeries = config.deltaSeries
     val showDelta = deltaSeries?.visible == true && distanceMode && comparisonSelected
-    val delta = analysis.deltaCurve?.takeIf {
-        it.currentLap == currentLapNumber && it.comparisonLap == comparisonLapNumber && it.sectorDelta == sectorDelta
-    }
+    val delta = analysis.deltaCurveFor(currentKey, comparisonKey, sectorDelta)
     val primaryLabel = if (fixed) config.lapALabel.ifBlank { DEFAULT_LAP_A_LABEL } else config.currentLabel.ifBlank { DEFAULT_CURRENT_LABEL }
     val comparisonLabel = if (fixed) config.lapBLabel.ifBlank { DEFAULT_LAP_B_LABEL } else config.compareLabel.ifBlank { DEFAULT_COMPARE_LABEL }
     val currentColor = Color(config.mapCurrentColor)
@@ -212,7 +251,7 @@ internal fun AnalysisScreen(
     var mapFocus by remember { mutableStateOf<Double?>(null) }
     val mapTotal = max(current?.duration ?: 0.0, comparison?.duration ?: 0.0)
     LaunchedEffect(mapTotal) { clock.setTotal(mapTotal) }
-    LaunchedEffect(fixed, currentLapNumber, comparisonLapNumber) {
+    LaunchedEffect(fixed, currentKey, comparisonKey) {
         clock.reset()
         mapFocus = null
     }
@@ -254,6 +293,10 @@ internal fun AnalysisScreen(
     var tabsHeight by remember { mutableIntStateOf(0) }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     BackHandler(enabled = lapsExpanded && !landscape) { lapsExpanded = false }
+    // Back leaves a zone for the list, then the list for the map.
+    BackHandler(enabled = brakingShown && !(lapsExpanded && !landscape)) {
+        brakingPanel = if (brakingPanel == BrakingPanel.ZONE) BrakingPanel.LIST else BrakingPanel.CLOSED
+    }
     val onView: (AnalysisView) -> Unit = { view ->
         // Choosing a view drops a point opened from the graph, as on the desktop.
         mapFocus = null
@@ -287,21 +330,37 @@ internal fun AnalysisScreen(
         }
     }
     val swapLaps: () -> Unit = {
-        val first = currentLapNumber
-        val second = comparisonLapNumber
-        analysis.selectLapA(second)
-        analysis.selectLapB(first)
+        val first = currentKey
+        val second = comparisonKey
+        analysis.selectLapA(second.lap, second.driver)
+        analysis.selectLapB(first.lap, first.driver)
         analysis.useFixedLaps(true)
     }
     val lapDelta = if (comparisonSelected && delta != null) summary else null
+    // The bar names each lap's driver while there is a choice of them.
+    fun slotDriver(driver: Int): String? {
+        val index = if (driver < 0) catalog.driverIndex else driver
+        return sheetDrivers.firstOrNull { it.index == index }?.let { driverCode(it.name) }
+    }
+    val slotA = LapSlot(
+        lap = currentLapNumber,
+        color = currentColor,
+        driver = slotDriver(currentDriver),
+        time = currentInfo?.let { formatLapTimeMs(it.lapTimeMs) },
+        fastest = false,
+    )
+    val slotB = LapSlot(
+        lap = comparisonLapNumber,
+        color = comparisonColor,
+        driver = slotDriver(comparisonDriver),
+        time = comparisonInfo?.let { formatLapTimeMs(it.lapTimeMs) },
+        fastest = comparisonLapNumber > 0 && comparisonLapNumber == analysis.fastestLapOf(catalog, comparisonDriver),
+    )
     val lapRow: @Composable (Boolean) -> Unit = { stacked ->
         LapSelectorRow(
-            catalog = catalog,
             fixed = fixed,
-            lapA = currentLapNumber,
-            lapB = comparisonLapNumber,
-            colorA = currentColor,
-            colorB = comparisonColor,
+            lapA = slotA,
+            lapB = slotB,
             stacked = stacked,
             onPick = { lapPicker = it },
             onSwap = swapLaps,
@@ -329,12 +388,9 @@ internal fun AnalysisScreen(
                 // Stays in place while the full row is open over it, so the page
                 // below does not move.
                 LapSummaryBar(
-                    catalog = catalog,
                     fixed = fixed,
-                    lapA = currentLapNumber,
-                    lapB = comparisonLapNumber,
-                    colorA = currentColor,
-                    colorB = comparisonColor,
+                    lapA = slotA,
+                    lapB = slotB,
                     onExpand = { lapsExpanded = true },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -439,55 +495,109 @@ internal fun AnalysisScreen(
                             if (config.view == AnalysisView.GRAPH) chips(Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 26.dp))
                         }
                     }
-                    val map: @Composable (Modifier) -> Unit = { modifier ->
+                    // The braking zones of the laps on show, marked on the Map view's map.
+                    val brakingLaps = BrakingLaps(
+                        currentLabel = listOfNotNull(slotA.driver, "L$currentLapNumber").joinToString(" "),
+                        currentColor = currentColor,
+                        comparisonLabel = listOfNotNull(slotB.driver, "L$comparisonLapNumber").joinToString(" "),
+                        comparisonColor = comparisonColor,
+                    )
+                    val brakingZones = if (brakingShown) analysis.brakingZonesFor(currentKey, comparisonKey) else null
+                    val zoneRows = brakingZones?.zones.orEmpty()
+                    val zoneIndex = brakingZoneIndex.coerceIn(0, max(0, zoneRows.lastIndex))
+                    val neutralZone = MaterialTheme.colorScheme.onSurfaceVariant
+                    val zoneMarks = zoneRows.map { MapZoneMark(it.number, it.fromM, brakingZoneColor(it, brakingLaps, neutralZone)) }
+                    val zoneOpen = brakingPanel == BrakingPanel.ZONE && zoneRows.isNotEmpty()
+                    val openZone: (Int) -> Unit = { index ->
+                        brakingZoneIndex = index
+                        brakingPanel = BrakingPanel.ZONE
+                    }
+                    // [braking]: the Map view, whose map carries the braking zones.
+                    val map: @Composable (Modifier, Boolean) -> Unit = { modifier, braking ->
                         Column(modifier) {
                             Box(Modifier.fillMaxWidth().weight(1f)) {
-                                AnalysisMap(trackId, mapLaps, mapElapsed, aeroMode, Modifier.fillMaxSize(), focusSector = stripSelection?.takeIf { it != WHOLE_LAP }, slmTrackStatus = slmTrackStatus)
-                                chips(Modifier.align(Alignment.BottomEnd).padding(8.dp))
+                                AnalysisMap(
+                                    trackId,
+                                    mapLaps,
+                                    mapElapsed,
+                                    aeroMode,
+                                    Modifier.fillMaxSize(),
+                                    focusSector = stripSelection?.takeIf { it != WHOLE_LAP },
+                                    slmTrackStatus = slmTrackStatus,
+                                    zoneMarks = if (braking) zoneMarks else emptyList(),
+                                    selectedZone = if (braking && zoneOpen) zoneIndex else -1,
+                                    onZone = openZone,
+                                )
+                                if (braking) {
+                                    // The chip sits at the bottom of the map, the others beside it.
+                                    Row(
+                                        Modifier.align(Alignment.BottomCenter).padding(8.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        if (brakingPanel == BrakingPanel.CLOSED) BrakingPointsChip(onClick = { brakingPanel = BrakingPanel.LIST })
+                                        chips(Modifier)
+                                    }
+                                } else {
+                                    chips(Modifier.align(Alignment.BottomEnd).padding(8.dp))
+                                }
                             }
                             if (fixed) AnalysisPlaybackBar(clock, mapElapsed, mapTotal, current?.sectorSplits?.map { it.elapsedSeconds }.orEmpty())
                         }
                     }
-                    val sectorTable: @Composable (Modifier) -> Unit = { modifier ->
-                        SectorTable(
-                            catalog = catalog,
-                            current = current,
-                            comparison = comparison,
-                            primaryLabel = "L$currentLapNumber",
-                            comparisonLabel = if (comparisonLapNumber > 0) "L$comparisonLapNumber" else null,
-                            primaryColor = currentColor,
-                            comparisonColor = comparisonColor,
-                            visibleDistance = visibleDistance,
-                            summary = if (comparisonSelected && delta != null) summary else null,
-                            positiveColor = positiveColor,
-                            negativeColor = negativeColor,
-                            modifier = modifier,
-                        )
+                    // The zone list, or one zone's head to head: below the map
+                    // in portrait, beside it in landscape.
+                    val brakingDrawer: @Composable (Modifier) -> Unit = { modifier ->
+                        if (zoneOpen) {
+                            BrakingZoneDrawer(
+                                zone = zoneRows[zoneIndex],
+                                index = zoneIndex,
+                                count = zoneRows.size,
+                                laps = brakingLaps,
+                                docked = landscape,
+                                onStep = { brakingZoneIndex = it.coerceIn(0, zoneRows.lastIndex) },
+                                onBack = { brakingPanel = BrakingPanel.LIST },
+                                modifier = modifier,
+                            )
+                        } else {
+                            BrakingZoneList(
+                                zones = brakingZones,
+                                loading = analysis.brakingLoading,
+                                unavailable = analysis.brakingUnavailable,
+                                laps = brakingLaps,
+                                docked = landscape,
+                                onZone = openZone,
+                                onClose = { brakingPanel = BrakingPanel.CLOSED },
+                                modifier = modifier,
+                            )
+                        }
                     }
                     when (config.view) {
                         AnalysisView.GRAPH -> chart(Modifier.fillMaxSize())
+                        // The map fills the view, and refits beside or above
+                        // whichever braking drawer is open.
                         AnalysisView.MAP -> if (landscape) {
                             Row(Modifier.fillMaxSize()) {
-                                map(Modifier.weight(1f).fillMaxHeight())
-                                VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                sectorTable(Modifier.width(300.dp).fillMaxHeight())
+                                map(Modifier.weight(1f).fillMaxHeight(), true)
+                                if (brakingShown) {
+                                    VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                    brakingDrawer(Modifier.width(300.dp).fillMaxHeight())
+                                }
                             }
                         } else {
                             Column(Modifier.fillMaxSize()) {
-                                map(Modifier.fillMaxWidth().weight(1f))
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                sectorTable(Modifier.fillMaxWidth())
+                                map(Modifier.fillMaxWidth().weight(if (brakingShown) 0.45f else 1f), true)
+                                if (brakingShown) brakingDrawer(Modifier.fillMaxWidth().weight(0.55f))
                             }
                         }
                         AnalysisView.SPLIT -> if (landscape) {
                             Row(Modifier.fillMaxSize()) {
                                 chart(Modifier.weight(1f).fillMaxHeight())
                                 VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                map(Modifier.weight(1f).fillMaxHeight())
+                                map(Modifier.weight(1f).fillMaxHeight(), false)
                             }
                         } else {
                             Column(Modifier.fillMaxSize()) {
-                                map(Modifier.fillMaxWidth().weight(0.85f))
+                                map(Modifier.fillMaxWidth().weight(0.85f), false)
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                                 chart(Modifier.fillMaxWidth().weight(1.15f))
                             }
@@ -531,6 +641,7 @@ internal fun AnalysisScreen(
             target = target,
             lapAColor = currentColor,
             lapBColor = comparisonColor,
+            drivers = sheetDrivers,
             onDismiss = { lapPicker = null },
         )
     }
@@ -602,54 +713,63 @@ private fun ViewTabs(view: AnalysisView, onView: (AnalysisView) -> Unit, modifie
 }
 
 /**
- * The compared laps, one button each: its colour, number, role and time.
- * Each opens that lap's sheet; between them, a swap fixes the two laps the
- * other way round. [stacked] puts them one above the other, for the
+ * What the lap bar shows of one compared lap: its number (0 = none), colour
+ * and time, its driver's short name while each lap can have its own, and
+ * whether it is that driver's fastest.
+ */
+private class LapSlot(
+    val lap: Int,
+    val color: Color,
+    val driver: String?,
+    val time: String?,
+    val fastest: Boolean,
+)
+
+/** A driver's name as three letters, as timing screens abbreviate it: "NOR" for "Lando NORRIS". */
+private fun driverCode(name: String): String =
+    name.trim().substringAfterLast(' ').take(3).uppercase(Locale.ROOT)
+
+/**
+ * The compared laps, one button each: its colour, driver, number, role and
+ * time. Each opens that lap's sheet; between them, a swap fixes the two laps
+ * the other way round. [stacked] puts them one above the other, for the
  * landscape column.
  */
 @Composable
 private fun LapSelectorRow(
-    catalog: PlaybackCatalog,
     fixed: Boolean,
-    lapA: Int,
-    lapB: Int,
-    colorA: Color,
-    colorB: Color,
+    lapA: LapSlot,
+    lapB: LapSlot,
     stacked: Boolean,
     onPick: (LapTarget) -> Unit,
     onSwap: () -> Unit,
 ) {
     val first: @Composable (Modifier) -> Unit = { modifier ->
         LapButton(
-            lap = lapA,
-            color = colorA,
+            slot = lapA,
             placeholder = if (fixed) "Lap A" else "Waiting",
             role = if (fixed) "fixed" else "following",
             roleColor = null,
-            time = lapTime(catalog, lapA),
             onClick = { onPick(LapTarget.LAP_A) },
             modifier = modifier,
         )
     }
     val second: @Composable (Modifier) -> Unit = { modifier ->
-        val fastest = lapB > 0 && lapB == catalog.fastestLap
         LapButton(
-            lap = lapB,
-            color = colorB,
+            slot = lapB,
             placeholder = if (fixed) "Lap B" else "Compare",
             role = when {
-                lapB <= 0 -> "none chosen"
-                fastest -> "fastest"
+                lapB.lap <= 0 -> "none chosen"
+                lapB.fastest -> "fastest"
                 else -> null
             },
-            roleColor = if (fastest) FastestLapColor else null,
-            time = lapTime(catalog, lapB),
+            roleColor = if (lapB.fastest) FastestLapColor else null,
             onClick = { onPick(LapTarget.LAP_B) },
             modifier = modifier,
         )
     }
     val swap: @Composable () -> Unit = {
-        IconButton(onClick = onSwap, enabled = lapA > 0 && lapB > 0) {
+        IconButton(onClick = onSwap, enabled = lapA.lap > 0 && lapB.lap > 0) {
             Icon(painterResource(R.drawable.ic_swap_horiz), contentDescription = "Swap laps", modifier = Modifier.size(20.dp))
         }
     }
@@ -675,33 +795,33 @@ private fun LapSelectorRow(
 
 /**
  * The compared laps folded to one slim strip, like the player's: each lap's
- * colour, number and time. Tapping it opens [LapSelectorRow] over the page.
+ * colour, driver, number and time. Tapping it opens [LapSelectorRow] over the
+ * page.
  */
 @Composable
 private fun LapSummaryBar(
-    catalog: PlaybackCatalog,
     fixed: Boolean,
-    lapA: Int,
-    lapB: Int,
-    colorA: Color,
-    colorB: Color,
+    lapA: LapSlot,
+    lapB: LapSlot,
     onExpand: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val timeStyle = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum")
     // Each lap fills half the strip, under its button in the open row.
-    val lap: @Composable RowScope.(Int, Color, String) -> Unit = { number, color, placeholder ->
+    val lap: @Composable RowScope.(LapSlot, String) -> Unit = { slot, placeholder ->
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(width = 3.dp, height = 14.dp).background(if (number > 0) color else color.copy(alpha = 0.35f), RoundedCornerShape(1.5.dp)))
+            Box(Modifier.size(width = 3.dp, height = 14.dp).background(if (slot.lap > 0) slot.color else slot.color.copy(alpha = 0.35f), RoundedCornerShape(1.5.dp)))
+            if (slot.lap > 0 && slot.driver != null) {
+                Text(slot.driver, modifier = Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, maxLines = 1)
+            }
             Text(
-                if (number > 0) "L$number" else placeholder,
+                if (slot.lap > 0) "L${slot.lap}" else placeholder,
                 modifier = Modifier.padding(start = 6.dp),
                 style = MaterialTheme.typography.labelLarge,
                 maxLines = 1,
             )
-            val time = if (number > 0) lapTime(catalog, number) else null
-            if (time != null) {
-                Text(time, modifier = Modifier.padding(start = 6.dp), style = timeStyle, color = colors.onSurfaceVariant, maxLines = 1)
+            if (slot.lap > 0 && slot.time != null) {
+                Text(slot.time, modifier = Modifier.padding(start = 6.dp), style = timeStyle, color = colors.onSurfaceVariant, maxLines = 1)
             }
         }
     }
@@ -714,10 +834,10 @@ private fun LapSummaryBar(
             .padding(start = 14.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        lap(lapA, colorA, if (fixed) "Lap A" else "Waiting")
+        lap(lapA, if (fixed) "Lap A" else "Waiting")
         // As wide as the open row's swap button, so the halves line up.
         Text("vs", modifier = Modifier.width(48.dp), style = timeStyle, color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
-        lap(lapB, colorB, if (fixed) "Lap B" else "Compare")
+        lap(lapB, if (fixed) "Lap B" else "Compare")
         Icon(
             painterResource(R.drawable.ic_expand_more),
             contentDescription = null,
@@ -727,21 +847,30 @@ private fun LapSummaryBar(
     }
 }
 
-private fun lapTime(catalog: PlaybackCatalog, lap: Int): String? =
-    catalog.laps.firstOrNull { it.lapNumber == lap }?.let { formatLapTimeMs(it.lapTimeMs) }
-
 @Composable
 private fun LapButton(
-    lap: Int,
-    color: Color,
+    slot: LapSlot,
     placeholder: String,
     role: String?,
     roleColor: Color?,
-    time: String?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
+    val lap = slot.lap
+    val color = slot.color
+    val time = slot.time
+    val title = buildAnnotatedString {
+        if (lap > 0) {
+            if (slot.driver != null) {
+                withStyle(SpanStyle(color = colors.onSurfaceVariant)) { append(slot.driver) }
+                append(" · ")
+            }
+            append("Lap $lap")
+        } else {
+            append(placeholder)
+        }
+    }
     val detail = buildAnnotatedString {
         if (role != null) {
             withStyle(SpanStyle(color = roleColor ?: colors.onSurfaceVariant)) { append(role) }
@@ -763,9 +892,10 @@ private fun LapButton(
         Box(Modifier.size(width = 4.dp, height = 32.dp).background(if (lap > 0) color else color.copy(alpha = 0.35f), RoundedCornerShape(2.dp)))
         Column(Modifier.weight(1f)) {
             Text(
-                if (lap > 0) "Lap $lap" else placeholder,
+                title,
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (detail.isNotEmpty()) {
                 Text(
@@ -906,130 +1036,6 @@ private fun ChartChips(
             )
         }
     }
-}
-
-/**
- * Sector and lap times of both laps, and the delta between them. Following
- * the desktop, the current lap shows only the sectors its cursor has passed.
- */
-@Composable
-private fun SectorTable(
-    catalog: PlaybackCatalog,
-    current: AnalysisLap?,
-    comparison: AnalysisLap?,
-    primaryLabel: String,
-    comparisonLabel: String?,
-    primaryColor: Color,
-    comparisonColor: Color,
-    visibleDistance: State<Double?>,
-    summary: State<AnalysisDeltaSummary>?,
-    positiveColor: Color,
-    negativeColor: Color,
-    modifier: Modifier = Modifier,
-) {
-    val colors = MaterialTheme.colorScheme
-    // The cursor moves ten times a second, but a sector time appears only as
-    // a sector is completed: recompose then, not on every move.
-    val currentTimes by remember(current, catalog) {
-        derivedStateOf(structuralEqualityPolicy()) { sectorTimes(current, catalog, visibleDistance.value) }
-    }
-    val comparisonTimes = remember(comparison, catalog) { sectorTimes(comparison, catalog, null) }
-    val numberStyle = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum")
-    @Composable
-    fun RowScope.Cell(text: String, color: Color = colors.onSurface, weight: FontWeight = FontWeight.Normal, align: TextAlign = TextAlign.End) {
-        Text(text, modifier = Modifier.weight(1f), style = numberStyle, color = color, fontWeight = weight, textAlign = align, maxLines = 1)
-    }
-    Column(modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Row(Modifier.fillMaxWidth().height(28.dp), verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.weight(0.6f))
-            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(8.dp).background(primaryColor, CircleShape))
-                Text(" $primaryLabel", style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
-            }
-            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                if (comparisonLabel != null) {
-                    Box(Modifier.size(8.dp).background(comparisonColor, CircleShape))
-                    Text(" $comparisonLabel", style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
-                }
-            }
-            Cell("Δ", colors.onSurfaceVariant)
-        }
-        listOf("S1", "S2", "S3", "Lap").forEachIndexed { index, name ->
-            HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.5f))
-            Row(Modifier.fillMaxWidth().height(32.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    name,
-                    modifier = Modifier.weight(0.6f),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = colors.onSurfaceVariant,
-                    fontWeight = if (index == 3) FontWeight.SemiBold else FontWeight.Normal,
-                )
-                val bold = if (index == 3) FontWeight.SemiBold else FontWeight.Normal
-                Cell(formatSeconds(currentTimes[index], index == 3), weight = bold)
-                Cell(if (comparisonLabel == null) "" else formatSeconds(comparisonTimes[index], index == 3), colors.onSurfaceVariant, bold)
-                // The live deltas are painted, read while drawing.
-                Readout(
-                    runs = {
-                        val summed = summary?.value ?: return@Readout emptyList()
-                        val value = if (index == 3) summed.lap else summed.sectors.getOrNull(index)
-                        listOf(ReadoutRun(if (value == null) "—" else formatDelta(value), deltaColor(value, colors.onSurfaceVariant, positiveColor, negativeColor)))
-                    },
-                    style = numberStyle.copy(fontWeight = FontWeight.SemiBold),
-                    modifier = Modifier.weight(1f),
-                    alignEnd = true,
-                )
-            }
-        }
-        // The better of the two laps in each sector, once both have all three.
-        val best = if (comparisonLabel == null) null else bestOfBoth(currentTimes, comparisonTimes)
-        if (best != null) {
-            HorizontalDivider(color = colors.outlineVariant)
-            Row(Modifier.fillMaxWidth().height(36.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Best of both, by sector",
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colors.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(formatSeconds(best, true), style = numberStyle, color = FastestLapColor, fontWeight = FontWeight.SemiBold)
-            }
-        }
-    }
-}
-
-/** The sum of the faster of each lap's S1, S2 and S3, or null while any is missing. */
-private fun bestOfBoth(first: List<Double?>, second: List<Double?>): Double? {
-    var total = 0.0
-    for (sector in 0 until 3) {
-        val a = first.getOrNull(sector) ?: return null
-        val b = second.getOrNull(sector) ?: return null
-        total += min(a, b)
-    }
-    return total
-}
-
-/** S1, S2, S3 and lap seconds of [lap], each null until [visible] metres have passed its end. */
-private fun sectorTimes(lap: AnalysisLap?, catalog: PlaybackCatalog, visible: Double?): List<Double?> {
-    lap ?: return listOf(null, null, null, null)
-    if (visible?.isNaN() == true) return listOf(null, null, null, null)
-    val splits = lap.sectorSplits
-    val s1 = splits.firstOrNull { it.afterSector == 1 }
-    val s2 = splits.firstOrNull { it.afterSector == 2 }
-    val lapSeconds = catalog.laps.firstOrNull { it.lapNumber == lap.lapNumber }?.lapTimeMs?.takeIf { it > 0 }?.div(1000.0)
-    val finished = visible == null || lap.progress?.let { visible >= it.maxDistance - 1.0 } == true
-    fun passed(distance: Double) = visible == null || visible >= distance
-    val first = s1?.takeIf { passed(it.distance) }?.elapsedSeconds
-    val second = if (s1 != null && s2 != null && passed(s2.distance)) s2.elapsedSeconds - s1.elapsedSeconds else null
-    val third = if (s2 != null && lapSeconds != null && finished) lapSeconds - s2.elapsedSeconds else null
-    return listOf(first, second, third, lapSeconds?.takeIf { finished })
-}
-
-private fun formatSeconds(seconds: Double?, lap: Boolean): String {
-    if (seconds == null || !seconds.isFinite() || seconds <= 0) return "—"
-    if (lap || seconds >= 60) return formatLapTimeMs((seconds * 1000).toInt()) ?: "—"
-    return String.format(Locale.US, "%.3f", seconds)
 }
 
 /** A lap's catalogue label: "Lap 12 · 1:31.234 · FL". */

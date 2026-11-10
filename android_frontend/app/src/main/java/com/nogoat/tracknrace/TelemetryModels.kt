@@ -264,11 +264,23 @@ internal data class DashboardLapComparisonState(
     val sector3DeltaSeconds: Double? = null,
 )
 
+/** One request for braking zones: [currentLap]'s, matched with [comparisonLap]'s (0 = none). */
+internal data class BrakingZonesRequest(
+    val requestId: Long,
+    val currentLap: Int,
+    val comparisonLap: Int,
+    val currentDriver: Int,
+    val comparisonDriver: Int,
+)
+
 internal data class PlaybackLapDeltaRequest(
     val requestId: Long,
     val currentLap: Int,
     val comparisonLap: Int,
     val sectorDelta: Boolean = true,
+    /** Each lap's driver: a car index, or -1 for the selected driver. */
+    val currentDriver: Int = -1,
+    val comparisonDriver: Int = -1,
 )
 
 /** One lap of the recording the desktop is playing, for the selected driver. */
@@ -295,6 +307,13 @@ internal data class PlaybackCatalog(
     val fastestLap: Int = 0,
     val deltaAvailable: Boolean = false,
     val trackLengthM: Double = 0.0,
+)
+
+/** Another driver's laps of the recording playing, fetched for the Analysis lap sheet. */
+internal data class DriverLapCatalog(
+    val driverIndex: Int,
+    val laps: List<PlaybackLapInfo>,
+    val fastestLap: Int,
 )
 
 internal data class TimingCarEntry(

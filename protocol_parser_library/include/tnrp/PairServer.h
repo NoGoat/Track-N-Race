@@ -14,6 +14,12 @@ namespace tnrp {
 // by the Android app for recordings it plays itself.
 std::string pairPhoneLapBlocks(const std::string& json);
 
+// One driver's laps from a full playback_lap_blocks row's analysisDrivers, in
+// the same block and lap shape as pairPhoneLapBlocks: {"blocks","laps",
+// "fastestLapNum"}. Empty when the row holds no such driver (only V6
+// recordings list every driver).
+std::string pairPhoneDriverLaps(const std::string& lapBlocksJson, int driverIndex);
+
 struct PairServerConfig {
     uint16_t port = 20779;
     std::string name{"Track N Race"};
@@ -39,13 +45,27 @@ public:
     using RequirementsCallback = std::function<void(uint32_t streamMask,
                                                     const std::vector<uint8_t>& v6Types,
                                                     bool refreshSnapshot)>;
+    // Each lap's driver is a car index, or -1 for the selected driver.
     using LapDeltaCallback = std::function<std::string(int currentLap,
                                                        int comparisonLap,
-                                                       bool sectorDelta)>;
-    // One recorded lap of the selected driver, reduced to the "family.field"
-    // channels a phone's Analysis page draws. Empty when nothing is playing.
+                                                       bool sectorDelta,
+                                                       int currentDriver,
+                                                       int comparisonDriver)>;
+    // One recorded lap of a driver (-1 = the selected driver), reduced to the
+    // "family.field" channels a phone's Analysis page draws. Empty when
+    // nothing is playing.
     using LapDataCallback = std::function<std::string(int lapNum,
-                                                      const std::vector<std::string>& channels)>;
+                                                      const std::vector<std::string>& channels,
+                                                      int driverIndex)>;
+    // One driver's lap catalogue for a phone's lap picker (pairPhoneDriverLaps).
+    // Empty when nothing is playing or the recording holds no such driver.
+    using DriverLapsCallback = std::function<std::string(int driverIndex)>;
+    // The braking zones of one lap, or two matched up (comparisonLap 0 for
+    // one), for a phone's Analysis map. Empty when nothing is playing.
+    using BrakingZonesCallback = std::function<std::string(int currentLap,
+                                                           int comparisonLap,
+                                                           int currentDriver,
+                                                           int comparisonDriver)>;
     using DiagnosticCallback = std::function<void(const std::string& message)>;
 
     PairServer();
@@ -57,6 +77,8 @@ public:
                    RequirementsCallback requirementsCallback,
                    LapDeltaCallback lapDeltaCallback,
                    LapDataCallback lapDataCallback,
+                   DriverLapsCallback driverLapsCallback,
+                   BrakingZonesCallback brakingZonesCallback,
                    DiagnosticCallback diagnosticCallback = {});
 
     bool start(std::string* error = nullptr);

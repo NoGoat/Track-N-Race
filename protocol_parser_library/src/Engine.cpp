@@ -1,4 +1,5 @@
 #include "tnrp/Engine.h"
+#include "tnrp/AnalysisMap.h"
 #include "tnrp/BinaryRows.h"
 #include "tnrp/LapDelta.h"
 #include "tnrp/TimeUtils.h"
@@ -224,11 +225,20 @@ Engine::Engine(const Config& config, Sink* sink)
                bool refreshSnapshot) {
             setPairDataRequirements(streamMask, v6Types, refreshSnapshot);
         },
-        [this](int currentLap, int comparisonLap, bool sectorDelta) {
-            return playerLapDeltaJson(currentLap, comparisonLap, sectorDelta);
+        [this](int currentLap, int comparisonLap, bool sectorDelta,
+               int currentDriver, int comparisonDriver) {
+            return playerLapDeltaJson(currentLap, comparisonLap, sectorDelta,
+                                      currentDriver, comparisonDriver);
         },
-        [this](int lapNum, const std::vector<std::string>& channels) {
-            return playerPhoneLapDataJson(lapNum, channels);
+        [this](int lapNum, const std::vector<std::string>& channels, int driverIndex) {
+            return playerPhoneLapDataJson(lapNum, channels, false, driverIndex);
+        },
+        [this](int driverIndex) {
+            return playerPhoneDriverLapsJson(driverIndex);
+        },
+        [this](int currentLap, int comparisonLap, int currentDriver, int comparisonDriver) {
+            return playerBrakingZonesJson(currentLap, comparisonLap,
+                                          currentDriver, comparisonDriver);
         },
         [this](const std::string& message) {
             if (sink_) sink_->onPairDiagnostic(message);
@@ -1280,14 +1290,15 @@ void Engine::requestDataRequirements(uint64_t requestId) {
                std::memory_order_relaxed)) {}
 }
 
-std::string Engine::playerLapDeltaJson(int currentLap, int comparisonLap, bool sectorDelta) {
+std::string Engine::playerLapDeltaJson(int currentLap, int comparisonLap, bool sectorDelta,
+                                       int currentDriver, int comparisonDriver) {
     AnalysisLapProgress current;
     AnalysisLapProgress comparison;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!inPlayback_.load() ||
-            !reader_.getAnalysisLapProgress(currentLap, current) ||
-            !reader_.getAnalysisLapProgress(comparisonLap, comparison)) {
+            !reader_.getAnalysisLapProgress(currentLap, current, currentDriver) ||
+            !reader_.getAnalysisLapProgress(comparisonLap, comparison, comparisonDriver)) {
             return std::string{};
         }
     }
@@ -1304,20 +1315,47 @@ std::string Engine::playerLapDeltaJson(int currentLap, int comparisonLap, bool s
 }
 
 std::string Engine::playerPhoneLapDataJson(int lapNum, const std::vector<std::string>& channels,
-                                           bool forCharts) {
-    // The selected driver's indexed lap, read without moving the shared
-    // playback cursor; the phone only chooses which columns.
+                                           bool forCharts, int driverIndex) {
+    // The driver's indexed lap, read without moving the shared playback
+    // cursor; the phone only chooses which columns.
     std::string lapData;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!inPlayback_.load()) return std::string{};
-        if (forCharts) {
+        // The column path reads the playback driver's laps only.
+        if (forCharts && driverIndex < 0) {
             std::string columns = reader_.phoneChartLapJson(lapNum, channels);
             if (!columns.empty()) return columns;
         }
-        lapData = reader_.getLapDataMessage(lapNum, pairLapDataRowMask(channels));
+        lapData = reader_.getLapDataMessage(lapNum, pairLapDataRowMask(channels), driverIndex);
     }
     return pairLapDataJson(lapData, channels);
+}
+
+std::string Engine::playerPhoneDriverLapsJson(int driverIndex) {
+    std::string lapBlocks;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!inPlayback_.load()) return std::string{};
+        lapBlocks = reader_.lapBlocksMessage();
+    }
+    return pairPhoneDriverLaps(lapBlocks, driverIndex);
+}
+
+std::string Engine::playerBrakingZonesJson(int currentLap, int comparisonLap,
+                                           int currentDriver, int comparisonDriver) const {
+    if (!inPlayback_.load() || currentLap <= 0) return std::string{};
+    // Each read takes the engine lock for itself, as the desktop's map does.
+    const RecordingAccess access =
+        [this](const std::function<void(const TnrdReader&)>& read) {
+            return playerReadRecording(read);
+        };
+    const AnalysisMapLap current{access, currentLap, currentDriver};
+    const AnalysisMapLap comparison{access, comparisonLap, comparisonDriver};
+    const AnalysisMapResult result = buildAnalysisMap(
+        "braking", current, comparisonLap > 0 ? &comparison : nullptr);
+    if (!result.hasCurrent) return std::string{};
+    return writeJson(result.braking);
 }
 
 void Engine::setPhoneRequirements(uint32_t streamRowMask, const std::vector<uint8_t>& v6Types) {

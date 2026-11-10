@@ -379,22 +379,68 @@ internal class PairedTelemetryClient(
                 .put("currentLap", request.currentLap)
                 .put("comparisonLap", request.comparisonLap)
                 .put("sectorDelta", request.sectorDelta)
+                .apply {
+                    // Left out for the selected driver, as older desktops expect.
+                    if (request.currentDriver >= 0) put("currentDriver", request.currentDriver)
+                    if (request.comparisonDriver >= 0) put("comparisonDriver", request.comparisonDriver)
+                }
                 .toString(),
         )
     }
 
     /**
-     * Asks for one lap of the desktop's selected driver, reduced to the
-     * "family.field" channels given. False when the desktop cannot answer.
+     * Asks for one lap of a driver ([driver] is a car index, -1 the desktop's
+     * selected driver), reduced to the "family.field" channels given. False
+     * when the desktop cannot answer.
      */
-    fun requestLapData(requestId: Long, lapNumber: Int, channels: Collection<String>): Boolean {
+    fun requestLapData(requestId: Long, lapNumber: Int, channels: Collection<String>, driver: Int = -1): Boolean {
         val connection = admitted()?.takeIf { it.lapDataSupported } ?: return false
+        if (driver >= 0 && !connection.driverLapsSupported) return false
         return connection.send(
             JSONObject()
                 .put("type", "request_lap_data")
                 .put("requestId", requestId)
                 .put("lapNum", lapNumber)
                 .put("channels", JSONArray(channels.toList()))
+                .apply { if (driver >= 0) put("driverIndex", driver) }
+                .toString(),
+        )
+    }
+
+    /** Whether the desktop can send another driver's laps. */
+    fun driverLapsSupported(): Boolean = admitted()?.driverLapsSupported == true
+
+    /** Asks for one driver's lap catalogue. False when the desktop cannot answer. */
+    fun requestDriverLaps(requestId: Long, driver: Int): Boolean {
+        val connection = admitted()?.takeIf { it.driverLapsSupported } ?: return false
+        return connection.send(
+            JSONObject()
+                .put("type", "request_driver_laps")
+                .put("requestId", requestId)
+                .put("driverIndex", driver)
+                .toString(),
+        )
+    }
+
+    /** Whether the desktop can send braking zones. */
+    fun brakingZonesSupported(): Boolean = admitted()?.brakingZonesSupported == true
+
+    /**
+     * Asks for the braking zones of one lap, matched with a second lap's
+     * ([request]'s comparison lap, 0 for none). False when the desktop cannot answer.
+     */
+    fun requestBrakingZones(request: BrakingZonesRequest): Boolean {
+        val connection = admitted()?.takeIf { it.brakingZonesSupported } ?: return false
+        return connection.send(
+            JSONObject()
+                .put("type", "request_braking_zones")
+                .put("requestId", request.requestId)
+                .put("currentLap", request.currentLap)
+                .put("comparisonLap", request.comparisonLap)
+                .apply {
+                    if (request.currentDriver >= 0) put("currentDriver", request.currentDriver)
+                    if (request.comparisonDriver >= 0) put("comparisonDriver", request.comparisonDriver)
+                }
                 .toString(),
         )
     }
@@ -578,6 +624,12 @@ internal class PairedTelemetryClient(
             private set
 
         @Volatile var driverRestrictionSupported = false
+            private set
+
+        @Volatile var driverLapsSupported = false
+            private set
+
+        @Volatile var brakingZonesSupported = false
             private set
 
         fun start() {
@@ -788,6 +840,8 @@ internal class PairedTelemetryClient(
             lapDeltaSupported = "lap-delta" in advertised
             lapDataSupported = "lap-data" in advertised
             driverRestrictionSupported = "driver-restriction" in advertised
+            driverLapsSupported = "driver-laps" in advertised
+            brakingZonesSupported = "braking-zones" in advertised
             val page = synchronized(lock) {
                 if (current !== this) return
                 admitted = true

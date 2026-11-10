@@ -65,17 +65,30 @@ internal class NativeTelemetry(
     /** While listening for the game: whether the Strategy snapshot is streamed. */
     fun setLiveStrategy(enabled: Boolean) = nativeSetLiveStrategy(enabled)
 
-    /** A paired phone's lap_delta data for the open recording, or null. */
-    fun lapDelta(currentLap: Int, comparisonLap: Int, sectorDelta: Boolean): String? =
-        nativeLapDelta(currentLap, comparisonLap, sectorDelta)
+    /**
+     * A paired phone's lap_delta data for the open recording, or null. Each
+     * lap's driver is a car index, -1 the selected driver.
+     */
+    fun lapDelta(currentLap: Int, comparisonLap: Int, sectorDelta: Boolean, currentDriver: Int, comparisonDriver: Int): String? =
+        nativeLapDelta(currentLap, comparisonLap, sectorDelta, currentDriver, comparisonDriver)
 
     /**
      * A paired phone's lap_data data for the open recording, or null. For
      * Charts, which draw no map, the lap is read from the recording's columns
-     * and carries no positions.
+     * and carries no positions. [driver] is a car index, -1 the selected driver.
      */
-    fun lapData(lapNumber: Int, channels: Array<String>, forCharts: Boolean): String? =
-        nativeLapData(lapNumber, channels, forCharts)
+    fun lapData(lapNumber: Int, channels: Array<String>, forCharts: Boolean, driver: Int): String? =
+        nativeLapData(lapNumber, channels, forCharts, driver)
+
+    /** A paired phone's driver_laps data for one driver of the open recording, or null. */
+    fun driverLaps(driver: Int): String? = nativeDriverLaps(driver)
+
+    /**
+     * A paired phone's braking_zones data for the open recording, or null:
+     * [currentLap]'s braking zones, matched with [comparisonLap]'s (0 = none).
+     */
+    fun brakingZones(currentLap: Int, comparisonLap: Int, currentDriver: Int, comparisonDriver: Int): String? =
+        nativeBrakingZones(currentLap, comparisonLap, currentDriver, comparisonDriver)
 
     @Suppress("unused") // Invoked by JNI on libtnrp worker threads.
     private fun onNativeRow(json: String) {
@@ -111,9 +124,19 @@ internal class NativeTelemetry(
 
     private external fun nativeSetLiveStrategy(enabled: Boolean)
 
-    private external fun nativeLapDelta(currentLap: Int, comparisonLap: Int, sectorDelta: Boolean): String?
+    private external fun nativeLapDelta(
+        currentLap: Int,
+        comparisonLap: Int,
+        sectorDelta: Boolean,
+        currentDriver: Int,
+        comparisonDriver: Int,
+    ): String?
 
-    private external fun nativeLapData(lapNumber: Int, channels: Array<String>, forCharts: Boolean): String?
+    private external fun nativeLapData(lapNumber: Int, channels: Array<String>, forCharts: Boolean, driver: Int): String?
+
+    private external fun nativeDriverLaps(driver: Int): String?
+
+    private external fun nativeBrakingZones(currentLap: Int, comparisonLap: Int, currentDriver: Int, comparisonDriver: Int): String?
 
     // Analysis map layer colours (tnrp/AnalysisMapPaint.h): {"dark":…,"light":…}.
     // Not wired to any UI yet.

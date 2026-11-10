@@ -265,14 +265,23 @@ public:
     // Runs `read` on the loaded recording under the engine lock; false when
     // nothing is playing. The Analysis map (tnrp/AnalysisMap.h) reads through it.
     bool playerReadRecording(const std::function<void(const TnrdReader&)>& read) const;
-    // The loaded recording's answers to a phone's request_lap_delta and
-    // request_lap_data: the JSON a paired phone receives as their "data".
-    // Empty when nothing is playing or a lap is unknown.
-    std::string playerLapDeltaJson(int currentLap, int comparisonLap, bool sectorDelta);
+    // The loaded recording's answers to a phone's request_lap_delta,
+    // request_lap_data and request_driver_laps: the JSON a paired phone
+    // receives as their "data". Empty when nothing is playing or a lap or
+    // driver is unknown. A driver is a car index, -1 the selected driver.
+    std::string playerLapDeltaJson(int currentLap, int comparisonLap, bool sectorDelta,
+                                   int currentDriver = -1, int comparisonDriver = -1);
     // forCharts: the request draws no map, so a V6 recording's lap is read
     // straight from its columns (no positions) instead of rendered and filtered.
     std::string playerPhoneLapDataJson(int lapNum, const std::vector<std::string>& channels,
-                                       bool forCharts = false);
+                                       bool forCharts = false, int driverIndex = -1);
+    std::string playerPhoneDriverLapsJson(int driverIndex);
+    // A phone's request_braking_zones: the braking zones of one lap, or of two
+    // matched up (tnrp/AnalysisMap.h BrakingPointsMap), as JSON. comparisonLap
+    // 0 means the current lap alone. Empty when nothing is playing or the
+    // current lap cannot be read.
+    std::string playerBrakingZonesJson(int currentLap, int comparisonLap,
+                                       int currentDriver = -1, int comparisonDriver = -1) const;
     void playerGetAllLapsData(uint64_t requestId = 0, uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerGetWindowData(float windowSeconds, uint64_t requestId = 0,
                              uint32_t rowTypeMask = 0xFFFFFFFFu);

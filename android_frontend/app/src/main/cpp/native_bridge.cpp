@@ -331,17 +331,18 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeSetLiveStrategy(
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_nogoat_tracknrace_NativeTelemetry_nativeLapDelta(
-    JNIEnv* env, jobject, jint currentLap, jint comparisonLap, jboolean sectorDelta) {
+    JNIEnv* env, jobject, jint currentLap, jint comparisonLap, jboolean sectorDelta,
+    jint currentDriver, jint comparisonDriver) {
     auto current = session();
     if (!current) return nullptr;
     const std::string data = current->engine->playerLapDeltaJson(
-        currentLap, comparisonLap, sectorDelta == JNI_TRUE);
+        currentLap, comparisonLap, sectorDelta == JNI_TRUE, currentDriver, comparisonDriver);
     return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_nogoat_tracknrace_NativeTelemetry_nativeLapData(
-    JNIEnv* env, jobject, jint lapNum, jobjectArray channels, jboolean forCharts) {
+    JNIEnv* env, jobject, jint lapNum, jobjectArray channels, jboolean forCharts, jint driver) {
     auto current = session();
     if (!current) return nullptr;
     std::vector<std::string> names;
@@ -354,7 +355,27 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeLapData(
             env->DeleteLocalRef(name);
         }
     }
-    const std::string data = current->engine->playerPhoneLapDataJson(lapNum, names, forCharts == JNI_TRUE);
+    const std::string data = current->engine->playerPhoneLapDataJson(
+        lapNum, names, forCharts == JNI_TRUE, driver);
+    return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeDriverLaps(JNIEnv* env, jobject, jint driver) {
+    auto current = session();
+    if (!current) return nullptr;
+    const std::string data = current->engine->playerPhoneDriverLapsJson(driver);
+    return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeBrakingZones(
+    JNIEnv* env, jobject, jint currentLap, jint comparisonLap,
+    jint currentDriver, jint comparisonDriver) {
+    auto current = session();
+    if (!current) return nullptr;
+    const std::string data = current->engine->playerBrakingZonesJson(
+        currentLap, comparisonLap, currentDriver, comparisonDriver);
     return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
 }
 

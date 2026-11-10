@@ -11,6 +11,9 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -255,6 +258,9 @@ internal class AnalysisMapClock {
 
 internal class MapLap(val lap: AnalysisLap, val color: Color, val label: String)
 
+/** A braking zone marked on the map: its number, where it starts on the lap, and its colour. */
+internal class MapZoneMark(val number: Int, val distanceM: Double, val color: Color)
+
 private val TrackWidth = 3.dp
 private val ZoneWidth = 1.75.dp
 private val ZoneOffset = 8.dp
@@ -265,6 +271,9 @@ private val PointRadius = 4.dp
 private val JunctionGap = 4.dp
 /** Distance of a sector's name from the centreline, past its zone line. */
 private val SectorLabelOffset = 20.dp
+/** A braking zone's numbered mark, and the touch target around it. */
+private val ZoneMarkSize = 20.dp
+private val ZoneMarkTarget = 36.dp
 
 /**
  * The circuit with each compared car where it was [elapsed] seconds into its
@@ -272,7 +281,9 @@ private val SectorLabelOffset = 20.dp
  * traps, and the overtaking aids of the car's era (DRS zones, or the 2026 SLM
  * zones for the track's grip with the overtake detection and activation
  * points). With [focusSector] (0 for S1) the other sectors fade, matching the
- * sector the graph is zoomed to.
+ * sector the graph is zoomed to. [zoneMarks] number braking zones where
+ * the first lap reached them, [selectedZone] filled in; tapping one calls
+ * [onZone] with its index.
  */
 @Composable
 internal fun AnalysisMap(
@@ -283,6 +294,9 @@ internal fun AnalysisMap(
     modifier: Modifier = Modifier,
     focusSector: Int? = null,
     slmTrackStatus: Int = -1,
+    zoneMarks: List<MapZoneMark> = emptyList(),
+    selectedZone: Int = -1,
+    onZone: (Int) -> Unit = {},
 ) {
     val context = LocalContext.current.applicationContext
     val outline by produceState<TrackOutline?>(null, context, trackId) {
@@ -401,6 +415,47 @@ internal fun AnalysisMap(
                     }
                 },
         )
+        // Braking zones, where the first lap reached each one's start.
+        val zonePlaces = remember(fit, outline, laps, zoneMarks) {
+            val track = outline
+            val lap = laps.firstOrNull()?.lap
+            if (fit == null || track == null || lap == null) return@remember emptyList()
+            zoneMarks.map { mark ->
+                val time = lap.progress?.timeAtDistance(mark.distanceM)?.takeIf { it.isFinite() } ?: return@map null
+                val (x, z) = lap.positionAt(time) ?: return@map null
+                fit.toScreen(track.mapPosition(x, z))
+            }
+        }
+        val half = with(density) { ZoneMarkTarget.toPx() / 2f }
+        zonePlaces.forEachIndexed { index, place ->
+            place ?: return@forEachIndexed
+            val mark = zoneMarks[index]
+            val on = index == selectedZone
+            Box(
+                Modifier
+                    .offset { IntOffset((place.x - half).roundToInt(), (place.y - half).roundToInt()) }
+                    .size(ZoneMarkTarget)
+                    .clip(CircleShape)
+                    .clickable(onClickLabel = "Show zone ${mark.number}") { onZone(index) }
+                    .semantics { contentDescription = "Braking zone ${mark.number}" },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    Modifier
+                        .size(ZoneMarkSize)
+                        .background(if (on) mark.color else markerOutline, CircleShape)
+                        .border(2.dp, mark.color, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "${mark.number}",
+                        style = carLabelStyle.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                        color = if (on) markerOutline else colors.onSurface,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
     }
 }
 

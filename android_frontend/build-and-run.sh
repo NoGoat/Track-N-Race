@@ -351,9 +351,9 @@ if ! $SKIP_BUILD; then
     done
 
     # Android refuses to install a lower versionCode over a higher one, so build
-    # one above the newest copy on any device. The code follows
+    # the same version as the newest copy on any device. The code follows
     # build-signed-apk.sh's major*10000 + minor*100 + patch scheme, so the
-    # version name is derived from it: 10603 installed -> 10604, 1.6.4.
+    # version name is derived from it: 10603 installed -> 1.6.3.
     INSTALLED_VERSION_CODE=0
     for serial in "${RESOLVED_DEVICE_SERIALS[@]}"; do
         code="$(get_installed_version_code "$ADB" "$serial")"
@@ -362,7 +362,7 @@ if ! $SKIP_BUILD; then
         fi
     done
     if (( INSTALLED_VERSION_CODE > 0 )); then
-        VERSION_CODE=$((INSTALLED_VERSION_CODE + 1))
+        VERSION_CODE=$INSTALLED_VERSION_CODE
         VERSION_NAME="$((VERSION_CODE / 10000)).$((VERSION_CODE / 100 % 100)).$((VERSION_CODE % 100))"
         echo "Installed versionCode is $INSTALLED_VERSION_CODE; building $VERSION_NAME (versionCode $VERSION_CODE)."
         GRADLE_ARGS+=("-PtnrVersionName=$VERSION_NAME" "-PtnrVersionCode=$VERSION_CODE")

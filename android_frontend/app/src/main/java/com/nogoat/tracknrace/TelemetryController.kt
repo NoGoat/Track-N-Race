@@ -49,8 +49,13 @@ internal class TelemetryController(
         store,
         ::requestLapData,
         ::requestLapDelta,
+        ::requestDriverLaps,
+        ::driverLapsSupported,
+        ::requestBrakingZones,
     )
-    internal val graphs = GraphsController(context, store, ::requestLapData)
+    internal val graphs = GraphsController(context, store) { requestId, lapNumber, channels ->
+        requestLapData(requestId, -1, lapNumber, channels)
+    }
 
     /** A recording open on the phone; it replaces the game or desktop source. */
     private class OpenRecording(val file: RecordingFile, val handle: RecordingLibrary.Handle)
@@ -80,6 +85,8 @@ internal class TelemetryController(
         }
         store.setLapDeltaRequester(::requestLapDelta)
         store.setAnalysisDeltaSink(analysis::onDeltaReply)
+        store.setAnalysisDriverLapsSink(analysis::onDriverLaps)
+        store.setAnalysisBrakingSink(analysis::onBrakingZones)
         publishSettings()
     }
 
@@ -112,6 +119,7 @@ internal class TelemetryController(
     fun destroy() {
         store.setLapDeltaRequester(null)
         store.setAnalysisDeltaSink(null)
+        store.setAnalysisBrakingSink(null)
         sourceRequested = false
         sourceGeneration++
         pairingPending = false
@@ -240,12 +248,15 @@ internal class TelemetryController(
         playbackExecutor.execute { if (playback != null) block() }
     }
 
-    /** Lap columns for Analysis or Graphs: from the phone's recording when one is open, else the desktop. */
-    private fun requestLapData(requestId: Long, lapNumber: Int, channels: Collection<String>): Boolean {
-        if (playback == null) return pairedTelemetry.requestLapData(requestId, lapNumber, channels)
+    /**
+     * Lap columns for Analysis or Graphs: from the phone's recording when one
+     * is open, else the desktop. [driver] is a car index, -1 the selected driver.
+     */
+    private fun requestLapData(requestId: Long, driver: Int, lapNumber: Int, channels: Collection<String>): Boolean {
+        if (playback == null) return pairedTelemetry.requestLapData(requestId, lapNumber, channels, driver)
         val names = channels.toTypedArray()
         lapExecutor.execute {
-            val data = directTelemetry.lapData(lapNumber, names, forCharts = requestId >= GRAPHS_REQUEST_BASE)
+            val data = directTelemetry.lapData(lapNumber, names, forCharts = requestId >= GRAPHS_REQUEST_BASE, driver)
             onLapData("{\"type\":\"lap_data\",\"requestId\":$requestId,\"lapNum\":$lapNumber,\"data\":${data ?: "null"}}")
         }
         return true
@@ -255,11 +266,47 @@ internal class TelemetryController(
     private fun requestLapDelta(request: PlaybackLapDeltaRequest): Boolean {
         if (playback == null) return pairedTelemetry.requestLapDelta(request)
         lapExecutor.execute {
-            val data = directTelemetry.lapDelta(request.currentLap, request.comparisonLap, request.sectorDelta)
+            val data = directTelemetry.lapDelta(
+                request.currentLap,
+                request.comparisonLap,
+                request.sectorDelta,
+                request.currentDriver,
+                request.comparisonDriver,
+            )
             store.acceptColdRow("{\"type\":\"lap_delta\",\"requestId\":${request.requestId},\"data\":${data ?: "null"}}")
         }
         return true
     }
+
+    /** Another driver's lap catalogue: from the phone's recording when one is open, else the desktop. */
+    private fun requestDriverLaps(requestId: Long, driver: Int): Boolean {
+        if (playback == null) return pairedTelemetry.requestDriverLaps(requestId, driver)
+        lapExecutor.execute {
+            val data = directTelemetry.driverLaps(driver)
+            store.acceptColdRow(
+                "{\"type\":\"driver_laps\",\"requestId\":$requestId,\"driverIndex\":$driver,\"data\":${data ?: "null"}}",
+            )
+        }
+        return true
+    }
+
+    /** Braking zones: from the phone's recording when one is open, else the desktop. */
+    private fun requestBrakingZones(request: BrakingZonesRequest): Boolean {
+        if (playback == null) return pairedTelemetry.requestBrakingZones(request)
+        lapExecutor.execute {
+            val data = directTelemetry.brakingZones(
+                request.currentLap,
+                request.comparisonLap,
+                request.currentDriver,
+                request.comparisonDriver,
+            )
+            store.acceptColdRow("{\"type\":\"braking_zones\",\"requestId\":${request.requestId},\"data\":${data ?: "null"}}")
+        }
+        return true
+    }
+
+    /** Whether the source can serve another driver's laps: the phone's own reader, or a desktop that says so. */
+    private fun driverLapsSupported(): Boolean = playback != null || pairedTelemetry.driverLapsSupported()
 
     fun setSource(source: String) {
         if (source != PairedTelemetryClient.SOURCE_DIRECT &&

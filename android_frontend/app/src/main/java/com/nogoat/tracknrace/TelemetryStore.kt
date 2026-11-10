@@ -205,6 +205,8 @@ internal class TelemetryStore {
     // Analysis issues its own lap-delta requests, numbered from
     // ANALYSIS_REQUEST_BASE; their replies go to it rather than the dashboard.
     @Volatile private var analysisDeltaSink: ((Long, JSONObject?) -> Unit)? = null
+    @Volatile private var analysisDriverLapsSink: ((JSONObject) -> Unit)? = null
+    @Volatile private var analysisBrakingSink: ((JSONObject) -> Unit)? = null
 
     /** The laps of the recording the desktop is playing, for Analysis. */
     var playbackCatalog by mutableStateOf(PlaybackCatalog())
@@ -520,6 +522,10 @@ internal class TelemetryStore {
                     )
                 }
             }
+
+            "driver_laps" -> analysisDriverLapsSink?.invoke(row)
+
+            "braking_zones" -> analysisBrakingSink?.invoke(row)
 
             "lap_delta" -> {
                 val requestId = row.optLong("requestId")
@@ -1074,6 +1080,16 @@ internal class TelemetryStore {
     /** Receives replies to lap-delta requests numbered from [ANALYSIS_REQUEST_BASE]. */
     fun setAnalysisDeltaSink(sink: ((Long, JSONObject?) -> Unit)?) {
         analysisDeltaSink = sink
+    }
+
+    /** Receives `driver_laps` replies: another driver's lap catalogue. */
+    fun setAnalysisDriverLapsSink(sink: ((JSONObject) -> Unit)?) {
+        analysisDriverLapsSink = sink
+    }
+
+    /** Receives `braking_zones` replies: the braking zones of the laps Analysis shows. */
+    fun setAnalysisBrakingSink(sink: ((JSONObject) -> Unit)?) {
+        analysisBrakingSink = sink
     }
 
     fun resetLapComparison() = post { resetAllLapComparison() }

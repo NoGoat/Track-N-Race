@@ -117,9 +117,15 @@ struct PairIncomingMessage {
     int currentLap{};
     int comparisonLap{};
     bool sectorDelta{};
-    // request_lap_data: one lap of the selected driver, as "family.field".
+    // request_lap_data: one lap of a driver, as "family.field".
     int lapNum{};
     std::vector<std::string> channels{};
+    // Car indices, -1 for the selected driver: request_lap_data and
+    // request_driver_laps name one, request_lap_delta and
+    // request_braking_zones one per lap.
+    int driverIndex{-1};
+    int currentDriver{-1};
+    int comparisonDriver{-1};
 };
 
 // The part of playback_lap_blocks a phone reads. The full row also carries the
@@ -173,6 +179,24 @@ struct PairLapBlocksSource {
     int                             playbackDriverIndex{-1};
 };
 
+// One driver's entry in the full row's analysisDrivers, and its phone form.
+struct PairDriverLapsSourceDriver {
+    int                             driverIndex{-1};
+    std::vector<PairLapBlockSource> blocks;
+    std::vector<PairLapTime>        laps;
+    int                             fastestLapNum{};
+};
+
+struct PairDriverLapsSource {
+    std::vector<PairDriverLapsSourceDriver> analysisDrivers;
+};
+
+struct PairDriverLaps {
+    std::vector<PairLapBlock> blocks;
+    std::vector<PairLapTime>  laps;
+    int                       fastestLapNum{};
+};
+
 struct PairRowsFrame {
     std::string type{"rows"};
     std::vector<std::string> rows;
@@ -210,7 +234,8 @@ struct PairWelcomeFrame {
     std::optional<bool> regulations2026;
     std::vector<std::string> capabilities{
         "subscribe", "latest-state", "playback-state", "lap-delta",
-        "v6-requirements", "driver-restriction", "lap-data"
+        "v6-requirements", "driver-restriction", "lap-data", "driver-laps",
+        "braking-zones"
     };
 };
 
@@ -665,21 +690,23 @@ std::string writeJson(const T& value) {
     return json;
 }
 
+PairLapBlock phoneLapBlock(const PairLapBlockSource& block) {
+    PairLapBlock out{block.lapNum, block.startSessionTime, block.endSessionTime};
+    for (auto it = block.statusHistory.rbegin(); it != block.statusHistory.rend(); ++it) {
+        if (it->tyre_compound <= 0) continue;
+        out.tyreCompound = it->tyre_compound;
+        out.visualCompound = it->visual_compound;
+        break;
+    }
+    return out;
+}
+
 std::string phoneLapBlocks(const std::string& json) {
     PairLapBlocksSource source;
     if (glz::read<kPartialRead>(source, std::string_view(json))) return json;
     PairLapBlocksRow row;
     row.blocks.reserve(source.blocks.size());
-    for (const auto& block : source.blocks) {
-        PairLapBlock out{block.lapNum, block.startSessionTime, block.endSessionTime};
-        for (auto it = block.statusHistory.rbegin(); it != block.statusHistory.rend(); ++it) {
-            if (it->tyre_compound <= 0) continue;
-            out.tyreCompound = it->tyre_compound;
-            out.visualCompound = it->visual_compound;
-            break;
-        }
-        row.blocks.push_back(out);
-    }
+    for (const auto& block : source.blocks) row.blocks.push_back(phoneLapBlock(block));
     row.laps = std::move(source.laps);
     row.fastestLapNum = source.fastestLapNum;
     row.deltaAvailable = source.deltaAvailable;
@@ -695,6 +722,21 @@ std::string writePublicState(const PairPublicState& value) {
 }
 
 } // namespace
+
+std::string pairPhoneDriverLaps(const std::string& lapBlocksJson, int driverIndex) {
+    PairDriverLapsSource source;
+    if (glz::read<kPartialRead>(source, std::string_view(lapBlocksJson))) return {};
+    for (auto& driver : source.analysisDrivers) {
+        if (driver.driverIndex != driverIndex) continue;
+        PairDriverLaps out;
+        out.blocks.reserve(driver.blocks.size());
+        for (const auto& block : driver.blocks) out.blocks.push_back(phoneLapBlock(block));
+        out.laps = std::move(driver.laps);
+        out.fastestLapNum = driver.fastestLapNum;
+        return writeJson(out);
+    }
+    return {};
+}
 
 std::string pairPhoneLapBlocks(const std::string& json) {
     return phoneLapBlocks(json);
@@ -772,6 +814,8 @@ struct PairServer::Impl {
     RequirementsCallback requirementsCallback;
     LapDeltaCallback lapDeltaCallback;
     LapDataCallback lapDataCallback;
+    DriverLapsCallback driverLapsCallback;
+    BrakingZonesCallback brakingZonesCallback;
     DiagnosticCallback diagnosticCallback;
     mutable std::mutex mutex;
     PairSocket listener{kInvalidPairSocket};
@@ -1433,7 +1477,8 @@ struct PairServer::Impl {
             std::string data;
             if (callback && message.currentLap > 0 && message.comparisonLap > 0) {
                 data = callback(message.currentLap, message.comparisonLap,
-                                message.sectorDelta);
+                                message.sectorDelta, message.currentDriver,
+                                message.comparisonDriver);
             }
             std::string response = "{\"type\":\"lap_delta\",\"requestId\":" +
                 std::to_string(message.requestId) + ",\"data\":" +
@@ -1447,13 +1492,39 @@ struct PairServer::Impl {
             }
             std::string data;
             if (callback && message.lapNum > 0 && message.channels.size() <= kMaxLapDataChannels)
-                data = callback(message.lapNum, message.channels);
+                data = callback(message.lapNum, message.channels, message.driverIndex);
             // Its own frame rather than a rows batch: a lap is hundreds of KB,
             // and the phone parses it straight into columns off the UI thread.
             sendText(client, "{\"type\":\"lap_data\",\"requestId\":" +
                 std::to_string(message.requestId) + ",\"lapNum\":" +
                 std::to_string(message.lapNum) + ",\"data\":" +
                 (data.empty() ? "null" : data) + "}");
+        } else if (message.type == "request_driver_laps") {
+            DriverLapsCallback callback;
+            {
+                std::lock_guard lock(mutex);
+                callback = driverLapsCallback;
+            }
+            std::string data;
+            if (callback && message.driverIndex >= 0) data = callback(message.driverIndex);
+            sendRows(client, {"{\"type\":\"driver_laps\",\"requestId\":" +
+                std::to_string(message.requestId) + ",\"driverIndex\":" +
+                std::to_string(message.driverIndex) + ",\"data\":" +
+                (data.empty() ? "null" : data) + "}"});
+        } else if (message.type == "request_braking_zones") {
+            BrakingZonesCallback callback;
+            {
+                std::lock_guard lock(mutex);
+                callback = brakingZonesCallback;
+            }
+            std::string data;
+            if (callback && message.currentLap > 0 && message.comparisonLap >= 0) {
+                data = callback(message.currentLap, message.comparisonLap,
+                                message.currentDriver, message.comparisonDriver);
+            }
+            sendRows(client, {"{\"type\":\"braking_zones\",\"requestId\":" +
+                std::to_string(message.requestId) + ",\"data\":" +
+                (data.empty() ? "null" : data) + "}"});
         } else if (message.type == "ping") {
             sendText(client, writeJson(PairPongFrame{"pong", nowMs()}));
         } else {
@@ -1980,6 +2051,8 @@ void PairServer::configure(PairServerConfig config, StateCallback stateCallback,
                            RequirementsCallback requirementsCallback,
                            LapDeltaCallback lapDeltaCallback,
                            LapDataCallback lapDataCallback,
+                           DriverLapsCallback driverLapsCallback,
+                           BrakingZonesCallback brakingZonesCallback,
                            DiagnosticCallback diagnosticCallback) {
     bool startEnabled = config.enabled;
     {
@@ -1989,6 +2062,8 @@ void PairServer::configure(PairServerConfig config, StateCallback stateCallback,
         impl_->requirementsCallback = std::move(requirementsCallback);
         impl_->lapDeltaCallback = std::move(lapDeltaCallback);
         impl_->lapDataCallback = std::move(lapDataCallback);
+        impl_->driverLapsCallback = std::move(driverLapsCallback);
+        impl_->brakingZonesCallback = std::move(brakingZonesCallback);
         impl_->diagnosticCallback = std::move(diagnosticCallback);
         pair::init();
         PairPersistedState persisted;

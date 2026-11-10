@@ -786,6 +786,49 @@ The page's delta curve reuses `request_lap_delta`, now honouring its
 `sectorDelta` flag. Analysis numbers its requests from `1 << 40` so the phone
 routes those replies to the page instead of the dashboard's lap delta.
 
+Each compared lap can belong to its own driver, as on the desktop. A V6
+recording holds every car, so the lap sheet lists the roster and asks for the
+chosen driver's laps:
+
+```json
+{"type":"request_driver_laps","requestId":1099511627780,"driverIndex":7}
+```
+
+```json
+{"type":"driver_laps","requestId":1099511627780,"driverIndex":7,"data":{
+  "blocks":[{"lapNum":1,"startSessionTime":0.0,"endSessionTime":78.0,
+             "tyreCompound":17,"visualCompound":16}],
+  "laps":[{"lapNum":1,"lapTimeMs":78002}],"fastestLapNum":5}}
+```
+
+The reply is a `rows` entry cut from the full `playback_lap_blocks` row's
+`analysisDrivers` (`pairPhoneDriverLaps`); the catalogue for every driver is
+not sent with each snapshot because it is hundreds of KB for a race. `data` is
+`null` when nothing is playing or the recording holds no such driver.
+`request_lap_data` then takes an optional `driverIndex`, and
+`request_lap_delta` an optional `currentDriver` and `comparisonDriver`; each
+defaults to -1, the desktop's selected driver. The `welcome` frame advertises
+`driver-laps`, and a phone offers no driver choice without it.
+
+The Map view's braking zones are found on the desktop by libtnrp, as for the
+desktop's own Braking Zones panel (`buildAnalysisMap("braking")`):
+
+```json
+{"type":"request_braking_zones","requestId":1099511627790,
+ "currentLap":4,"comparisonLap":5,"currentDriver":7}
+```
+
+```json
+{"type":"braking_zones","requestId":1099511627790,"data":{
+  "trackLengthM":5412.0,"current":[…],"comparison":[…],"pairs":[…]}}
+```
+
+`data` is the `BrakingPointsMap` of tnrp/AnalysisMap.h, as a `rows` entry;
+`comparisonLap` 0 asks for one lap's zones alone, and the drivers default to
+-1 as above. `data` is `null` when nothing is playing or the current lap cannot
+be read. The `welcome` frame advertises `braking-zones`; without it the phone
+says the desktop needs an update.
+
 ### 10.5 Delivery and backpressure
 
 Every Android page is a latest-state display, so the desktop delivers the newest
