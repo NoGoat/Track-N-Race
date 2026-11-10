@@ -2068,9 +2068,10 @@ QWidget* SettingsDialog::buildAboutPage() {
 
     // name, version, license label, copyright holder, homepage URL, short link text, license resource.
     struct Lib { const char* name; QString version; const char* license; const char* copyright;
-                 const char* url; const char* linkText; const char* resource; };
-    const Lib libs[] = {
-        { "Qt",            qVersion(), "LGPL v3", "© The Qt Company Ltd.",                       "https://www.qt.io",                "qt.io",           ":/licenses/LGPL-3.0.txt" },
+                 const char* url; const char* linkText; QString resource; };
+    QList<Lib> libs = {
+        // Qt's notice also covers the third-party code inside the Windows Qt build.
+        { "Qt",            qVersion(), "LGPL v3", "© The Qt Company Ltd.",                       "https://www.qt.io",                "qt.io",           ":/licenses/LGPL-3.0-Qt.txt" },
         { "glaze",         "7.8.3",    "MIT",     "© 2019–present Stephen Berry",           "https://github.com/stephenberry/glaze", "github.com", ":/licenses/MIT-glaze.txt" },
         // The toast notifications are a fork of niklashenning/qt-toast (see the
         // license text, which notes the fork and reproduces the upstream notice).
@@ -2087,31 +2088,36 @@ QWidget* SettingsDialog::buildAboutPage() {
         { "Noto Sans",     "—",        "OFL 1.1", "© The Noto Project Authors",             "https://fonts.google.com/noto/specimen/Noto+Sans", "fonts.google.com", ":/licenses/OFL-1.1-Noto.txt" },
 #ifdef BREEZE_BUNDLED
         // KDE is bundled only in --with-breeze builds (BREEZE_BUNDLED). "KDE
-        // Frameworks" covers every KF6 module in the breeze6 runtime closure
+        // Frameworks" covers the KF6 modules in the breeze6 runtime closure
         // (CoreAddons, Config, GuiAddons, ColorScheme, WindowSystem, IconThemes,
-        // Archive, Codecs, ConfigWidgets, I18n, WidgetsAddons) — one row, not
-        // eleven, because KDE's Frameworks Licensing Policy requires every module
-        // to use the same terms (LGPL 2.1, or 3, or a later KDE e.V.-approved
-        // version), so it's genuinely one license, matching KDE apps' own
-        // convention (e.g. Kate's About dialog). All ship at 6.27.0.
+        // Archive, I18n), all at 6.27.0. Their code is mostly LGPL-2.0-or-later,
+        // with some LGPL-2.0-only/2.1 and a few BSD-2/MIT files; the notice lists
+        // them and carries the LGPL v2.0 and v2.1 texts.
         //
         // Breeze style (Plasma) is a separate row: it tracks Plasma's own release
-        // (6.7.0, not KF6_VERSION) and — unlike the rest of this list — the
-        // widget-style plugin itself (kstyle/breezestyle.cpp) is GPL-2.0-or-later,
-        // not LGPL; verified against its SPDX header and the GPL-2.0-or-later.txt
-        // shipped in the breeze repo's LICENSES/ dir.
-        //
-        // Breeze Icons is also separate: KDE's policy requires icon files
-        // specifically to be LGPL-3.0 (not 2.1-or-later like the rest of
-        // Frameworks), and the shipped icon set is a mix of LGPL-2.x/3.0/
-        // CC-BY-SA-4.0 from legacy contributions — distinct enough from the code
-        // frameworks' licensing to warrant its own line and its own license text.
-        { "Breeze style (Plasma)", "6.7.0",  "GPL v2+",    "© 2014 Hugo Pereira Da Costa, The Qt Company Ltd., and KDE contributors", "https://invent.kde.org/plasma/breeze", "invent.kde.org", ":/licenses/GPL-2.0.txt" },
-        { "Breeze Icons",          "6.27.0", "LGPL v3",    "© KDE contributors",                         "https://invent.kde.org/frameworks/breeze-icons", "invent.kde.org", ":/licenses/LGPL-3.0.txt" },
-        { "KDE Frameworks",        "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://develop.kde.org/products/frameworks/",   "develop.kde.org", ":/licenses/LGPL-2.1.txt" },
+        // (6.7.0, not KF6_VERSION) and the widget-style plugin is GPL-2.0-or-later,
+        // not LGPL (some files MIT); its bundled colour schemes are
+        // LGPL-2.0-or-later. Breeze Icons is LGPL-3.0-or-later (COPYING-ICONS).
+        { "Breeze style (Plasma)", "6.7.0",  "GPL v2+",    "© 2014 Hugo Pereira Da Costa, The Qt Company Ltd., and KDE contributors", "https://invent.kde.org/plasma/breeze", "invent.kde.org", ":/licenses/GPL-2.0-Breeze.txt" },
+        { "Breeze Icons",          "6.27.0", "LGPL v3+",   "© 2014 Uri Herrera and KDE contributors",    "https://invent.kde.org/frameworks/breeze-icons", "invent.kde.org", ":/licenses/LGPL-3.0-Breeze-Icons.txt" },
+        { "KDE Frameworks",        "6.27.0", "LGPL v2+",   "© KDE contributors",                         "https://develop.kde.org/products/frameworks/",   "develop.kde.org", ":/licenses/LGPL-2.0-KDE-Frameworks.txt" },
+#ifdef Q_OS_WIN
+        // KF6I18n's runtime deps on Windows, copied from the gettext install
+        // (BREEZE_WIN_RUNTIME_DIR) next to the .exe.
+        { "GNU gettext (libintl) & libiconv", "—", "LGPL v2.1+", "© Free Software Foundation, Inc.", "https://www.gnu.org/software/gettext/", "gnu.org", ":/licenses/LGPL-2.1.txt" },
+#endif
 #endif
     };
-    const int libCount = int(std::size(libs));
+#if defined(Q_OS_LINUX) && defined(BREEZE_BUNDLED)
+    // The AppImage also bundles host distro libraries; build-appimage.sh writes
+    // their notices next to the executable. Other Linux builds don't have it.
+    const QString appImageNotices =
+        QCoreApplication::applicationDirPath() + "/licenses/linux-appimage-libraries.txt";
+    if (QFile::exists(appImageNotices))
+        libs.append({ "Linux AppImage libraries", "—", "Various", "See notices", "https://launchpad.net/ubuntu",
+                      "launchpad.net", appImageNotices });
+#endif
+    const int libCount = int(libs.size());
 
     // A table keeps the columns aligned and width under control; the long homepage
     // URLs (shown as short host links) were what forced the horizontal scrollbar.

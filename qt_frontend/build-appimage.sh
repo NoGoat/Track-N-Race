@@ -155,7 +155,9 @@ export EXTRA_PLATFORM_PLUGINS="libqwayland.so"
 # against --help so an older linuxdeploy that lacks the flag still works.
 EXCLUDES=()
 if "$LD" --help 2>&1 | grep -q -- '--exclude-library'; then
-    EXCLUDES=(--exclude-library 'libKF6*')
+    # gtk-nocsd is LD_PRELOADed by some desktop sessions, so it shows up in the
+    # app's ldd output without anything actually needing it — keep it out.
+    EXCLUDES=(--exclude-library 'libKF6*' --exclude-library 'libgtk-nocsd*')
 fi
 
 # Curate which Qt imageformats plugins get deployed. The host's kimageformats
@@ -166,18 +168,28 @@ fi
 # except imageformats, which holds only what the app needs (ico for its icon,
 # svg for play/pause, plus jpeg/gif). A qmake wrapper rewrites the
 # QT_INSTALL_PLUGINS the plugin queries; everything else passes through.
+#
+# Two more categories are trimmed to keep unused code (and its licences) out of
+# the bundle: platforminputcontexts drops the virtual keyboard plugin, which
+# otherwise drags in Qt Quick/QML and Qt Virtual Keyboard (GPL-3.0); and
+# networkinformation is left empty, since the app never uses QNetworkInformation.
 REAL_PLUGINS="$("$QMAKE" -query QT_INSTALL_PLUGINS)"
 CURATED_PLUGINS="$TOOLS_DIR/qt-plugins-curated"
 rm -rf "$CURATED_PLUGINS"
-mkdir -p "$CURATED_PLUGINS/imageformats"
+mkdir -p "$CURATED_PLUGINS/imageformats" "$CURATED_PLUGINS/platforminputcontexts" \
+         "$CURATED_PLUGINS/networkinformation"
 for d in "$REAL_PLUGINS"/*; do
     name="$(basename "$d")"
-    [[ "$name" == imageformats ]] && continue
+    [[ "$name" == imageformats || "$name" == platforminputcontexts || "$name" == networkinformation ]] && continue
     ln -s "$d" "$CURATED_PLUGINS/$name"
 done
 for p in libqico.so libqsvg.so libqjpeg.so libqgif.so; do
     [[ -e "$REAL_PLUGINS/imageformats/$p" ]] && \
         ln -s "$REAL_PLUGINS/imageformats/$p" "$CURATED_PLUGINS/imageformats/$p"
+done
+for p in "$REAL_PLUGINS"/platforminputcontexts/*.so; do
+    [[ "$(basename "$p")" == libqtvirtualkeyboardplugin.so ]] && continue
+    ln -s "$p" "$CURATED_PLUGINS/platforminputcontexts/"
 done
 
 QMAKE_WRAP="$TOOLS_DIR/qmake-curated"
@@ -299,6 +311,13 @@ if command -v patchelf >/dev/null 2>&1; then
 else
     echo "WARNING: patchelf not found — Breeze KF6 libs may not resolve at runtime." >&2
 fi
+
+# Licence notices for the host libraries bundled into usr/lib, generated from
+# what was actually deployed. The About dialog shows this file when present
+# (<exe dir>/licenses/); a missing notice is a warning, not a failed build.
+mkdir -p "$APPDIR/usr/bin/licenses"
+"$SCRIPT_DIR/gen-appimage-notices.sh" "$APPDIR" "$APPDIR/usr/bin/licenses/linux-appimage-libraries.txt" || \
+    echo "WARNING: bundled-library notices not generated — the AppImage won't include them." >&2
 
 # Pack the finished AppDir.
 echo ""

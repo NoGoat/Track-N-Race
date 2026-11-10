@@ -3,9 +3,14 @@
 <qresource prefix="/licenses">
     <!-- Track N Race is GPLv3; retain the existing canonical license copy. -->
     <file alias="GPL-3.0.txt">src/third_party/qcustomplot/GPL.txt</file>
-    <file alias="LGPL-3.0.txt">licenses/LGPL-3.0.txt</file>
+    <!-- Qt and the KDE/Breeze stack: full notices (versions, source links,
+         copyright holders, MIT/BSD notices) with the complete licence texts. -->
+    <file alias="LGPL-3.0-Qt.txt">licenses/LGPL-3.0-Qt.txt</file>
+    <file alias="GPL-2.0-Breeze.txt">licenses/GPL-2.0-Breeze.txt</file>
+    <file alias="LGPL-3.0-Breeze-Icons.txt">licenses/LGPL-3.0-Breeze-Icons.txt</file>
+    <file alias="LGPL-2.0-KDE-Frameworks.txt">licenses/LGPL-2.0-KDE-Frameworks.txt</file>
+    <!-- gettext's libintl and libiconv, bundled on Windows for KF6I18n. -->
     <file alias="LGPL-2.1.txt">licenses/LGPL-2.1.txt</file>
-    <file alias="GPL-2.0.txt">licenses/GPL-2.0.txt</file>
     <!-- MIT is used by several components with different copyright holders; each
          gets its own file so the displayed notice matches (MIT requires the
          copyright notice to be reproduced verbatim). qt-toast is a fork; its file

@@ -362,10 +362,24 @@ if(BREEZE_STACK_PREFIX)
         # Windows resolves a plugin's dependent DLLs from the *executable's*
         # directory, so the KF6 DLLs sit next to the .exe and breeze6.dll goes in
         # plugins/styles/. No RPATH/patchelf concept here — just copies.
-        # Glob all KF6 + zlib DLLs from the prefix (a superset of breeze6.dll's
-        # closure; the unused ones are never loaded, so they're harmless). Globbed
-        # at configure time — reconfigure if the superbuild's DLL set changes.
-        file(GLOB _breeze_win_dlls "${BREEZE_STACK_PREFIX}/bin/*.dll")
+        # Copy only breeze6.dll's KF6 runtime closure (same set as the Linux list
+        # below) rather than every DLL in the prefix. That keeps unused frameworks
+        # out of the bundle — notably KF6I18nLocaleData, whose timezone data is
+        # ODbL-licensed. If the Breeze/KF6 versions are bumped, re-verify the list.
+        set(_breeze_win_dlls "")
+        foreach(_lib CoreAddons IconThemes WindowSystem ColorScheme ConfigGui
+                     ConfigCore GuiAddons Archive BreezeIcons I18n)
+            set(_dll "${BREEZE_STACK_PREFIX}/bin/KF6${_lib}.dll")
+            if(EXISTS "${_dll}")
+                list(APPEND _breeze_win_dlls "${_dll}")
+            else()
+                message(WARNING "Breeze bundle: ${_dll} not found — Breeze may fail to load.")
+            endif()
+        endforeach()
+        # Vendored zlib (KArchive's dependency) — globbed because its DLL name
+        # varies by zlib version/toolchain. Globbed at configure time.
+        file(GLOB _breeze_zlib_dlls "${BREEZE_STACK_PREFIX}/bin/zlib*.dll" "${BREEZE_STACK_PREFIX}/bin/z.dll")
+        list(APPEND _breeze_win_dlls ${_breeze_zlib_dlls})
 
         add_custom_command(TARGET native_recorder POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "${_breeze_styldir}"
