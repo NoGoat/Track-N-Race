@@ -102,6 +102,19 @@
     <string name="local_network_required">Allow Nearby devices for Track N Race to receive telemetry and pair over Wi-Fi</string>
     <string name="local_network_off">Local network access is off</string>
 
+    <!-- Listener service (the notification that keeps telemetry running in the background) -->
+    <string name="listener_channel_name">Live telemetry</string>
+    <string name="listener_channel_description">Shown while Track N Race keeps receiving telemetry in the background</string>
+    <string name="listener_notification_title">Track N Race telemetry</string>
+    <string name="listener_notification_stop">Stop</string>
+    <string name="listener_notification_recording">Recording</string>
+    <string name="listener_notification_recording_suffix"> · Recording</string>
+    <string name="listener_state_listening">Listening for telemetry</string>
+    <string name="listener_state_desktop">Paired desktop</string>
+    <string name="listener_state_connecting">Pairing · %1$s</string>
+    <string name="listener_state_reconnecting">Looking for the desktop…</string>
+    <string name="listener_state_error">Telemetry stopped</string>
+
     <string name="overview_placeholder">Live speed, gear and race-state cards will live here.</string>
     <string name="session_placeholder">Weather, session clock, flags and proximity will live here.</string>
     <string name="strategy_placeholder">Pit windows, tyre plans and rival comparisons will live here.</string>

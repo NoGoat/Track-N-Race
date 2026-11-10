@@ -287,6 +287,7 @@ internal class TelemetryStore {
         private set
     var sourceStatus by mutableStateOf(SourceStatus())
         private set
+    private var sourceStatusListener: ((SourceStatus) -> Unit)? = null
     var pairingBusy by mutableStateOf(false)
         private set
     var pairingSuccessId by mutableStateOf(0L)
@@ -1069,9 +1070,20 @@ internal class TelemetryStore {
 
     fun updateSource(state: String, detail: String? = null) = post {
         sourceStatus = SourceStatus(state, detail)
+        sourceStatusListener?.invoke(sourceStatus)
     }
 
     fun updatePairingBusy(value: Boolean) = post { pairingBusy = value }
+
+    /**
+     * Receives every source state change on the main thread; the listener
+     * service keeps its notification showing the latest one. Since the store
+     * outlives the UI (the process holds it, the service reads it), a slot
+     * rather than a Compose flow.
+     */
+    fun setSourceStatusListener(listener: ((SourceStatus) -> Unit)?) {
+        post { sourceStatusListener = listener }
+    }
 
     fun setLapDeltaRequester(requester: ((PlaybackLapDeltaRequest) -> Boolean)?) {
         lapDeltaRequester = requester

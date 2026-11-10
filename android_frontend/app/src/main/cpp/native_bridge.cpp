@@ -191,6 +191,20 @@ tnrp::Config androidConfig() {
     config.binaryPlayback = true;
     config.sparseV6Playback = true;
     config.columnarV6History = true;
+    // binaryPlayback also opts into retaining the live session in memory for
+    // the desktop's live-history reads (setHostVisible restore flushes,
+    // liveGetLapData for stored previous/fastest laps, deep Strategy
+    // rollback, live track-map matching). No Android feature reads that
+    // store: live charts accumulate every streamed sample in their own
+    // SampleHistory, and every lap read goes through the recording player or
+    // the paired desktop. Retaining it left a full session growing in phone
+    // RAM precisely where a persistent listener in the background needs the
+    // opposite, so it is off here. If a live track-map or native rollback
+    // feature ever reaches Android, revisit this instead of opting back in
+    // silently. The concession: switching recording on mid-session no longer
+    // backfills the file from the session's start, because no memory copy is
+    // kept for the writer to hand the file.
+    config.retainLiveSession = false;
     return config;
 }
 

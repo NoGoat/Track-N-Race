@@ -1,13 +1,13 @@
 package com.nogoat.tracknrace
 
 import android.Manifest
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.PowerManager
 import android.provider.DocumentsContract
 import android.system.ErrnoException
 import android.system.Os
@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** Native owner for telemetry, recording, discovery, and desktop pairing. */
 internal class TelemetryController(
-    activity: Activity,
+    context: Context,
     internal val store: TelemetryStore,
 ) : NativeTelemetry.Listener, PairedTelemetryClient.Listener, PairDiscovery.Listener {
     companion object {
@@ -27,7 +27,7 @@ internal class TelemetryController(
         private const val PREF_WHEEL_DISPLAY = "wheel_display"
     }
 
-    private val context: Context = activity.applicationContext
+    private val context: Context = context.applicationContext
     private val sourceExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "tnrp-native-source").apply { isDaemon = true }
     }
@@ -72,6 +72,15 @@ internal class TelemetryController(
     @Volatile private var qrScannerActive = false
     private var lowLatencyLock: WifiManager.WifiLock? = null
 
+    // Who owns the session: between onStart and onStop the activity does; from
+    // then, the listener service keeps it until it is stopped. The service is
+    // what makes background listening survive, so the handbook's suspended
+    // listener does not happen while it runs.
+    private var listenerServiceActive = false
+    private var hostVisible = false
+    private var backgroundWifiLock: WifiManager.WifiLock? = null
+    private var backgroundWakeLock: PowerManager.WakeLock? = null
+
     /** Shows the system local network prompt; set by the UI that owns the launcher. */
     @Volatile var localNetworkRequester: (() -> Unit)? = null
 
@@ -95,17 +104,25 @@ internal class TelemetryController(
         // this app. Keep the current source and discovery browser alive across
         // that handoff instead of racing the activity-result pairing attempt.
         if (qrScannerActive) return
+        hostVisible = true
         holdLowLatencyWifi(true)
         sourceRequested = true
         if (!hasLocalNetworkAccess()) localNetworkRequester?.invoke()
         // A recording stays open, paused where it was left.
         if (playback != null) return
+        // While the listener service carries the session, keep the direct
+        // stream bound instead of rebinding it on every foreground return: a
+        // rebind drops everything the background streamed and resets the
+        // charts' All Laps history. A paired desktop reconnects cheaply under
+        // its own state machine, so it takes the restart.
+        if (listenerServiceActive && isDirectSource() && store.sourceStatus.state == "listening") return
         restartConfiguredSource()
         if (discoveryRequested) startDiscoveryInternal(clear = true)
     }
 
     fun onHostStop() {
         if (qrScannerActive) return
+        hostVisible = false
         holdLowLatencyWifi(false)
         desktopSearch = false
         stopDiscoveryInternal()
@@ -113,28 +130,89 @@ internal class TelemetryController(
             playbackPause()
             return
         }
+        if (listenerServiceActive) {
+            // The service keeps the sources and holds the locks that work off
+            // screen (acquired when it took over); the dashboard's session,
+            // recording and chart histories carry on behind the drawer.
+            return
+        }
+        // Without the local network permission there is nothing to carry: the
+        // listener cannot hold a socket, so suspend as before the service
+        // existed. A running session with a state error (a broken recording
+        // folder, a paired desktop's refusal) is still worth carrying; the
+        // notification shows the state.
+        if (!hasLocalNetworkAccess()) {
+            suspendSourcesAsync()
+            return
+        }
+        // Hand the session to the persistent listener: with a notification on
+        // record it keeps the sources, radio and CPU awake past this stop.
+        try {
+            context.startForegroundService(Intent(context, ListenerService::class.java))
+            listenerServiceActive = true
+        } catch (error: Exception) {
+            // A background service start was denied; suspend as before it existed.
+            suspendSourcesAsync()
+        }
+    }
+
+    // ── The listener service ────────────────────────────────────────────────
+
+    /**
+     * The service took over as the session's owner while no host is up
+     * (system restarts land here too). It holds the locks that work off
+     * screen, and starts the sources if nothing is streaming yet.
+     */
+    fun onListenerServiceStarted() {
+        listenerServiceActive = true
+        holdBackgroundRadio(true)
+        if (hostVisible || playback != null) return
+        if (!sourceRequested) {
+            sourceRequested = true
+            restartConfiguredSource()
+        }
+    }
+
+    /**
+     * The service stopped: with a host up the foreground keeps the sources as
+     * before the service existed; with none, everything suspends and the
+     * completed recordings are exported, as an app left in the background.
+     */
+    fun onListenerServiceStopped() {
+        listenerServiceActive = false
+        holdBackgroundRadio(false)
+        if (hostVisible) return
+        sourceRequested = false
         suspendSourcesAsync()
     }
 
-    fun destroy() {
-        store.setLapDeltaRequester(null)
-        store.setAnalysisDeltaSink(null)
-        store.setAnalysisBrakingSink(null)
-        sourceRequested = false
-        sourceGeneration++
-        pairingPending = false
-        discoveryRequested = false
-        desktopSearch = false
-        qrScannerActive = false
-        stopDiscoveryInternal()
-        holdLowLatencyWifi(false)
-        directTelemetry.stop()
-        pairedTelemetry.close()
-        playback?.handle?.close()
-        playback = null
-        sourceExecutor.shutdownNow()
-        playbackExecutor.shutdownNow()
-        lapExecutor.shutdownNow()
+    /**
+     * Complement of [holdLowLatencyWifi]: while no host owns the screen, the
+     * high performance Wi-Fi lock keeps the radio out of manufacturer power
+     * save and the partial wake lock keeps the CPU out of doze. The low
+     * latency lock only applies to a foreground, lit screen; through doze the
+     * receive thread would stop and datagrams would be lost, undoing the
+     * whole point of the persistent listener.
+     */
+    private fun holdBackgroundRadio(hold: Boolean) {
+        if (!hold) {
+            backgroundWifiLock?.let { if (it.isHeld) it.release() }
+            backgroundWakeLock?.let { if (it.isHeld) it.release() }
+            return
+        }
+        (context.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.let { wifi ->
+            @Suppress("DEPRECATION")
+            val lock = backgroundWifiLock ?: wifi
+                .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "track-n-race-background")
+                .apply { setReferenceCounted(false); backgroundWifiLock = this }
+            if (!lock.isHeld) lock.acquire()
+        }
+        (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.let { power ->
+            val lock = backgroundWakeLock ?: power
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "track-n-race:listener")
+                .apply { setReferenceCounted(false); backgroundWakeLock = this }
+            if (!lock.isHeld) lock.acquire()
+        }
     }
 
     fun reconnect() {

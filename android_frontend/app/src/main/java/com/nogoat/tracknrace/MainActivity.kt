@@ -1,5 +1,7 @@
 package com.nogoat.tracknrace
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
@@ -25,7 +27,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        telemetry = TelemetryController(this, TelemetryStore())
+        // The process owns the session (TelemetryHost): the controller survives
+        // this activity and is carried by ListenerService while it is hidden.
+        telemetry = TelemetryHost.controller(this)
+        askForNotifications()
         updateSystemBars()
         setContent {
             val dark = telemetry.store.settings.themeMode.isDark()
@@ -59,9 +64,18 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    override fun onDestroy() {
-        telemetry.destroy()
-        super.onDestroy()
+    /**
+     * The listener service's notification needs this on Android 13+; while it
+     * is withheld the service still runs and its entry shows up in the drawer's
+     * "apps running" list without text. The system only shows this a couple of
+     * times, so each launch asks again unless it is granted.
+     */
+    private fun askForNotifications() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) return
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

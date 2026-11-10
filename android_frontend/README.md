@@ -128,8 +128,13 @@ Without a release key configured, release builds are unsigned;
 
 Keep the phone and the PC/console running F1 on the same local network. Enable
 UDP telemetry in the game, set the destination to the phone's Wi-Fi IPv4
-address, and use port `20777`. Keep the dashboard in the foreground while
-receiving; Android may suspend its listener in the background.
+address, and use port `20777`. The session no longer has to stay in the
+foreground: on leaving the app a "Track N Race telemetry" notification appears
+and a foreground service keeps listening — the charts keep filling, All Laps
+stays whole, and recording follows the setting — until the notification's Stop
+taps, the app is swiped out (the service restarts and resumes), the app is
+force-quit, or "Listening for telemetry" is switched off in the system's app
+settings.
 
 The app uses scoped storage. It declares normal network and camera permissions;
 selecting a recording destination grants access only to the chosen folder.

@@ -138,8 +138,12 @@ parser, a remote-only row schema, or a Java model for playback timing.
   selective backfill mechanism for those future pages, while the initial race
   dashboard is latest-state only.
 - Cloud accounts, discovery across the internet, or NAT traversal.
-- Background telemetry when the Android UI is not actively in use. A foreground
-  service can be designed separately if that product behavior is wanted.
+- ~~Background telemetry when the Android UI is not actively in use. A foreground
+  service can be designed separately if that product behavior is wanted.~~
+  Implemented 2026-11-10, outside the pair protocol: `TelemetryController`
+  hands the session to the persistent foreground service (`ListenerService`)
+  in `onHostStop`; see docs/frontends_parity.md, "Persistent background
+  listener". Bluetooth, Wi-Fi Direct, USB remain out.
 - Simultaneously building and maintaining LAN, Bluetooth, Wi-Fi Direct, USB,
   and cloud data transports.
 
