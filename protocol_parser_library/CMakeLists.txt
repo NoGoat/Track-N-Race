@@ -22,11 +22,7 @@ if(NOT TARGET glaze::glaze)
 endif()
 
 if(NOT TARGET zlibstatic)
-    # libxlsxwriter links the canonical ZLIB::ZLIB target. zlib 1.3.2 maps
-    # that name to its shared target when shared builds are enabled, which
-    # makes Windows consumers import z.dll even though tnrp itself requests
-    # zlibstatic. Build only the static variant so our FindZLIB shim below can
-    # consistently expose ZLIB::ZLIB as zlibstatic.
+    # tnrp links zlibstatic only; skip zlib's shared variant (z.dll).
     set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     set(ZLIB_BUILD_STATIC ON CACHE BOOL "" FORCE)
     FetchContent_Declare(zlib
@@ -63,25 +59,6 @@ if(NOT TARGET libzstd_static)
         endif()
         add_subdirectory(${zstd_SOURCE_DIR}/build/cmake ${zstd_BINARY_DIR})
     endif()
-endif()
-
-# XLSX export (raw-data dump of a recorded session). libxlsxwriter's own
-# CMakeLists.txt calls find_package(ZLIB REQUIRED); shadow CMake's bundled
-# FindZLIB.cmake with cmake/FindZLIB.cmake so that resolves to the zlib we
-# already fetched above (target `zlibstatic`) instead of searching for a
-# system zlib. CMAKE_MODULE_PATH must be updated before FetchContent's
-# add_subdirectory() runs below.
-if(NOT TARGET xlsxwriter)
-    list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(USE_SYSTEM_MINIZIP OFF CACHE BOOL "" FORCE)
-
-    FetchContent_Declare(libxlsxwriter
-        GIT_REPOSITORY https://github.com/jmcnamara/libxlsxwriter.git
-        GIT_TAG v1.2.4
-        GIT_SHALLOW TRUE)
-    FetchContent_MakeAvailable(libxlsxwriter)
 endif()
 
 # Paired-display transport security. libsodium supplies X25519, Ed25519,
@@ -122,6 +99,8 @@ add_library(tnrp STATIC
     src/Labels.cpp
     src/CardColors.cpp
     src/TeamColors.cpp
+    src/AnalysisMap.cpp
+    src/AnalysisMapPaint.cpp
     src/LapDelta.cpp
     src/LapMeasures.cpp
     src/LiveV6Store.cpp
@@ -135,6 +114,18 @@ add_library(tnrp STATIC
     src/tnrd/TNRD_V4.cpp
     src/tnrd/TNRD_V5.cpp
     src/tnrd/TNRD_V6.cpp
+    src/tnrd/TNRD_V1_Reader.cpp
+    src/tnrd/TNRD_V2_Reader.cpp
+    src/tnrd/TNRD_V3_Reader.cpp
+    src/tnrd/TNRD_V4_Reader.cpp
+    src/tnrd/TNRD_V5_Reader.cpp
+    src/tnrd/TNRD_V6_Reader.cpp
+    src/tnrd/TNRD_V1_Exporter.cpp
+    src/tnrd/TNRD_V2_Exporter.cpp
+    src/tnrd/TNRD_V3_Exporter.cpp
+    src/tnrd/TNRD_V4_Exporter.cpp
+    src/tnrd/TNRD_V5_Exporter.cpp
+    src/tnrd/TNRD_V6_Exporter.cpp
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp
@@ -142,8 +133,14 @@ add_library(tnrp STATIC
     src/PairDiscovery.cpp
     src/PairLapData.cpp
     src/PairServer.cpp
+    src/TrackMaps.cpp
+    src/TrackMapBuilder.cpp
+    src/TrackMapTracker.cpp
     src/Engine.cpp
-    src/XlsxExport.cpp
+    src/ParquetExport.cpp
+    src/parquet/ParquetWriter.cpp
+    src/parquet/ThriftCompact.cpp
+    src/NetworkSetup.cpp
 )
 
 # Public headers (tnrp/*.h) under include/; internal headers (protocols/*) under src/.
@@ -153,7 +150,7 @@ target_include_directories(tnrp
 
 # glaze is in public headers. Both compression libraries are implementation
 # details, but static-library consumers still receive their link dependencies.
-target_link_libraries(tnrp PUBLIC glaze::glaze xlsxwriter PRIVATE zlibstatic libzstd_static
+target_link_libraries(tnrp PUBLIC glaze::glaze PRIVATE zlibstatic libzstd_static
     sodium tnrp_cpace)
 
 # PairDiscovery and PairServer use the native socket API in both backend modes.
@@ -162,6 +159,9 @@ target_link_libraries(tnrp PUBLIC glaze::glaze xlsxwriter PRIVATE zlibstatic lib
 # dns_sd. Elsewhere libtnrp answers mDNS itself.
 if(WIN32)
     target_link_libraries(tnrp PUBLIC ws2_32)
+    # NetworkSetup: adapter list (iphlpapi), Windows Firewall COM API (ole32,
+    # oleaut32) and the elevated firewall step (shell32).
+    target_link_libraries(tnrp PUBLIC iphlpapi ole32 oleaut32 shell32)
 endif()
 
 # zlib's generated zconf.h lives in its build dir; expose it to consumers too.
@@ -230,6 +230,12 @@ if(TNRP_BUILD_TESTS)
     target_include_directories(strategy_rollback PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(strategy_rollback PRIVATE tnrp)
     add_test(NAME strategy_rollback COMMAND strategy_rollback)
+    add_executable(network_setup tests/NetworkSetup.cpp)
+    target_link_libraries(network_setup PRIVATE tnrp)
+    add_test(NAME network_setup COMMAND network_setup)
+    add_executable(analysis_map_paint tests/AnalysisMapPaint.cpp)
+    target_link_libraries(analysis_map_paint PRIVATE tnrp)
+    add_test(NAME analysis_map_paint COMMAND analysis_map_paint)
 endif()
 
 # Offline length-prefixed UDP capture converter. Kept out of the default build;

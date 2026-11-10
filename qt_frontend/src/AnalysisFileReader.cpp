@@ -61,7 +61,13 @@ struct AnalysisFileReader::Impl {
     std::atomic<uint64_t> latestLoadGeneration{0};
     std::atomic<uint64_t> activeGeneration{0};
     uint64_t pendingGeneration = 0;
-    std::unique_ptr<tnrp::TnrdReader> active;
+    // The accepted recording. The worker reads it for lap data; the Analysis
+    // map reads it from the thread pool. Both hold `mutex` while they do.
+    struct Active {
+        std::mutex mutex;
+        std::unique_ptr<tnrp::TnrdReader> reader;
+    };
+    std::shared_ptr<Active> active = std::make_shared<Active>();
     std::unique_ptr<tnrp::TnrdReader> pending;
 };
 
@@ -117,7 +123,12 @@ void AnalysisFileReader::acceptLoaded(uint64_t generation) {
     d_->activeGeneration.store(generation, std::memory_order_release);
     d_->post([this, generation] {
         if (d_->pendingGeneration != generation || !d_->pending) return;
-        d_->active = std::move(d_->pending);
+        // Every car's ERS peaks and the track's corners, swept in the
+        // background so the Analysis map rarely waits for them.
+        d_->pending->startErsPeakSweep();
+        d_->pending->startTrackCornerSweep();
+        std::lock_guard lock(d_->active->mutex);
+        d_->active->reader = std::move(d_->pending);
         d_->pendingGeneration = 0;
     }, false);
 }
@@ -133,9 +144,13 @@ void AnalysisFileReader::rejectLoaded(uint64_t generation) {
 void AnalysisFileReader::requestLapData(int driverIndex, int lapNum, uint32_t rowTypeMask) {
     const uint64_t generation = d_->activeGeneration.load(std::memory_order_acquire);
     d_->post([this, generation, driverIndex, lapNum, rowTypeMask] {
-        if (!d_->active || d_->activeGeneration.load(std::memory_order_acquire) != generation || lapNum <= 0) return;
-        const std::string encoded = d_->active->getLapDataMessage(
-            lapNum, rowTypeMask, driverIndex);
+        std::string encoded;
+        {
+            std::lock_guard lock(d_->active->mutex);
+            if (!d_->active->reader || d_->activeGeneration.load(std::memory_order_acquire) != generation ||
+                lapNum <= 0) return;
+            encoded = d_->active->reader->getLapDataMessage(lapNum, rowTypeMask, driverIndex);
+        }
         auto batch = TnrdPlayer::decodeLapData(
             QByteArray(encoded.data(), static_cast<qsizetype>(encoded.size())));
         QMetaObject::invokeMethod(this, [this, generation, driverIndex, lapNum, rowTypeMask, batch] {
@@ -151,8 +166,25 @@ void AnalysisFileReader::close() {
     d_->activeGeneration.store(0, std::memory_order_release);
     d_->post([this] {
         d_->pending.reset();
-        d_->active.reset();
+        std::unique_ptr<tnrp::TnrdReader> closing;
+        {
+            std::lock_guard lock(d_->active->mutex);
+            closing = std::move(d_->active->reader);
+        }
+        closing.reset();
         d_->pendingGeneration = 0;
         d_->activeGeneration.store(0, std::memory_order_release);
     }, true);
+}
+
+tnrp::RecordingAccess AnalysisFileReader::recordingAccess() const {
+    std::weak_ptr<Impl::Active> active = d_->active;
+    return [active](const std::function<void(const tnrp::TnrdReader&)>& read) {
+        const auto state = active.lock();
+        if (!state) return false;
+        std::lock_guard lock(state->mutex);
+        if (!state->reader || !state->reader->isLoaded()) return false;
+        read(*state->reader);
+        return true;
+    };
 }

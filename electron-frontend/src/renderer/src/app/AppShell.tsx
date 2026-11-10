@@ -22,7 +22,8 @@ import RaceLeaderWatcher from './components/RaceLeaderWatcher'
 import RecordingErrorDialog from './components/RecordingErrorDialog'
 import RecordingChoiceDialog from './components/RecordingChoiceDialog'
 import UpdateAvailableDialog from './components/UpdateAvailableDialog'
-import type { AvailableUpdate, RecordingErrorMsg } from '../types'
+import FirstTimeSetup from '../components/FirstTimeSetup'
+import type { AvailableUpdate, FirstTimeSetupState, RecordingErrorMsg } from '../types'
 import { ChartCoordinatesProvider } from '../lib/chartCoordinates'
 import { DATA_ROW, dataRequirementsForUi, visibleChartSectionsForUi } from '../lib/historyDependencies'
 import {
@@ -66,6 +67,16 @@ export default function AppShell() {
   const [recordingError, setRecordingError] = useState<RecordingErrorMsg | null>(null)
   const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null)
   const [udpListenerError, setUdpListenerError] = useState<string | null>(null)
+  // First-time setup: shown on a fresh install, or when launched with --first-time-setup.
+  const [setupState, setSetupState] = useState<FirstTimeSetupState | null>(() => {
+    try { return window.setupBridge.getState() } catch { return null }
+  })
+  const [setupSession, setSetupSession] = useState(0)
+  useEffect(() => window.setupBridge?.onOpen(state => {
+    setSetupState(state)
+    setSetupSession(session => session + 1)
+  }), [])
+  const handleSetupDone = useCallback(() => setSetupState(null), [])
   const { headerVisible, isFullscreen, isMaximized, setHeaderVisible } = useWindowState()
   const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
   const [analyzeCompareDriver, setAnalyzeCompareDriver] = useState<AnalysisDriverSelection | null>(null)
@@ -710,7 +721,7 @@ export default function AppShell() {
           currentLapNum={playback.currentLapNum}
           exportError={playback.exportError}
           exportState={playback.exportState}
-          onExport={playback.exportXlsx}
+          onExport={playback.exportParquet}
           onSeekProgress={playback.seekProgress}
           onSeekBackward={playback.seekBackward}
           onSeekForward={playback.seekForward}
@@ -740,6 +751,18 @@ export default function AppShell() {
         update={availableUpdate}
         onClose={() => setAvailableUpdate(null)}
       />
+
+      {setupState?.show && (
+        <FirstTimeSetup
+          key={setupSession}
+          state={setupState}
+          theme={theme}
+          onThemeChange={setTheme}
+          compact={compact}
+          onCompactChange={setCompact}
+          onDone={handleSetupDone}
+        />
+      )}
 
     </div>
   )

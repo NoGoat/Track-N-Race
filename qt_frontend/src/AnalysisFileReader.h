@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 
+#include <tnrp/AnalysisMap.h>
 #include <tnrp/control_rows.h>
 
 struct PlaybackHistoryBatch;
@@ -32,6 +33,9 @@ public:
     void rejectLoaded(uint64_t generation);
     void requestLapData(int driverIndex, int lapNum, uint32_t rowTypeMask);
     void close();
+    // Reads the accepted recording under its lock from any thread, for the
+    // Analysis map (tnrp/AnalysisMap.h); false when none is open.
+    tnrp::RecordingAccess recordingAccess() const;
 
 signals:
     void catalogLoaded(const std::shared_ptr<AnalysisFileCatalog>& catalog);

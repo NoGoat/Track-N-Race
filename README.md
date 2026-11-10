@@ -116,7 +116,6 @@ I would like to thank all the projects listed under here for making Track N Race
 ### Shared and native components
 
 - [Glaze](https://github.com/stephenberry/glaze)
-- [libxlsxwriter](https://libxlsxwriter.github.io)
 - [zlib](https://zlib.net)
 - [Zstandard](https://facebook.github.io/zstd/)
 
@@ -140,7 +139,6 @@ I would like to thank all the projects listed under here for making Track N Race
 ### Native app
 
 - [Qt](https://www.qt.io/)
-- [QCustomPlot](https://www.qcustomplot.com/)
 - [qt-toast](https://github.com/niklashenning/qt-toast) — maintained fork
 - [Noto Sans](https://fonts.google.com/noto/specimen/Noto+Sans)
 - [Breeze](https://invent.kde.org/plasma/breeze)
@@ -152,8 +150,14 @@ While not in use anymore, I would like to thank all the projects listed under he
 
 - [uPlot](https://github.com/leeoniya/uPlot)
 - [JSON for Modern C++ (nlohmann/json)](https://github.com/nlohmann/json)
+- [libxlsxwriter](https://libxlsxwriter.github.io)
+- [QCustomPlot](https://www.qcustomplot.com/)
 
 I would also like to make a special shoutout to the [Telemetry Scan](https://github.com/alisezisli/Telemetry-Scan) project by [alisezisli](https://github.com/alisezisli). Track N Race originally started off as me trying to build an UI wrapper around their Python backend before evolving into the project it is today. Without Telemetry Scan, Track N Race wouldn't exist.
+
+## Contributing
+
+Track N Race is a solo dev project, so outside code contributions aren't accepted. Feedback, advice and forks are welcome. If you fork it, let me know on [Discord](https://discord.gg/UMVRrN3RbR). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

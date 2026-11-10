@@ -1,5 +1,7 @@
 #include "tnrp/LapDelta.h"
 
+#include "LapProgressMap.h"
+
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -7,15 +9,8 @@
 #include <utility>
 
 namespace tnrp {
+namespace detail {
 namespace {
-
-struct ProgressMap {
-    std::vector<LapProgressPoint> points;
-    // Elapsed time at each point, in ms: current_lap_ms, aligned with the lap's
-    // official split times by alignToOfficialTimes().
-    std::vector<double> elapsedMs;
-    float maxDistance{};
-};
 
 // A lap timer that drops by more than this while the car keeps moving forward
 // was still showing the out-lap's time. A timing-line crossing also resets the
@@ -38,6 +33,8 @@ size_t timedLapStart(const AnalysisLapProgress& lap) {
     }
     return cut;
 }
+
+} // namespace
 
 ProgressMap buildProgressMap(const AnalysisLapProgress& lap) {
     ProgressMap result;
@@ -118,6 +115,13 @@ double interpolateElapsed(const ProgressMap& progress, float distance) {
     return (progress.elapsedMs[index - 1] +
         (progress.elapsedMs[index] - progress.elapsedMs[index - 1]) * ratio) / 1000.0;
 }
+
+} // namespace detail
+
+namespace {
+
+using detail::ProgressMap;
+using detail::interpolateElapsed;
 
 // Elapsed seconds at a timing line, extended linearly past the last sample
 // when the lap's final packet lands just short of the finish line.
@@ -247,8 +251,8 @@ LapDeltaResult calculateLapDelta(const AnalysisLapProgress& current,
     result.comparisonLapNum = comparison.lapNum;
     result.sectorDelta = sectorDelta;
 
-    ProgressMap currentMap = buildProgressMap(current);
-    ProgressMap comparisonMap = buildProgressMap(comparison);
+    ProgressMap currentMap = detail::buildProgressMap(current);
+    ProgressMap comparisonMap = detail::buildProgressMap(comparison);
     if (currentMap.points.empty() || comparisonMap.points.empty()) return result;
 
     std::vector<float> sectorStarts;

@@ -67,7 +67,7 @@ public:
     void shutdown();
 
     // Path of the currently-loaded .tnrd (empty when none). Used by the Export-to-
-    // Excel action, whose exporter opens its own reader on this file.
+    // Parquet export, whose exporter opens its own reader on this file.
     QString loadedPath() const { return loadedPath_; }
     QString tnrdVersion() const { return tnrdVersion_; }
     int originalPlaybackDriverIndex() const { return originalPlaybackDriverIndex_; }
@@ -102,7 +102,7 @@ signals:
     void driverRestrictionChanged(int driverIndex, bool restricted, bool known);
     void activeLapChanged(int lapNum);             // refresh Current/Previous lap data
     void timeChanged(float absoluteTime);          // per playback tick / scrub
-    void exportRequested();                        // Export-to-Excel button clicked
+    void exportRequested();                        // Export-to-Parquet button clicked
 
 private:
     SessionModel* model_  = nullptr;

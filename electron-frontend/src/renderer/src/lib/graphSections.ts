@@ -242,6 +242,25 @@ export const COMPACT_GROUPS: { group: string; sections: { key: CompactDensityKey
 export const ALL_COMPACT_BOOL_KEYS: CompactDensityKey[] =
   COMPACT_GROUPS.flatMap(g => g.sections.map(s => s.key))
 
+// One density for every section, plus the matching tyre, weather and header
+// levels: what Settings ▸ Compact's Set All buttons and first-time setup apply.
+export function compactPreset(current: CompactState, mode: DensityMode): CompactState {
+  const next: CompactState = {
+    ...current,
+    overviewTyres: mode === 'spacious' ? 6 : mode === 'compact' ? 1 : 0,
+    sessionWeather: mode === 'spacious' ? 4 : mode === 'compact' ? 1 : 0,
+    sessionHeader: mode === 'spacious' ? 3 : mode === 'compact' ? 1 : 0,
+  }
+  for (const key of ALL_COMPACT_BOOL_KEYS) next[key] = mode
+  return next
+}
+
+// The preset `state` matches, or null when sections differ.
+export function compactPresetOf(state: CompactState): DensityMode | null {
+  const first = state[ALL_COMPACT_BOOL_KEYS[0]]
+  return ALL_COMPACT_BOOL_KEYS.every(key => state[key] === first) ? first : null
+}
+
 export const DENSITY_OPTIONS: { value: DensityMode; label: string }[] = [
   { value: 'compact',  label: 'Compact' },
   { value: 'normal',   label: 'Normal' },

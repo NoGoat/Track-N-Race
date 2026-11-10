@@ -2,14 +2,15 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal, flushSync } from 'react-dom'
 import { type FormatOptionLabelMeta, type GroupBase, type SingleValue } from 'react-select'
 import Select from '../lib/AnimatedSelect'
-import { AlertTriangle, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Eye, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, SeparatorVertical, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Disc3, Eye, Gauge, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, Palette, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RotateCcw, Rows3, SeparatorVertical, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_COMBINED_BY_ID, ANALYZE_METRIC_BY_ID, ANALYZE_TYRE_CORNERS, ANALYZE_TYRE_ROWS, DEFAULT_ANALYZE_CONFIG,
   analyzeCornerKeyOf, analyzeSeriesConflicts, analyzeSeriesLineColor, sanitizeCornerColors, sanitizeCorners,
   DEFAULT_COMPARE_LABEL, DEFAULT_CURRENT_LABEL, DEFAULT_LAP_A_LABEL, DEFAULT_LAP_B_LABEL,
   DEFAULT_DELTA_NEGATIVE_COLOR, DEFAULT_DELTA_POSITIVE_COLOR, sanitizeAnalyzeConfig,
-  type AnalyzeConfig, type AnalyzeSeriesConfig,
+  DEFAULT_ZONES_WIDTH, MAX_ZONES_WIDTH, MIN_ZONES_WIDTH,
+  type AnalyzeConfig, type AnalyzeMapColoring, type AnalyzeSeriesConfig,
 } from '../lib/analyzeMetrics'
 import type { AnalysisYAxisState } from '../lib/graphSections'
 import { buildSelectStyles } from '../lib/selectStyles'
@@ -20,7 +21,8 @@ import { tyreCompoundColor } from '../lib/tyreCompounds'
 import { useModalPresence, useModalPresenceValue } from '../lib/useModalPresence'
 import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
-import { buildLapProgressMap, findSectorSplits, interpolateDistanceAtTime, type LapProgressMap } from '../lib/lapDelta'
+import { parseAnalysisMapResult, type AnalysisMapResult } from '../lib/analyzeMapPaint'
+import { buildLapProgressMap, findSectorSplits, interpolateDistanceAtTime, interpolateLapElapsed, type LapProgressMap } from '../lib/lapDelta'
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../lib/playbackCursor'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { emptyView, viewOfRows } from '../lib/columnStore'
@@ -31,7 +33,9 @@ import type {
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
 import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
 import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
+import AnalyzeBrakingZones from './AnalyzeBrakingZones'
 import AnalyzeMetricPicker from './AnalyzeMetricPicker'
+import AnalysisPanelHandle from './AnalysisPanelHandle'
 import AnalysisSplitHandle from './AnalysisSplitHandle'
 import SyncedTooltipIcon from '../app/components/SyncedTooltipIcon'
 import ColorPicker from './ColorPicker'
@@ -107,6 +111,17 @@ const ANALYZE_TOGGLE_BUTTON_CLASS = 'analyze-toggle-button flex h-8 min-w-0 flex
 const ANALYZE_COMPARISON_COLOR_CLASS = 'h-5 w-5 shrink-0 cursor-pointer rounded border border-[var(--border)] shadow-inner'
 const EMPTY_LAP_OPTION_GROUPS: GroupBase<ComparisonLapOption>[] = []
 const noop = () => {}
+
+type MapColoringOption = { value: AnalyzeMapColoring; label: string }
+const MAP_COLORING_OPTIONS: MapColoringOption[] = [
+  { value: 'none', label: 'None' },
+  { value: 'dominance', label: 'Track Dominance' },
+  { value: 'racing', label: 'Racing Line' },
+  { value: 'inputs', label: 'Driver Inputs' },
+  { value: 'speed', label: 'Speed' },
+  { value: 'ers', label: 'ERS Usage' },
+  { value: 'harvest', label: 'ERS Harvest' },
+]
 const ANALYSIS_MOTION_EASING = 'cubic-bezier(0.65, 0, 0.35, 1)'
 const ANALYSIS_MOTION_DURATION = 260
 const ANALYSIS_PRESENCE_DURATION = ANALYSIS_MOTION_DURATION + 20
@@ -335,14 +350,14 @@ const AnalysisDeltaReadout = memo(function AnalysisDeltaReadout({ deltaData, cur
     }
   }, [followPlaybackCursor, updateValues])
 
-  return <div className="flex h-full items-center gap-3 font-mono tabular-nums">
+  return <div className="analysis-delta-readout flex h-full items-center gap-3 font-mono tabular-nums">
     {(['S1', 'S2', 'S3', 'Lap'] as const).map((label, index) => {
       if (!showSectors && index < 3) return null
-      return <span key={label} className="flex h-full items-center gap-1.5">
-        <span className="text-[9px] font-bold uppercase leading-none tracking-wider text-[var(--text-secondary)]">{label}</span>
+      return <span key={label} title={label} className="analysis-delta-readout__item flex h-full items-center gap-1.5">
+        <span className="analysis-delta-readout__caption text-[9px] font-bold uppercase leading-none tracking-wider text-[var(--text-secondary)]">{label}</span>
         <span
           ref={node => { valueRefs.current[index] = node }}
-          className="inline-block w-[3.5rem] text-left text-[11px] font-semibold leading-none text-[var(--text-secondary)]"
+          className="analysis-delta-readout__value inline-block w-[3.5rem] text-left text-[11px] font-semibold leading-none text-[var(--text-secondary)]"
         >—.---</span>
       </span>
     })}
@@ -863,6 +878,75 @@ const EMPTY_ANALYZE_LAP: AnalyzeLapData = {
   rowTypeMask: 0,
 }
 
+/**
+ * libtnrp's map calculation for `mode` over the laps on show; null while there
+ * is nothing to ask for. While a newly selected lap's answer is on its way the
+ * last one in the same mode stays up, rather than the map dropping to plain.
+ */
+function useAnalysisMap(
+  mode: AnalysisMapResult['mode'] | null,
+  currentDriver: AnalysisDriverSelection | null,
+  currentLap: number | null,
+  comparisonDriver: AnalysisDriverSelection | null,
+  comparisonLap: number | null,
+  filesKey: string,
+): AnalysisMapResult | null {
+  const key = mode && currentDriver && currentLap !== null
+    ? [mode, analysisLapKey(currentDriver, currentLap),
+        comparisonDriver && comparisonLap !== null ? analysisLapKey(comparisonDriver, comparisonLap) : '-',
+        filesKey].join('|')
+    : null
+  const [response, setResponse] = useState<AnalysisMapResult | null>(null)
+  useEffect(() => {
+    if (!key || !mode || !currentDriver || currentLap === null) return
+    let cancelled = false
+    const comparison = comparisonLap !== null ? comparisonDriver : null
+    void window.analysisBridge.map(
+      mode, currentLap, currentDriver.source, currentDriver.driverIndex,
+      comparison ? comparisonLap : null,
+      comparison?.source ?? 'file1', comparison?.driverIndex ?? -1,
+    ).then(raw => {
+      if (!cancelled) setResponse(parseAnalysisMapResult(raw))
+    })
+    return () => { cancelled = true }
+  }, [comparisonDriver, comparisonLap, currentDriver, currentLap, key, mode])
+  return key && response?.mode === mode ? response : null
+}
+
+/** Sets a sidebar's width: `width` open, 0 closed, sliding between them when it changes. */
+function useSidebarWidth(ref: { current: HTMLElement | null }, open: boolean, width: number, reduceAnimations: boolean) {
+  const previousOpenRef = useRef(open)
+  useLayoutEffect(() => {
+    const sidebar = ref.current
+    if (!sidebar) return
+
+    const targetWidth = open ? width : 0
+    if (previousOpenRef.current === open) {
+      sidebar.style.width = `${targetWidth}px`
+      return
+    }
+    previousOpenRef.current = open
+
+    const startWidth = sidebar.getBoundingClientRect().width
+    if (reduceAnimations || startWidth === targetWidth) {
+      sidebar.style.width = `${targetWidth}px`
+      return
+    }
+
+    const duration = ANALYSIS_MOTION_DURATION
+    const startedAt = performance.now()
+    let animationFrame = 0
+    const animate = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / duration)
+      const eased = easeInOutCubic(progress)
+      sidebar.style.width = `${startWidth + (targetWidth - startWidth) * eased}px`
+      if (progress < 1) animationFrame = requestAnimationFrame(animate)
+    }
+    animationFrame = requestAnimationFrame(animate)
+    return () => cancelAnimationFrame(animationFrame)
+  }, [open, reduceAnimations, ref, width])
+}
+
 export default function AnalyzeScreen({
   isDark, playbackFilename, currentLapNum, compareLapNum, onCompareLapChange,
   compareDriver, onCompareDriverChange,
@@ -880,6 +964,8 @@ export default function AnalyzeScreen({
   // Live ratio while the divider is dragged; persisted to config on release.
   const [draftSplitRatio, setDraftSplitRatio] = useState<number | null>(null)
   const splitRatio = draftSplitRatio ?? config.splitRatio
+  const [draftZonesWidth, setDraftZonesWidth] = useState<number | null>(null)
+  const zonesWidth = draftZonesWidth ?? config.zonesWidth
   const splitContainerRef = useRef<HTMLDivElement>(null)
   const chartsVisible = primaryView !== 'map'
   const mapVisible = primaryView !== 'graph'
@@ -935,12 +1021,17 @@ export default function AnalyzeScreen({
   const seriesLayoutBeforeUpdateRef = useRef<Map<string, DOMRect> | null>(null)
   const seriesLayoutReadyRef = useRef(false)
   const sidebarRef = useRef<HTMLElement>(null)
-  const previousCollapsedRef = useRef(config.collapsed)
+  const zonesSidebarRef = useRef<HTMLElement>(null)
   const lapSelectStyles = useMemo(() => buildSelectStyles(isDark, {
     solidBg: true,
     controlHeight: 32,
     labelStyleGroupHeadings: true,
     menuWidth: 'calc(100% + 50px)',
+  }), [isDark])
+  const layerSelectStyles = useMemo(() => buildSelectStyles(isDark, {
+    solidBg: true,
+    controlHeight: 32,
+    labelStyleGroupHeadings: true,
   }), [isDark])
   // Driver rows carry the race number, name and team, so their menu is as
   // wide as the title bar's driver picker.
@@ -953,6 +1044,9 @@ export default function AnalyzeScreen({
   const teamCatalog = useTeamCatalog()
 
   const save = useCallback((next: AnalyzeConfig) => setRawConfig(next), [setRawConfig])
+  const saveZonesListRatio = useCallback((zonesListRatio: number) => {
+    save({ ...config, zonesListRatio })
+  }, [config, save])
   useEffect(() => {
     if (mismatchedFiles && config.view !== 'graph') save({ ...config, view: 'graph' })
   }, [config, mismatchedFiles, save])
@@ -1366,6 +1460,35 @@ export default function AnalyzeScreen({
   const distinctMapTrackIds = [...new Set(mapTrackIds)]
   const mapTrackId = distinctMapTrackIds[0] ?? primaryTrackId
   const compatibleMapCircuit = distinctMapTrackIds.length <= 1
+
+  // libtnrp colours the map for the laps on show (tnrp/AnalysisMap.h), and
+  // finds their braking points when those are switched on. Racing Line needs
+  // nothing from it: it draws the laps' recorded positions.
+  const mapCurrentDriver = fixedLapMode.enabled ? lapADriver : currentDriverSelection
+  const mapComparisonDriver = fixedLapMode.enabled ? lapBDriver : compareDriver
+  const mapCurrentLap = fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum
+  const mapComparisonLap = fixedLapMode.enabled ? fixedLapMode.lapB : selectedCompareLapNum
+  const mapFilesKey = `${playbackFilename ?? ''}|${secondaryFile?.filename ?? ''}`
+  const mapActive = mapVisible && !!playbackFilename
+  const mapResult = useAnalysisMap(
+    mapActive && config.mapColoring !== 'none' && config.mapColoring !== 'racing' ? config.mapColoring : null,
+    mapCurrentDriver, mapCurrentLap, mapComparisonDriver, mapComparisonLap, mapFilesKey)
+  // Recordings only: libtnrp reads the zones from the file. The zones stay
+  // loaded until the sidebar has finished closing.
+  const zonesOpen = config.zonesPanel && !!playbackFilename
+  const zonesPresence = useModalPresence(zonesOpen, ANALYSIS_PRESENCE_DURATION)
+  const zonesWanted = zonesPresence.mounted && !mismatchedFiles
+  // The sidebar lists the zones whether or not Braking Points draws them on the map.
+  const brakingResult = useAnalysisMap(
+    (mapActive && config.brakingPoints) || zonesWanted ? 'braking' : null,
+    mapCurrentDriver, mapCurrentLap, mapComparisonDriver, mapComparisonLap, mapFilesKey)
+  // A chosen zone puts the cursors at its braking point, without changing the view.
+  const inspectZone = useCallback((distanceM: number) => {
+    const progress = buildLapProgressMap(current)
+    if (!progress) return
+    const elapsedSeconds = interpolateLapElapsed(progress, distanceM)
+    if (Number.isFinite(elapsedSeconds)) setMapFocus({ id: ++mapFocusIdRef.current, elapsedSeconds })
+  }, [current])
   const sectorBoundariesEnabled = !mismatchedFiles && config.sectorBoundaries
   const sectorDeltaEnabled = sectorBoundariesEnabled && config.sectorDelta
   const selectedDistanceMode = deltaAvailable && (fixedLapMode.enabled
@@ -1516,35 +1639,8 @@ export default function AnalyzeScreen({
     analysisRequestedRef.current.clear()
   }, [playbackFilename])
 
-  useLayoutEffect(() => {
-    const sidebar = sidebarRef.current
-    if (!sidebar) return
-
-    const targetWidth = config.collapsed ? 0 : 315
-    if (previousCollapsedRef.current === config.collapsed) {
-      sidebar.style.width = `${targetWidth}px`
-      return
-    }
-    previousCollapsedRef.current = config.collapsed
-
-    const startWidth = sidebar.getBoundingClientRect().width
-    if (reduceAnimations || startWidth === targetWidth) {
-      sidebar.style.width = `${targetWidth}px`
-      return
-    }
-
-    const duration = ANALYSIS_MOTION_DURATION
-    const startedAt = performance.now()
-    let animationFrame = 0
-    const animate = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / duration)
-      const eased = easeInOutCubic(progress)
-      sidebar.style.width = `${startWidth + (targetWidth - startWidth) * eased}px`
-      if (progress < 1) animationFrame = requestAnimationFrame(animate)
-    }
-    animationFrame = requestAnimationFrame(animate)
-    return () => cancelAnimationFrame(animationFrame)
-  }, [config.collapsed, reduceAnimations])
+  useSidebarWidth(sidebarRef, !config.collapsed, 315, reduceAnimations)
+  useSidebarWidth(zonesSidebarRef, zonesOpen, zonesWidth, reduceAnimations)
 
   useEffect(() => {
     if (!playbackFilename || fixedLapMode.enabled || effectiveCurrentLapNum === null) return
@@ -1749,7 +1845,7 @@ export default function AnalyzeScreen({
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${primaryView === 'map' ? 'analyze-toggle-button--active' : ''}`}
                 ><MapIcon size={15} /></button>
               </div>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-4 gap-2">
                 <button
                   type="button" aria-label="Individual Graphs" aria-pressed={config.individualGraphs} title="Individual Graphs"
                   onClick={() => save({ ...config, individualGraphs: !config.individualGraphs })}
@@ -1782,7 +1878,32 @@ export default function AnalyzeScreen({
                   onClick={() => save({ ...config, splitCursors: !config.splitCursors })}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.splitCursors ? 'analyze-toggle-button--active' : ''}`}
                 ><SeparatorVertical size={15} /></button>
+                <button
+                  type="button" aria-label="Braking Points" aria-pressed={config.brakingPoints} title="Braking Points"
+                  disabled={!mapVisible}
+                  onClick={() => save({ ...config, brakingPoints: !config.brakingPoints })}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.brakingPoints ? 'analyze-toggle-button--active' : ''}`}
+                ><Disc3 size={15} /></button>
+                <button
+                  type="button" aria-label="Data Comparison Panel" aria-pressed={config.inputPanel} title="Data Comparison Panel"
+                  disabled={!mapVisible}
+                  onClick={() => save({ ...config, inputPanel: !config.inputPanel })}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.inputPanel ? 'analyze-toggle-button--active' : ''}`}
+                ><Gauge size={15} /></button>
               </div>
+              {mapVisible && <div className="flex items-center">
+                <label htmlFor="analysis-map-coloring" className="mr-2 w-11 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Layer</label>
+                <div className="flex-1 min-w-0">
+                  <Select<MapColoringOption>
+                    inputId="analysis-map-coloring"
+                    value={MAP_COLORING_OPTIONS.find(option => option.value === config.mapColoring) ?? MAP_COLORING_OPTIONS[0]}
+                    options={MAP_COLORING_OPTIONS}
+                    onChange={option => save({ ...config, mapColoring: option?.value ?? 'none' })}
+                    styles={layerSelectStyles} components={selectComponents}
+                    isSearchable={false} menuPortalTarget={document.body}
+                  />
+                </div>
+              </div>}
               {playbackFilename && blocks && <div className="mb-1 space-y-1">
                 <div className="h-8 flex items-center gap-1 min-w-0">
                   <span
@@ -1965,7 +2086,10 @@ export default function AnalyzeScreen({
       </aside>
 
       <section className="analysis-view-page-transition flex-1 min-w-0 flex flex-col">
-        <div className="h-11 px-2 border-b border-[var(--border)] flex items-center gap-1 shrink-0">
+        <div
+          className="analysis-toolbar h-11 px-2 border-b border-[var(--border)] flex items-center gap-1 shrink-0"
+          data-chart-controls={analysisView !== 'map' ? '' : undefined}
+        >
           <button
             title={config.collapsed ? 'Open Analysis controls' : 'Collapse Analysis controls'}
             aria-label={config.collapsed ? 'Open Analysis controls' : 'Collapse Analysis controls'}
@@ -1975,17 +2099,17 @@ export default function AnalyzeScreen({
             {config.collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
           </button>
           {analysisView !== 'map' && <>
-            <span className="h-5 w-px mx-1 bg-[var(--border)]" />
-            <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Zoom</span>
+            <span className="analysis-toolbar__divider h-5 w-px mx-1 bg-[var(--border)]" />
+            <span className="analysis-toolbar__label px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Zoom</span>
             <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom out" onClick={() => activeChartControlsRef.current?.zoomOut()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomOut size={14} /></button>
             <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom in" onClick={() => activeChartControlsRef.current?.zoomIn()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomIn size={14} /></button>
-            <span className="h-5 w-px mx-1 bg-[var(--border)]" />
-            <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Pan</span>
+            <span className="analysis-toolbar__divider h-5 w-px mx-1 bg-[var(--border)]" />
+            <span className="analysis-toolbar__label px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Pan</span>
             <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan left" onClick={() => activeChartControlsRef.current?.panLeft()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowLeft size={14} /></button>
             <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => activeChartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
             <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => activeChartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
           </>}
-          <div className="ml-auto flex shrink-0 items-center gap-3 pr-1">
+          <div className="analysis-toolbar__end ml-auto flex shrink-0 items-center gap-3 pr-1">
             <AnalysisDeltaReadout
               deltaData={displayedDeltaData}
               current={current}
@@ -2004,6 +2128,16 @@ export default function AnalyzeScreen({
             >
               <CircleHelp size={15} />
             </button>
+            {!!playbackFilename && <button
+              type="button"
+              title={zonesOpen ? 'Close Braking Zones' : 'Open Braking Zones'}
+              aria-label={zonesOpen ? 'Close Braking Zones' : 'Open Braking Zones'}
+              aria-expanded={zonesOpen}
+              onClick={() => save({ ...config, zonesPanel: !config.zonesPanel })}
+              className="analysis-toolbar__zones -ml-2 w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+            >
+              {zonesOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
+            </button>}
           </div>
         </div>
         <div ref={splitContainerRef} className="flex-1 min-h-0 relative flex">
@@ -2063,6 +2197,11 @@ export default function AnalyzeScreen({
               trackId={mapTrackId}
               compatibleCircuit={compatibleMapCircuit}
               isDark={isDark}
+              mapColoring={config.mapColoring}
+              mapResult={mapResult}
+              brakingResult={config.brakingPoints ? brakingResult : null}
+              showInputPanel={config.inputPanel}
+              comparisonSelected={comparisonSelected}
               sectorColors={sectorColors}
               reduceAnimations={reduceAnimations}
               mapDimmed={mapDimmed}
@@ -2071,6 +2210,45 @@ export default function AnalyzeScreen({
           </div>}
         </div>
       </section>
+
+      {zonesOpen && <AnalysisPanelHandle
+        orientation="vertical"
+        label="Resize Braking Zones"
+        value={zonesWidth}
+        min={MIN_ZONES_WIDTH}
+        max={MAX_ZONES_WIDTH}
+        defaultValue={DEFAULT_ZONES_WIDTH}
+        step={10}
+        reversed
+        valueAt={clientX => (zonesSidebarRef.current?.getBoundingClientRect().right ?? clientX) - clientX}
+        onPreview={setDraftZonesWidth}
+        onCommit={width => {
+          setDraftZonesWidth(null)
+          if (width !== config.zonesWidth) save({ ...config, zonesWidth: width })
+        }}
+      />}
+
+      <aside
+        ref={zonesSidebarRef}
+        aria-label="Braking Zones"
+        aria-hidden={!zonesOpen}
+        inert={!zonesOpen}
+        className={`${zonesOpen ? 'border-l' : 'border-l-0'} shrink-0 border-[var(--border)] overflow-hidden bg-[var(--bg-panel)]`}
+      >
+        {zonesPresence.mounted && <div className="h-full" style={{ width: zonesWidth }}>
+          <AnalyzeBrakingZones
+            result={mismatchedFiles ? null : brakingResult}
+            lapChosen={mapCurrentLap !== null && !mismatchedFiles}
+            currentLabel={primaryLabel}
+            currentColor={config.mapCurrentColor}
+            comparisonLabel={comparisonLabel}
+            comparisonColor={config.mapComparisonColor}
+            onZoneActivated={inspectZone}
+            listRatio={config.zonesListRatio}
+            onListRatioCommit={saveZonesListRatio}
+          />
+        </div>}
+      </aside>
 
       {controlsHelpMounted && createPortal(<div
         ref={controlsHelpTargetRef}
@@ -2104,6 +2282,10 @@ export default function AnalyzeScreen({
               <AnalysisHelpItem icon={<Columns3 size={15} />} label="Sector Boundaries">Shows Sectors instead of Distance on the X Axis.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<ChartNoAxesCombined size={15} />} label="Sector Delta">Instead of whole lap delta, it splits the delta into sectors.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<ListChevronsUpDown size={15} />} label="Comparison">Compare two laps.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<Palette size={15} />} label="Map Layer">Track Dominance colors each stretch by the faster lap. Driver Inputs shows braking, full and partial throttle, and coasting, one map per lap. Speed colours each lap from its slowest to its fastest point on one scale, one map per lap; hover a corner's mark for its apex speed. ERS Usage shows where each lap deployed ERS, one map per lap. Full colour is the car's peak MGU-K output in the recording for the grip it was driving in. ERS Harvest shows where each lap harvested energy, full colour at the car's peak harvest power.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<Disc3 size={15} />} label="Braking Points">Marks each corner's braking zone (dimmed) and acceleration zone on the racing line, in the colour of the lap that was quicker through it. Hover a zone to compare the two laps.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<Gauge size={15} />} label="Data Comparison Panel">Shows or hides the steering, pedals, ERS, speed and gear panel on the map.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<PanelRightOpen size={15} />} label="Braking Zones">Every braking zone with the time gap through it. Select one to see both laps head to head and move the map's cursors there.</AnalysisHelpItem>
               <AnalysisHelpItem icon={<SeparatorVertical size={15} />} label="Split Cursors">In Split Mode while comparing, shows where both cars are on the lap as lines on the graphs.</AnalysisHelpItem>
             </div>
 

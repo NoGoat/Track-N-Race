@@ -23,11 +23,12 @@
 #include "tnrp/Strategy.h"
 #include "tnrp/TnrdReader.h"
 #include "tnrp/TnrdWriter.h"
+#include "tnrp/TrackMaps.h"
 #include "tnrp/UdpListener.h"
 
 namespace tnrp {
 
-namespace detail { class LiveV6Store; class TnrdV6Archive; }
+namespace detail { class LiveV6Store; class TnrdV6Archive; class TrackMapTracker; }
 
 // Orchestrates the whole telemetry pipeline and is the only class consumers
 // (the bridge, later the native app) construct directly. It wires:
@@ -169,6 +170,10 @@ public:
     bool restartUdp(uint16_t port, const std::string& bindAddress);
     std::string udpLastError() const;
     void setDiagnosticsEnabled(bool enabled);
+    // Live UDP datagrams received since the engine started, whether or not
+    // diagnostics are on (playback drops datagrams and doesn't count them).
+    // Lock-free, so a UI can poll it. First-time setup's connection check.
+    uint64_t datagramsReceived() const { return datagramsReceived_.load(std::memory_order_relaxed); }
     LiveDiagnostics liveDiagnostics() const;
     LiveHistoryMemoryStats liveHistoryMemoryStats() const;
     StrategyMemoryStats strategyMemoryStats() const;
@@ -257,6 +262,9 @@ public:
     void setLapHistoryCar(int carIdx);
     bool playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
                                       int driverIndex = -1) const;
+    // Runs `read` on the loaded recording under the engine lock; false when
+    // nothing is playing. The Analysis map (tnrp/AnalysisMap.h) reads through it.
+    bool playerReadRecording(const std::function<void(const TnrdReader&)>& read) const;
     // The loaded recording's answers to a phone's request_lap_delta and
     // request_lap_data: the JSON a paired phone receives as their "data".
     // Empty when nothing is playing or a lap is unknown.
@@ -269,6 +277,28 @@ public:
     void playerGetWindowData(float windowSeconds, uint64_t requestId = 0,
                              uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerClose();                    // back to live mode
+
+    // ── Track maps (tnrp/TrackMaps.h) ────────────────────────────────────
+    // The built-in, generated and imported maps. Hosts register their bundled
+    // maps and the user map folder here. After changing a pin or the maps,
+    // call refreshTrackMap() so the session's choice is made again.
+    TrackMapLibrary& trackMaps();
+    // Modded maps on: the engine sends a "track_map" row (TrackMapResolution)
+    // for the live session or the loaded recording whenever its choice
+    // changes, matching the cars' positions against every map. Generate on:
+    // when no map fits, it builds one from the session's laps, saves it and
+    // sends "track_maps_changed". Off: no rows.
+    void setTrackMapOptions(bool moddedMaps, bool generateMaps);
+    void refreshTrackMap();
+    // The last "track_map" row sent, or empty.
+    std::string trackMapStateJson() const;
+    // Builds a map from a V6 recording and saves it; its ID, or empty with a
+    // reason. Blocks for as long as reading the recording takes.
+    std::string generateTrackMap(const std::string& path, std::string* errorOut = nullptr);
+    // The map a recording opened outside playback (Analysis) uses, as a
+    // "track_map" row with scope "recording"; empty when it cannot be read.
+    // Blocks while it samples the recording.
+    std::string resolveTrackMapForRecording(const std::string& path) const;
 
     // Host window visibility. A hidden host drops the rows it is sent, so on
     // the hidden-to-visible edge the engine rebuilds what it missed from its
@@ -317,29 +347,24 @@ private:
     // cursor or file handle. historyMutex_ serializes use of that handle and
     // is never taken while mutex_ is held in the other order.
     std::mutex historyMutex_;
-    std::unique_ptr<detail::TnrdV6Archive> historyArchive_; // guarded by historyMutex_
+    std::unique_ptr<TnrdReader::HistoryReader> historyArchive_; // guarded by historyMutex_
     std::atomic<bool> historyArchiveReady_{false};
     // Bumped when the timeline a history read was taken against stops being
     // valid (driver switch, load, close). Reads compare it to their snapshot.
     std::atomic<uint64_t> historyEpoch_{0};
-    struct V6HistoryRead {
-        uint8_t driver = 0;
-        std::vector<uint8_t> types;
-        uint32_t mask = 0;
-        float from = 0.0f;
-        float to = 0.0f;
-        bool seed = false;
+    struct HistoryRead {
+        TnrdReader::HistoryRequest request;
         uint64_t epoch = 0;
     };
     // mutex_ held. True when this read should take the columnar path.
-    bool prepareV6HistoryReadLocked(float from, float to, uint32_t mask, V6HistoryRead& out) const;
+    bool prepareHistoryReadLocked(float from, float to, uint32_t mask, HistoryRead& out) const;
     // mutex_ NOT held. Null when cancelled or superseded; an empty buffer when
     // the read failed, so the caller still answers the request. An
     // authoritative seek ignores the epoch: the renderer is blocked on its
     // flush, and a driver change is always followed by a newer seek anyway.
-    std::shared_ptr<std::vector<uint8_t>> runV6HistoryRead(const V6HistoryRead& read,
-                                                           const std::function<bool()>& cancelled,
-                                                           bool respectEpoch);
+    std::shared_ptr<std::vector<uint8_t>> runHistoryRead(const HistoryRead& read,
+                                                         const std::function<bool()>& cancelled,
+                                                         bool respectEpoch);
 
     // Binary-playback sparse-row cache (guarded by mutex_): the last seen raw
     // line per panel type. Damage is cached for initial/seek restoration but is
@@ -388,6 +413,9 @@ private:
     // TNRD V6 file holds it: every car, by lap and data type
     // (Config::binaryPlayback hosts only).
     std::unique_ptr<detail::LiveV6Store> liveV6_;
+    std::shared_ptr<TrackMapLibrary> trackMaps_;
+    // Declared after liveV6_ so it stops before the store it reads goes away.
+    std::unique_ptr<detail::TrackMapTracker> trackMapTracker_;
     uint64_t          liveStrategySequence_ = 0;
     // The player's lap starts, for putting the lap back after a rewind.
     std::map<int, float> liveLapStarts_;
@@ -472,6 +500,7 @@ private:
     std::vector<std::string> playbackStrategyPendingRows_; // guarded by mutex_
     std::string playbackPath_;                        // guarded by mutex_
     uint64_t runtimeDatagramsProcessed_{};             // guarded by mutex_
+    std::atomic<uint64_t> datagramsReceived_{0};
     uint64_t runtimeDatagramBytesProcessed_{};         // guarded by mutex_
     uint64_t runtimeParserRowsProduced_{};             // guarded by mutex_
     uint64_t runtimeParserControlRowsProduced_{};      // guarded by mutex_

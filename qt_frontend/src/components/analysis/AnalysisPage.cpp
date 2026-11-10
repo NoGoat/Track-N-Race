@@ -1,14 +1,17 @@
 #include "AnalysisPage.h"
 
+#include "AnalysisBrakingZones.h"
 #include "AnalysisLapSlot.h"
 #include "AnalysisMapView.h"
 #include "AnalysisMetricPicker.h"
+#include "AnalysisPanels.h"
 #include "AnalysisSeriesModel.h"
 #include "AnalysisSplitter.h"
 #include "AnalysisWidgets.h"
 
 #include "../AnalyzeChart.h"
 #include "../PageUiHelpers.h"
+#include "../SegmentedControl.h"
 #include "../UnderlineTabBar.h"
 #include "../TyreHelpers.h"
 #include "../../AnalysisFileReader.h"
@@ -19,8 +22,12 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QColorDialog>
+#include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDockWidget>
+#include <QHideEvent>
+#include <QShowEvent>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QFrame>
@@ -30,14 +37,18 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListView>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMetaObject>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStyle>
+#include <QThreadPool>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -47,10 +58,13 @@
 #include <array>
 #include <cmath>
 #include <initializer_list>
+#include <optional>
+#include <utility>
 
 namespace {
 
 constexpr int kSettingsVersion = 10;
+constexpr int kWorkspaceVersion = 1;   // QMainWindow::saveState of the Analysis docks
 constexpr int kPlaybackTab = 0;
 constexpr int kFixedTab = 1;
 
@@ -109,31 +123,50 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
     chart_ = new AnalyzeChart(this);
     chart_->setModel(model_);
     map_ = new AnalysisMapView(this);
+    graphPane_ = buildGraphPane();
+    mapPane_ = buildMapPane();
 
     // Split view: graphs | map, kept as a percentage of the width (default 50 / 50).
     contentSplitter_ = new AnalysisSplitter(this);
     contentSplitter_->setChildrenCollapsible(false);
-    contentSplitter_->addWidget(chart_);
-    contentSplitter_->addWidget(map_);
+    contentSplitter_->setHandleWidth(kAnalysisGripExtent);
+    contentSplitter_->addWidget(graphPane_);
+    contentSplitter_->addWidget(mapPane_);
     contentSplitter_->setStretchFactor(0, 1);
     contentSplitter_->setStretchFactor(1, 1);
 
-    splitter_ = new QSplitter(Qt::Horizontal, this);
-    splitter_->setChildrenCollapsible(false);
-    splitter_->addWidget(buildSidebar());
-    splitter_->addWidget(contentSplitter_);
-    splitter_->setStretchFactor(0, 0);
-    splitter_->setStretchFactor(1, 1);
+    workspace_ = new AnalysisWorkspace(this);
+    workspace_->setCentralWidget(contentSplitter_);
+    workspace_->fillPanelsMenu = [this](QMenu* menu) { fillPanelsMenu(menu); };
+    buildDocks();
+    leftRail_ = new AnalysisDockRail(false, this);
+    rightRail_ = new AnalysisDockRail(true, this);
+
+    auto* body = new QHBoxLayout;
+    body->setContentsMargins(0, 0, 0, 0);
+    body->setSpacing(0);
+    body->addWidget(leftRail_);
+    body->addWidget(workspace_, 1);
+    body->addWidget(rightRail_);
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
-    root->addWidget(toolBar_);
-    root->addWidget(tnrui::hline());   // separates the page tool bar from its content
-    root->addWidget(splitter_, 1);
+    root->addLayout(body, 1);
+
+    layoutSaveTimer_ = new QTimer(this);
+    layoutSaveTimer_->setSingleShot(true);
+    layoutSaveTimer_->setInterval(400);
+    connect(layoutSaveTimer_, &QTimer::timeout, this, [this] {
+        recordArrangement();
+        saveSettings();
+    });
+    for (QDockWidget* dock : {lapsDock_, metricsDock_, zonesDock_}) dock->installEventFilter(this);
+    connect(zones_, &AnalysisBrakingZones::splitChanged, layoutSaveTimer_, qOverload<>(&QTimer::start));
 
     loadSettings();
     restoreLayout();
+    settingsReady_ = true;
 
     // ── Wiring ──
     connect(seriesModel_, &AnalysisSeriesModel::seriesEdited, this, [this] {
@@ -168,13 +201,15 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
             saveSettings();
             applyState();
         });
+    for (AnalysisLapSlot* slot : {currentSlot_, compareSlot_, lapASlot_, lapBSlot_})
+        connect(slot, &AnalysisLapSlot::expandedChanged, this, &AnalysisPage::fitLapPanel);
     for (AnalysisLapSlot* slot : {currentSlot_, lapASlot_})
         connect(slot, &AnalysisLapSlot::colorPicked, this, &AnalysisPage::setPrimaryColor);
     for (AnalysisLapSlot* slot : {compareSlot_, lapBSlot_})
         connect(slot, &AnalysisLapSlot::colorPicked, this, &AnalysisPage::setComparisonColor);
 
-    connect(openSecondary_, &QToolButton::clicked, this, &AnalysisPage::loadSecondaryFile);
-    connect(removeSecondary_, &QToolButton::clicked, this, [this] { clearSecondaryFile(true); });
+    connect(openSecondary_, &QAction::triggered, this, [this] { loadSecondaryFile(); });
+    connect(removeSecondary_, &QAction::triggered, this, [this] { clearSecondaryFile(true); });
     connect(secondaryReader_, &AnalysisFileReader::catalogLoaded, this,
             &AnalysisPage::onSecondaryCatalog);
     connect(secondaryReader_, &AnalysisFileReader::loadFailed, this, [this](const QString& reason) {
@@ -190,9 +225,17 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
                     installLap(*secondary_, driverIndex, lapNum, mask, batch);
             });
 
-    connect(chart_, &ChartView::inspectionRequested, this, &AnalysisPage::inspectMap);
+    connect(chart_, &ChartView::inspectionRequested, this,
+            [this](double coordinate, bool distance) { inspectMap(coordinate, distance); });
     connect(map_, &AnalysisMapView::cursorElapsedChanged, chart_, &AnalyzeChart::setMapCursorElapsed);
-    connect(splitter_, &QSplitter::splitterMoved, this, &AnalysisPage::saveSettings);
+    connect(mapZoomInAction_, &QAction::triggered, map_, &AnalysisMapView::zoomIn);
+    connect(mapZoomOutAction_, &QAction::triggered, map_, &AnalysisMapView::zoomOut);
+    connect(mapFitAction_, &QAction::triggered, map_, &AnalysisMapView::fitCircuit);
+    connect(map_, &AnalysisMapView::zoomChanged, this, &AnalysisPage::refreshMapZoomActions);
+    // A chosen braking zone puts the cursors at its braking point, without
+    // changing the view.
+    connect(zones_, &AnalysisBrakingZones::zoneActivated, this,
+            [this](double distanceM) { inspectMap(distanceM, true, false); });
     connect(contentSplitter_, &AnalysisSplitter::ratioChanged, this, [this](double ratio) {
         settings_.setValue("analyze/splitRatio", ratio);
     });
@@ -204,6 +247,7 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
     refreshDriverChoices();
     refreshLapChoices();
     fitLapPanel();
+    refreshRails();
 }
 
 void AnalysisPage::showSlotPage(int index) {
@@ -227,10 +271,7 @@ QString AnalysisPage::stageComparison(const QString& driverA, int lapA, const QS
     if (!a.valid) return QStringLiteral("driver %1 not in the recording").arg(driverA);
     if (!b.valid) return QStringLiteral("driver %1 not in the recording").arg(driverB);
 
-    {
-        QSignalBlocker guard(modeTabs_);
-        modeTabs_->setCurrentIndex(kFixedTab);
-    }
+    modeTabs_->setCurrentIndex(kFixedTab);
     showSlotPage(kFixedTab);
     refreshDriverChoices();
     lapASlot_->selectDriver(a);
@@ -259,43 +300,118 @@ void AnalysisPage::focusMapElapsed(double seconds) {
 // The lap panel may not grow past its content, so it scrolls only when part of
 // it is actually cut off. Measured once layouts have settled after a change.
 void AnalysisPage::fitLapPanel() {
+    // While the dock catches up with its content their heights disagree, which
+    // would flash the scroll bar. It returns below if the dock could not fit.
+    if (resizePanelsAction_->isChecked()) lapScroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     QTimer::singleShot(0, this, [this] {
-        QWidget* content = lapScroll_->widget();
-        if (QLayout* layout = content->layout()) layout->activate();
-        lapScroll_->setMaximumHeight(content->sizeHint().height() + 2 * lapScroll_->frameWidth());
+        // Showing a widget refreshes the layouts above it at once; hiding one
+        // only reaches them through later events, so mark them all stale here
+        // or a collapse would be measured at its old height.
+        QWidget* panel = lapsDock_->widget();
+        for (QWidget* child : panel->findChildren<QWidget*>()) child->updateGeometry();
+        if (QLayout* layout = panel->layout()) layout->activate();
+        if (QLayout* layout = lapScroll_->widget()->layout()) layout->activate();
+        fitLapsDock();
+        // resizeDocks only schedules the new sizes; apply them before the
+        // scroll bar is allowed to judge the fit.
+        if (QLayout* layout = workspace_->layout()) layout->activate();
+        lapScroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     });
 }
 
-AnalysisPage::~AnalysisPage() = default;
+// Resize Panels as needed: the Laps dock takes the height of its content, and
+// the panel stacked with it gives or takes the difference.
+void AnalysisPage::fitLapsDock() {
+    if (!resizePanelsAction_->isChecked() || !lapsDock_->isVisible()) return;
+    // A tab group shares one height.
+    if (!workspace_->tabifiedDockWidgets(lapsDock_).isEmpty()) return;
+    const int wanted = lapsDock_->height() - lapScroll_->viewport()->height() + lapScroll_->widget()->sizeHint().height();
+    if (wanted == lapsDock_->height()) return;
+    if (lapsDock_->isFloating()) {
+        lapsDock_->resize(lapsDock_->width(), wanted);
+        return;
+    }
+
+    const Qt::DockWidgetArea area = workspace_->dockWidgetArea(lapsDock_);
+    const QRect lapsRect = lapsDock_->geometry();
+    int remaining = wanted - lapsDock_->height();
+    QList<QDockWidget*> docks{lapsDock_};
+    QList<int> heights{wanted};
+    for (QDockWidget* other : {metricsDock_, zonesDock_}) {
+        if (other->isFloating() || !other->isVisible() || workspace_->dockWidgetArea(other) != area) continue;
+        const QRect otherRect = other->geometry();
+        if (otherRect.right() < lapsRect.left() || otherRect.left() > lapsRect.right()) continue;   // beside Laps
+        const int height = qMax(other->height() - remaining, other->minimumSizeHint().height());
+        remaining -= other->height() - height;
+        docks << other;
+        heights << height;
+    }
+    if (docks.size() == 1) return;   // Laps already fills its column
+    heights[0] -= remaining;         // what the others could not give up
+    workspace_->resizeDocks(docks, heights, Qt::Vertical);
+}
+
+AnalysisPage::~AnalysisPage() {
+    // The last panel sizes, in case a save was still pending.
+    if (layoutSaveTimer_ && layoutSaveTimer_->isActive()) saveSettings();
+}
+
+bool AnalysisPage::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::Resize && settingsReady_ && layoutSaveTimer_ &&
+        (watched == lapsDock_ || watched == metricsDock_ || watched == zonesDock_))
+        layoutSaveTimer_->start();
+    return QWidget::eventFilter(watched, event);
+}
+
+void AnalysisPage::hideEvent(QHideEvent* event) {
+    if (layoutSaveTimer_ && layoutSaveTimer_->isActive()) {
+        layoutSaveTimer_->stop();
+        saveSettings();
+    }
+    QWidget::hideEvent(event);
+}
+
+void AnalysisPage::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    if (lapsFittedOnShow_) return;
+    lapsFittedOnShow_ = true;
+    fitLapPanel();
+}
 
 // ── Construction ────────────────────────────────────────────────────────────
 
 void AnalysisPage::buildToolBar() {
-    toolBar_ = new QToolBar(QStringLiteral("Analysis"), this);
-    toolBar_->setMovable(false);
-    toolBar_->setFloatable(false);
-    toolBar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    // The view switch and the panel controls sit in the app tool bar
+    // (MainWindow hands them to AppToolbar::setAnalyzePageWidgets).
     const int iconSize = style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, this);
-    toolBar_->setIconSize(QSize(iconSize, iconSize));
-
-    sidebarAction_ = makeToggle(this, themed(this, {"sidebar-show", "view-sidetree"},
-                                             QStyle::SP_FileDialogDetailedView),
-                                QStringLiteral("Show Sidebar"),
-                                QStringLiteral("Shows or hides the lap and metric settings."));
-    toolBar_->addAction(sidebarAction_);
-    toolBar_->addSeparator();
+    auto controlRow = [this] {
+        auto* row = new QWidget(this);
+        auto* layout = new QHBoxLayout(row);
+        layout->setContentsMargins(2, 0, 2, 0);
+        layout->setSpacing(2);
+        return row;
+    };
+    auto addButton = [iconSize](QWidget* row, QAction* action, Qt::ToolButtonStyle style) {
+        auto* button = new AnalysisToggleButton(row);
+        button->setDefaultAction(action);
+        button->setToolButtonStyle(style);
+        button->setAutoRaise(true);
+        button->setIconSize(QSize(iconSize, iconSize));
+        row->layout()->addWidget(button);
+        return button;
+    };
+    viewControls_ = controlRow();
+    panelControls_ = controlRow();
 
     viewGroup_ = new QActionGroup(this);
     viewGroup_->setExclusive(true);
-    auto addView = [this](QAction*& action, std::initializer_list<const char*> icons,
-                          QStyle::StandardPixmap fallback, const QString& text,
-                          const QString& help, View view) {
+    auto addView = [this, addButton](QAction*& action, std::initializer_list<const char*> icons,
+                                     QStyle::StandardPixmap fallback, const QString& text,
+                                     const QString& help, View view) {
         action = makeToggle(this, themed(this, icons, fallback), text, help);
         action->setData(static_cast<int>(view));
         viewGroup_->addAction(action);
-        toolBar_->addAction(action);
-        if (auto* button = qobject_cast<QToolButton*>(toolBar_->widgetForAction(action)))
-            button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        addButton(viewControls_, action, Qt::ToolButtonTextBesideIcon);
     };
     addView(graphsAction_, {"office-chart-line", "labplot-xy-curve"}, QStyle::SP_FileDialogContentsView,
             QStringLiteral("Graphs"), QStringLiteral("Plots the selected metrics of both laps."),
@@ -305,7 +421,32 @@ void AnalysisPage::buildToolBar() {
             View::Split);
     addView(mapAction_, {"map-flat", "globe"}, QStyle::SP_DriveNetIcon, QStringLiteral("Map"),
             QStringLiteral("Both laps as cars on the circuit map."), View::Map);
-    toolBar_->addSeparator();
+
+    // ── Graph strip actions (buildGraphPane) ──
+    // Each action's iconText is its short label under the strip icon; its text
+    // names it in tooltips, menus and Help.
+    auto strip = [](QAction* action, const QString& label, const QKeySequence& key = {}) {
+        action->setIconText(label);
+        if (!key.isEmpty()) {
+            action->setShortcut(key);
+            action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+            action->setToolTip(QStringLiteral("%1 (%2)").arg(action->text(),
+                                                            key.toString(QKeySequence::NativeText)));
+        }
+    };
+    auto plain = [this](std::initializer_list<const char*> icons, QStyle::StandardPixmap fallback,
+                        const QString& text) {
+        auto* action = new QAction(themed(this, icons, fallback), text, this);
+        action->setToolTip(text);
+        return action;
+    };
+    zoomInAction_ = plain({"zoom-in"}, QStyle::SP_ArrowUp, QStringLiteral("Zoom In"));
+    zoomOutAction_ = plain({"zoom-out"}, QStyle::SP_ArrowDown, QStringLiteral("Zoom Out"));
+    resetZoomAction_ = plain({"zoom-original", "zoom-fit-best"}, QStyle::SP_BrowserReload,
+                             QStringLiteral("Reset Zoom"));
+    strip(zoomInAction_, QStringLiteral("Zoom In"), QKeySequence(Qt::CTRL | Qt::Key_Plus));
+    strip(zoomOutAction_, QStringLiteral("Zoom Out"), QKeySequence(Qt::CTRL | Qt::Key_Minus));
+    strip(resetZoomAction_, QStringLiteral("Reset"), QKeySequence(Qt::CTRL | Qt::Key_0));
 
     stackedAction_ = makeToggle(this, themed(this, {"view-split-top-bottom"}, QStyle::SP_TitleBarShadeButton),
                                 QStringLiteral("Individual Graphs"),
@@ -328,34 +469,101 @@ void AnalysisPage::buildToolBar() {
                                      QStringLiteral("Split Cursors"),
                                      QStringLiteral("In Split Mode while comparing, shows where both "
                                                     "cars are on the lap as lines on the graphs."));
-    inputsAction_ = makeToggle(this, themed(this, {"input-gaming", "view-list-details"},
+    strip(stackedAction_, QStringLiteral("Stacked"));
+    strip(syncedTooltipAction_, QStringLiteral("Sync"));
+    strip(sectorBoundariesAction_, QStringLiteral("Sectors"));
+    strip(sectorDeltaAction_, QStringLiteral("Sector Δ"));
+    strip(splitCursorsAction_, QStringLiteral("Cursors"));
+
+    // ── Map strip actions (buildMapPane) ──
+    layerGroup_ = new QActionGroup(this);
+    layerGroup_->setExclusive(true);
+    struct Layer { const char* mode; const char* text; const char* label; const char* icon; const char* altIcon;
+                   QStyle::StandardPixmap fallback; const char* help; };
+    const Layer layers[] = {
+        {"none", "No Layer", "None", "draw-eraser", "edit-clear", QStyle::SP_DialogCancelButton,
+         "Draws the track plain."},
+        {"dominance", "Track Dominance", "Dominance", "flag", "flag-green", QStyle::SP_DialogApplyButton,
+         "Colours each mini-sector by the lap that was faster through it."},
+        {"racing", "Racing Line", "Line", "draw-path", "draw-bezier-curves", QStyle::SP_ArrowForward,
+         "Both laps' raw paths, with only the sector boundaries of the map."},
+        {"inputs", "Driver Inputs", "Inputs", "input-gaming", "games-config-options", QStyle::SP_ComputerIcon,
+         "Each lap's own map, coloured by braking, coasting, partial and full throttle."},
+        {"speed", "Speed", "Speed", "speedometer", "chronometer", QStyle::SP_MediaSeekForward,
+         "Each lap's own map, coloured by speed on one scale for both."},
+        {"ers", "ERS Usage", "ERS", "battery-good", "battery", QStyle::SP_MediaVolume,
+         "Each lap's own map, coloured by MGU-K deployment against the car's peak."},
+        {"harvest", "ERS Harvest", "Harvest", "battery-070-charging", "battery-good-charging",
+         QStyle::SP_ArrowDown, "Each lap's own map, coloured by energy harvested."},
+    };
+    for (const Layer& layer : layers) {
+        QAction* action = makeToggle(this, themed(this, {layer.icon, layer.altIcon}, layer.fallback),
+                                     QString::fromUtf8(layer.text), QString::fromUtf8(layer.help));
+        action->setData(QString::fromLatin1(layer.mode));
+        action->setIconText(QString::fromUtf8(layer.label));
+        layerGroup_->addAction(action);
+    }
+    layerGroup_->actions().first()->setChecked(true);
+
+    inputsAction_ = makeToggle(this, themed(this, {"object-columns", "view-list-details"},
                                             QStyle::SP_FileDialogDetailedView),
                                QStringLiteral("Data Comparison"),
                                QStringLiteral("Shows a card on the map with both laps' steering, "
                                               "pedals, ERS, speed and gear at the map cursor."));
-    for (QAction* action : {stackedAction_, syncedTooltipAction_, sectorBoundariesAction_,
-                            sectorDeltaAction_, splitCursorsAction_}) {
-        toolBar_->addAction(action);
-        if (action == syncedTooltipAction_) toolBar_->addSeparator();
-    }
-    toolBar_->addSeparator();
-    toolBar_->addAction(inputsAction_);
+    brakingAction_ = makeToggle(this, themed(this, {"media-optical", "drive-optical"},
+                                             QStyle::SP_DriveCDIcon),
+                                QStringLiteral("Braking Points"),
+                                QStringLiteral("Highlights each braking zone on the map; hover one "
+                                               "for both laps' braking, corners and exit."));
+    strip(brakingAction_, QStringLiteral("Braking"), QKeySequence(Qt::Key_B));
+    strip(inputsAction_, QStringLiteral("Data"), QKeySequence(Qt::Key_D));
+    // The graphs have Ctrl with these keys, across the whole page.
+    mapZoomInAction_ = plain({"zoom-in"}, QStyle::SP_ArrowUp, QStringLiteral("Map Zoom In"));
+    mapZoomOutAction_ = plain({"zoom-out"}, QStyle::SP_ArrowDown, QStringLiteral("Map Zoom Out"));
+    mapFitAction_ = plain({"zoom-fit-best", "zoom-original"}, QStyle::SP_BrowserReload, QStringLiteral("Fit Circuit"));
+    strip(mapZoomInAction_, QStringLiteral("In"), QKeySequence(Qt::ALT | Qt::Key_Plus));
+    strip(mapZoomOutAction_, QStringLiteral("Out"), QKeySequence(Qt::ALT | Qt::Key_Minus));
+    strip(mapFitAction_, QStringLiteral("100 %"), QKeySequence(Qt::ALT | Qt::Key_0));
 
-    auto* spacer = new QWidget(toolBar_);
-    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    toolBar_->addWidget(spacer);
-    deltaReadout_ = new AnalysisDeltaReadout(toolBar_);
-    toolBar_->addWidget(deltaReadout_);
+    // ── Panels ──
+    edgeTabsAction_ = new QAction(QStringLiteral("Closed Panels as Edge Tabs"), this);
+    edgeTabsAction_->setCheckable(true);
+    edgeTabsAction_->setChecked(true);
+    lockPanelsAction_ = new QAction(QStringLiteral("Lock Panels"), this);
+    lockPanelsAction_->setCheckable(true);
+    resizePanelsAction_ = new QAction(QStringLiteral("Resize Panels as needed"), this);
+    resizePanelsAction_->setCheckable(true);
+    resizePanelsAction_->setChecked(true);
+    resetLayoutAction_ = new QAction(themed(this, {"view-restore", "edit-undo"}, QStyle::SP_BrowserReload),
+                                     QStringLiteral("Reset Layout"), this);
+
+    panelsButton_ = new QToolButton(panelControls_);
+    panelsButton_->setText(QStringLiteral("Panels"));
+    panelsButton_->setIcon(themed(this, {"view-split-left-right", "window"}, QStyle::SP_TitleBarNormalButton));
+    panelsButton_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    panelsButton_->setPopupMode(QToolButton::InstantPopup);
+    panelsButton_->setAutoRaise(true);
+    panelsButton_->setIconSize(QSize(iconSize, iconSize));
+    panelsButton_->setToolTip(QStringLiteral("Show, hide and arrange the panels"));
+    auto* panelsMenu = new QMenu(panelsButton_);
+    connect(panelsMenu, &QMenu::aboutToShow, this, [this, panelsMenu] {
+        panelsMenu->clear();
+        fillPanelsMenu(panelsMenu);
+    });
+    panelsButton_->setMenu(panelsMenu);
+    panelControls_->layout()->addWidget(panelsButton_);
 
     helpAction_ = new QAction(themed(this, {"help-contextual", "help-about"}, QStyle::SP_MessageBoxQuestion),
                               QStringLiteral("Analysis Help"), this);
     helpAction_->setToolTip(QStringLiteral("What the Analysis controls do"));
-    toolBar_->addAction(helpAction_);
+    addButton(panelControls_, helpAction_, Qt::ToolButtonIconOnly);
 
-    connect(sidebarAction_, &QAction::toggled, this, [this](bool on) {
-        sidebar_->setVisible(on);
-        saveSettings();
-    });
+    for (QAction* action : {zoomInAction_, zoomOutAction_, resetZoomAction_, brakingAction_, inputsAction_,
+                            mapZoomInAction_, mapZoomOutAction_, mapFitAction_})
+        addAction(action);   // their shortcuts work anywhere on the page
+    connect(zoomInAction_, &QAction::triggered, this, &AnalysisPage::zoomIn);
+    connect(zoomOutAction_, &QAction::triggered, this, &AnalysisPage::zoomOut);
+    connect(resetZoomAction_, &QAction::triggered, this, &AnalysisPage::resetZoom);
     connect(viewGroup_, &QActionGroup::triggered, this, [this](QAction* action) {
         preferredView_ = static_cast<View>(action->data().toInt());
         saveSettings();
@@ -365,69 +573,287 @@ void AnalysisPage::buildToolBar() {
         if (!on) sectorDeltaAction_->setChecked(false);
     });
     for (QAction* action : {stackedAction_, syncedTooltipAction_, sectorBoundariesAction_,
-                            sectorDeltaAction_, splitCursorsAction_, inputsAction_})
+                            sectorDeltaAction_, splitCursorsAction_, inputsAction_, brakingAction_})
         connect(action, &QAction::triggered, this, [this] {
             saveSettings();
             applyState();
         });
+    connect(layerGroup_, &QActionGroup::triggered, this, [this] {
+        saveSettings();
+        applyState();
+    });
+    connect(edgeTabsAction_, &QAction::triggered, this, [this] {
+        saveSettings();
+        refreshRails();
+    });
+    connect(lockPanelsAction_, &QAction::triggered, this, [this] {
+        saveSettings();
+        applyPanelLock();
+    });
+    connect(resizePanelsAction_, &QAction::triggered, this, [this] {
+        saveSettings();
+        fitLapPanel();
+    });
+    connect(resetLayoutAction_, &QAction::triggered, this, &AnalysisPage::resetPanels);
     connect(helpAction_, &QAction::triggered, this, &AnalysisPage::showControlsHelp);
 }
 
-QWidget* AnalysisPage::buildSidebar() {
-    sidebar_ = new QWidget(this);
-    auto* layout = new QVBoxLayout(sidebar_);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
+// Graph pane: its tool strip on the outer edge, then the result band over the graphs.
+QWidget* AnalysisPage::buildGraphPane() {
+    auto* pane = new QWidget(this);
+    auto* row = new QHBoxLayout(pane);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(0);
 
-    // Laps scroll when the window is short; the metric list takes what remains.
-    auto* scroll = new QScrollArea(sidebar_);
-    lapScroll_ = scroll;
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setWidgetResizable(true);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    auto* upper = new QWidget(scroll);
-    auto* upperLayout = new QVBoxLayout(upper);
-    upperLayout->setContentsMargins(8, 8, 8, 4);
-    upperLayout->setSpacing(8);
-    upperLayout->addWidget(buildRecordingGroup());
-    upperLayout->addWidget(buildLapGroup());
-    scroll->setWidget(upper);
+    graphStrip_ = new AnalysisToolStrip(QStringLiteral("Graph tools"), pane);
+    for (QAction* action : {zoomInAction_, zoomOutAction_, resetZoomAction_}) graphStrip_->addTool(action);
+    graphStrip_->addSeparator();
+    for (QAction* action : {stackedAction_, syncedTooltipAction_, sectorBoundariesAction_,
+                            sectorDeltaAction_, splitCursorsAction_})
+        graphStrip_->addTool(action);
+    row->addWidget(graphStrip_);
+    row->addWidget(tnrui::vline());
 
-    auto* sections = new QSplitter(Qt::Vertical, sidebar_);
-    sections->setChildrenCollapsible(false);
-    sections->setObjectName(QStringLiteral("analysisSidebarSections"));
-    sections->addWidget(scroll);
-    sections->addWidget(buildMetricGroup());
-    sections->setStretchFactor(0, 0);
-    sections->setStretchFactor(1, 1);
-    layout->addWidget(sections, 1);
+    auto* column = new QVBoxLayout;
+    column->setContentsMargins(0, 0, 0, 0);
+    column->setSpacing(0);
+    deltaReadout_ = new AnalysisDeltaReadout(pane);
+    column->addWidget(deltaReadout_);
+    column->addWidget(tnrui::hline());
+    column->addWidget(chart_, 1);
+    row->addLayout(column, 1);
+    return pane;
+}
 
-    sidebar_->setMinimumWidth(280);
-    return sidebar_;
+// Map pane: the map, then its tool strip on the outer edge.
+QWidget* AnalysisPage::buildMapPane() {
+    auto* pane = new QWidget(this);
+    auto* row = new QHBoxLayout(pane);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(0);
+    row->addWidget(map_, 1);
+    row->addWidget(tnrui::vline());
+
+    mapStrip_ = new AnalysisToolStrip(QStringLiteral("Map tools"), pane);
+    mapStrip_->addCaption(QStringLiteral("Layer"));
+    for (QAction* action : layerGroup_->actions()) mapStrip_->addTool(action);
+    mapStrip_->addSeparator();
+    mapStrip_->addTool(brakingAction_);
+    mapStrip_->addTool(inputsAction_);
+    mapStrip_->addSeparator();
+    mapStrip_->addCaption(QStringLiteral("Zoom"));
+    mapStrip_->addToolPair(mapZoomOutAction_, mapZoomInAction_);
+    mapStrip_->addTool(mapFitAction_);
+    row->addWidget(mapStrip_);
+    return pane;
+}
+
+// Laps and Metrics on the left, Braking Zones on the right: the default
+// layout, also what Reset Layout returns to.
+void AnalysisPage::buildDocks() {
+    auto makeDock = [this](const QString& title, const QString& name, QWidget* content) {
+        auto* dock = new QDockWidget(title, workspace_);
+        dock->setObjectName(name);   // saveState keys docks by object name
+        dock->setWidget(content);
+        dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+        QAction* toggle = dock->toggleViewAction();
+        toggle->setText(title);
+        // Qt shares the space out afresh whenever the arrangement changes; put
+        // back the sizes this arrangement had instead.
+        connect(toggle, &QAction::toggled, this, [this, dock](bool shown) {
+            if (settingsReady_) {
+                if (!shown && layoutSaveTimer_->isActive()) {
+                    // A resize not yet recorded: take it now, with the closing
+                    // panel still counted as open (the layout has not reflowed).
+                    layoutSaveTimer_->stop();
+                    recordArrangement(dock);
+                }
+                restoreArrangement();
+            }
+            refreshRails();
+            saveSettings();
+        });
+        connect(dock, &QDockWidget::dockLocationChanged, this, [this] {
+            if (settingsReady_) restoreArrangement();
+            refreshRails();
+            saveSettings();
+        });
+        connect(dock, &QDockWidget::topLevelChanged, this, [this] {
+            if (settingsReady_) restoreArrangement();
+            saveSettings();
+        });
+        return dock;
+    };
+
+    // Laps: the mode tabs on top, the two laps (scrolling on a short window) and
+    // the second recording pinned to the bottom.
+    auto* lapsPanel = new QWidget(this);
+    auto* lapsPanelLayout = new QVBoxLayout(lapsPanel);
+    lapsPanelLayout->setContentsMargins(0, 0, 0, 0);
+    lapsPanelLayout->setSpacing(0);
+    lapsPanelLayout->addWidget(buildModeTabs());
+    lapScroll_ = new QScrollArea(lapsPanel);
+    lapScroll_->setFrameShape(QFrame::NoFrame);
+    lapScroll_->setWidgetResizable(true);
+    lapScroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto* laps = new QWidget(lapScroll_);
+    auto* lapsLayout = new QVBoxLayout(laps);
+    lapsLayout->setContentsMargins(0, 0, 0, 0);
+    lapsLayout->setSpacing(0);
+    lapsLayout->addWidget(buildLapGroup());
+    lapsLayout->addStretch(1);
+    lapScroll_->setWidget(laps);
+    lapScroll_->setMinimumWidth(260);
+    // A scroll area's own minimum is its scroll bar's length, which is taller
+    // than two collapsed laps and would leave a gap under them.
+    lapScroll_->setMinimumHeight(1);
+    lapsPanelLayout->addWidget(lapScroll_, 1);
+    lapsPanelLayout->addWidget(buildRecordingGroup());
+
+    lapsDock_ = makeDock(QStringLiteral("Laps"), QStringLiteral("analysisLapsDock"), lapsPanel);
+    metricsDock_ = makeDock(QStringLiteral("Metrics"), QStringLiteral("analysisMetricsDock"),
+                            buildMetricGroup());
+    zones_ = new AnalysisBrakingZones(this);
+    zones_->setMinimumWidth(240);
+    zonesDock_ = makeDock(QStringLiteral("Braking Zones"), QStringLiteral("analysisZonesDock"), zones_);
+    // The zone list is only worked out while someone can see it.
+    connect(zonesDock_->toggleViewAction(), &QAction::toggled, this, &AnalysisPage::requestMapLayers);
+    resetPanels();
+}
+
+void AnalysisPage::resetPanels() {
+    layoutMemory_.clear();
+    latestPanelSizes_.clear();
+    for (QDockWidget* dock : {lapsDock_, metricsDock_, zonesDock_}) dock->setFloating(false);
+    workspace_->addDockWidget(Qt::LeftDockWidgetArea, lapsDock_);
+    workspace_->addDockWidget(Qt::LeftDockWidgetArea, metricsDock_);
+    workspace_->splitDockWidget(lapsDock_, metricsDock_, Qt::Vertical);
+    workspace_->addDockWidget(Qt::RightDockWidgetArea, zonesDock_);
+    for (QDockWidget* dock : {lapsDock_, metricsDock_, zonesDock_}) dock->show();
+    workspace_->resizeDocks({lapsDock_, zonesDock_}, {300, 280}, Qt::Horizontal);
+    workspace_->resizeDocks({lapsDock_, metricsDock_}, {420, 300}, Qt::Vertical);
+    refreshRails();
+    saveSettings();
+    fitLapPanel();
+}
+
+QString AnalysisPage::arrangementKey(Qt::DockWidgetArea side, QDockWidget* closing) const {
+    QStringList parts;
+    for (QDockWidget* dock : {lapsDock_, metricsDock_, zonesDock_}) {
+        if (dock->isFloating() || workspace_->dockWidgetArea(dock) != side) continue;
+        if (dock != closing && !dock->toggleViewAction()->isChecked()) continue;
+        parts << dock->objectName() + QLatin1Char('@') + QString::number(int(side));
+    }
+    parts.sort();
+    return parts.join(QLatin1Char(','));
+}
+
+void AnalysisPage::recordArrangement(QDockWidget* closing) {
+    QHash<QString, QHash<QString, QSize>> recorded;
+    for (QDockWidget* dock : {lapsDock_, metricsDock_, zonesDock_}) {
+        if (dock->isFloating()) continue;
+        if (dock != closing && !dock->toggleViewAction()->isChecked()) continue;
+        // A panel behind another's tab has no size of its own on screen.
+        if (!(dock == closing || dock->isVisible()) || dock->width() <= 0 || dock->height() <= 0) continue;
+        recorded[arrangementKey(workspace_->dockWidgetArea(dock), closing)].insert(dock->objectName(), dock->size());
+        latestPanelSizes_.insert(dock->objectName(), dock->size());
+    }
+    for (auto it = recorded.cbegin(); it != recorded.cend(); ++it) layoutMemory_.insert(it.key(), it.value());
+}
+
+void AnalysisPage::restoreArrangement() {
+    // Once the window has laid the panels out again.
+    QTimer::singleShot(0, this, [this] {
+        if (QLayout* layout = workspace_->layout()) layout->activate();
+        QList<QDockWidget*> docks;
+        QList<int> widths;
+        QList<int> heights;
+        for (QDockWidget* dock : {lapsDock_, metricsDock_, zonesDock_}) {
+            if (dock->isFloating() || !dock->isVisible()) continue;
+            QSize size;
+            const auto remembered = layoutMemory_.constFind(arrangementKey(workspace_->dockWidgetArea(dock)));
+            if (remembered != layoutMemory_.cend()) size = remembered->value(dock->objectName());
+            if (!size.isValid()) size = latestPanelSizes_.value(dock->objectName());
+            if (!size.isValid() || size.isEmpty()) continue;
+            docks << dock;
+            widths << size.width();
+            heights << size.height();
+        }
+        if (docks.isEmpty()) return;
+        // resizeDocks moves whichever separators lie between these panels,
+        // however they are stacked, side by side or nested.
+        workspace_->resizeDocks(docks, widths, Qt::Horizontal);
+        workspace_->resizeDocks(docks, heights, Qt::Vertical);
+        fitLapsDock();
+        layoutSaveTimer_->start();   // records the result for this arrangement
+    });
+}
+
+void AnalysisPage::fillPanelsMenu(QMenu* menu) {
+    menu->addSection(QStringLiteral("Panels"));
+    for (QDockWidget* dock : {lapsDock_, metricsDock_, zonesDock_}) menu->addAction(dock->toggleViewAction());
+    menu->addSeparator();
+    menu->addAction(edgeTabsAction_);
+    menu->addAction(lockPanelsAction_);
+    menu->addAction(resizePanelsAction_);
+    menu->addSeparator();
+    menu->addAction(resetLayoutAction_);
+}
+
+// A closed dock gets a tab on the edge it was docked to (Laps and Metrics
+// default left, Braking Zones right, when it was floating).
+void AnalysisPage::refreshRails() {
+    if (!leftRail_ || !rightRail_) return;
+    QVector<QDockWidget*> left;
+    QVector<QDockWidget*> right;
+    if (edgeTabsAction_->isChecked()) {
+        for (QDockWidget* dock : {lapsDock_, metricsDock_, zonesDock_}) {
+            // Closed, not merely behind another panel's tab.
+            if (dock->toggleViewAction()->isChecked()) continue;
+            Qt::DockWidgetArea area = workspace_->dockWidgetArea(dock);
+            if (area != Qt::LeftDockWidgetArea && area != Qt::RightDockWidgetArea)
+                area = dock == zonesDock_ ? Qt::RightDockWidgetArea : Qt::LeftDockWidgetArea;
+            (area == Qt::RightDockWidgetArea ? right : left).push_back(dock);
+        }
+    }
+    leftRail_->setDocks(left);
+    rightRail_->setDocks(right);
+}
+
+// Locked panels can still be closed, but not dragged or floated by accident.
+void AnalysisPage::applyPanelLock() {
+    const QDockWidget::DockWidgetFeatures features = lockPanelsAction_->isChecked()
+        ? QDockWidget::DockWidgetClosable
+        : QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable;
+    for (QDockWidget* dock : {lapsDock_, metricsDock_, zonesDock_}) dock->setFeatures(features);
 }
 
 QWidget* AnalysisPage::buildRecordingGroup() {
-    recordingGroup_ = new QGroupBox(sidebar_);
-    auto* layout = new QVBoxLayout(recordingGroup_);
+    recordingGroup_ = new QWidget(this);
+    auto* outer = new QVBoxLayout(recordingGroup_);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
+    auto* divider = new QFrame(recordingGroup_);
+    divider->setFrameShape(QFrame::HLine);
+    divider->setFrameShadow(QFrame::Sunken);
+    outer->addWidget(divider);
+    auto* layout = new QVBoxLayout;
+    layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(6);
+    outer->addLayout(layout);
 
-    auto* row = new QHBoxLayout;
-    row->setSpacing(4);
-    secondaryName_ = new QLabel(recordingGroup_);
-    secondaryName_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    secondaryName_->setTextFormat(Qt::PlainText);
-    openSecondary_ = new QToolButton(recordingGroup_);
-    openSecondary_->setIcon(themed(this, {"document-open"}, QStyle::SP_DialogOpenButton));
-    openSecondary_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    removeSecondary_ = new QToolButton(recordingGroup_);
-    removeSecondary_->setIcon(themed(this, {"edit-delete-remove", "list-remove"},
-                                     QStyle::SP_DialogCloseButton));
+    // A read-only field with its browse and close actions inside it.
+    secondaryField_ = new QLineEdit(recordingGroup_);
+    secondaryField_->setReadOnly(true);
+    secondaryField_->setPlaceholderText(QStringLiteral("No second recording"));
+    secondaryField_->setAccessibleName(QStringLiteral("Second recording"));
+    // Trailing actions stack leftwards, so the one added first sits at the edge.
+    removeSecondary_ = secondaryField_->addAction(
+        themed(this, {"window-close", "dialog-close"}, QStyle::SP_DialogCloseButton), QLineEdit::TrailingPosition);
     removeSecondary_->setToolTip(QStringLiteral("Close the second recording"));
-    removeSecondary_->setAutoRaise(true);
-    row->addWidget(secondaryName_, 1);
-    row->addWidget(openSecondary_);
-    row->addWidget(removeSecondary_);
-    layout->addLayout(row);
+    openSecondary_ = secondaryField_->addAction(
+        themed(this, {"folder-open", "document-open"}, QStyle::SP_DirOpenIcon), QLineEdit::TrailingPosition);
+    layout->addWidget(secondaryField_);
 
     // Inline error, in the spirit of KMessageWidget: stays until dismissed or resolved.
     messageBar_ = new QFrame(recordingGroup_);
@@ -453,26 +879,27 @@ QWidget* AnalysisPage::buildRecordingGroup() {
     messageBar_->hide();
     layout->addWidget(messageBar_);
     connect(dismiss, &QToolButton::clicked, messageBar_, &QWidget::hide);
+    connect(dismiss, &QToolButton::clicked, this, &AnalysisPage::fitLapPanel);
 
     return recordingGroup_;
 }
 
+QWidget* AnalysisPage::buildModeTabs() {
+    modeTabs_ = new UnderlineTabBar(this);
+    modeTabs_->addTab(QStringLiteral("Follow Playback"));   // kPlaybackTab
+    modeTabs_->addTab(QStringLiteral("Fixed Laps"));        // kFixedTab
+    modeTabs_->setTinted(false);
+    modeTabs_->setBottomBorder(true);
+    modeTabs_->setTabToolTip(kPlaybackTab, QStringLiteral("Compare the lap under the playback cursor with a chosen lap"));
+    modeTabs_->setTabToolTip(kFixedTab, QStringLiteral("Compare any two laps, from either recording"));
+    return modeTabs_;
+}
+
 QWidget* AnalysisPage::buildLapGroup() {
-    auto* group = new QWidget(sidebar_);
+    auto* group = new QWidget(this);
     auto* layout = new QVBoxLayout(group);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(6);
-
-    // The same underline tabs as the Settings dialog.
-    modeTabs_ = new UnderlineTabBar(group);
-    modeTabs_->setBottomBorder(true);
-    modeTabs_->setTinted(false);
-    modeTabs_->addTab(QStringLiteral("Follow Playback"));
-    modeTabs_->addTab(QStringLiteral("Fixed Laps"));
-    modeTabs_->setTabToolTip(kPlaybackTab,
-                             QStringLiteral("Compare the lap under the playback cursor with a chosen lap"));
-    modeTabs_->setTabToolTip(kFixedTab, QStringLiteral("Compare any two laps, from either recording"));
-    layout->addWidget(modeTabs_);
+    layout->setSpacing(0);
 
     // Both pages live in one layout and only the active one is shown, so the
     // group is always exactly as tall as the page on screen.
@@ -480,7 +907,7 @@ QWidget* AnalysisPage::buildLapGroup() {
         auto* page = new QWidget(group);
         auto* pageLayout = new QVBoxLayout(page);
         pageLayout->setContentsMargins(0, 0, 0, 0);
-        pageLayout->setSpacing(8);
+        pageLayout->setSpacing(0);
         pageLayout->addWidget(first);
         pageLayout->addWidget(second);
         slotPages_.push_back(page);
@@ -494,6 +921,9 @@ QWidget* AnalysisPage::buildLapGroup() {
                                     AnalysisLapSlot::Mode::Selectable);
     lapBSlot_ = new AnalysisLapSlot(QStringLiteral("Lap B"), QStringLiteral("Lap B"),
                                     AnalysisLapSlot::Mode::Selectable);
+    // The followed lap has nothing to choose, so Compare starts open.
+    currentSlot_->setExpanded(false);
+    lapBSlot_->setExpanded(false);
     makePage(currentSlot_, compareSlot_);
     makePage(lapASlot_, lapBSlot_);
     slotPages_[kFixedTab]->hide();
@@ -501,8 +931,10 @@ QWidget* AnalysisPage::buildLapGroup() {
 }
 
 QWidget* AnalysisPage::buildMetricGroup() {
-    auto* group = new QGroupBox(QStringLiteral("Metrics"), sidebar_);
+    // The dock's title names it, so no group box title of its own.
+    auto* group = new QWidget(this);
     auto* layout = new QVBoxLayout(group);
+    layout->setContentsMargins(6, 6, 6, 6);
     layout->setSpacing(4);
 
     seriesView_ = new QListView(group);
@@ -657,7 +1089,6 @@ void AnalysisPage::loadSettings() {
         QSignalBlocker guard(action);
         action->setChecked(on);
     };
-    setChecked(sidebarAction_, !settings_.value("analyze/collapsed", false).toBool());
     setChecked(stackedAction_, settings_.value("analyze/individualGraphs", false).toBool());
     setChecked(syncedTooltipAction_, settings_.value("analyze/syncedTooltip", false).toBool());
     const bool boundaries = settings_.value("analyze/sectorBoundaries", false).toBool();
@@ -665,7 +1096,18 @@ void AnalysisPage::loadSettings() {
     setChecked(sectorDeltaAction_, boundaries && settings_.value("analyze/sectorDelta", false).toBool());
     setChecked(splitCursorsAction_, settings_.value("analyze/splitCursors", true).toBool());
     setChecked(inputsAction_, settings_.value("analyze/inputsPanel", true).toBool());
-    sidebar_->setVisible(sidebarAction_->isChecked());
+    setChecked(brakingAction_, settings_.value("analyze/brakingPoints", false).toBool());
+    {
+        const QString layer = settings_.value("analyze/mapColoring", "none").toString();
+        QAction* chosen = layerGroup_->actions().first();
+        for (QAction* action : layerGroup_->actions())
+            if (action->data().toString() == layer) chosen = action;
+        QSignalBlocker guard(chosen);
+        chosen->setChecked(true);
+    }
+    setChecked(edgeTabsAction_, settings_.value("analyze/edgeTabs", true).toBool());
+    setChecked(lockPanelsAction_, settings_.value("analyze/lockPanels", false).toBool());
+    setChecked(resizePanelsAction_, settings_.value("analyze/resizePanels", true).toBool());
 
     const bool defaultAxis = settings_.value("analyze/showYAxis", true).toBool();
     const QJsonDocument doc = QJsonDocument::fromJson(settings_.value("analyze/series").toByteArray());
@@ -714,8 +1156,8 @@ void AnalysisPage::loadSettings() {
 }
 
 void AnalysisPage::saveSettings() {
+    if (!settingsReady_) return;
     settings_.setValue("analyze/version", kSettingsVersion);
-    settings_.setValue("analyze/collapsed", !sidebarAction_->isChecked());
     settings_.setValue("analyze/view", viewKey(static_cast<int>(preferredView_)));
     settings_.setValue("analyze/individualGraphs", stackedAction_->isChecked());
     settings_.setValue("analyze/syncedTooltip", syncedTooltipAction_->isChecked());
@@ -723,6 +1165,11 @@ void AnalysisPage::saveSettings() {
     settings_.setValue("analyze/sectorDelta", sectorDeltaAction_->isChecked());
     settings_.setValue("analyze/splitCursors", splitCursorsAction_->isChecked());
     settings_.setValue("analyze/inputsPanel", inputsAction_->isChecked());
+    settings_.setValue("analyze/brakingPoints", brakingAction_->isChecked());
+    settings_.setValue("analyze/mapColoring", layerMode());
+    settings_.setValue("analyze/edgeTabs", edgeTabsAction_->isChecked());
+    settings_.setValue("analyze/lockPanels", lockPanelsAction_->isChecked());
+    settings_.setValue("analyze/resizePanels", resizePanelsAction_->isChecked());
     settings_.setValue("analyze/showYAxis", seriesModel_->allYAxesShown());
     settings_.setValue("analyze/mapCurrentColor", primaryColor_.name());
     settings_.setValue("analyze/mapComparisonColor", comparisonColor_.name());
@@ -751,24 +1198,41 @@ void AnalysisPage::saveSettings() {
     }
     settings_.setValue("analyze/series", QJsonDocument(series).toJson(QJsonDocument::Compact));
 
-    if (splitter_) settings_.setValue("analyze/splitter", splitter_->saveState());
-    if (auto* sections = sidebar_->findChild<QSplitter*>(QStringLiteral("analysisSidebarSections")))
-        settings_.setValue("analyze/sidebarSections", sections->saveState());
+    if (workspace_) settings_.setValue("analyze/workspace", workspace_->saveState(kWorkspaceVersion));
+    if (zones_) settings_.setValue("analyze/zonesSplit", zones_->splitState());
+    QVariantMap memory;
+    for (auto it = layoutMemory_.cbegin(); it != layoutMemory_.cend(); ++it) {
+        QVariantMap sizes;
+        for (auto size = it.value().cbegin(); size != it.value().cend(); ++size) sizes.insert(size.key(), size.value());
+        memory.insert(it.key(), sizes);
+    }
+    settings_.setValue("analyze/sideLayoutMemory", memory);
+    QVariantMap latest;
+    for (auto it = latestPanelSizes_.cbegin(); it != latestPanelSizes_.cend(); ++it) latest.insert(it.key(), it.value());
+    settings_.setValue("analyze/panelSizes", latest);
 }
 
 void AnalysisPage::restoreLayout() {
-    if (!splitter_->restoreState(settings_.value("analyze/splitter").toByteArray()))
-        splitter_->setSizes({320, 960});
     contentSplitter_->setRatio(settings_.value("analyze/splitRatio", AnalysisSplitter::kDefaultRatio).toDouble());
-    if (auto* sections = sidebar_->findChild<QSplitter*>(QStringLiteral("analysisSidebarSections"))) {
-        connect(sections, &QSplitter::splitterMoved, this, &AnalysisPage::saveSettings);
-        if (!sections->restoreState(settings_.value("analyze/sidebarSections").toByteArray()))
-            sections->setSizes({420, 300});
+    // Dock positions, sizes, tabs and which are closed; the default layout
+    // (buildDocks) stays when nothing was saved or it cannot be read.
+    workspace_->restoreState(settings_.value("analyze/workspace").toByteArray(), kWorkspaceVersion);
+    zones_->restoreSplitState(settings_.value("analyze/zonesSplit").toByteArray());
+    const QVariantMap memory = settings_.value("analyze/sideLayoutMemory").toMap();
+    for (auto it = memory.cbegin(); it != memory.cend(); ++it) {
+        const QVariantMap sizes = it.value().toMap();
+        QHash<QString, QSize>& arrangement = layoutMemory_[it.key()];
+        for (auto size = sizes.cbegin(); size != sizes.cend(); ++size)
+            if (const QSize value = size.value().toSize(); value.isValid() && !value.isEmpty())
+                arrangement.insert(size.key(), value);
     }
-    // restoreState() also restores visibility; the view and sidebar actions own that.
-    sidebar_->setVisible(sidebarAction_->isChecked());
-    chart_->show();
-    map_->show();
+    const QVariantMap latest = settings_.value("analyze/panelSizes").toMap();
+    for (auto it = latest.cbegin(); it != latest.cend(); ++it)
+        if (const QSize value = it.value().toSize(); value.isValid() && !value.isEmpty())
+            latestPanelSizes_.insert(it.key(), value);
+    applyPanelLock();
+    graphPane_->show();
+    mapPane_->show();
 }
 
 // ── Queries ─────────────────────────────────────────────────────────────────
@@ -866,19 +1330,13 @@ void AnalysisPage::refreshFollowedSlot() {
 }
 
 void AnalysisPage::refreshSecondaryRow() {
-    if (secondaryLoading_) {
-        secondaryName_->setText(QStringLiteral("Loading…"));
-        secondaryName_->setToolTip({});
-    } else if (secondary_) {
-        secondaryName_->setText(secondary_->filename);
-        secondaryName_->setToolTip(secondary_->path);
-    } else {
-        secondaryName_->setText(QStringLiteral("No second recording"));
-        secondaryName_->setToolTip({});
+    const QString fileText = secondaryLoading_ ? QStringLiteral("Loading…")
+                             : secondary_ ? secondary_->filename : QString();
+    if (secondaryField_->text() != fileText) {
+        secondaryField_->setText(fileText);
+        secondaryField_->setCursorPosition(0);
     }
-    secondaryName_->setForegroundRole(secondary_ && !secondaryLoading_ ? QPalette::WindowText
-                                                                       : QPalette::PlaceholderText);
-    openSecondary_->setText(secondary_ ? QStringLiteral("Replace…") : QStringLiteral("Open…"));
+    secondaryField_->setToolTip(secondary_ && !secondaryLoading_ ? secondary_->path : QString());
     openSecondary_->setToolTip(secondary_ ? QStringLiteral("Replace the second recording")
                                           : QStringLiteral("Open a second recording to compare against"));
     openSecondary_->setEnabled(playback_ && !secondaryLoading_);
@@ -944,12 +1402,16 @@ void AnalysisPage::applyState() {
     sectorDeltaAction_->setEnabled(!mismatch && sectorBoundariesAction_->isChecked());
     splitCursorsAction_->setEnabled(view == View::Split && fixed);
     inputsAction_->setEnabled(showMap);
+    brakingAction_->setEnabled(showMap);
+    layerGroup_->setEnabled(showMap);
+    const bool navigation = showChart && fixed && lapA.isValid();
+    for (QAction* action : {zoomInAction_, zoomOutAction_, resetZoomAction_}) action->setEnabled(navigation);
+    refreshMapZoomActions();
 
     // ── Sidebar ──
     const bool haveLaps = playback_ && !model_->data().laps.isEmpty();
     modeTabs_->setTabEnabled(kFixedTab, haveLaps);
     if (!haveLaps && modeTabs_->currentIndex() == kFixedTab) {
-        QSignalBlocker guard(modeTabs_);
         modeTabs_->setCurrentIndex(kPlaybackTab);
         showSlotPage(kPlaybackTab);
     }
@@ -1007,8 +1469,9 @@ void AnalysisPage::applyState() {
     map_->setLabels(primaryLabel, comparisonLabel);
     map_->setReadoutVisible(inputsAction_->isChecked());
     map_->setCurrentTime(currentTime_);
-    chart_->setVisible(showChart);
-    map_->setVisible(showMap);
+    zones_->setLaps(primaryLabel, primaryColor_, comparisonLabel, comparisonColor_);
+    graphPane_->setVisible(showChart);
+    mapPane_->setVisible(showMap);
     contentSplitter_->applyRatio();   // Split view opens at the saved percentage
 
     refreshDelta();
@@ -1027,6 +1490,114 @@ void AnalysisPage::showFollowedLap(const LapBlock* lap) {
     const int trackId = shownPrimary_.trackId >= 0 ? shownPrimary_.trackId : shownComparison_.trackId;
     map_->setLaps(shownPrimary_.lap, shownComparison_.lap, shownFixed_, trackId, compatible);
     deltaReadout_->setSectorsVisible(!circuitsMismatched() && compatible);
+    requestMapLayers();
+}
+
+// Asks libtnrp (tnrp/AnalysisMap.h) for the map layer and the braking points
+// of the laps on show, on the thread pool. A request is made only when what
+// it asks for changes; while it runs the last answer stays up, and an answer
+// to a request that has since been replaced is dropped.
+void AnalysisPage::requestMapLayers() {
+    const bool fixed = fixedMode();
+    AnalysisLapRef current;
+    AnalysisLapRef comparison;
+    if (fixed) {
+        current = lapASlot_->selection();
+        comparison = lapBSlot_->selection();
+    } else {
+        comparison = compareSlot_->selection();
+        if (shownPrimary_.lap) {
+            const AnalysisDriverRef followed = followedDriver();
+            current.driver = followed.valid ? followed : AnalysisDriverRef{true, false, -1};
+            current.lapNum = shownPrimary_.lap->lapNum;
+        }
+    }
+    const QString layer = layerMode();
+    map_->setLayerMode(layer, comparison.isValid());
+    const bool ready = playback_ && current.isValid() && primaryAccess_ && !circuitsMismatched();
+    const bool mapShown = effectiveView() != View::Graphs;
+    const bool active = ready && mapShown;
+    // Zones are found for the map's highlights and for the Braking Zones panel.
+    const bool zonesWanted = ready && ((mapShown && brakingAction_->isChecked()) || zonesDock_->toggleViewAction()->isChecked());
+
+    const auto describe = [this](const AnalysisLapRef& ref) {
+        if (!ref.isValid()) return QStringLiteral("-");
+        const AnalysisRecording* recording = recordingFor(ref.driver);
+        return QStringLiteral("%1:%2:%3:%4").arg(ref.driver.secondary ? 2 : 1)
+            .arg(recording ? recording->generation : 0).arg(ref.driver.driverIndex).arg(ref.lapNum);
+    };
+    const auto access = [this](const AnalysisLapRef& ref) {
+        return ref.driver.secondary ? secondaryReader_->recordingAccess() : primaryAccess_;
+    };
+    const auto issue = [&](const QString& mode, QString& key, bool braking) {
+        if (mode.isEmpty()) {
+            key.clear();
+            if (braking) {
+                brakingResult_.reset();
+                zones_->setResult(nullptr);
+                map_->setBrakingResult(nullptr);
+            } else {
+                map_->setLayerResult(nullptr);
+            }
+            return;
+        }
+        const QString next = mode + QLatin1Char('|') + describe(current) + QLatin1Char('|') + describe(comparison);
+        if (next == key) return;
+        key = next;
+        const tnrp::AnalysisMapLap currentLap{access(current), current.lapNum, current.driver.driverIndex};
+        const std::optional<tnrp::AnalysisMapLap> comparisonLap = comparison.isValid()
+            ? std::optional<tnrp::AnalysisMapLap>(tnrp::AnalysisMapLap{
+                  access(comparison), comparison.lapNum, comparison.driver.driverIndex})
+            : std::nullopt;
+        QPointer<AnalysisPage> self(this);
+        QThreadPool::globalInstance()->start([self, next, braking, mode = mode.toStdString(), currentLap,
+                                              comparisonLap] {
+            auto result = std::make_shared<const tnrp::AnalysisMapResult>(tnrp::buildAnalysisMap(
+                mode, currentLap, comparisonLap ? &*comparisonLap : nullptr));
+            if (!self) return;
+            QMetaObject::invokeMethod(self, [self, next, braking, result] {
+                if (!self || (braking ? self->brakingKey_ : self->layerKey_) != next) return;
+                if (braking) {
+                    self->brakingResult_ = result;
+                    self->zones_->setResult(result);
+                    self->map_->setBrakingResult(self->brakingAction_->isChecked() ? result : nullptr);
+                } else {
+                    self->map_->setLayerResult(result);
+                }
+            }, Qt::QueuedConnection);
+        });
+    };
+    // Racing Line draws the laps' recorded positions; libtnrp has nothing to add.
+    const bool layerFromLibrary = layer != QLatin1String("none") && layer != QLatin1String("racing");
+    issue(active && layerFromLibrary ? layer : QString(), layerKey_, false);
+    issue(zonesWanted ? QStringLiteral("braking") : QString(), brakingKey_, true);
+    // Braking Points only decides whether the map shows the zones.
+    map_->setBrakingResult(brakingAction_->isChecked() ? brakingResult_ : nullptr);
+}
+
+void AnalysisPage::refreshMapZoomActions() {
+    const bool mapShown = effectiveView() != View::Graphs;
+    mapZoomInAction_->setEnabled(mapShown && !map_->isAtMaxZoom());
+    mapZoomOutAction_->setEnabled(mapShown && map_->isZoomed());
+    mapFitAction_->setEnabled(mapShown && map_->isZoomed());
+    mapFitAction_->setIconText(QStringLiteral("%1 %").arg(qRound(map_->zoom() * 100)));
+}
+
+QString AnalysisPage::layerMode() const {
+    const QAction* checked = layerGroup_->checkedAction();
+    return checked ? checked->data().toString() : QStringLiteral("none");
+}
+
+void AnalysisPage::showBrakingZones() {
+    zonesDock_->show();
+    zonesDock_->raise();
+}
+
+void AnalysisPage::setPrimaryRecordingAccess(tnrp::RecordingAccess access) {
+    primaryAccess_ = std::move(access);
+    layerKey_.clear();
+    brakingKey_.clear();
+    requestMapLayers();
 }
 
 void AnalysisPage::refreshDelta() {
@@ -1265,12 +1836,13 @@ void AnalysisPage::setAeroMode(bool slm) {
     map_->setAeroMode(slm);
 }
 
+void AnalysisPage::refreshMapTheme() {
+    map_->refreshTheme();
+}
+
 void AnalysisPage::resetPlaybackSelections() {
-    {
-        QSignalBlocker guard(modeTabs_);
-        modeTabs_->setCurrentIndex(kPlaybackTab);
-        showSlotPage(kPlaybackTab);
-    }
+    modeTabs_->setCurrentIndex(kPlaybackTab);
+    showSlotPage(kPlaybackTab);
     for (AnalysisLapSlot* slot : {compareSlot_, lapASlot_, lapBSlot_}) slot->clearLap();
     refreshDriverChoices();
     refreshLapChoices();
@@ -1382,7 +1954,7 @@ void AnalysisPage::requestAnalysisLaps() {
     }
 }
 
-void AnalysisPage::inspectMap(double coordinate, bool distanceCoordinate) {
+void AnalysisPage::inspectMap(double coordinate, bool distanceCoordinate, bool showMap) {
     if (!playback_ || circuitsMismatched()) return;
     const SessionData* owner = &model_->data();
     const LapBlock* lap = nullptr;
@@ -1401,11 +1973,11 @@ void AnalysisPage::inspectMap(double coordinate, bool distanceCoordinate) {
         ? owner->timeAtDistance(lap, coordinate) - lap->startSessionTime
         : coordinate;
     if (!std::isfinite(elapsed)) return;
-    if (preferredView_ == View::Graphs) {
+    if (showMap && preferredView_ == View::Graphs) {
         preferredView_ = View::Split;
         saveSettings();
+        applyState();
     }
-    applyState();
     map_->focusElapsed(elapsed);
 }
 
@@ -1444,8 +2016,23 @@ void AnalysisPage::showControlsHelp() {
     QFormLayout* views = section(QStringLiteral("Tool Bar"));
     for (QAction* action : {graphsAction_, splitAction_, mapAction_, stackedAction_,
                             syncedTooltipAction_, sectorBoundariesAction_, sectorDeltaAction_,
-                            splitCursorsAction_, inputsAction_, sidebarAction_})
+                            splitCursorsAction_, brakingAction_, inputsAction_})
         row(views, action->icon(), action->text(), action->whatsThis());
+    row(views, {}, QStringLiteral("Layer"),
+        QStringLiteral("Paints the map: Track Dominance shows the faster lap per mini-sector; "
+                       "Racing Line draws both laps' paths; "
+                       "Driver Inputs, Speed, ERS Usage and ERS Harvest give each lap its own map."));
+    row(views, mapZoomInAction_->icon(), QStringLiteral("Map Zoom"),
+        QStringLiteral("Scroll over the map to zoom, drag to pan, double-click to fit the circuit."));
+
+    QFormLayout* panels = section(QStringLiteral("Panels"));
+    row(panels, {}, QStringLiteral("Panels"),
+        QStringLiteral("Laps, Metrics and Braking Zones can be floated, moved, tabbed together or "
+                       "closed. A closed panel leaves a tab on the window edge; the Panels menu "
+                       "(also on right-click of a panel title) reopens it or resets the layout."));
+    row(panels, {}, QStringLiteral("Braking Zones"),
+        QStringLiteral("Every braking zone with the time gap through it. Select one to see both "
+                       "laps head to head and to move the cursors there."));
 
     QFormLayout* laps = section(QStringLiteral("Laps"));
     row(laps, {}, QStringLiteral("Follow Playback"),

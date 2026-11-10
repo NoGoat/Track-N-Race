@@ -6,13 +6,17 @@
 #include <QElapsedTimer>
 #include <QColor>
 #include <QString>
+#include <memory>
 #include <vector>
 #include <unordered_map>
 
 #include <tnrp/rows.h>
 #include <tnrp/control_rows.h>
 
+namespace tnrp { struct AnalysisMapPaint; struct TrackMapData; }
+
 class QComboBox;
+class QLabel;
 class QToolButton;
 
 // Live track map: renders a circuit outline (sector-colored) with live car dots
@@ -24,12 +28,50 @@ class TrackMapWidget : public QWidget {
 public:
     enum class LabelMode { DotsAndLabels, DotsOnly, LabelsOnly };
     struct Marker { double x = 0; double z = 0; QString label; QColor color; };
+    // A stretch of the lap line between two fractions of the lap from the
+    // timing line (`to` below `from` crosses the line), drawn over the track.
+    // Hovering it shows `tooltip` (rich text) when set. With `caret`, a caret on
+    // the inside of the bend at the stretch's middle is drawn instead.
+    struct Mark {
+        double from = 0;
+        double to = 0;
+        QColor color;
+        double opacity = 1.0;
+        QString tooltip;
+        bool caret = false;
+        // On the Racing Line layer: the stretch along a lap's own path, as
+        // world x and z, since there is no lap line to follow.
+        QPolygonF world;
+    };
+    // One lap's recorded path, as world x and z.
+    struct RacingLine { QPolygonF world; QColor color; };
+    // How far the map is zoomed (1 is the whole circuit) and the map point at
+    // its centre.
+    struct View { double zoom = 1; double cx = 0; double cy = 0; };
+    static constexpr double kMaxViewZoom = 16.0;
 
     explicit TrackMapWidget(QWidget* parent = nullptr);
 
-    // Loads :/maps/track_<id>.json and rebuilds the prepared geometry + static layer.
-    // No-op if the same track is already loaded. Returns false if no map exists.
+    // Draws the track's map: the session's choice with Modded Maps on
+    // (TrackMapService), else the bundled :/maps/track_<id>.json. Follows the
+    // choice as it changes. Returns false if no map exists.
     bool setTrack(int trackId);
+    // Draws this map instead of the track's (Edit Map's preview); null drops it.
+    void setMapOverride(std::shared_ptr<const tnrp::TrackMapData> map);
+    // Colours the track by lap position in place of the plain/sector colours;
+    // an empty paint restores them.
+    void setPaint(const tnrp::AnalysisMapPaint& paint);
+    void setMarks(const QVector<Mark>& marks);
+    // While on, draws these paths on a map stripped to its sector boundaries.
+    void setRacingLines(bool on, const QVector<RacingLine>& lines);
+    // Scroll zooms about the pointer, dragging pans and double-clicking fits
+    // the circuit. Changes made here are announced by viewChanged; setView is
+    // for following another map and announces nothing.
+    void setViewEnabled(bool on);
+    const View& view() const { return view_; }
+    void setView(const View& view);
+    void zoomBy(double factor);
+    void fitView();
     void setPositions(const PositionsRow& positions);
     void setParticipants(const tnrp::ParticipantsRow& participants);
     void setDark(bool dark);
@@ -63,10 +105,17 @@ signals:
     // The overlay fullscreen button was clicked; the host (SessionPage) maximises
     // the map to fill the session view, or restores it.
     void fullscreenToggled();
+    void viewChanged(const TrackMapWidget::View& view);
 
 protected:
     void paintEvent(QPaintEvent*) override;
     void resizeEvent(QResizeEvent*) override;
+    void wheelEvent(QWheelEvent*) override;
+    void mousePressEvent(QMouseEvent*) override;
+    void mouseReleaseEvent(QMouseEvent*) override;
+    void mouseDoubleClickEvent(QMouseEvent*) override;
+    void mouseMoveEvent(QMouseEvent*) override;
+    void leaveEvent(QEvent*) override;
     void showEvent(QShowEvent*) override;
     void hideEvent(QHideEvent*) override;
 
@@ -94,6 +143,10 @@ private:
         bool    hasSF = false;                   // start/finish (start of sector 1)
         QPointF sfPt;
         int     sfIdx = 0;                       // nearest index on sector-1 polyline
+        // The rotated centerline from the start/finish line in driving order,
+        // and each vertex's fraction of the lap by arc length.
+        std::vector<QPointF> lapLine;
+        std::vector<double> lapFraction;
         double minX, minY, w, h;                 // tight bounds of rotated geometry
         double rotCos, rotSin, rotCx, rotCy;
     };
@@ -104,6 +157,18 @@ private:
     struct Car { int idx; double x, z; };
     struct Snapshot { std::vector<Car> cars; };
 
+    bool loadMap(const tnrp::TrackMapData& map);
+    void reloadMap();
+    void refreshMapPicker();
+    QPointF lapPointAt(double fraction) const;
+    void drawPaintedTrack(QPainter& p, const Layout& l, double width) const;
+    void drawRacingLines(QPainter& p, const Layout& l) const;
+    void clampView(View& view) const;
+    bool moveView(const View& view);   // true when the view changed
+    void refreshViewCursor();
+    std::vector<QPolygonF> drawMarks(QPainter& p, const Layout& l, double tzf) const;
+    QPointF drawCaret(QPainter& p, const Layout& l, double tzf, const Mark& mark, double to) const;
+    void showHoveredMark(int index, const QPointF& at);
     void rebuildPrepared();
     void rebuildStaticLayer();
     void drawTrack(QPainter& p, const Layout& l, double effZoom) const;   // vector track render
@@ -117,6 +182,31 @@ private:
     // Track data
     bool        loaded_       = false;
     int         trackId_      = -1;
+    bool        trackSet_     = false;
+    std::shared_ptr<const tnrp::TrackMapData> map_;        // the map drawn
+    std::shared_ptr<const tnrp::TrackMapData> mapOverride_;
+
+    // Painted layer: a colour per stretch of the lap, and highlighted stretches.
+    std::vector<QColor> paintColors_;
+    double      paintBinM_ = 0;
+    double      paintTrackLengthM_ = 0;
+    QColor      paintColorAt(double fraction) const;
+    QVector<Mark> marks_;
+    bool        racingLinesOn_ = false;
+    QVector<RacingLine> racingLines_;
+    bool        viewEnabled_ = false;
+    View        view_;
+    bool        dragging_ = false;
+    QPointF     dragStart_;
+    View        dragView_;
+    std::vector<QPolygonF> markPaths_;   // device points along each mark, for hover
+    int         hoveredMark_ = -1;
+    QLabel*     markCard_ = nullptr;
+
+    // Modded maps: the map picker, Edit Map, and the choice's status.
+    QComboBox*   mapCombo_ = nullptr;
+    QToolButton* editButton_ = nullptr;
+    QLabel*      mapStatus_ = nullptr;
     Transform   transform_{};
     double      viewBoxW_     = 1000.0;
     double      viewBoxH_     = 1000.0;

@@ -3,7 +3,10 @@
 #include <QColorDialog>
 #include <QEvent>
 #include <QFontDatabase>
+#include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
+#include <QResizeEvent>
 #include <QLabel>
 #include <QPainter>
 #include <QPixmap>
@@ -25,22 +28,6 @@ QString formatDelta(double seconds) {
     if (!std::isfinite(seconds)) return QString::fromUtf8("—.---");
     const double value = std::abs(seconds) < 0.0005 ? 0.0 : seconds;
     return (value > 0 ? QStringLiteral("+") : QString()) + QString::number(value, 'f', 3);
-}
-
-QIcon dotIcon(const QColor& fill, const QWidget* context, int size) {
-    const qreal ratio = context ? context->devicePixelRatioF() : 1.0;
-    QPixmap pixmap(QSize(size, size) * ratio);
-    pixmap.setDevicePixelRatio(ratio);
-    pixmap.fill(Qt::transparent);
-    if (fill.isValid()) {
-        QPainter painter(&pixmap);
-        painter.setRenderHint(QPainter::Antialiasing);
-        const QColor rim = context ? context->palette().color(QPalette::Mid) : fill.darker(160);
-        painter.setPen(QPen(rim, 1.0));
-        painter.setBrush(fill);
-        painter.drawEllipse(QRectF(0.5, 0.5, size - 1.0, size - 1.0));
-    }
-    return QIcon(pixmap);
 }
 
 } // namespace analysis
@@ -94,9 +81,9 @@ void AnalysisColorButton::paintEvent(QPaintEvent*) {
 // ── Delta readout ───────────────────────────────────────────────────────────
 
 AnalysisDeltaReadout::AnalysisDeltaReadout(QWidget* parent) : QWidget(parent) {
-    auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(6, 0, 6, 0);
-    layout->setSpacing(14);
+    grid_ = new QGridLayout(this);
+    grid_->setContentsMargins(6, 6, 6, 6);
+    grid_->setSpacing(6);
 
     QFont valueFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     valueFont.setPointSizeF(font().pointSizeF());
@@ -104,9 +91,10 @@ AnalysisDeltaReadout::AnalysisDeltaReadout(QWidget* parent) : QWidget(parent) {
 
     const char* names[] = {"S1", "S2", "S3", "Lap"};
     for (int index = 0; index < 4; ++index) {
-        auto* cell = new QWidget(this);
+        auto* cell = new QFrame(this);
+        cell->setFrameShape(QFrame::StyledPanel);
         auto* cellLayout = new QHBoxLayout(cell);
-        cellLayout->setContentsMargins(0, 0, 0, 0);
+        cellLayout->setContentsMargins(8, 3, 8, 3);
         cellLayout->setSpacing(5);
         auto* caption = new QLabel(QString::fromLatin1(names[index]), cell);
         QFont captionFont = caption->font();
@@ -119,15 +107,50 @@ AnalysisDeltaReadout::AnalysisDeltaReadout(QWidget* parent) : QWidget(parent) {
         value->setMinimumWidth(valueWidth);
         value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         cellLayout->addWidget(caption);
+        cellLayout->addStretch(1);
         cellLayout->addWidget(value);
-        layout->addWidget(cell);
+        cells_.push_back(cell);
         values_.push_back(value);
         if (index < 3) sectorCells_.push_back(cell);
     }
     seconds_.fill(qQNaN());
     setToolTip(QStringLiteral("Time delta of the primary lap against the comparison lap. "
                               "Positive is slower."));
+    reflow();
     repaintValues();
+}
+
+void AnalysisDeltaReadout::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    reflow();
+}
+
+// One row of four tiles, or two rows of two when a row would not fit.
+void AnalysisDeltaReadout::reflow() {
+    int widest = 0;
+    int shown = 0;
+    for (QWidget* cell : cells_)
+        if (!cell->isHidden()) {
+            widest = qMax(widest, cell->sizeHint().width());
+            ++shown;
+        }
+    const QMargins m = grid_->contentsMargins();
+    const int available = width() - m.left() - m.right();
+    const int columns = shown <= 1 || available >= shown * widest + (shown - 1) * grid_->spacing()
+        ? qMax(1, shown) : 2;
+    if (columns == columns_ && shown == shownCells_) return;
+    columns_ = columns;
+    shownCells_ = shown;
+    for (QWidget* cell : cells_) grid_->removeWidget(cell);
+    for (int column = 0; column < 4; ++column) grid_->setColumnStretch(column, 0);
+    int index = 0;
+    for (QWidget* cell : cells_) {
+        if (cell->isHidden()) continue;
+        grid_->addWidget(cell, index / columns, index % columns);
+        grid_->setColumnStretch(index % columns, 1);
+        ++index;
+    }
+    updateGeometry();
 }
 
 void AnalysisDeltaReadout::setColors(const QColor& slower, const QColor& faster) {
@@ -137,7 +160,10 @@ void AnalysisDeltaReadout::setColors(const QColor& slower, const QColor& faster)
 }
 
 void AnalysisDeltaReadout::setSectorsVisible(bool visible) {
+    if (!sectorCells_.isEmpty() && sectorCells_.first()->isHidden() == !visible) return;
     for (QWidget* cell : sectorCells_) cell->setVisible(visible);
+    columns_ = 0;
+    reflow();
 }
 
 void AnalysisDeltaReadout::setValues(const std::array<double, 4>& seconds) {

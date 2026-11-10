@@ -104,6 +104,9 @@ static QIcon loadAppIcon(const QString& resource) {
     return icon;
 }
 
+static const QString kFirstTimeSetupSwitch = QStringLiteral("--first-time-setup");
+static const QString kFirstLaunchSwitch = QStringLiteral("--first-launch");   // same as --first-time-setup
+
 static QString recordingPathFromArguments(const QStringList& arguments) {
     for (const QString& argument : arguments) {
         const QFileInfo file(argument);
@@ -212,8 +215,30 @@ int main(int argc, char* argv[]) {
     app.setWindowIcon(loadAppIcon(":/icon.ico"));
 
     const QString startupRecording = recordingPathFromArguments(app.arguments().mid(1));
+    // First-time setup runs once, on a fresh install. Launching with
+    // --first-launch / --first-time-setup (or TNR_FIRST_TIME_SETUP=1) shows it
+    // again on any install; a second launch with the switch reopens it in the
+    // running window.
+    bool forceFirstTimeSetup = qEnvironmentVariable("TNR_FIRST_TIME_SETUP") == QLatin1String("1");
+    for (const QString& argument : app.arguments().mid(1))
+        if (argument.compare(kFirstTimeSetupSwitch, Qt::CaseInsensitive) == 0 ||
+            argument.compare(kFirstLaunchSwitch, Qt::CaseInsensitive) == 0)
+            forceFirstTimeSetup = true;
     SingleInstanceCoordinator singleInstance;
-    if (!singleInstance.acquireOrNotify(startupRecording)) return 0;
+    if (!singleInstance.acquireOrNotify(
+            startupRecording.isEmpty() && forceFirstTimeSetup ? kFirstTimeSetupSwitch : startupRecording))
+        return 0;
+
+    // Installs that already had settings before this version count as set up,
+    // so only fresh installs see setup on their own. Checked before anything
+    // else this launch writes settings.
+    bool showFirstTimeSetup = forceFirstTimeSetup;
+    {
+        QSettings setupSettings("TrackNRace", "NativeRecorder");
+        if (!setupSettings.contains("setup/completed"))
+            setupSettings.setValue("setup/completed", !setupSettings.allKeys().isEmpty());
+        if (!setupSettings.value("setup/completed").toBool()) showFirstTimeSetup = true;
+    }
 
     // Start the per-launch log as soon as application identity and the
     // single-instance decision are known, before graphics or telemetry startup.
@@ -288,11 +313,13 @@ int main(int argc, char* argv[]) {
         else w.show();
         w.raise();
         w.activateWindow();
-        if (!path.isEmpty()) w.offerRecordingFile(path);
+        if (path == kFirstTimeSetupSwitch) w.showFirstTimeSetup();
+        else if (!path.isEmpty()) w.offerRecordingFile(path);
     };
     singleInstance.activationHandler = activate;
     app.fileOpenHandler = activate;
     w.show();
+    if (showFirstTimeSetup) w.showFirstTimeSetup();
     if (!startupRecording.isEmpty())
         QTimer::singleShot(0, &w, [&w, startupRecording] { w.offerRecordingFile(startupRecording); });
     for (const QString& path : std::as_const(app.pendingFileOpens))

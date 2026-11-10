@@ -4,16 +4,16 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
-#include <list>
 #include <map>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <unordered_map>
+#include <optional>
 #include <vector>
 
 #include "tnrp/control_rows.h"
+#include "tnrp/AnalysisMap.h"
 #include "tnrp/LapDelta.h"
 #include "tnrp/LapMeasures.h"
 #include "tnrp/Strategy.h"
@@ -21,21 +21,35 @@
 
 namespace tnrp {
 
-namespace detail { class TnrdIndexedArchive; class TnrdV6Archive; struct V4TimedRow; class V6RowSource; }
+namespace detail {
+class TnrdV6Archive;
+class TnrdReaderBackend;
 
-// Reads TNRD V1/gzip, V2/V3 monolithic Zstandard, and V4/V5 indexed chunked
-// Zstandard files. load() detects the container signature; the legacy JSON
-// header distinguishes V2 from V3.
-// Legacy formats decompress to a temp file and build a time/type index. V4
-// streams its strategy row families once at load to retain one processor
-// checkpoint per completed lap, then releases decoded payloads and worker
-// scratch. V5 keeps its indexed payloads lazy and builds strategy checkpoints
-// only when strategy state is first requested.
+// What a reader keeps across recordings: the host's playback settings and the
+// last error. Each loaded recording's backend reads and updates it in place.
+struct TnrdReaderContext {
+    bool binaryPlayback = false;
+    bool sparseV6Playback = false;
+    bool lapStatusSummaries = false;
+    uint32_t playbackRowMask = 0xFFFFFFFFu;
+    uint32_t playbackOutputRowMask = 0xFFFFFFFFu;
+    int strategyMinimumStops = 0;
+    TeamColorOverrides teamColorOverrides;
+    std::vector<uint8_t> playbackV6Types;
+    std::vector<uint8_t> playbackV6HistoryTypes;
+    std::string lastError;
+};
+} // namespace detail
+
+// Reads every TNRD generation. load() detects the container signature (the
+// legacy JSON header distinguishes V2 from V3) and hands the recording to that
+// generation's reader backend, which lives in its own module under src/tnrd/
+// (TNRD_V1_Reader.cpp ... TNRD_V6_Reader.cpp). This class keeps only what is
+// independent of the format: host settings, the last error and analysis caches.
 //
 // The hot streaming path (pullUntil / drainRest / stateSnapshot / readRange)
 // returns raw JSONL strings — no re-parse needed. The load-time payload
-// (lapBlocksMessage / getLapDataMessage) returns fully-serialised JSON strings,
-// built once at load time with glaze (raw rows embedded verbatim via raw_json).
+// (lapBlocksMessage / getLapDataMessage) returns fully-serialised JSON strings.
 //
 // Not thread-safe; the engine serializes access from its playback thread.
 class TnrdReader {
@@ -70,18 +84,18 @@ public:
     // chunk stream because the writer was interrupted. The final lap of each
     // driver may be absent; callers should say so rather than stay silent.
     bool wasRecoveredV6() const;
-    const std::string& lastError() const { return lastError_; }
+    const std::string& lastError() const { return context_.lastError; }
 
     // Enable packed binary delivery for hot playback rows and seek flushes.
     // Indexed playback decodes and packs requested chunks on demand. V5 keeps
     // its existing lazy-load behavior; V4 also avoids a full-session hot-row
     // mirror and retains only its load-time strategy checkpoints.
-    void setBinaryPlayback(bool on) { binaryPlayback_ = on; }
-    void setSparseV6Playback(bool on) { sparseV6Playback_ = on; }
+    void setBinaryPlayback(bool on) { context_.binaryPlayback = on; }
+    void setSparseV6Playback(bool on) { context_.sparseV6Playback = on; }
 
     // Include the small per-lap status summaries used for tyre labels without
     // building the binary playback stores.
-    void setLapStatusSummaries(bool on) { lapStatusSummaries_ = on; }
+    void setLapStatusSummaries(bool on) { context_.lapStatusSummaries = on; }
 
     // Delete stale decompression temp files ("tracknrace_*.tmp") left in the OS
     // temp dir by earlier runs (or the Electron app) that exited abnormally, so
@@ -93,8 +107,8 @@ public:
     // never be allowed to take down either application.
     static void sweepStaleTempFiles() noexcept;
 
-    float startTime() const { return startTime_; }
-    float totalTime() const { return totalTime_; }
+    float startTime() const;
+    float totalTime() const;
 
     // ── Playback streaming ───────────────────────────────────────────────────
     // Changes the logical row families loaded/emitted by sequential playback.
@@ -106,12 +120,10 @@ public:
                             float cursorTime);
     // What setPlaybackV6Types last installed; empty (also after close()) means
     // every field.
-    const std::vector<uint8_t>& playbackV6Types() const { return playbackV6Types_; }
-    const std::vector<uint8_t>& playbackV6HistoryTypes() const { return playbackV6HistoryTypes_; }
+    const std::vector<uint8_t>& playbackV6Types() const { return context_.playbackV6Types; }
+    const std::vector<uint8_t>& playbackV6HistoryTypes() const { return context_.playbackV6HistoryTypes; }
     // The V6 driver whose data playback currently follows.
-    int effectivePlaybackDriver() const {
-        return playbackDriverIndex_ >= 0 ? playbackDriverIndex_ : recordedDriverIndex_;
-    }
+    int effectivePlaybackDriver() const;
     // V6 only: project driver-scoped rows for exactly the selected driver.
     // The recorded driver keeps the original private/player rows, but the V6
     // all-car payload attached to those rows is stripped before emission.
@@ -192,6 +204,35 @@ public:
                         bool includeMandatoryState = true,
                         const std::function<bool()>& cancelled = {});
 
+    // ── Chart history on a second handle ─────────────────────────────────────
+    // What one history read asks for; historyRequest() fills it.
+    struct HistoryRequest {
+        uint8_t driver = 0;
+        std::vector<uint8_t> types;   // empty = every field
+        uint32_t mask = 0;
+        float from = 0.0f;
+        float to = 0.0f;
+        bool seed = false;            // carry each field's value at `from`
+    };
+    // An independent read-only handle on the loaded recording, so seek and
+    // All Laps history can be read while playback keeps using this reader.
+    // Takes one read at a time.
+    class HistoryReader {
+    public:
+        virtual ~HistoryReader() = default;
+        // The history as binary column blocks (the layout Electron's
+        // lib/columnStore.ts decodes).
+        virtual bool read(const HistoryRequest& request, std::vector<uint8_t>& out,
+                          std::string* errorOut, const std::function<bool()>& cancelled) = 0;
+    };
+    // Null when this recording has no column history (only V6 recordings
+    // opened from a file do), leaving errorOut alone, or when the handle
+    // could not open, with errorOut saying why.
+    std::unique_ptr<HistoryReader> openHistoryReader(std::string* errorOut = nullptr) const;
+    // The read for [from, to] of the playback driver's history; false when
+    // this recording or the playback settings cannot serve it column-wise.
+    bool historyRequest(float from, float to, uint32_t mask, HistoryRequest& out) const;
+
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
     // "driver_restriction" for the selected driver at cursorTime, or "" when
@@ -207,6 +248,55 @@ public:
     std::string phoneChartLapJson(int lapNum, const std::vector<std::string>& channels) const;
     bool getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
                                 int driverIndex = -1) const;
+    // ── Analysis map inputs (tnrp/AnalysisMap.h) ──
+    // The laps getAnalysisLapProgress can answer for this driver.
+    std::vector<int> analysisLapNumbers(int driverIndex = -1) const;
+    // One lap's Car Status MGU-K and ERS store samples for this driver.
+    bool getAnalysisErsSamples(int lapNum, std::vector<ErsSample>& out,
+                               int driverIndex = -1) const;
+    // One lap's MGU-K + MGU-H harvest counter samples for this driver.
+    bool getAnalysisHarvestSamples(int lapNum, std::vector<HarvestSample>& out,
+                                   int driverIndex = -1) const;
+    // One lap's throttle and brake samples for this driver.
+    bool getAnalysisInputSamples(int lapNum, std::vector<InputSample>& out,
+                                 int driverIndex = -1) const;
+    // The race's active-aero track status over time, from its Session rows.
+    // Empty when the recording has none (formats before 2026, V1-V3 files).
+    std::vector<TrackStatusChange> aeroTrackStatusTimeline() const;
+    // A car's whole-recording ERS peaks, kept once scanned. loadSerial()
+    // changes with every load/close, so a scan that finishes after another
+    // recording was opened is not stored against it.
+    uint64_t loadSerial() const { return loadSerial_; }
+    bool cachedErsPeaks(int driverIndex, ErsPeaks& out) const;
+    void cacheErsPeaks(int driverIndex, uint64_t serial, const ErsPeaks& peaks) const;
+    // The car a driver index names: -1 is the car playback follows.
+    int analysisCarIndex(int driverIndex) const {
+        return driverIndex >= 0 ? driverIndex : effectivePlaybackDriver();
+    }
+    // V6 recordings opened from a file: finds every car's ERS peaks on
+    // background threads, each reading its own copy of the archive, so the
+    // first ERS Usage map does not wait for a scan. Hosts call it after
+    // load() for recordings they will analyse; close() cancels it.
+    void startErsPeakSweep();
+    std::shared_ptr<ErsPeakSweep> ersPeakSweep() const { return ersPeakSweep_; }
+    // V6 recordings opened from a file: finds the track's corners from every
+    // car's laps on background threads, each reading its own copy of the
+    // archive, for the Speed and braking maps to place corners by. Hosts call
+    // it after load() for recordings they will analyse; close() cancels it.
+    void startTrackCornerSweep();
+    std::shared_ptr<TrackCornerSweep> trackCornerSweep() const { return trackCornerSweep_; }
+    // One lap's world positions for this driver, in time order.
+    bool getAnalysisPositionSamples(int lapNum, std::vector<PlayerPositionPoint>& out,
+                                    int driverIndex = -1) const;
+    // When this driver was penalised or warned for track limits (corner
+    // cutting or running wide), from the recording's penalty events, in the
+    // recording's order.
+    std::vector<float> trackLimitTimes(int driverIndex = -1) const;
+    // Track corners found without a sweep, from the playback car's own laps,
+    // kept once found (an empty list when there were none). `serial` is
+    // loadSerial() when the scan began.
+    bool cachedTrackCorners(TrackCorners& out) const;
+    void cacheTrackCorners(uint64_t serial, const TrackCorners& corners) const;
     // One car's completed laps ending at or before `throughTime`. V6 only;
     // other formats return no laps.
     DriverLapHistoryRow driverLapHistory(int driver, float throughTime) const;
@@ -223,178 +313,29 @@ public:
     // the recording is not V6.
     float v6NextLapEndAfter(float t) const;
 
-    // ── XLSX export (raw data dump, implemented in XlsxExport.cpp) ──────────
-    // Walks the whole index in file order and writes one XLSX sheet per row
-    // type encountered, plus an "Info" sheet from `header`. Requires isLoaded().
-    // onProgress (if set) is called periodically from this same thread with
-    // (rowsDone, totalUnits, stage) as the export proceeds — see XlsxExport.h.
-    bool exportXlsx(const HeaderRow& header, const std::string& outPath,
-                    std::string* errorOut = nullptr,
-                    const std::function<void(size_t, size_t, const std::string&)>& onProgress = nullptr);
+    // ── Parquet export (implemented in ParquetExport.cpp) ───────────────────
+    // Writes every stored row as Parquet tables, one <Table>.parquet each, into
+    // `directory` (an existing folder, UTF-8) through this generation's
+    // exporter; `header` is recorded in each file's metadata. Requires
+    // isLoaded(). onProgress gets (fraction 0..1, stage) on this thread;
+    // `cancelled` is polled between rows. tnrp/ParquetExport.h wraps this
+    // with a staged, never-overwriting output folder.
+    bool exportParquet(const HeaderRow& header, const std::string& directory,
+                       std::string* errorOut = nullptr,
+                       const std::function<void(double, const std::string&)>& onProgress = nullptr,
+                       const std::function<bool()>& cancelled = nullptr);
 
 private:
-    using FileOffset = std::int64_t;
-    struct IndexEntry { FileOffset offset; float sessionTime; uint8_t type; };
-    // A stored raw JSONL row plus its session_time (for ordering). The json is
-    // emitted verbatim into the playback payload via glz::raw_json.
-    struct TimedRaw { float t; std::string json; uint64_t sequence{}; };
-    // A V6 row arrives unrendered: `source` is set and `json` stays empty until
-    // pullUntil() emits it (see loadV4PlaybackFrontier()).
-    struct V4PlaybackRow {
-        float t;
-        uint64_t sequence;
-        std::string json;
-        std::shared_ptr<const detail::V6RowSource> source{};
-        uint32_t sourceRow{};
-    };
-    struct V4PlaybackLane {
-        std::vector<size_t> chunks;
-        size_t nextChunk{};
-        bool nextPrefetched{};
-        std::vector<V4PlaybackRow> rows;
-        size_t rowPos{};
-        float maxDecodedTime{};
-        float safeThrough{};
-    };
-    struct LapBlock {
-        int   lapNum;
-        float startSessionTime;
-        float endSessionTime;
-        std::vector<TimedRaw> telemetry;
-        std::vector<TimedRaw> statusHistory;
-        std::vector<TimedRaw> motionHistory;
-        std::vector<TimedRaw> motionExHistory;
-        std::vector<TimedRaw> damageHistory;
-        std::vector<LapProgressPoint> lapProgress; // populated only for V3
-        std::vector<PlayerPositionPoint> playerPositions;
-        // Slim chart points for lapBlocksMessage().
-        std::vector<SlimTelemetryPoint> slimTelemetry;
-        std::vector<SlimStatusPoint>    slimStatus;
-        float sector1EndDistanceM{};
-        float sector2EndDistanceM{};
-    };
-    struct ScanLap { int lapNum; float startSessionTime; float endSessionTime; int lapTimeMs; };
-
-    std::vector<IndexEntry> index_;
-    std::FILE*  tempFile_    = nullptr;
-    std::string tempPath_;
-    std::unique_ptr<detail::TnrdIndexedArchive> indexedArchive_;
-    struct PackedSeekCacheEntry {
-        std::vector<uint8_t> bytes;
-        std::list<uint64_t>::iterator lru;
-    };
-    std::list<uint64_t> packedSeekLru_;
-    std::unordered_map<uint64_t, PackedSeekCacheEntry> packedSeekCache_;
-    size_t packedSeekCacheBytes_ = 0;
-    static constexpr size_t PACKED_SEEK_CACHE_LIMIT = 32ull * 1024ull * 1024ull;
-    std::array<V4PlaybackLane, 25> v4PlaybackLanes_;
-    int         v4PlaybackLap_ = 0;
-    float       v4PlaybackCursor_ = 0.0f;
-    bool        v4PlaybackPrepared_ = false;
-    bool        v4PlaybackPrefetchOutstanding_ = false;
-    TimedRaw    v4PlaybackDamageState_;
-    bool        v4PlaybackDamageStateReady_ = false;
-    uint32_t    playbackRowMask_ = 0xFFFFFFFFu;
-    uint32_t    playbackOutputRowMask_ = 0xFFFFFFFFu;
-    int         playbackDriverIndex_ = -1;
-    int         recordedDriverIndex_ = -1;
-    bool        playbackDriverUsesRecordedRows_ = false;
-    std::vector<uint8_t> playbackV6Types_;
-    std::vector<uint8_t> playbackV6HistoryTypes_;
-    std::vector<size_t> v6SharedOrder_;
-    size_t      v6SharedPos_ = 0;
-    std::array<std::string, 16> v6ProjectionState_{};
-    // First recorded tyre sets per car, read on first use: the session wear
-    // baseline for rows recorded before the parser added avg_wear_per_lap.
-    mutable std::array<std::optional<std::vector<TyreSet>>, 24> v6FirstTyreSets_{};
-    const std::vector<TyreSet>& firstV6TyreSets(int car) const;
-    // Each time the fastest lap improved: when the lap ended, whose it was and
-    // how long it took. Built from the lap summaries on first use.
-    struct V6FastestLapChange { float time; int car; int lapMs; };
-    mutable std::optional<std::vector<V6FastestLapChange>> v6FastestLapChanges_;
-    mutable std::optional<std::vector<float>> v6LapEnds_;
-    // Each car's measured laps, read from the samples around its lap lines on
-    // first use: lap number -> totals, with the lap's logical end time.
-    struct V6MeasuredLap { float logicalEnd; LapTotals totals; };
-    mutable std::array<std::optional<std::map<int, V6MeasuredLap>>, 24> v6LapMeasures_{};
-    bool v6FocusStatusRows(float t, std::vector<detail::V4TimedRow>& out);
-    FileOffset  tempFileSize_ = 0;
-    float       startTime_   = 0.0f;
-    float       totalTime_   = 0.0f;
-    size_t      playPos_     = 0;
-    float       damageCadenceCursor_ = 0.0f;
-    bool        binaryPlayback_ = false;
-    bool        sparseV6Playback_ = false;
-    bool        lapStatusSummaries_ = false;
-    TnrdFormat  loadedFormat_ = TnrdFormat::Unknown;
-    std::string lastError_;
-
-    // Binary-playback stores (built by buildIndex when binaryPlayback_):
-    // packed hot records + per-record times/byte-offsets (hotStart_ has one
-    // sentinel end entry), a cumulative hot-record count per index position
-    // (hotCum_[i] = hot records among index_[0..i), length index_.size()+1) so
-    // an index range maps to a contiguous store slice, and the sparse cold
-    // rows kept whole for seek flushes.
-    std::shared_ptr<std::vector<uint8_t>> hotBin_ = std::make_shared<std::vector<uint8_t>>();
-    std::vector<float>    hotTimes_;
-    std::vector<size_t>   hotStart_;
-    std::vector<uint32_t> hotCum_;
-    std::vector<TimedRaw> coldStatus_;
-    std::vector<TimedRaw> coldDamage_;
-    std::vector<TimedRaw> coldLap_;
-    // Legacy V1–V3 files are already scanned in full to build their index. Keep
-    // just the cold strategy inputs so a seek never rereads/parses hot JSONL.
-    std::vector<TimedRaw> legacyStrategyRows_;
-    std::vector<char>     scratch_;   // reused block-read buffer (pull/drain)
-
-    std::map<int, LapBlock>  lapBlocks_;
-    std::vector<ScanLap>     scannedLaps_;
-    std::vector<std::string> scannedEvents_;   // raw race_event JSONL lines
-    std::vector<std::pair<float, StrategyProcessor>> strategyCheckpoints_;
-    uint16_t                 strategyProtocol_ = 2025;
-    int                      strategyMinimumStops_ = 0;
-    TeamColorOverrides       teamColorOverrides_;
-    int                      fastestLapNum_ = 0;
-    int                      fastestLapMs_  = 0;
-    double                   initialFuelKg_ = -1.0;
-    int                      trackLengthM_ = 0;
-
-    size_t upperBoundTime(float t) const;
-    size_t lowerBoundTime(float t) const;
-
     bool loadWithFormat(const std::string& path, HeaderRow& outHeader, TnrdFormat format);
-    bool buildSectorDistanceMetadata();
-    bool rebuildV6LapCatalog();
-    bool buildIndex(const std::string& filePath, const std::string* memoryFile = nullptr);
-    std::string readLine(FileOffset offset);   // reads raw JSONL line (no parse)
-    bool forEachIndexedRange(
-        float fromTime, float toTime, uint32_t rowTypeMask,
-        const std::function<bool(const detail::V4TimedRow&)>& callback,
-        const std::function<bool()>& cancelled = {});
 
-    // Linear forward walk from playPos_ (same early-stop semantics as the old
-    // per-row pullUntil on out-of-order rows): first index >= playPos_ whose
-    // sessionTime exceeds t.
-    size_t pullEnd(float t) const;
-    // One contiguous fread of the lines behind index_[fromIdx..toIdx) into
-    // scratch_; returns bytes read (0 on failure/empty range).
-    size_t readBlock(size_t fromIdx, size_t toIdx);
-    void prepareV4PlaybackLap();
-    bool loadV4PlaybackFrontier(float throughTime);
-    void prefetchV4PlaybackChunk();
-    bool forEachStrategyRow(
-        float fromTime, float toTime, bool includeFrom,
-        const std::function<void(float, std::string_view)>& callback,
-        const std::function<bool()>& cancelled = {});
-    bool encodeV4HotRow(uint8_t type, std::string_view json,
-                        std::vector<uint8_t>& out);
-    bool encodeV4HotRowCached(const detail::V4TimedRow& row,
-                              std::vector<uint8_t>& out);
-    uint32_t expandedPlaybackMask(uint32_t outputMask) const;
-    void projectV6Row(uint8_t sourceType, float sessionTime, std::string_view json,
-                      std::vector<std::pair<uint8_t, std::string>>& out,
-                      int selectedDriverOverride = -1,
-                      uint32_t outputMaskOverride = 0) const;
+    detail::TnrdReaderContext context_;
+    std::unique_ptr<detail::TnrdReaderBackend> backend_;
+    TnrdFormat               loadedFormat_ = TnrdFormat::Unknown;
+    uint64_t                 loadSerial_ = 0;
+    std::shared_ptr<ErsPeakSweep> ersPeakSweep_;
+    std::shared_ptr<TrackCornerSweep> trackCornerSweep_;
+    mutable std::optional<TrackCorners> trackCorners_;
+    mutable std::map<int, ErsPeaks> ersPeaks_;
 };
 
 } // namespace tnrp

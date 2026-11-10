@@ -8,10 +8,12 @@
 #include <string>
 #include <vector>
 
+#include "tnrp/AnalysisMapPaint.h"
 #include "tnrp/Config.h"
 #include "tnrp/BinaryRows.h"
 #include "tnrp/PairCrypto.h"
 #include "tnrp/Engine.h"
+#include "tnrp/ParquetExport.h"
 #include "tnrp/PairServer.h"
 #include "tnrp/Sink.h"
 #include "tnrp/TnrdReader.h"
@@ -515,4 +517,186 @@ Java_com_nogoat_tracknrace_PairChannel_nativeOpen(
     if (kindOut && env->GetArrayLength(kindOut) > 0)
         env->SetIntArrayRegion(kindOut, 0, 1, &kindValue);
     return javaBytes(env, plain);
+}
+
+// ── Track maps (tnrp/TrackMaps.h) ────────────────────────────────────────
+// The current session's map library, under the same names as the desktop
+// addon. Results of changes are {"ok","id","error"} JSON.
+
+// Written with glaze reflection, which MSVC cannot apply to types in an
+// anonymous namespace.
+struct TrackMapResult {
+    bool ok{};
+    std::string id;
+    std::string error;
+};
+
+namespace {
+
+jstring trackMapResult(JNIEnv* env, const TrackMapResult& result) {
+    return javaString(env, tnrp::writeJson(result));
+}
+
+} // namespace
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsAddBuiltins(
+    JNIEnv* env, jobject, jobjectArray maps) {
+    auto current = session();
+    if (!current || !maps) return 0;
+    jint added = 0;
+    const jsize count = env->GetArrayLength(maps);
+    for (jsize i = 0; i < count; ++i) {
+        auto value = static_cast<jstring>(env->GetObjectArrayElement(maps, i));
+        if (current->engine->trackMaps().addBuiltin(utf8(env, value))) ++added;
+        env->DeleteLocalRef(value);
+    }
+    if (added) current->engine->refreshTrackMap();
+    return added;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsSetDirectory(
+    JNIEnv* env, jobject, jstring directory) {
+    if (auto current = session()) {
+        current->engine->trackMaps().setUserDirectory(utf8(env, directory));
+        current->engine->refreshTrackMap();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsSetOptions(
+    JNIEnv*, jobject, jboolean moddedMaps, jboolean generateMaps) {
+    if (auto current = session())
+        current->engine->setTrackMapOptions(moddedMaps == JNI_TRUE, generateMaps == JNI_TRUE);
+}
+
+// The Analysis map layer colours (tnrp/AnalysisMapPaint.h) as
+// {"dark": palette, "light": palette}. Not wired to any UI yet.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeAnalysisMapPaletteJson(JNIEnv* env, jobject) {
+    return javaString(env, tnrp::analysisMapPaletteJson());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsCatalog(JNIEnv* env, jobject) {
+    auto current = session();
+    return javaString(env, current ? current->engine->trackMaps().catalogJson() : "{}");
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsGet(JNIEnv* env, jobject, jstring id) {
+    auto current = session();
+    const std::string json = current ? current->engine->trackMaps().mapJson(utf8(env, id)) : "";
+    return json.empty() ? nullptr : javaString(env, json);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsState(JNIEnv* env, jobject) {
+    auto current = session();
+    const std::string json = current ? current->engine->trackMapStateJson() : "";
+    return json.empty() ? nullptr : javaString(env, json);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsPin(
+    JNIEnv* env, jobject, jstring trackKey, jstring mapId) {
+    if (auto current = session()) {
+        current->engine->trackMaps().pin(utf8(env, trackKey), utf8(env, mapId));
+        current->engine->refreshTrackMap();
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsRename(
+    JNIEnv* env, jobject, jstring id, jstring name) {
+    TrackMapResult result{.id = utf8(env, id)};
+    if (auto current = session()) {
+        result.ok = current->engine->trackMaps().rename(result.id, utf8(env, name), &result.error);
+        if (result.ok) current->engine->refreshTrackMap();
+    }
+    return trackMapResult(env, result);
+}
+
+// editJson: tnrp::TrackMapEdit fields. A built-in map's edit returns a new ID.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsEdit(
+    JNIEnv* env, jobject, jstring id, jstring editJson) {
+    TrackMapResult result;
+    tnrp::TrackMapEdit edit;
+    if (glz::read<glz::opts{.error_on_unknown_keys = false}>(edit, utf8(env, editJson))) {
+        result.error = "Invalid map details";
+        return trackMapResult(env, result);
+    }
+    if (auto current = session()) {
+        result.id = current->engine->trackMaps().edit(utf8(env, id), edit, &result.error);
+        result.ok = !result.id.empty();
+        if (result.ok) current->engine->refreshTrackMap();
+    }
+    return trackMapResult(env, result);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsDelete(JNIEnv* env, jobject, jstring id) {
+    TrackMapResult result{.id = utf8(env, id)};
+    if (auto current = session()) {
+        result.ok = current->engine->trackMaps().remove(result.id, &result.error);
+        if (result.ok) current->engine->refreshTrackMap();
+    }
+    return trackMapResult(env, result);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsImport(JNIEnv* env, jobject, jstring path) {
+    TrackMapResult result;
+    if (auto current = session()) {
+        result.id = current->engine->trackMaps().importFile(utf8(env, path), &result.error);
+        result.ok = !result.id.empty();
+        if (result.ok) current->engine->refreshTrackMap();
+    }
+    return trackMapResult(env, result);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsExport(
+    JNIEnv* env, jobject, jstring id, jstring path) {
+    TrackMapResult result{.id = utf8(env, id)};
+    if (auto current = session())
+        result.ok = current->engine->trackMaps().exportFile(result.id, utf8(env, path), &result.error);
+    return trackMapResult(env, result);
+}
+
+// Blocks while it reads the recording; call it off the main thread.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsGenerate(JNIEnv* env, jobject, jstring path) {
+    TrackMapResult result;
+    if (auto current = session()) {
+        result.id = current->engine->generateTrackMap(utf8(env, path), &result.error);
+        result.ok = !result.id.empty();
+    }
+    return trackMapResult(env, result);
+}
+
+// Blocks while it samples the recording; call it off the main thread.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsResolveRecording(
+    JNIEnv* env, jobject, jstring path) {
+    auto current = session();
+    const std::string json = current ? current->engine->resolveTrackMapForRecording(utf8(env, path)) : "";
+    return json.empty() ? nullptr : javaString(env, json);
+}
+
+// Exports the recording at `path` as Parquet tables into a new
+// "<recording>_parquet" folder inside `destDir` (tnrp/ParquetExport.h).
+// Blocking: call it off the main thread. Returns {"ok":true,"folder":...} or
+// {"ok":false,"error":...}.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeExportParquet(
+    JNIEnv* env, jclass, jstring path, jstring destDir) {
+    std::string folder;
+    std::string error;
+    const bool ok = tnrp::exportTnrdFileToParquet(utf8(env, path), utf8(env, destDir), &folder, &error);
+    const std::string json = ok ? "{\"ok\":true,\"folder\":" + jsonString(folder) + "}"
+                                : "{\"ok\":false,\"error\":" + jsonString(error) + "}";
+    return javaString(env, json);
 }

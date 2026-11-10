@@ -106,6 +106,7 @@ struct Axis {
     double lo = 0, hi = 1;
     QColor color;
     bool inherit = true, visible = true, grid = false, time = false, distance = false;
+    bool showLabels = true;   // false: grid only, no labels and no room for them
     bool lap = false;   // lap-number axis: sessionKeys are laps, sessionTimes their starts
     char format = 'f'; int precision = 0, panel = 0;
     int tickSpacePx = 80;
@@ -1273,7 +1274,7 @@ protected:
                            Qt::AlignLeft | Qt::AlignVCenter, p.title);
             }
             for (const Axis& a : *axes) {
-                if (!a.visible || a.panel != pid || a.hi <= a.lo) continue;
+                if (!a.visible || !a.showLabels || a.panel != pid || a.hi <= a.lo) continue;
                 const Part part = a.side == ChartView::Side::Bottom ? Bottom
                     : a.side == ChartView::Side::Left ? LeftGutter : RightGutter;
                 if (!region.intersects(partRect(bounds, part))) continue;
@@ -1451,7 +1452,7 @@ private:
 
     static size_t axisKey(const Axis& a) {
         size_t h = 0;
-        hashMix(h, size_t(a.visible)); hashMix(h, size_t(a.side)); hashMix(h, a.lo); hashMix(h, a.hi);
+        hashMix(h, size_t(a.visible)); hashMix(h, size_t(a.showLabels)); hashMix(h, size_t(a.side)); hashMix(h, a.lo); hashMix(h, a.hi);
         hashMix(h, size_t(a.inherit)); hashMix(h, size_t(a.color.rgba())); hashMix(h, size_t(a.format));
         hashMix(h, size_t(a.precision)); hashMix(h, size_t(a.tickSpacePx)); hashMix(h, size_t(a.lapBoundaryLabels));
         hashMix(h, size_t(a.tickMarkPx)); hashMix(h, size_t(a.labelWidth)); hashMix(h, size_t(a.laneOffset));
@@ -1724,7 +1725,7 @@ struct ChartView::Impl {
                     QVector<int> leftAxes, rightAxes, bottomAxes;
                     for (int axisId = 0; axisId < axes.size(); ++axisId) {
                         const Axis& axis = axes[axisId];
-                        if (!axis.visible || axis.panel != id) continue;
+                        if (!axis.visible || !axis.showLabels || axis.panel != id) continue;
                         if (axis.side == ChartView::Side::Left) leftAxes.push_back(axisId);
                         else if (axis.side == ChartView::Side::Right) rightAxes.push_back(axisId);
                         else bottomAxes.push_back(axisId);
@@ -1763,7 +1764,9 @@ struct ChartView::Impl {
                     const int topInset = p.header
                         ? kHeader + kPlotEdgePad
                         : qMax(kPlotEdgePad, int(std::ceil((axisMetrics.height() + 2) / 2)));
-                    const int bottomInset = bottomAxes.isEmpty() ? 4 : int(std::ceil(axisMetrics.height())) + 10;
+                    const int bottomInset = bottomAxes.isEmpty()
+                        ? qMax(kPlotEdgePad, int(std::ceil((axisMetrics.height() + 2) / 2)))
+                        : int(std::ceil(axisMetrics.height())) + 10;
                     insets.insert(id, QMargins(leftInset, topInset, rightInset, bottomInset));
                     p.plot = p.outer.adjusted(leftInset, topInset, -rightInset, -bottomInset);
                     if (p.plot.width() < 8 || p.plot.height() < 8) p.plot = {};
@@ -1789,6 +1792,10 @@ struct ChartView::Impl {
             // a 10 px gap after it. Panels squash as more are added; they never
             // drop out, unlike the generic split's per-panel insets.
             constexpr int kStackedGap = 10;
+            // The y labels are centred on the plot's top and bottom grid lines,
+            // so each plot keeps half a label clear above and below it.
+            const int labelHalf = int(std::ceil((axisMetrics.height() + 2) / 2));
+            const int halfGap = qMax(kStackedGap / 2, labelHalf + 1);
             const int n = lr.size();
             const int top = bounds.top() + insets.value(lr.first().first()).top();
             const int bottom = bounds.bottom() + 1 - insets.value(lr.last().first()).bottom();
@@ -1800,16 +1807,17 @@ struct ChartView::Impl {
                 Panel& p = panels[id];
                 const QMargins m = insets.value(id);
                 const bool lastRow = ri + 1 == n;
-                const int plotTop = sliceTop(ri);
-                const int plotBottom = qMax(plotTop + 1, sliceTop(ri + 1) - (lastRow ? 0 : kStackedGap));
+                const int plotTop = sliceTop(ri) + (ri == 0 ? 0 : halfGap);
+                const int plotBottom = qMax(plotTop + 1, sliceTop(ri + 1) - (lastRow ? 0 : halfGap));
                 p.outer = QRect(QPoint(bounds.left(), ri == 0 ? bounds.top() : plotTop),
                                 QPoint(bounds.right(), lastRow ? bounds.bottom() : sliceTop(ri + 1) - 1));
                 p.plot = QRect(QPoint(bounds.left() + m.left(), plotTop),
                                QPoint(bounds.right() - m.right(), plotBottom - 1));
                 if (p.plot.width() < 8) p.plot = {};
-                if (!lastRow && sliceTop(ri + 1) > plotBottom)
-                    dividers.push_back({ QRect(bounds.left(), plotBottom, bounds.width(),
-                                               sliceTop(ri + 1) - plotBottom), QFrame::HLine });
+                // A thin divider on the slice boundary, clear of both labels.
+                if (!lastRow)
+                    dividers.push_back({ QRect(bounds.left(), sliceTop(ri + 1) - 1, bounds.width(), 2),
+                                         QFrame::HLine });
             }
         }
         if (alignedInsets) {
@@ -2129,6 +2137,7 @@ void ChartView::setAxisSide(int id,Side side,int laneOrder){if(id<0||id>=d_->axe
 void ChartView::setPanelInsetsAligned(bool on){if(d_->alignedInsets==on)return;d_->alignedInsets=on;applyPanelLayout();}
 void ChartView::setAxisVisible(int id,bool on){if(id>=0&&id<d_->axes.size()&&d_->axes[id].visible!=on){d_->axes[id].visible=on;d_->geometry(rect());}}
 void ChartView::setAxisColor(int id,const QColor&c){if(id>=0&&id<d_->axes.size()){d_->axes[id].color=c;d_->axes[id].inherit=false;}}
+void ChartView::setAxisLabelsVisible(int id,bool on){if(id>=0&&id<d_->axes.size()&&d_->axes[id].showLabels!=on){d_->axes[id].showLabels=on;d_->geometry(rect());}}
 void ChartView::setAxisGridVisible(int id,bool on){if(id>=0&&id<d_->axes.size())d_->axes[id].grid=on;}
 void ChartView::setAxisGridStyle(int id, bool dashed, int tickMarkPx) {
     if (id < 0 || id >= d_->axes.size()) return;

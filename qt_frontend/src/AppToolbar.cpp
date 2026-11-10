@@ -1,6 +1,7 @@
 #include "AppToolbar.h"
 #include "ChartWindowCombo.h"
 #include "IconUtils.h"
+#include "components/SegmentedControl.h"
 
 #include <QApplication>
 #include <QAction>
@@ -12,11 +13,10 @@
 #include <QLabel>
 #include <QMenu>
 #include <QPropertyAnimation>
+#include <QProxyStyle>
 #include <QResizeEvent>
 #include <QSizePolicy>
 #include <QStyle>
-#include <QStyleOptionButton>
-#include <QStylePainter>
 #include <QTimer>
 #include <QToolButton>
 #include <cmath>
@@ -27,35 +27,20 @@
 
 
 static constexpr int kToolbarHeight = 44;
+static constexpr int kSegmentButtonPadding = 10;
 
 namespace {
 
-// Segmented-control button for the toolbar's window-size picker. When checked it
-// paints itself as the active QStyle's *default button* — the same blue outline
-// the Edit-Layout dialog's on-toggles wear (see ToggleButton in
-// EditOverviewLayoutDialog.cpp). QToolButton can't reuse that trick directly:
-// the DefaultButton look lives on QStyleOptionButton, which only QPushButton
-// feeds the style, so for the checked state we draw a default QPushButton bevel
-// + label ourselves (same CE_PushButton + DefaultButton code path the dialog
-// hits). Unchecked segments fall through to the normal flat auto-raised look.
-class SegmentButton : public QToolButton {
-public:
-    using QToolButton::QToolButton;
+// Breeze may be wrapped in BreezeIconProxyStyle, so look through the proxy. The
+// icon theme can't answer this: on Windows it is "breeze" under every style.
+bool breezeStyleActive() {
+    QStyle* style = QApplication::style();
+    if (auto* proxy = qobject_cast<QProxyStyle*>(style))
+        style = proxy->baseStyle();
+    return style && style->objectName().compare(QLatin1String("breeze"), Qt::CaseInsensitive) == 0;
+}
 
-protected:
-    void paintEvent(QPaintEvent* e) override {
-        if (!isChecked()) { QToolButton::paintEvent(e); return; }
-        QStylePainter p(this);
-        QStyleOptionButton opt;
-        opt.initFrom(this);
-        opt.rect = rect();
-        opt.text = text();
-        opt.features = QStyleOptionButton::DefaultButton;
-        opt.state |= QStyle::State_Raised;
-        opt.state &= ~(QStyle::State_On | QStyle::State_Sunken);
-        p.drawControl(QStyle::CE_PushButton, opt);
-    }
-};
+using tnrui::SegmentButton;
 
 // No bundled SVG for these — prefer the OS/desktop theme icon (tinted to the
 // toolbar foreground on Windows so the monochrome Breeze icons stay visible in
@@ -114,9 +99,6 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     // anything in the child controls themselves) was the source of unwanted
     // space between the toolbar contents and its true bottom edge.
     setFixedHeight(kToolbarHeight);
-    // Sets the toolbar stylesheet (border/margins, + the palette Button shade
-    // background — see the method).
-    updateColorScheme();
 
     // Match Electron's header navigation: one non-searchable dropdown showing
     // the active page. Item order remains identical to the owner's page stack,
@@ -126,7 +108,6 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     pageLayout->setContentsMargins(8, 0, 0, 0);
     pageLayout->setSpacing(0);
     pageBtn_ = new QComboBox(pageControl);
-    pageBtn_->setFrame(false);
     pageBtn_->addItems(pageNames);
     pageBtn_->setCurrentIndex(0);
     pageBtn_->setToolTip("Page");
@@ -184,13 +165,13 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     deltaLabel_->setToolTip("Lap comparison delta");
     deltaLabel_->hide();
     spacerLay->addWidget(deltaLabel_);
-    addWidget(spacer);
+    spacerLayout_ = spacerLay;
+    spacerAct_ = addWidget(spacer);
 
     // TNRD V6 recordings can project playback onto any recorded participant.
     // Keep the selector independent from the chart/Analyze segment so changing
     // pages never hides it; narrow windows move it into the existing overflow.
     driverBtn_ = new QComboBox(this);
-    driverBtn_->setFrame(false);
     driverBtn_->setMinimumContentsLength(14);
     driverBtn_->setMaximumWidth(280);
     driverBtn_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -226,14 +207,13 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     setAnalyzeControlsEnabled(false);
     refreshThemedIcons();
 
-    // Window-size selector: a frameless combo box showing the current window,
-    // with the options as its dropdown list.
+    // Window-size selector: a combo box showing the current window, with the
+    // options as its dropdown list.
     QWidget* windowTools = new QWidget;
     auto* windowToolsLayout = new QHBoxLayout(windowTools);
     windowToolsLayout->setContentsMargins(0, 0, 0, 0);
     windowToolsLayout->setSpacing(2);
     windowBtn_ = new QComboBox(windowTools);
-    windowBtn_->setFrame(false);
     rebuildChartWindowOptions();
     windowBtn_->setToolTip("Chart window");
     connect(windowBtn_, QOverload<int>::of(&QComboBox::activated),
@@ -241,7 +221,6 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     windowToolsLayout->addWidget(windowBtn_);
 
     referenceLap_ = new QComboBox(windowTools);
-    referenceLap_->setFrame(false);
     referenceLap_->setToolTip("Selected reference lap");
     referenceLap_->hide();
     connect(referenceLap_, QOverload<int>::of(&QComboBox::activated), this, [this](int) {
@@ -249,7 +228,7 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     });
     windowToolsLayout->addWidget(referenceLap_);
 
-    sectorBtn_ = new QToolButton(windowTools);
+    sectorBtn_ = new SegmentButton(windowTools);   // checked: the segmented controls' look
     sectorBtn_->setText("S1|S2");
     sectorBtn_->setCheckable(true);
     sectorBtn_->setAutoRaise(true);
@@ -257,7 +236,7 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     connect(sectorBtn_, &QToolButton::toggled, this, &AppToolbar::sectorBoundariesChanged);
     windowToolsLayout->addWidget(sectorBtn_);
 
-    syncBtn_ = new QToolButton(windowTools);
+    syncBtn_ = new SegmentButton(windowTools);
     syncBtn_->setText("Sync");
     syncBtn_->setCheckable(true);
     syncBtn_->setAutoRaise(true);
@@ -298,6 +277,8 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
         extButton_->hide();
         extButton_->installEventFilter(this);
     }
+    // Needs the controls above: sets the stylesheet and their per-style sizing.
+    updateColorScheme();
     // Initial pass once the toolbar has a real width (after the window is shown).
     QTimer::singleShot(0, this, [this] {
         relayout();
@@ -341,6 +322,20 @@ void AppToolbar::setAnalyzeContextWidget(QWidget* widget) {
     relayout();
 }
 
+void AppToolbar::setAnalyzePageWidgets(QWidget* leading, QWidget* trailing) {
+    if (leading && !analyzeLeadingAct_ && spacerAct_) {
+        analyzeLeadingAct_ = insertWidget(spacerAct_, leading);
+        analyzeLeadingAct_->setVisible(false);
+    }
+    if (trailing && !analyzeTrailing_ && spacerLayout_) {
+        analyzeTrailing_ = trailing;
+        // After the stretch, before the timer: rides at the spacer's right edge.
+        spacerLayout_->insertWidget(1, trailing);
+        trailing->setVisible(false);
+    }
+    relayout();
+}
+
 void AppToolbar::setAnalyzeControlsEnabled(bool on) {
     for (auto* button : {analyzeZoomIn_, analyzeZoomOut_, analyzePanLeft_,
                          analyzePanRight_, analyzeReset_})
@@ -353,14 +348,19 @@ void AppToolbar::setShowLabels(bool on) {
 }
 
 void AppToolbar::updateColorScheme() {
-    // The toolbar sits on the palette's Button shade (a touch lighter than the
-    // window) with a hairline bottom border separating it from the page content
-    // below — the same divider style as the tab-bar/pane seam in the Settings
-    // window. The border colour is ~30% of the way from the window colour toward
-    // the text colour so it stays visible in both light and dark themes; it's
-    // recomputed here so it re-themes when the colour scheme changes.
-    // (background: palette(button) already neutralises Breeze's OS-scheme "tools
-    // area" tint unconditionally, so no style/mode-specific branch is needed.)
+    const bool breeze = breezeStyleActive();
+
+    // Other styles get their normal framed combo height; frameless ones collapse.
+    // Set before the stylesheet: applying it drops QComboBox's cached size hint.
+    for (QComboBox* combo : {pageBtn_, driverBtn_, windowBtn_, referenceLap_})
+        combo->setFrame(!breeze);
+
+    // A hairline bottom border separates the toolbar from the page content below
+    // — the same divider style as the tab-bar/pane seam in the Settings window.
+    // The border colour is ~30% of the way from the window colour toward the text
+    // colour so it stays visible in both light and dark themes; it's recomputed
+    // here so it re-themes when the colour scheme changes. Only Breeze sits on the
+    // Button shade, which neutralises its OS-scheme "tools area" tint.
     const QColor win = QApplication::palette().color(QPalette::Window);
     const QColor txt = QApplication::palette().color(QPalette::WindowText);
     const QColor borderCol((win.red()   * 7 + txt.red()   * 3) / 10,
@@ -368,7 +368,22 @@ void AppToolbar::updateColorScheme() {
                            (win.blue()  * 7 + txt.blue()  * 3) / 10);
     setStyleSheet(QString(
         "QToolBar { border: none; border-bottom: 1px solid %1;"
-        " margin: 0px; padding: 0px; background: palette(button); }").arg(borderCol.name()));
+        " margin: 0px; padding: 0px;%2 }")
+        .arg(borderCol.name(), breeze ? QStringLiteral(" background: palette(button);") : QString()));
+
+    // Breeze sizes these buttons well itself. Elsewhere they hug their text, so
+    // match the combos beside them.
+    for (QToolButton* button : {sectorBtn_, syncBtn_}) {
+        if (breeze) {
+            button->setMinimumSize(0, 0);
+            button->setMaximumHeight(QWIDGETSIZE_MAX);
+        } else {
+            button->setFixedHeight(windowBtn_->sizeHint().height());
+            button->setMinimumWidth(button->fontMetrics().horizontalAdvance(button->text())
+                                    + kSegmentButtonPadding * 2);
+        }
+    }
+    relayout();   // control widths depend on the style
 }
 
 // Toolbar session timer. `sessionTime` is the header session_time carried on
@@ -661,10 +676,16 @@ void AppToolbar::relayout() {
                             ? timerLabel_->sizeHint().width() : 0)
                      + ((deltaLabel_ && deltaLabel_->isVisible())
                             ? deltaLabel_->sizeHint().width() : 0);
+    // The Analyze page's own controls never collapse into the overflow menu.
+    const int wAnalyzePage = analyzeVisible_
+        ? actW(analyzeLeadingAct_) + (analyzeTrailing_ ? analyzeTrailing_->sizeHint().width() : 0)
+        : 0;
+    if (analyzeLeadingAct_) analyzeLeadingAct_->setVisible(analyzeVisible_);
+    if (analyzeTrailing_) analyzeTrailing_->setVisible(analyzeVisible_);
     // Inter-item gaps: 6 toolbar items (page dropdown, spacer, segment, 3 icons)
     // create 5 gaps. The timer adds no gap of its own (it rides in the spacer).
-    const int needAll = wPage + wDriver + wSeg + wIcons + wTimer +
-        spacing * (playbackDriversVisible_ ? 6 : 5);
+    const int needAll = wPage + wDriver + wSeg + wIcons + wTimer + wAnalyzePage +
+        spacing * ((playbackDriversVisible_ ? 6 : 5) + (analyzeVisible_ && analyzeLeadingAct_ ? 1 : 0));
 
     if (avail >= needAll + kSlack) {              // comfortably fits — everything inline
         if (windowAct_) windowAct_->setVisible(!analyzeVisible_);

@@ -5,6 +5,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QStyle>
+#include <QStyleOptionButton>
 
 #include <algorithm>
 
@@ -450,7 +451,22 @@ void AnalysisSeriesDelegate::paint(QPainter* painter, const QStyleOptionViewItem
     const QWidget* widget = opt.widget;
     QStyle* style = widget ? widget->style() : QApplication::style();
 
-    // Let the style draw panel, selection, focus and check box; we draw the rest.
+    // The selected row wears the segmented controls' selected look (the
+    // style's default-button outline, as Follow Playback | Fixed Laps) rather
+    // than a solid highlight fill.
+    if (opt.state.testFlag(QStyle::State_Selected)) {
+        QStyleOptionButton bevel;
+        bevel.state = (opt.state & QStyle::State_Enabled) | QStyle::State_Raised;
+        bevel.palette = opt.palette;
+        bevel.rect = opt.rect.adjusted(1, 1, -1, -1);
+        bevel.features = QStyleOptionButton::DefaultButton;
+        style->drawControl(QStyle::CE_PushButtonBevel, &bevel, painter, widget);
+        // No item panel over it: the style's hover and focus panels cover the
+        // text area but not the check box, which drew an edge between them.
+        opt.state &= ~(QStyle::State_Selected | QStyle::State_MouseOver | QStyle::State_HasFocus);
+    }
+
+    // Let the style draw panel, focus and check box; we draw the rest.
     const QString title = opt.text;
     opt.text.clear();
     opt.icon = QIcon();

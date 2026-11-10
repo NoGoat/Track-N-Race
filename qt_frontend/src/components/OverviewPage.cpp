@@ -222,6 +222,20 @@ constexpr int kDamageOrder[OverviewLayout::DmgCardCount] = {
 
 } // namespace
 
+QFrame* makeOverviewStatCardPreview(const QString& label, const QString& value,
+                                    const QString& unit, const QString& sub,
+                                    tnr::DensityMode density) {
+    QLabel* valueLabel = nullptr;
+    QLabel* subLabel = nullptr;
+    QLabel* unitLabel = nullptr;
+    QFrame* card = makeStatCard(label, unit, valueLabel, density,
+                                sub.isEmpty() ? nullptr : &subLabel, nullptr, &unitLabel);
+    valueLabel->setText(value);
+    if (unitLabel) unitLabel->show();
+    if (subLabel) subLabel->setText(sub);
+    return card;
+}
+
 // ── Overview page ─────────────────────────────────────────────────────────
 
 OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)

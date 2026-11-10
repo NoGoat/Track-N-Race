@@ -25,6 +25,12 @@ class TyreCardsWidget;
 class TyreChartsWidget;
 class GraphTable;
 
+// One Overview stat card filled with fixed text, built exactly as the page
+// builds its own at `density`. First-time setup's Density previews use it.
+QFrame* makeOverviewStatCardPreview(const QString& label, const QString& value,
+                                    const QString& unit, const QString& sub,
+                                    tnr::DensityMode density);
+
 // Overview tab — key-driven stat cards, telemetry chart with mode bar and
 // compare-lap selector, tyre cards/charts section, and the damage rows.
 // Self-contained: owns its widgets, the data cache behind the cards, and the

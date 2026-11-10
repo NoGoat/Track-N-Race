@@ -7,7 +7,7 @@ one repository:
 
 | Component | Path | Tech | Role |
 |---|---|---|---|
-| Telemetry engine (libtnrp) | `protocol_parser_library/` | C++20, glaze, Zstandard, zlib, libxlsxwriter | UDP receive, packet parsing, `.tnrd` record/playback, paired-display server, XLSX export, label/colour catalogs |
+| Telemetry engine (libtnrp) | `protocol_parser_library/` | C++20, glaze, Zstandard, zlib | UDP receive, packet parsing, `.tnrd` record/playback, paired-display server, Parquet export, label/colour catalogs |
 | Node addon | `electron-frontend/node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `electron-frontend/src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Qt frontend | `qt_frontend/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
@@ -271,15 +271,58 @@ JSON-only consumers (the Qt recorder drives `TnrdReader` directly, the legacy
 pipe exe drives the engine without `binaryPlayback`) see the legacy all-JSON
 playback stream unchanged.
 
-### 1.7 XLSX export
+### 1.7 Parquet export
 
-`exportTnrdFileToXlsx()` opens its **own throwaway reader** on the file
-(independent of any active playback), walks the legacy index or V4/V5 chunk directory and
-writes one sheet per row type plus an "Info" sheet from the header, reporting
-progress `(rowsDone, totalUnits, stage)`. Both apps run it off their UI thread
-(Electron: `AsyncProgressQueueWorker` on the libuv pool; Qt:
-`XlsxExportWorker` on a `QThread`) behind identical save-dialog + progress
-overlay flows.
+`exportTnrdFileToParquet()` (tnrp/ParquetExport.h) opens its **own throwaway
+reader** on the file (independent of any active playback) and writes one
+`<Table>.parquet` per table into a new `<recording>_parquet` folder inside the
+chosen directory (`… (2)`, `(3)` when taken; an existing folder is never
+touched). Tables are written into a hidden staging folder there, which is
+renamed into place only once every table is complete.
+
+- **Writer**: `tnrp::parquet::TableWriter` (tnrp/ParquetWriter.h) is a
+  dependency-free writer for flat tables: v1 data pages, PLAIN values, RLE
+  definition levels for nullable columns, zstd pages, Thrift-compact footer
+  (src/parquet/ThriftCompact.cpp). Memory is bounded by one row group.
+- **Exporters**: each generation has its own module,
+  `src/tnrd/TNRD_V1_Exporter.cpp` … `TNRD_V6_Exporter.cpp`, sharing no code
+  (declared in `TnrdExporter.h`; reached through
+  `TnrdReaderBackend::exportParquet`). V1–V5 export every JSONL row, one table
+  per `type`, with columns discovered from the rows and `cars` / `drivers` /
+  `sets` arrays split into one row per item. V6 exports one table per data type
+  from the typed chunk columns (`TnrdV6Archive::loadChunkColumns`), one per
+  shared-record type, plus `Laps` and `Drivers` from its index. Every file
+  carries `tnrd.format`, `tnrd.table` and `tnrd.header` metadata.
+- **Apps**: progress is `(fraction, stage)` and a cancel callback is polled
+  between rows. Electron runs it in an `AsyncProgressQueueWorker`, Qt in
+  `ParquetExportWorker` on a `QThread`, both behind a folder dialog and a
+  progress overlay. Android has `nativeExportParquet` (no UI).
+
+**Measured on the sample recordings (2026-11-07).** Release build, Windows,
+one export at a time. Time includes loading the recording ("load"), the
+pass that works out each table's columns ("columns"; V6 does this per data
+type, so it has no separate figure), and writing. Every export was checked
+with pyarrow 26 and DuckDB 2.0: both decode every column, row counts and
+column types match an independent reference, and field values match on every
+row (V1, V2) or a sample from every table (V3–V6.1).
+
+| Recording | Source | Parquet | Ratio | Tables | Rows | Time (load / columns / write) | Largest tables (MB) |
+|---|---|---|---|---|---|---|---|
+| V1 | 51.8 MB | 33.9 MB | 0.65× | 15 | 4,467,039 | 14 s (3 / 4 / 7) | Positions 24.3, Telemetry 2.6, Motion 2.2 |
+| V2 | 10.5 MB | 8.4 MB | 0.79× | 15 | 1,690,130 | 11 s (2 / 4 / 5) | Positions 4.2, AllStatus 2.2, Telemetry 0.5 |
+| V3 | 141.2 MB | 115.7 MB | 0.82× | 15 | 24,395,267 | 206 s (48 / 65 / 89) | Positions 45.9, AllStatus 27.5, Timing 19.7 |
+| V4 | 212.2 MB | 143.6 MB | 0.68× | 15 | 31,100,904 | 212 s (37 / 73 / 102) | Positions 62.8, AllStatus 26.6, Timing 26.3 |
+| V5 | 222.5 MB | 118.4 MB | 0.53× | 15 | 24,854,857 | 95 s (1 / 56 / 38) | Positions 50.5, AllStatus 23.3, Timing 22.5 |
+| V6 | 73.6 MB | 232.9 MB | 3.16× | 29 | 127,870,693 | 54 s | GForce 46.9, Position 44.6, LapTiming 24.7 |
+| V6.1 | 77.8 MB | 235.6 MB | 3.03× | 29 | 133,803,776 | 78 s | GForce 48.7, Position 45.6, LapTiming 26.4 |
+
+V1–V5 tables are dominated by the per-car packets (Positions, AllStatus,
+Timing: 22 rows per packet). V6 exports come out about 3× their recording
+because V6 stores samples delta- and byte-plane encoded while the writer uses
+PLAIN + zstd: `session_time` alone is 24% of the V6 export, and decimal
+columns (positions, G-forces, steering) most of the rest. Byte-stream-split
+(floats) and delta (integers) page encodings would shrink them losslessly; not
+implemented yet.
 
 ### 1.8 Threading model
 
@@ -287,7 +330,7 @@ overlay flows.
 |---|---|---|
 | libtnrp Engine | UDP receive, playback, Strategy worker, writer disk thread, callers' control threads | One `mutex_` guards engine state; `inPlayback_` atomic gates the UDP path. Strategy parsing/calculation and recording I/O have independent queues, so neither blocks UDP receive. |
 | node_addon | engine threads → 3 TSFNs → JS main thread | Flush state is `shared_ptr` so queued callbacks survive wrapper teardown. |
-| Electron main | single JS thread + libuv pool (XLSX export, player load) | No TS playback tick or hot-row pacing timer — the engine drives playback and addon-coalesced binary batches are forwarded directly. |
+| Electron main | single JS thread + libuv pool (Parquet export, player load) | No TS playback tick or hot-row pacing timer — the engine drives playback and addon-coalesced binary batches are forwarded directly. |
 | Electron renderer | store ingest outside React; rAF loops per chart | Zustand slices re-render only subscribed leaves; All Laps charts append directly from stable full-session arrays. |
 | Qt recorder | GUI thread + engine threads + playback load thread + export thread | `EngineSink` marshals rows to the GUI thread via queued signals. |
 | Android | main thread + engine threads (JNI) or OkHttp socket thread + source/playback/lap executors + raster workers | Hot rows decode on the producing thread into atomic slots; cold rows post to the main thread (§5.3). |
@@ -366,7 +409,7 @@ takes `(config, jsonCb, binCb?, seekCb?)` and creates up to three
 Long operations run on the libuv pool and resolve Promises:
 `playerLoad` (`AsyncWorker`; a `loadBusy_` atomic makes a concurrent second
 load resolve `false` instead of racing the playback thread) and
-`playerExportXlsx` (`AsyncProgressQueueWorker`, marshalling progress ticks to
+`playerExportParquet` (`AsyncProgressQueueWorker`, marshalling progress ticks to
 the JS progress callback). Module-level exports: `labelsJson(format)`,
 `cardColorsJson()`, `sweepTempFiles()`.
 
@@ -413,7 +456,7 @@ window with custom titlebar (optional native titlebar setting), window sized to
 60% of the work area (min 1200×700), Windows taskbar/tray icon theme detection
 (async `reg.exe query` + 1.5 s poll + `nativeTheme` events), `.tnrd` open-file
 handling (argv, macOS `open-file`, drag/drop confirm flow), and the IPC surface
-(store get/set, dialogs, player controls, protocol config, UDP restart, XLSX
+(store get/set, dialogs, player controls, protocol config, UDP restart, Parquet
 export with progress relay). `stopBridge()` on `will-quit` closes the player
 and destroys the engine.
 
@@ -525,7 +568,7 @@ explicit generated step geometry.
 `App.tsx` (2,098 lines) owns the shell: custom titlebar/window controls, tab
 bar (Overview, Session, Strategy, Standings, Input, Power, Tyres, Misc),
 window-seconds selector, race-event banner queue, playback controls bar
-(transport, scrub, speed, lap jump, XLSX export with progress), per-tab layout
+(transport, scrub, speed, lap jump, Parquet export with progress), per-tab layout
 editors persisted via `electron-store`, and the Settings panel (UDP, protocol
 override, recording, theme, attributions). `LabelsProvider` /
 `CardColorsProvider` (from `protocol_status`) resolve all labels/colours.
@@ -834,9 +877,8 @@ and dark fallback schemes.
   device. `build-and-run-release.ps1` / `.sh` does the same for the release
   build type, signed with the debug key for local install only.
 - **Library dependencies** are FetchContent-pinned (glaze v7.8.3, zlib v1.3.2,
-  Zstandard v1.5.7, libxlsxwriter v1.2.4, libsodium 1.0.20 via libsodium-cmake,
-  plus CPace for pairing) with parent-project reuse guards (`if(NOT TARGET …)`);
-  a shadowed `FindZLIB.cmake` points libxlsxwriter at the fetched zlib.
+  Zstandard v1.5.7, libsodium 1.0.20 via libsodium-cmake, plus CPace for
+  pairing) with parent-project reuse guards (`if(NOT TARGET …)`).
 - **Release driver**: root `build.ps1` bumps the version
   (minor/major/overhaul), builds the native recorder, then
   `npm run build` / `dist` / `dist:win:portable`, with an optional

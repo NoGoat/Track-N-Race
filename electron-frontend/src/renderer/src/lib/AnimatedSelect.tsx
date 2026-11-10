@@ -19,6 +19,11 @@ export default function AnimatedSelect<
     classNames,
     defaultMenuIsOpen = false,
     menuIsOpen: controlledMenuIsOpen,
+    // react-select scrolls the page to bring an open menu into view. The app
+    // is a fixed window, so that shifts the whole UI up and leaves it there;
+    // instead a menu opens upwards when there is no room below.
+    menuShouldScrollIntoView = false,
+    menuPlacement = 'auto',
     onMenuClose,
     onMenuOpen,
     styles,
@@ -80,6 +85,8 @@ export default function AnimatedSelect<
       className={[className, 'react-select-no-drag'].filter(Boolean).join(' ')}
       classNames={noDragClassNames}
       defaultMenuIsOpen={defaultMenuIsOpen}
+      menuShouldScrollIntoView={menuShouldScrollIntoView}
+      menuPlacement={menuPlacement}
       menuIsOpen={phase !== 'closed'}
       onMenuOpen={openMenu}
       onMenuClose={closeMenu}

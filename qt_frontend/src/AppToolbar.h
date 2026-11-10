@@ -7,6 +7,7 @@
 
 class QAction;
 class QComboBox;
+class QHBoxLayout;
 class QLabel;
 class QMenu;
 class QPropertyAnimation;
@@ -35,9 +36,13 @@ public:
     void setAnalyzeControlsVisible(bool on);
     void setAnalyzeControlsEnabled(bool on);
     void setAnalyzeContextWidget(QWidget* widget);
+    // Analyze-only controls owned by the page: `leading` right after the page
+    // dropdown (the view switch), `trailing` just left of the session timer
+    // (Panels, Help). Shown only while Analyze is the current page.
+    void setAnalyzePageWidgets(QWidget* leading, QWidget* trailing);
     void setShowLabels(bool on);        // icon-only ↔ text-beside-icon
-    // Forces the toolbar to the palette's Button shade with a hairline bottom
-    // border; recomputed on theme/style changes so it re-themes correctly.
+    // Applies the hairline bottom border, Breeze's Button-shade background, and
+    // per-style control sizing. Call on every theme/style change.
     void updateColorScheme();
 
     // Session timer label (header session_time, formatted M:SS). Lives inside
@@ -100,7 +105,7 @@ private:
     QComboBox*    pageBtn_      = nullptr;   // compact page-navigation dropdown
     QToolButton*  udpErrorBtn_  = nullptr;   // "UDP ERROR", hidden while the listener is fine
     QAction*      pageAct_      = nullptr;   // kept inline during overflow
-    QComboBox*    windowBtn_    = nullptr;   // window-size dropdown (frameless combo box)
+    QComboBox*    windowBtn_    = nullptr;   // window-size dropdown
     QAction*      windowAct_    = nullptr;   // its toolbar action (hide to free space)
     QComboBox*    driverBtn_    = nullptr;   // TNRD V6 playback-only driver selector
     QAction*      driverAct_    = nullptr;
@@ -109,6 +114,10 @@ private:
     QToolButton*  syncBtn_ = nullptr;
     QAction*      analyzeAct_   = nullptr;   // Analyze-only zoom/pan controls
     QAction*      analyzeContextAct_ = nullptr;
+    QAction*      analyzeLeadingAct_ = nullptr;   // after the page dropdown
+    QWidget*      analyzeTrailing_ = nullptr;     // in the spacer, left of the timer
+    QAction*      spacerAct_    = nullptr;
+    QHBoxLayout*  spacerLayout_ = nullptr;
     QWidget*      analyzeControls_ = nullptr;
     QToolButton*  analyzeZoomIn_ = nullptr;
     QToolButton*  analyzeZoomOut_ = nullptr;

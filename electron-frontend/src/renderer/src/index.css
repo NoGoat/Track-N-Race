@@ -177,6 +177,23 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes brakingCardIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes brakingRowIn {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.braking-card { animation: brakingCardIn 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both; transform-origin: top left; }
+.braking-row  { animation: brakingRowIn 180ms ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .braking-card, .braking-row { animation: none; }
+}
+
 /* Legacy utility colours still used by the layout editor and compact badges. */
 [data-theme='light'] .text-\[\#5794F2\] { color: var(--color-info); }
 [data-theme='light'] .text-\[\#5794F2\].opacity-60 { opacity: 1; }
@@ -341,6 +358,51 @@ body {
     grid-template-columns: repeat(2, max-content);
     column-gap: 0.75rem;
     row-gap: 0.125rem;
+  }
+}
+
+/* The Analysis toolbar narrows with both side panels. Sheds text and spacing
+   in steps so every control and delta value stays on screen. */
+.analysis-toolbar {
+  container-name: analysis-toolbar;
+  container-type: inline-size;
+}
+
+@container analysis-toolbar (max-width: 750px) {
+  .analysis-toolbar[data-chart-controls] .analysis-toolbar__label {
+    display: none;
+  }
+}
+
+@container analysis-toolbar (max-width: 664px) {
+  .analysis-toolbar[data-chart-controls] .analysis-toolbar__divider {
+    display: none;
+  }
+
+  .analysis-toolbar[data-chart-controls] .analysis-toolbar__end {
+    gap: 0.25rem;
+  }
+
+  .analysis-toolbar[data-chart-controls] .analysis-toolbar__zones {
+    margin-left: 0;
+  }
+
+  .analysis-toolbar[data-chart-controls] .analysis-delta-readout {
+    gap: 0.5rem;
+  }
+
+  .analysis-toolbar[data-chart-controls] .analysis-delta-readout__item {
+    gap: 0.25rem;
+  }
+
+  .analysis-toolbar[data-chart-controls] .analysis-delta-readout__value {
+    width: 3rem;
+  }
+}
+
+@container analysis-toolbar (max-width: 570px) {
+  .analysis-toolbar[data-chart-controls] .analysis-delta-readout__caption {
+    display: none;
   }
 }
 
@@ -867,6 +929,65 @@ html[data-analysis-view-transition-phase='preparing']::view-transition-new(analy
     grid-template-rows 220ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 160ms ease-out;
 }
+
+/* First-time setup: each step slides in from the side it was reached from. */
+@keyframes setupStepInForward {
+  from { opacity: 0; transform: translateX(36px); }
+}
+@keyframes setupStepInBack {
+  from { opacity: 0; transform: translateX(-36px); }
+}
+.setup-step-in-forward { animation: setupStepInForward 320ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.setup-step-in-back { animation: setupStepInBack 320ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* First-time setup theme previews: a skeleton of the Overview page. Each
+   preview carries its own data-theme, so the theme tokens resolve per preview. */
+.setup-sk {
+  --sk-green: #56a64b; --sk-red: #e02f44; --sk-yellow: #fade2a; --sk-blue: #5794f2;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  aspect-ratio: 1199 / 703;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 0 0 1px var(--border);
+  transition: box-shadow 200ms ease;
+}
+.setup-sk[data-theme='light'] { --sk-green: #1e7a2e; --sk-red: #c8001a; --sk-yellow: #a07800; --sk-blue: #1a55bb; }
+.setup-theme-option:hover .setup-sk { box-shadow: 0 0 0 1px var(--border-focus-hover); }
+.setup-theme-option[data-selected='true'] .setup-sk { box-shadow: 0 0 0 2px var(--color-info); }
+.setup-sk i { display: block; flex-shrink: 0; border-radius: 1px; }
+.setup-sk .t { height: 2px; background: var(--text-muted); }
+.setup-sk .tp { height: 2px; background: var(--text-primary); opacity: 0.85; }
+.setup-sk .g { flex: 1; }
+.setup-sk svg { display: block; flex: 1; min-height: 0; width: 100%; margin-top: 3px; }
+.setup-sk-tb { display: flex; flex-shrink: 0; align-items: center; gap: 4px; height: 13px; padding: 0 5px; border-bottom: 1px solid var(--border); }
+.setup-sk-tb .logo { width: 7px; height: 7px; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--text-secondary); }
+.setup-sk-tb .sq { width: 4px; height: 4px; box-shadow: inset 0 0 0 1px var(--text-secondary); }
+.setup-sk-tb .pill { width: 13px; height: 5px; background: color-mix(in srgb, var(--color-info) 45%, transparent); }
+.setup-sk-tb .act { width: 6px; height: 6px; background: var(--border-focus); }
+.setup-sk-stats { display: grid; flex-shrink: 0; grid-template-columns: repeat(11, 1fr); height: 10px; border-bottom: 1px solid var(--border); }
+.setup-sk-stats span { display: flex; align-items: center; justify-content: space-between; gap: 2px; padding: 0 3px; border-left: 1px solid var(--border); }
+.setup-sk-stats span:first-child { border-left: 0; }
+.setup-sk-stats .t { width: 40%; height: 1.5px; }
+.setup-sk-stats .v { width: 30%; height: 3px; }
+.setup-sk-chart { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: 4px 5px 3px; border-bottom: 1px solid var(--border); }
+.setup-sk-hd { display: flex; flex-shrink: 0; align-items: center; gap: 3px; height: 6px; }
+.setup-sk-hd .lg { width: 10px; height: 2px; }
+.setup-sk-tyres { display: grid; flex-shrink: 0; grid-template-columns: repeat(4, 1fr); height: 31%; border-bottom: 1px solid var(--border); }
+.setup-sk-tp { display: flex; flex-direction: column; min-width: 0; padding: 4px 4px 3px; border-left: 1px solid var(--border); }
+.setup-sk-tp:first-child { border-left: 0; }
+.setup-sk-dmg { display: grid; flex-shrink: 0; grid-template-columns: repeat(8, 1fr); height: 8px; border-bottom: 1px solid var(--border); }
+.setup-sk-dmg span { display: flex; align-items: center; justify-content: space-between; padding: 0 3px; border-left: 1px solid var(--border); }
+.setup-sk-dmg span:first-child { border-left: 0; }
+.setup-sk-dmg .t { width: 40%; height: 1.5px; }
+.setup-sk-dmg .v { width: 12%; height: 2px; background: var(--sk-green); }
+.setup-sk-play { display: flex; flex-shrink: 0; align-items: center; gap: 4px; height: 10px; padding: 0 5px; }
+.setup-sk-play .tr { position: relative; flex: 1; height: 2px; border-radius: 1px; background: var(--border); }
+.setup-sk-play .tr::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 7%; border-radius: 1px; background: var(--color-info); }
+.setup-sk-play .tr::after { content: ''; position: absolute; left: 7%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; background: var(--color-info); }
+.setup-sk-play .pa { width: 3px; height: 3px; background: var(--text-secondary); }
 
 html[data-reduce-animations='true'] *,
 html[data-reduce-animations='true'] *::before,

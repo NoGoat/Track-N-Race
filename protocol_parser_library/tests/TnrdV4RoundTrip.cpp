@@ -252,13 +252,17 @@ int main() {
             ++legacyTelemetryRows;
         }));
     assert(legacyTelemetryRows == 2);
-    const fs::path xlsxPath = longDir /
-        "export_with_a_deliberately_long_filename_for_extended_windows_path_testing.xlsx";
-    assert(reader.exportXlsx(loadedHeader, xlsxPath.string(), &error));
+    const fs::path parquetDir = longDir /
+        "export_with_a_deliberately_long_folder_name_for_extended_windows_path_testing";
+    const fs::path telemetryTable = parquetDir / "Telemetry.parquet";
 #ifdef _WIN32
-    assert(fs::exists(fs::path(tnrp::detail::windowsExtendedPath(xlsxPath.string()))));
+    assert(fs::create_directory(fs::path(tnrp::detail::windowsExtendedPath(parquetDir.string()))));
+    assert(reader.exportParquet(loadedHeader, parquetDir.string(), &error));
+    assert(fs::exists(fs::path(tnrp::detail::windowsExtendedPath(telemetryTable.string()))));
 #else
-    assert(fs::exists(xlsxPath));
+    assert(fs::create_directory(parquetDir));
+    assert(reader.exportParquet(loadedHeader, parquetDir.string(), &error));
+    assert(fs::exists(telemetryTable));
 #endif
     reader.close();
 

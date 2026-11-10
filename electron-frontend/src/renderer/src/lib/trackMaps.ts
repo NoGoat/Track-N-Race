@@ -27,6 +27,9 @@ export interface TrackMapData {
   start_finish:   [number, number] | null
   overtake_detection_point?:  [number, number] | null
   overtake_activation_point?: [number, number] | null
+  // Saved maps only (generated, imported or edited).
+  display_name?:  string
+  source?:        'generated' | 'imported' | 'edited'
 }
 
 // Vite expands this glob at dev-server startup/build time, so newly generated

@@ -1,7 +1,9 @@
 #include "UnderlineTabBar.h"
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QButtonGroup>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QPainter>
 #include <QToolButton>
@@ -9,15 +11,33 @@
 namespace {
 constexpr int kUnderlineWidth = 2;
 
-// ~30% of the way from the window colour to the text colour: a clearly visible
-// hairline in both light and dark themes (the palette's Mid etch is nearly
-// identical to Window in the dark theme).
-QColor hairlineColor() {
+// `tenths` of the way from the window colour to the text colour.
+QColor towardText(int tenths) {
     const QColor win = QApplication::palette().color(QPalette::Window);
     const QColor txt = QApplication::palette().color(QPalette::WindowText);
-    return QColor((win.red() * 7 + txt.red() * 3) / 10,
-                  (win.green() * 7 + txt.green() * 3) / 10,
-                  (win.blue() * 7 + txt.blue() * 3) / 10);
+    return QColor((win.red() * (10 - tenths) + txt.red() * tenths) / 10,
+                  (win.green() * (10 - tenths) + txt.green() * tenths) / 10,
+                  (win.blue() * (10 - tenths) + txt.blue() * tenths) / 10);
+}
+
+// A clearly visible hairline in both light and dark themes (the palette's Mid
+// etch is nearly identical to Window in the dark theme).
+QColor hairlineColor() {
+    return towardText(3);
+}
+
+QString tabStyle() {
+    return QString(
+        "QToolButton { padding: 6px 8px; border: none; background: transparent;"
+        " border-bottom: %1px solid transparent; color: %2; }"
+        "QToolButton:hover, QToolButton:checked { color: %3; }"
+        "QToolButton:checked { border-bottom: %1px solid %4; }"
+        "QToolButton:disabled { color: %5; }")
+        .arg(kUnderlineWidth)
+        .arg(towardText(7).name())
+        .arg(QApplication::palette().color(QPalette::WindowText).name())
+        .arg(QApplication::palette().color(QPalette::Highlight).name())
+        .arg(towardText(4).name());
 }
 }
 
@@ -26,28 +46,23 @@ UnderlineTabBar::UnderlineTabBar(QWidget* parent) : QWidget(parent) {
     setBackgroundRole(QPalette::Button);
     setAutoFillBackground(true);
     layout_ = new QHBoxLayout(this);
-    layout_->setContentsMargins(8, 0, 8, 0);
-    layout_->setSpacing(4);
-    layout_->addStretch(1);
+    layout_->setContentsMargins(0, 0, 0, 0);
+    layout_->setSpacing(0);
     group_ = new QButtonGroup(this);
     group_->setExclusive(true);
     connect(group_, &QButtonGroup::idClicked, this, &UnderlineTabBar::tabClicked);
 }
 
 int UnderlineTabBar::addTab(const QString& text) {
-    const QString accent = QApplication::palette().color(QPalette::Highlight).name();
     auto* tab = new QToolButton(this);
     tab->setText(text);
     tab->setCheckable(true);
     tab->setAutoRaise(true);
-    tab->setStyleSheet(QString(
-        "QToolButton { padding: 8px 14px; border: none; background: transparent;"
-        " border-bottom: %1px solid transparent; }"
-        "QToolButton:checked { border-bottom: %1px solid %2; }")
-        .arg(kUnderlineWidth).arg(accent));
+    tab->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    tab->setStyleSheet(tabStyle());
     const int index = count();
     group_->addButton(tab, index);
-    layout_->insertWidget(index, tab);   // before the trailing stretch
+    layout_->addWidget(tab, 1);
     if (index == 0) tab->setChecked(true);
     return index;
 }
@@ -89,6 +104,12 @@ void UnderlineTabBar::paintEvent(QPaintEvent* event) {
     if (!bottomBorder_) return;
     QPainter painter(this);
     painter.fillRect(QRect(0, height() - 1, width(), 1), hairlineColor());
+}
+
+void UnderlineTabBar::changeEvent(QEvent* event) {
+    QWidget::changeEvent(event);
+    if (group_ && event->type() == QEvent::PaletteChange)
+        for (QAbstractButton* tab : group_->buttons()) tab->setStyleSheet(tabStyle());
 }
 
 QToolButton* UnderlineTabBar::button(int index) const {

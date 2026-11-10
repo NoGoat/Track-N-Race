@@ -30,15 +30,17 @@
 #include "components/TrendsPage.h"
 #include "components/DamagePage.h"
 #include "components/SettingsDialog.h"
+#include "components/FirstTimeSetup.h"
 #include "components/TrackMapWidget.h"
 #include "components/ChartView.h"   // ChartView::reapplyRenderSettings (chart GPU settings)
 #include "components/ToastEvents.h"
 #include "components/Toast.h"
 #include "components/ToastHost.h"
-#include "components/XlsxExportWorker.h"
+#include "components/ParquetExportWorker.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"   // setApplicationStyle (style swap in setStyleName)
 #include "PresentationScheduler.h"
+#include "TrackMapService.h"
 #include "UpdateChecker.h"
 #include "Diagnostics.h"
 #include "IdleMemory.h"
@@ -452,6 +454,13 @@ MainWindow::MainWindow(QWidget* parent)
     });
     connect(analyzePage_, &AnalysisPage::primaryLapDataRequested,
             playback_, &PlaybackController::requestAnalysisLapData);
+    // The Analysis map layers read the playback recording on the thread pool.
+    // engine_ is read per call: it is only replaced on this thread after the
+    // pool has drained (recreateEngine).
+    analyzePage_->setPrimaryRecordingAccess(
+        [this](const std::function<void(const tnrp::TnrdReader&)>& read) {
+            return engine_ && engine_->playerReadRecording(read);
+        });
     connect(playback_, &PlaybackController::analysisLapDataReady,
             analyzePage_, &AnalysisPage::installPrimaryLap);
     connect(toolbar_, &AppToolbar::playbackDriverChanged, this, [this](int driverIndex) {
@@ -526,7 +535,7 @@ MainWindow::MainWindow(QWidget* parent)
     loadingOverlay_->hide();
 
     // Export overlay: same full-central-area cover as the loading overlay, but with a
-    // *determinate* progress bar + stage label, driven by the off-thread XlsxExportWorker.
+    // *determinate* progress bar + stage label, driven by the off-thread ParquetExportWorker.
     exportOverlay_ = new QWidget(container_);
     exportOverlay_->setAutoFillBackground(true);
     {
@@ -537,7 +546,7 @@ MainWindow::MainWindow(QWidget* parent)
     auto* eol = new QVBoxLayout(exportOverlay_);
     eol->setAlignment(Qt::AlignCenter);
     eol->setSpacing(12);
-    exportStageLabel_ = new QLabel("Exporting to Excel…", exportOverlay_);
+    exportStageLabel_ = new QLabel("Exporting to Parquet…", exportOverlay_);
     exportStageLabel_->setAlignment(Qt::AlignCenter);
     eol->addWidget(exportStageLabel_);
     exportProgressBar_ = new QProgressBar(exportOverlay_);
@@ -547,6 +556,7 @@ MainWindow::MainWindow(QWidget* parent)
     exportOverlay_->hide();
 
     connect(toolbar_, &AppToolbar::pageSelected, stack, &QStackedWidget::setCurrentIndex);
+    toolbar_->setAnalyzePageWidgets(analyzePage_->viewControls(), analyzePage_->panelControls());
     connect(toolbar_, &AppToolbar::analyzeZoomInRequested, analyzePage_, &AnalysisPage::zoomIn);
     connect(toolbar_, &AppToolbar::analyzeZoomOutRequested, analyzePage_, &AnalysisPage::zoomOut);
     connect(toolbar_, &AppToolbar::analyzePanLeftRequested, analyzePage_, &AnalysisPage::panLeft);
@@ -608,7 +618,7 @@ MainWindow::MainWindow(QWidget* parent)
                 (reason.isEmpty() ? QStringLiteral("The file could not be read.") : reason));
     });
 
-    connect(playback_, &PlaybackController::exportRequested, this, &MainWindow::onExportXlsxRequested);
+    connect(playback_, &PlaybackController::exportRequested, this, &MainWindow::onExportParquetRequested);
 
     connect(playback_, &PlaybackController::entered, this,
             [this](const tnrp::HeaderRow& hdr, float currentTime) {
@@ -757,6 +767,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(playback_, &PlaybackController::exited, this, [this] {
         inPlayback_ = false;
+        TrackMapService::instance().clearPlaybackSession();
         // Electron's resetSession(): no session, no events until live rows arrive.
         streamedEvents_.clear();
         playbackEvents_.clear();
@@ -925,34 +936,37 @@ MainWindow::~MainWindow() {
     tnr::diagnostics::setFatalFlushHandler({});
     if (playback_) playback_->shutdown();
     persistPairStateFromEngine();
-    // A lap-times dialog may still be reading the engine on the pool.
+    TrackMapService::instance().setEngine(nullptr);
+    // A lap-times dialog, map change or Analysis map may still be reading the
+    // engine on the pool.
     QThreadPool::globalInstance()->waitForDone();
     // The engine's destructor stops the UDP thread and flushes/closes any active
     // .tnrd stream. Reset explicitly so it tears down before the sink it points at.
     engine_.reset();
 }
 
-// Export the currently-loaded .tnrd clip to Excel. Mirrors the Electron flow
-// (renderer button → main-process save dialog + off-thread export + progress). The
-// libxlsxwriter-backed tnrp::exportTnrdFileToXlsx opens its own reader on the file,
-// so this is independent of the live SessionModel and works while a clip is loaded.
-void MainWindow::onExportXlsxRequested() {
+// Export the currently-loaded .tnrd clip to Parquet. Mirrors the Electron flow
+// (renderer button → main-process folder dialog + off-thread export + progress).
+// tnrp::exportTnrdFileToParquet opens its own reader on the file, so this is
+// independent of the live SessionModel and works while a clip is loaded. The
+// library creates "<recording>_parquet" (numbered when taken) inside the folder
+// the user picks.
+void MainWindow::onExportParquetRequested() {
     if (exporting_) return;   // one export at a time (the overlay is up meanwhile)
 
     const QString src = playback_ ? playback_->loadedPath() : QString();
     if (src.isEmpty()) {
-        QMessageBox::warning(this, "Export to Excel", "No session file is loaded.");
+        QMessageBox::warning(this, "Export to Parquet", "No session file is loaded.");
         return;
     }
 
     const QFileInfo srcInfo(src);
     const QString lastDirectory = lastDialogDirectory();
-    const QDir exportDirectory(lastDirectory.isEmpty() ? srcInfo.absolutePath() : lastDirectory);
-    const QString defaultPath = exportDirectory.filePath(srcInfo.completeBaseName() + ".xlsx");
-    const QString dest = QFileDialog::getSaveFileName(
-        this, "Export to Excel", defaultPath, "Excel Workbook (*.xlsx)");
-    if (dest.isEmpty()) return;   // cancelled
-    rememberDialogDirectory(dest);
+    const QString startDirectory = lastDirectory.isEmpty() ? srcInfo.absolutePath() : lastDirectory;
+    const QString destDir = QFileDialog::getExistingDirectory(
+        this, "Export to Parquet", startDirectory, QFileDialog::ShowDirsOnly);
+    if (destDir.isEmpty()) return;   // cancelled
+    rememberDialogDirectory(destDir, true);
 
     exporting_ = true;
     exportStageLabel_->setText("Preparing export…");
@@ -963,32 +977,33 @@ void MainWindow::onExportXlsxRequested() {
 
     // Run off the GUI thread; progress()/finished() arrive here as queued signals.
     exportThread_ = new QThread(this);
-    auto* worker = new XlsxExportWorker(src, dest);
+    auto* worker = new ParquetExportWorker(src, destDir);
     worker->moveToThread(exportThread_);
-    connect(exportThread_, &QThread::started, worker, &XlsxExportWorker::run);
-    connect(worker, &XlsxExportWorker::progress, this, [this](int pct, const QString& stage) {
+    connect(exportThread_, &QThread::started, worker, &ParquetExportWorker::run);
+    connect(worker, &ParquetExportWorker::progress, this, [this](int pct, const QString& stage) {
         exportProgressBar_->setValue(pct);
         exportStageLabel_->setText(stage);
     });
-    connect(worker, &XlsxExportWorker::finished, this, [this, dest](bool ok, const QString& error) {
+    connect(worker, &ParquetExportWorker::finished, this,
+            [this](bool ok, const QString& folder, const QString& error) {
         exportOverlay_->hide();
         exporting_ = false;
         exportThread_ = nullptr;   // deleted below via the thread's finished() chain
         if (ok) {
             ToastSpec spec;
-            spec.label = "Exported to Excel";
-            spec.sub   = QFileInfo(dest).fileName();
+            spec.label = "Exported to Parquet";
+            spec.sub   = QFileInfo(folder).fileName();
             spec.color = QColor("#37872D");
             spec.persistent = false;
             spec.dismissesPersistent = false;
             if (toasts_) toasts_->show(spec);
-        } else {
+        } else if (error != "cancelled") {
             QMessageBox::warning(this, "Export Failed",
-                error.isEmpty() ? "Could not export the session to Excel." : error);
+                error.isEmpty() ? "Could not export the session to Parquet." : error);
         }
     });
     // Tear-down: stop the thread's loop once the export finishes, then delete both.
-    connect(worker, &XlsxExportWorker::finished, exportThread_, &QThread::quit);
+    connect(worker, &ParquetExportWorker::finished, exportThread_, &QThread::quit);
     connect(exportThread_, &QThread::finished, worker, &QObject::deleteLater);
     connect(exportThread_, &QThread::finished, exportThread_, &QObject::deleteLater);
     exportThread_->start();
@@ -1260,6 +1275,15 @@ void MainWindow::setTheme(const QString& theme) {
     // Re-evaluate whether the toolbar needs the window-colour override for the new
     // mode (forced light/dark over an opposite OS scheme).
     if (toolbar_) toolbar_->updateColorScheme();
+    refreshAnalysisMapTheme();
+}
+
+// Tells the Analysis map directly once the palette is in place, and again on
+// the next event-loop pass for styles whose palette follows the theme later.
+void MainWindow::refreshAnalysisMapTheme() {
+    if (!analyzePage_) return;
+    analyzePage_->refreshMapTheme();
+    QTimer::singleShot(0, this, [this] { analyzePage_->refreshMapTheme(); });
 }
 
 void MainWindow::setStyleName(const QString& name) {
@@ -1308,6 +1332,7 @@ void MainWindow::setStyleName(const QString& name) {
     }
     // The toolbar override only applies under Breeze, so re-evaluate on style change.
     if (toolbar_) toolbar_->updateColorScheme();
+    refreshAnalysisMapTheme();
 }
 
 void MainWindow::setToolbarLabels(bool checked) {
@@ -1358,6 +1383,40 @@ void MainWindow::setHeaderCompactLevel(int level) {
     if (sessionPage_) sessionPage_->setHeaderCompactLevel(level);
     dirtySession_ = true;
     scheduleUiRefresh();
+}
+
+void MainWindow::setAllDensity(tnr::DensityMode mode) {
+    for (int i = 0; i < static_cast<int>(tnr::CompactSection::Count_); ++i)
+        setDensitySection(static_cast<tnr::CompactSection>(i), mode);
+}
+
+std::optional<tnr::DensityMode> MainWindow::uniformDensity() const {
+    using CS = tnr::CompactSection;
+    std::optional<tnr::DensityMode> shared;
+    for (int i = 0; i < static_cast<int>(CS::Count_); ++i) {
+        const auto section = static_cast<CS>(i);
+        if (section == CS::OverviewTyres || section == CS::SessionWeather ||
+            section == CS::SessionHeader)
+            continue;
+        const tnr::DensityMode mode = densitySection(section);
+        if (shared && *shared != mode) return std::nullopt;
+        shared = mode;
+    }
+    return shared;
+}
+
+quint64 MainWindow::udpDatagramsReceived() const {
+    return engine_ ? engine_->datagramsReceived() : 0;
+}
+
+void MainWindow::showFirstTimeSetup() {
+    if (firstTimeSetup_) {
+        firstTimeSetup_->raise();
+        return;
+    }
+    auto* setup = new FirstTimeSetup(this, this);
+    firstTimeSetup_ = setup;
+    setup->open();
 }
 
 void MainWindow::setCompactSection(tnr::CompactSection s, bool on) {
@@ -1849,6 +1908,10 @@ QString MainWindow::applyUdpConfiguration(
 }
 
 void MainWindow::showUdpListenerStatus(const QString& error) {
+    if (error != udpListenerError_) {
+        udpListenerError_ = error;
+        emit udpListenerStatusChanged(error);
+    }
     if (!toolbar_) return;
     static const QString kEnginePrefix = QStringLiteral("engine-startup:");
     toolbar_->setUdpError(error.startsWith(kEnginePrefix) ? error.mid(kEnginePrefix.size()) : error);
@@ -2055,7 +2118,9 @@ QString MainWindow::recreateEngine() {
     if (playback_) playback_->setEngine(nullptr);
     if (engine_) engine_->flushRecording();
     persistPairStateFromEngine();
-    // A lap-times subscription call may still be using the engine on the pool.
+    TrackMapService::instance().setEngine(nullptr);
+    // A lap-times subscription call, map change or Analysis map may still be
+    // using the engine on the pool.
     QThreadPool::globalInstance()->waitForDone();
     engine_.reset();
 
@@ -2105,14 +2170,17 @@ QString MainWindow::recreateEngine() {
         engine_ = std::make_unique<tnrp::Engine>(cfg, engineSink_);
         engine_->setDiagnosticsEnabled(additionalLoggingEnabled());
         if (playback_) playback_->setEngine(engine_.get());
+        TrackMapService::instance().setEngine(engine_.get());
         updatePlaybackDataRequirements();
         if (engine_->startUdp()) return {};
     } catch (const std::exception& error) {
         if (playback_) playback_->setEngine(nullptr);
+        TrackMapService::instance().setEngine(nullptr);
         engine_.reset();
         return QStringLiteral("engine-startup:") + QString::fromUtf8(error.what());
     } catch (...) {
         if (playback_) playback_->setEngine(nullptr);
+        TrackMapService::instance().setEngine(nullptr);
         engine_.reset();
         return QStringLiteral("engine-startup:Unknown native engine exception");
     }
@@ -2416,6 +2484,8 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     }
     if (handleRecordingErrorRow(json)) return;
     if (handleRecordingFinishedRow(json)) return;
+    // Modded maps: the session's map choice, and changes to the saved maps.
+    if (TrackMapService::instance().handleRow(json)) return;
 
     // Playback lifecycle/state payloads belong to the engine-backed player
     // facade, not AnyRow. Handling playback_loaded synchronously flips

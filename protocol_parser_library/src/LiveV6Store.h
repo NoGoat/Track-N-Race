@@ -70,6 +70,10 @@ public:
     // built an image. False when no session is held.
     bool rebuildStrategy(float through, int minimumStops, const TeamColorOverrides& teamColors,
                          StrategyProcessor& out);
+    // The live session as an archive holding only `types` (every car), with
+    // the shared records when `shared`. Blocks until the writer thread has
+    // built the image; null when no session is held.
+    std::unique_ptr<TnrdV6Archive> openArchive(const std::vector<uint8_t>& types, bool shared);
 
     struct ReadStats {
         size_t queuedReads{};

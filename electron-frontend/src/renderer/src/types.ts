@@ -408,6 +408,49 @@ export interface MarshalZoneInfo {
   flag: number         // -1=invalid, 0=none, 1=green, 2=blue, 3=yellow
 }
 
+// ── Track maps (tnrp/TrackMaps.h) ──────────────────────────────────────────
+
+export interface TrackMapSettings { modded: boolean; generate: boolean }
+export interface TrackMapResult { ok: boolean; id: string; error: string }
+export interface TrackMapEdit {
+  display_name?: string
+  track_name?: string
+  circuit_name?: string
+  rotation_deg?: number
+}
+
+// Which map a session uses: the engine's "track_map" row.
+export interface TrackMapResolution {
+  type: 'track_map'
+  scope: 'live' | 'playback' | 'recording'
+  track_id: number
+  track_length_m: number
+  track_key: string
+  map_id: string
+  reason: 'pinned' | 'track_id' | 'length' | 'geometry' | 'generated' | 'none'
+  checked: boolean
+  mismatch: boolean
+  fit_m: number
+  generating: boolean
+}
+
+export interface TrackMapCatalogEntry {
+  id: string
+  source: 'builtin' | 'generated' | 'imported' | 'edited'
+  name: string
+  circuit: string
+  track_id: number
+  track_length_m: number
+  created_at: number
+  created_from: string
+  laps_used: number
+}
+
+export interface TrackMapCatalog {
+  maps: TrackMapCatalogEntry[]
+  pins: Record<string, string>
+}
+
 export interface SessionMsg {
   type: 'session'
   ts: string
@@ -736,6 +779,37 @@ export interface PairServiceState {
   error: string | null
 }
 
+export interface FirstTimeSetupState {
+  show: boolean
+  forced: boolean
+  defaultRecordingDirectory: string
+}
+
+export interface SetupNetworkInterface {
+  name: string
+  kind: 'wifi' | 'ethernet' | 'other' | 'virtual' | 'loopback'
+  address: string
+}
+
+export interface SetupFirewallStatus {
+  supported: boolean
+  enabled: boolean
+  publicNetwork: boolean
+  privateNetwork: boolean
+  domainNetwork: boolean
+  allowed: 'yes' | 'no' | 'unknown'
+  blockRule: boolean
+  error: string
+}
+
+export interface SetupUdpProbe {
+  available: boolean
+  running: boolean
+  datagrams: number
+  accepted: number
+  lastFormat: number
+}
+
 declare global {
   interface DebugSettingsPayload {
     additionalLogging: boolean
@@ -768,6 +842,17 @@ declare global {
       getStatus: () => Promise<{ ok: boolean; error?: string }>
       restart: () => Promise<{ ok: boolean; error?: string }>
       onStatusChange: (cb: (status: { ok: boolean; error?: string }) => void) => () => void
+    }
+    setupBridge: {
+      getState: () => FirstTimeSetupState
+      complete: () => Promise<void>
+      networkInterfaces: () => Promise<SetupNetworkInterface[]>
+      firewallStatus: () => Promise<SetupFirewallStatus>
+      allowThroughFirewall: () => Promise<string>
+      udpProbe: () => Promise<SetupUdpProbe>
+      freeBytes: (directory: string) => Promise<number | null>
+      ensureDirectory: (directory: string) => Promise<boolean>
+      onOpen: (cb: (state: FirstTimeSetupState) => void) => () => void
     }
     debugBridge: {
       get: () => Promise<DebugSettingsPayload>
@@ -842,7 +927,7 @@ declare global {
       getAllLapsData: (rowTypeMask?: number) => void
       getWindowData: (windowSeconds: number, rowTypeMask?: number) => void
       close: () => void
-      exportXlsx: () => Promise<{ ok: boolean; error?: string }>
+      exportParquet: () => Promise<{ ok: boolean; folder?: string; error?: string }>
       onExportProgress: (cb: (pct: number, stage: string) => void) => () => void
       onStateChange: (cb: (state: PlaybackState) => void) => () => void
       onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void
@@ -863,7 +948,33 @@ declare global {
         comparisonDriverIndex: number,
         sectorDelta: boolean,
       ) => Promise<unknown | null>
+      map: (
+        mode: 'dominance' | 'ers' | 'harvest' | 'inputs' | 'speed' | 'braking',
+        currentLapNum: number,
+        currentSource: 'file1' | 'file2',
+        currentDriverIndex: number,
+        comparisonLapNum: number | null,
+        comparisonSource: 'file1' | 'file2',
+        comparisonDriverIndex: number,
+      ) => Promise<unknown | null>
       closeFile: () => void
+    }
+    trackMapsBridge: {
+      getSettings: () => Promise<TrackMapSettings>
+      setSettings: (value: Partial<TrackMapSettings>) => Promise<TrackMapSettings>
+      onSettings: (cb: (settings: TrackMapSettings) => void) => () => void
+      catalog: () => Promise<unknown>
+      get: (id: string) => Promise<unknown | null>
+      state: () => Promise<unknown | null>
+      pin: (trackKey: string, mapId: string) => Promise<void>
+      rename: (id: string, name: string) => Promise<TrackMapResult>
+      remove: (id: string) => Promise<TrackMapResult>
+      edit: (id: string, value: TrackMapEdit) => Promise<TrackMapResult>
+      importMaps: () => Promise<TrackMapResult>
+      exportMap: (id: string, suggestedName: string) => Promise<TrackMapResult>
+      generateFromRecording: () => Promise<TrackMapResult>
+      resolveRecording: (filePath: string) => Promise<unknown | null>
+      openFolder: () => Promise<void>
     }
 
   }

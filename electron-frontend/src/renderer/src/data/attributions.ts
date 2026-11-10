@@ -22,7 +22,6 @@ import cascadiaLicense from '../assets/licenses/cascadia-code.txt?raw'
 import zlibLicense from '../assets/licenses/zlib.txt?raw'
 import zstandardLicense from '../assets/licenses/zstandard.txt?raw'
 import glazeLicense from '../assets/licenses/glaze.txt?raw'
-import libxlsxwriterLicense from '../assets/licenses/libxlsxwriter.txt?raw'
 import libsodiumLicense from '../assets/licenses/libsodium.txt?raw'
 import cpaceLicense from '../assets/licenses/cpace.txt?raw'
 import nodeAddonApiLicense from '../assets/licenses/node-addon-api.txt?raw'
@@ -196,14 +195,6 @@ export const ATTRIBUTIONS: Attribution[] = [
     license: 'MIT',
     homepage: 'https://github.com/stephenberry/glaze',
     licenseText: glazeLicense,
-    category: 'node-addon',
-  },
-  {
-    name: 'libxlsxwriter',
-    version: '1.2.4',
-    license: 'BSD-2-Clause',
-    homepage: 'https://libxlsxwriter.github.io',
-    licenseText: libxlsxwriterLicense,
     category: 'node-addon',
   },
   {
