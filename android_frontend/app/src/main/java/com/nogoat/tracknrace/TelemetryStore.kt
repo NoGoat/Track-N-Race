@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.json.JSONObject
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -377,6 +378,25 @@ internal class TelemetryStore {
         if (result.telemetryRows > 0) hotRows.addAndGet(result.telemetryRows.toLong())
         if (result.malformed && malformedReported.compareAndSet(false, true)) {
             showMessage("A malformed native telemetry batch was discarded")
+        }
+    }
+
+    /**
+     * Listening for the game: the open graph page's history as the engine
+     * read it back from the session it keeps. Decoded here, on the engine's
+     * thread, as [payload] is only lent; each history then takes what is
+     * older than the samples it holds.
+     */
+    fun acceptLiveHistory(payload: ByteBuffer) {
+        val listening = graphHistories.values.filter { it.enabled }
+        if (listening.isEmpty()) return
+        val decoded = V6HistoryDecoder.decode(payload, listening.map { it.family }) ?: return
+        post {
+            if (playbackActive) return@post
+            for (history in listening) {
+                decoded.samples[history.family]?.let { history.backfill(it.times, it.columns, Double.POSITIVE_INFINITY) }
+                decoded.laps?.let(history::backfillLaps)
+            }
         }
     }
 

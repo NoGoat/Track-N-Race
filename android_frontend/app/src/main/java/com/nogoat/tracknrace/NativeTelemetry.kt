@@ -1,5 +1,7 @@
 package com.nogoat.tracknrace
 
+import java.nio.ByteBuffer
+
 internal class NativeTelemetry(
     private val listener: Listener,
 ) {
@@ -7,6 +9,13 @@ internal class NativeTelemetry(
         fun onTelemetryRow(json: String)
 
         fun onTelemetryBinary(bytes: ByteArray)
+
+        /**
+         * A graph page's history read back from the session the engine keeps,
+         * as a V6H1 payload ([V6HistoryDecoder]). [payload] is the engine's
+         * memory, valid only until this returns.
+         */
+        fun onTelemetryHistory(payload: ByteBuffer)
     }
 
     companion object {
@@ -31,7 +40,25 @@ internal class NativeTelemetry(
         external fun nativeExportParquet(path: String, destDir: String): String
     }
 
-    fun start(port: Int): String? = nativeStart(port)
+    /**
+     * Listens for the game on [port], copying every datagram unchanged to
+     * [forwardTargets]; an error message, or null when the listener is bound.
+     */
+    fun start(port: Int, forwardTargets: List<UdpForwardTarget> = emptyList()): String? = nativeStart(
+        port,
+        Array(forwardTargets.size) { forwardTargets[it].address },
+        IntArray(forwardTargets.size) { forwardTargets[it].port },
+    )
+
+    /**
+     * Rebinds the running listener to [port] and [forwardTargets] without
+     * ending its session; an error message, or null when it is bound.
+     */
+    fun restartUdp(port: Int, forwardTargets: List<UdpForwardTarget>): String? = nativeRestartUdp(
+        port,
+        Array(forwardTargets.size) { forwardTargets[it].address },
+        IntArray(forwardTargets.size) { forwardTargets[it].port },
+    )
 
     fun stop() = nativeStop()
 
@@ -64,6 +91,14 @@ internal class NativeTelemetry(
 
     /** While listening for the game: whether the Strategy snapshot is streamed. */
     fun setLiveStrategy(enabled: Boolean) = nativeSetLiveStrategy(enabled)
+
+    /**
+     * While listening for the game: the open graph page's row families
+     * ([rowMask] of [DataRow]s, 0 for none) are streamed, and their history is
+     * read back from the session the engine keeps, [windowSeconds] behind now
+     * or all of it when negative. It arrives at [Listener.onTelemetryHistory].
+     */
+    fun setLiveHistory(rowMask: Int, windowSeconds: Float) = nativeSetLiveHistory(rowMask, windowSeconds)
 
     /**
      * A paired phone's lap_delta data for the open recording, or null. Each
@@ -100,7 +135,14 @@ internal class NativeTelemetry(
         listener.onTelemetryBinary(bytes)
     }
 
-    private external fun nativeStart(port: Int): String?
+    @Suppress("unused") // Invoked by JNI on libtnrp's live read thread.
+    private fun onNativeHistory(payload: ByteBuffer) {
+        listener.onTelemetryHistory(payload)
+    }
+
+    private external fun nativeStart(port: Int, forwardAddresses: Array<String>, forwardPorts: IntArray): String?
+
+    private external fun nativeRestartUdp(port: Int, forwardAddresses: Array<String>, forwardPorts: IntArray): String?
 
     private external fun nativeStop()
 
@@ -123,6 +165,8 @@ internal class NativeTelemetry(
     private external fun nativeSetRequirements(streamMask: Int, v6Types: IntArray)
 
     private external fun nativeSetLiveStrategy(enabled: Boolean)
+
+    private external fun nativeSetLiveHistory(rowMask: Int, windowSeconds: Float)
 
     private external fun nativeLapDelta(
         currentLap: Int,

@@ -67,7 +67,7 @@ internal enum class GraphWindow(val id: String, val label: String, val seconds: 
         }
 
     companion object {
-        val DEFAULT = S30
+        val DEFAULT = CURRENT
         val LAPS = entries.filter { it.isLap }
         val TIMES = entries.filter { !it.isLap }
 
@@ -86,7 +86,9 @@ private fun Double.orLowest(): Double = if (isFinite()) this else Double.NEGATIV
  * fetched from the recorded laps that cover the window and put in front of
  * what the stream has delivered since. The lap modes draw recorded laps by
  * distance; the first lap's fuel gives the fuel axis its starting load, as on
- * the desktop. Each [GraphFamily] keeps its own laps and history.
+ * the desktop. Each [GraphFamily] keeps its own laps and history. Listening
+ * for the game there is no recording to ask: the engine keeps the session,
+ * and the histories are refilled from it ([syncLive]).
  *
  * Compose state is written on the main thread only; replies are parsed on
  * the socket thread and posted across.
@@ -94,6 +96,8 @@ private fun Double.orLowest(): Double = if (isFinite()) this else Double.NEGATIV
 internal class GraphsController(
     context: Context,
     private val store: TelemetryStore,
+    /** Asks the listening engine for the open page's history, so many seconds back or all of it when infinite; false when not listening for the game. */
+    private val liveHistoryRequester: (Double) -> Boolean,
     private val lapRequester: (Long, Int, Collection<String>) -> Boolean,
 ) {
     private data class Pending(
@@ -137,6 +141,11 @@ internal class GraphsController(
     private val families = GraphFamily.entries.associateWith { FamilyLaps(it) }
     private var initialFuelSentAt = 0L
     private var initialFuel = Float.NaN
+    // Listening for the game: the histories last refilled from the engine's
+    // session, their epochs then, and how far back.
+    private var liveFamilies = emptyList<GraphFamily>()
+    private var liveEpochs = emptyList<Int>()
+    private var liveWindow = 0.0
 
     /** Bumped when a recorded lap arrives, so a chart drawing it redraws. */
     var lapsVersion by mutableIntStateOf(0)
@@ -171,7 +180,7 @@ internal class GraphsController(
     /** The choices on offer: Selected needs a recording, as on the desktop. */
     fun available(window: GraphWindow): Boolean = window != GraphWindow.SELECTED || store.playbackCatalog.active
 
-    /** The window a chart shows: its own if still on offer, else the global one, else 30 s. */
+    /** The window a chart shows: its own if still on offer, else the global one, else the current lap. */
     fun windowOf(chartId: String): GraphWindow {
         windowOverrides[chartId]?.takeIf(::available)?.let { return it }
         return globalWindow.takeIf(::available) ?: GraphWindow.DEFAULT
@@ -444,6 +453,26 @@ internal class GraphsController(
             val times = DoubleArray(lap.size) { lap.startSessionTime + lap.times[it] }
             history.backfill(times, lap.values, cursor)
         }
+    }
+
+    /**
+     * Main thread, on the same slow tick, while listening for the game: has
+     * the engine refill the visible [families]' histories from the session it
+     * keeps, [windowSeconds] behind now, or all of it ([wholeSession]) for the
+     * lap modes. Asked again when a history starts over (its page opened, a
+     * flashback, a stall) or a chart shows more than was fetched.
+     */
+    fun syncLive(families: List<GraphFamily>, windowSeconds: Double, wholeSession: Boolean) {
+        if (store.playbackCatalog.active) return
+        val listening = families.filter { history(it).enabled }
+        val window = if (wholeSession) Double.POSITIVE_INFINITY else windowSeconds
+        if (listening.isEmpty() || window <= 0) return
+        val epochs = listening.map { history(it).epoch }
+        if (listening == liveFamilies && epochs == liveEpochs && window <= liveWindow) return
+        if (!liveHistoryRequester(window)) return
+        liveFamilies = listening
+        liveEpochs = epochs
+        liveWindow = window
     }
 
     /** The recorded laps covering the window behind the cursor that the history lacks, newest first. */

@@ -325,11 +325,13 @@ void UdpListener::runLoop(uint16_t, std::string, Handler,
 
 void UdpListener::stop() {
     running_.store(false);
-    if (rawSock_ != INVALID_RAW_SOCKET) {
-        const SOCKET socket = static_cast<SOCKET>(rawSock_);
-        rawSock_ = INVALID_RAW_SOCKET;
-        // To guarantee recvfrom unblocks on Linux, we send a dummy packet to ourselves.
-        // sockaddr_in we bound to might be INADDR_ANY, but 127.0.0.1 will reach it.
+    const bool hadSocket = rawSock_ != INVALID_RAW_SOCKET;
+    const SOCKET socket = static_cast<SOCKET>(rawSock_);
+    rawSock_ = INVALID_RAW_SOCKET;
+    if (hadSocket) {
+        // Wake recvfrom with a packet to ourselves so the thread sees running_
+        // at once; without it the receive timeout ends the wait. A socket
+        // bound to INADDR_ANY is reached through loopback.
         sockaddr_in name{};
         socklen_t namelen = sizeof(name);
         if (getsockname(socket, (sockaddr*)&name, &namelen) == 0) {
@@ -338,19 +340,24 @@ void UdpListener::stop() {
                 sockaddr_in dest{};
                 dest.sin_family = AF_INET;
                 dest.sin_port = name.sin_port;
-                dest.sin_addr.s_addr = inet_addr("127.0.0.1");
+                dest.sin_addr = name.sin_addr;
+                if (dest.sin_addr.s_addr == htonl(INADDR_ANY))
+                    dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
                 const char msg = 0;
                 ::sendto(dummy, &msg, 1, 0, (sockaddr*)&dest, sizeof(dest));
                 closeSock(dummy);
             }
         }
-        
+    }
+    // Join before closing: a descriptor closed under the receive thread can be
+    // handed to another thread's socket, which the loop would then read from.
+    if (thread_.joinable()) thread_.join();
+    if (hadSocket) {
         closeSock(socket);
 #ifdef _WIN32
         WSACleanup();
 #endif
     }
-    if (thread_.joinable()) thread_.join();
 }
 
 } // namespace tnrp

@@ -167,7 +167,14 @@ public:
 
     // ── Live ─────────────────────────────────────────────────────────────
     bool startUdp();                       // bind + begin receiving
-    bool restartUdp(uint16_t port, const std::string& bindAddress);
+    // Rebinds the listener on `port`/`bindAddress` and forwards to
+    // `forwardTargets` from then on. Only the socket changes: the live
+    // session, subscriptions, playback and pairing are kept. On a failed bind
+    // the engine stays up unbound (see udpLastError()). Blocks until the
+    // receive thread has stopped.
+    bool restartUdp(uint16_t port, const std::string& bindAddress,
+                    std::vector<UdpForwardTarget> forwardTargets);
+    void stopUdp();                        // stop receiving; the engine stays up
     std::string udpLastError() const;
     void setDiagnosticsEnabled(bool enabled);
     // Live UDP datagrams received since the engine started, whether or not
@@ -331,6 +338,9 @@ private:
     StrategyProcessor strategy_;
     TnrdReader    reader_;
     UdpListener   udp_;
+    // Serialises startUdp / restartUdp / stopUdp, and guards the listener
+    // fields of config_ (port, bindAddress, udpForwardTargets).
+    std::mutex    udpControlMutex_;
     PairServer    pairServer_;
 
     mutable std::mutex mutex_;             // guards all mutable state below

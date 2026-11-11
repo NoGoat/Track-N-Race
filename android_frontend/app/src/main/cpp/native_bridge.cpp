@@ -1,5 +1,7 @@
 #include <jni.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -39,6 +41,7 @@ public:
         jclass cls = env->GetObjectClass(receiver);
         onRow_ = env->GetMethodID(cls, "onNativeRow", "(Ljava/lang/String;)V");
         onBinary_ = env->GetMethodID(cls, "onNativeBinary", "([B)V");
+        onHistory_ = env->GetMethodID(cls, "onNativeHistory", "(Ljava/nio/ByteBuffer;)V");
         env->DeleteLocalRef(cls);
     }
 
@@ -86,7 +89,9 @@ public:
     // window's packed rows and its cold rows. The engine sends the panel rows
     // at the cursor straight after this. A V6 recording's seek carries columnar
     // history ("V6H1") instead of packed rows; the phone reads its history per
-    // lap and asks seeks for none, so that block is skipped.
+    // lap and asks seeks for none, so that block is skipped. Listening for the
+    // game, the same call carries a graph page's history refill
+    // (nativeSetLiveHistory): all history, as V6H1, which the app decodes.
     void onSeekFlush(std::shared_ptr<const std::vector<uint8_t>> binStore,
                      size_t binBegin, size_t binEnd, std::string&& coldJson,
                      float currentLapStart, int lapNum, bool allHistory,
@@ -103,6 +108,7 @@ public:
             const size_t len = binEnd - binBegin;
             const bool columnar = len >= 4 && std::memcmp(data, "V6H1", 4) == 0;
             if (!columnar) onBinary(data, len);
+            else if (allHistory) deliverHistory(data, len);
         }
         size_t start = 0;
         while (start < coldJson.size()) {
@@ -127,6 +133,21 @@ public:
         if (env->ExceptionCheck()) env->ExceptionClear();
     }
 
+    // The payload is lent for the call only: the app decodes it before
+    // returning, so a whole session's history is never copied to its heap.
+    void deliverHistory(const uint8_t* data, size_t len) {
+        JNIEnv* env = environment();
+        if (!env || !receiver_ || !onHistory_) return;
+
+        jobject value = env->NewDirectByteBuffer(
+            const_cast<uint8_t*>(data), static_cast<jlong>(len));
+        if (value) {
+            env->CallVoidMethod(receiver_, onHistory_, value);
+            env->DeleteLocalRef(value);
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+
 private:
     // An engine thread delivers many rows, so it attaches to the VM once and
     // stays attached until it exits, rather than around every row.
@@ -143,6 +164,7 @@ private:
     jobject receiver_{};
     jmethodID onRow_{};
     jmethodID onBinary_{};
+    jmethodID onHistory_{};
 };
 
 // Logical row ids (Engine's rowTypeOf) the Kotlin store consumes: telemetry (its
@@ -151,13 +173,18 @@ private:
 // libtnrp can produce -- race_event, motion, session_history_fastest (a full
 // lap/stint history per car in V6) -- would be marshalled through JNI and
 // JSON-parsed on the source thread only to be discarded. Strategy is added
-// only while its tab is open (nativeSetLiveStrategy). Control rows
+// only while its tab is open (nativeSetLiveStrategy), motion and motion_ex
+// only while a graph page keeps them (nativeSetLiveHistory). Control rows
 // (protocol_*, recording_error, ...) carry no row id and are never masked, and
 // recording ignores the mask, so TNRD files still contain every row.
 constexpr uint32_t kAndroidRowMask =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
     (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13);
 constexpr uint32_t kStrategyRowBit = 1u << 15;
+// The chart families a graph page may have refilled (Engine's historical rows):
+// telemetry, status, damage, lap, motion and motion_ex.
+constexpr uint32_t kHistoryRowMask =
+    (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 11) | (1u << 12);
 
 // One engine at a time: listening for the game, or playing a recording. A
 // call takes its own reference, so a slow seek or lap read finishing after
@@ -165,6 +192,13 @@ constexpr uint32_t kStrategyRowBit = 1u << 15;
 struct Session {
     std::unique_ptr<AndroidSink> sink;
     std::unique_ptr<tnrp::Engine> engine;
+
+    // Listening for the game: what the open page adds to kAndroidRowMask.
+    std::atomic<bool> liveStrategy{false};
+    std::atomic<uint32_t> liveHistoryMask{0};
+    std::atomic<float> liveHistoryWindow{0.0f};
+    // Started by nativeStart, as opposed to a recording being played.
+    bool listening = false;
 
     ~Session() { engine.reset(); }
 };
@@ -191,24 +225,44 @@ tnrp::Config androidConfig() {
     config.binaryPlayback = true;
     config.sparseV6Playback = true;
     config.columnarV6History = true;
-    // binaryPlayback also opts into retaining the live session in memory for
-    // the desktop's live-history reads (setHostVisible restore flushes,
-    // liveGetLapData for stored previous/fastest laps, deep Strategy
-    // rollback, live track-map matching). No Android feature reads that
-    // store: live charts accumulate every streamed sample in their own
-    // SampleHistory, and every lap read goes through the recording player or
-    // the paired desktop. Retaining it left a full session growing in phone
-    // RAM precisely where a persistent listener in the background needs the
-    // opposite, so it is off here. If a live track-map or native rollback
-    // feature ever reaches Android, revisit this instead of opting back in
-    // silently. The concession: switching recording on mid-session no longer
-    // backfills the file from the session's start, because no memory copy is
-    // kept for the writer to hand the file.
-    config.retainLiveSession = false;
+    // binaryPlayback also keeps the live session in memory
+    // (Config::retainLiveSession), as on the desktop: a graph page's history is
+    // refilled from it (nativeSetLiveHistory), and a recording switched on
+    // mid-session starts from the session's start.
     return config;
 }
 
 std::string utf8(JNIEnv* env, jstring value);
+
+// The destinations every datagram is copied to, from parallel arrays.
+std::vector<tnrp::UdpForwardTarget> forwardTargets(
+    JNIEnv* env, jobjectArray addresses, jintArray ports) {
+    std::vector<tnrp::UdpForwardTarget> targets;
+    if (!addresses || !ports) return targets;
+    const jsize count = std::min(env->GetArrayLength(addresses), env->GetArrayLength(ports));
+    std::vector<jint> values(static_cast<size_t>(count));
+    env->GetIntArrayRegion(ports, 0, count, values.data());
+    targets.reserve(static_cast<size_t>(count));
+    for (jsize index = 0; index < count; ++index) {
+        auto* address = static_cast<jstring>(env->GetObjectArrayElement(addresses, index));
+        targets.push_back({utf8(env, address), static_cast<uint16_t>(values[static_cast<size_t>(index)])});
+        env->DeleteLocalRef(address);
+    }
+    return targets;
+}
+
+// Listening for the game: the rows streamed and the history kept for the open
+// page. The engine backfills a history family when it is newly asked for, so
+// `refill` asks for none first: the phone's history of a family starts over
+// whenever its page opens, whatever the engine was last asked.
+void applyLiveRequirements(Session& current, bool refill) {
+    const uint32_t history = current.liveHistoryMask.load();
+    const float window = current.liveHistoryWindow.load();
+    const uint32_t stream = kAndroidRowMask | history |
+        (current.liveStrategy.load() ? kStrategyRowBit : 0u);
+    if (refill) current.engine->setDataRequirements(stream, 0, window);
+    current.engine->setDataRequirements(stream, history, window);
+}
 
 } // namespace
 
@@ -219,14 +273,16 @@ extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_nogoat_tracknrace_NativeTelemetry_nativeStart(
-    JNIEnv* env, jobject receiver, jint port) {
+    JNIEnv* env, jobject receiver, jint port, jobjectArray forwardAddresses, jintArray forwardPorts) {
     std::lock_guard lock(gMutex);
     stopLocked();
 
     tnrp::Config config = androidConfig();
     config.port = static_cast<uint16_t>(port);
+    config.udpForwardTargets = forwardTargets(env, forwardAddresses, forwardPorts);
 
     auto next = std::make_shared<Session>();
+    next->listening = true;
     next->sink = std::make_unique<AndroidSink>(env, receiver);
     next->engine = std::make_unique<tnrp::Engine>(config, next->sink.get());
     if (!next->engine->startUdp()) {
@@ -236,6 +292,20 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeStart(
     next->engine->setDataRequirements(kAndroidRowMask, 0, 0.0f);
     gSession = std::move(next);
     return nullptr;
+}
+
+// Rebinds the running listener; its session, recording and requirements stay.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeRestartUdp(
+    JNIEnv* env, jobject, jint port, jobjectArray forwardAddresses, jintArray forwardPorts) {
+    auto current = session();
+    if (!current || !current->listening) return env->NewStringUTF("No UDP listener to restart");
+    if (current->engine->restartUdp(static_cast<uint16_t>(port), "0.0.0.0",
+                                    forwardTargets(env, forwardAddresses, forwardPorts))) {
+        return nullptr;
+    }
+    const std::string error = current->engine->udpLastError();
+    return env->NewStringUTF(error.empty() ? "Unable to bind UDP listener" : error.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -337,15 +407,30 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeSetRequirements(
 }
 
 // Live listening keeps kAndroidRowMask whatever page is open; the Strategy
-// snapshot is the one family worth switching off while nothing shows it. Its
-// inputs are always parsed, so turning it on emits a current snapshot at once.
+// snapshot is worth switching off while nothing shows it. Its inputs are
+// always parsed, so turning it on emits a current snapshot at once.
 extern "C" JNIEXPORT void JNICALL
 Java_com_nogoat_tracknrace_NativeTelemetry_nativeSetLiveStrategy(
     JNIEnv*, jobject, jboolean enabled) {
     auto current = session();
     if (!current) return;
-    current->engine->setDataRequirements(
-        kAndroidRowMask | (enabled ? kStrategyRowBit : 0u), 0, 0.0f);
+    current->liveStrategy.store(enabled == JNI_TRUE);
+    applyLiveRequirements(*current, false);
+}
+
+// Listening for the game: the open graph page's row families (rowMask, 0 for
+// none) are streamed, and their history is read back from the session the
+// engine keeps, windowSeconds behind now or all of it when negative. It
+// arrives through AndroidSink::onSeekFlush as V6H1. Motion and motion_ex are
+// streamed only while a page asks for them here.
+extern "C" JNIEXPORT void JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeSetLiveHistory(
+    JNIEnv*, jobject, jint rowMask, jfloat windowSeconds) {
+    auto current = session();
+    if (!current) return;
+    current->liveHistoryMask.store(static_cast<uint32_t>(rowMask) & kHistoryRowMask);
+    current->liveHistoryWindow.store(windowSeconds);
+    applyLiveRequirements(*current, true);
 }
 
 extern "C" JNIEXPORT jstring JNICALL

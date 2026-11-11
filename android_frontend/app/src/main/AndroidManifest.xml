@@ -41,8 +41,9 @@
             android:theme="@style/QrScannerTheme"
             android:windowSoftInputMode="stateAlwaysHidden" />
         <!-- The persistent listener: owns the telemetry session from the
-             foreground's onStop until it is stopped. stopWithTask="false" keeps
-             the sticky service schedulable after the task is swiped away. -->
+             foreground's onStop until it is stopped. stopWithTask="false" has
+             the service told when the task is swiped away (onTaskRemoved),
+             where it stops itself and suspends the session in order. -->
         <service
             android:name=".ListenerService"
             android:exported="false"

@@ -1881,6 +1881,31 @@ QVector<UdpForwardTargetSetting> MainWindow::udpForwardTargets() const {
     return targets;
 }
 
+// The saved forwarding channels as the engine takes them; none while forwarding is off.
+static std::vector<tnrp::UdpForwardTarget> engineForwardTargets(
+    bool forwardingEnabled, const QVector<UdpForwardTargetSetting>& targets)
+{
+    std::vector<tnrp::UdpForwardTarget> result;
+    if (!forwardingEnabled) return result;
+    for (const UdpForwardTargetSetting& target : targets) {
+        const QString address = target.address.trimmed();
+        if (address.isEmpty() || target.port < 1 || target.port > 65535)
+            continue;
+        result.push_back({address.toStdString(), static_cast<uint16_t>(target.port)});
+    }
+    return result;
+}
+
+// As Electron: a failed bind leaves the engine running unbound, so file
+// analysis, playback and pairing still work; only UDP status reports it.
+static QString udpBindError(const tnrp::Engine& engine, int port) {
+    const QString nativeError = QString::fromStdString(engine.udpLastError());
+    if (!nativeError.isEmpty()) return nativeError;
+    return QString("Failed to bind to UDP port %1.\n"
+                   "Is another telemetry tool or Track-N-Race already open?")
+        .arg(port);
+}
+
 QString MainWindow::applyUdpConfiguration(
     int port, const QString& bindAddress, bool forwardingEnabled,
     const QVector<UdpForwardTargetSetting>& targets)
@@ -1902,7 +1927,18 @@ QString MainWindow::applyUdpConfiguration(
     settings.setValue("udp/forwardTargets",
                       QJsonDocument(serializedTargets).toJson(QJsonDocument::Compact));
 
-    const QString error = recreateEngine();
+    // Only the listener is rebound: the engine keeps its live session, the
+    // pages' data requirements, an open recording and paired devices. Without
+    // an engine (its startup failed) there is one to create first.
+    QString error;
+    if (!engine_) {
+        error = recreateEngine();
+    } else if (!engine_->restartUdp(static_cast<uint16_t>(udpPort()),
+                                    udpBindAddress().toStdString(),
+                                    engineForwardTargets(udpForwardingEnabled(),
+                                                         udpForwardTargets()))) {
+        error = udpBindError(*engine_, udpPort());
+    }
     showUdpListenerStatus(error);
     return error;
 }
@@ -2111,10 +2147,8 @@ void MainWindow::syncTrendsDriver() {
 
 QString MainWindow::recreateEngine() {
     lastRaceLeader_.reset();
-    // Config owns forwarding targets, so applying a changed target list requires
-    // the same stop/create/start lifecycle used by Electron's bridge manager.
-    // This is host adaptation only: the shared library and its public API remain
-    // unchanged.
+    // Startup, and the fallback when no engine exists. A changed UDP
+    // configuration rebinds the running engine instead (applyUdpConfiguration).
     if (playback_) playback_->setEngine(nullptr);
     if (engine_) engine_->flushRecording();
     persistPairStateFromEngine();
@@ -2156,15 +2190,7 @@ QString MainWindow::recreateEngine() {
     cfg.loggingEnabled  = wantRecord && !outputDirectory.isEmpty() && !inPlayback_;
     cfg.outputDirectory = outputDirectory.toStdString();
     cfg.recordingScopes = recordingScopes();
-    if (udpForwardingEnabled()) {
-        for (const UdpForwardTargetSetting& target : udpForwardTargets()) {
-            const QString address = target.address.trimmed();
-            if (address.isEmpty() || target.port < 1 || target.port > 65535)
-                continue;
-            cfg.udpForwardTargets.push_back({address.toStdString(),
-                                             static_cast<uint16_t>(target.port)});
-        }
-    }
+    cfg.udpForwardTargets = engineForwardTargets(udpForwardingEnabled(), udpForwardTargets());
 
     try {
         engine_ = std::make_unique<tnrp::Engine>(cfg, engineSink_);
@@ -2185,13 +2211,7 @@ QString MainWindow::recreateEngine() {
         return QStringLiteral("engine-startup:Unknown native engine exception");
     }
 
-    // As Electron: a failed bind leaves the engine running unbound, so file
-    // analysis, playback and pairing still work; only UDP status reports it.
-    const QString nativeError = QString::fromStdString(engine_->udpLastError());
-    if (!nativeError.isEmpty()) return nativeError;
-    return QString("Failed to bind to UDP port %1.\n"
-                   "Is another telemetry tool or Track-N-Race already open?")
-        .arg(udpPort());
+    return udpBindError(*engine_, udpPort());
 }
 
 bool MainWindow::handleRecordingErrorRow(const QByteArray& json) {

@@ -200,8 +200,8 @@ public:
     QString udpBindAddress() const { return settings.value("udp/bindAddress", "0.0.0.0").toString(); }
     bool    udpForwardingEnabled() const { return settings.value("udp/forwardingEnabled", false).toBool(); }
     QVector<UdpForwardTargetSetting> udpForwardTargets() const;
-    // Persists the normalized draft first, then recreates the host-owned engine
-    // so Config::udpForwardTargets takes effect. Returns an empty string on success.
+    // Persists the normalized draft first, then rebinds the engine's listener
+    // in place (Engine::restartUdp). Returns an empty string on success.
     QString applyUdpConfiguration(int port, const QString& bindAddress,
                                   bool forwardingEnabled,
                                   const QVector<UdpForwardTargetSetting>& targets);
@@ -387,7 +387,7 @@ private:
     // engine runs on a fresh identity and must not overwrite the pairings.
     bool                          keepStoredPairState_ = false;
     void applyEngineLogging();   // push wantRecord/outputDirectory to the engine
-    QString recreateEngine();    // stop/create/start using the current persisted host config
+    QString recreateEngine();    // stop/create/start using the current persisted host config (startup)
     void showUdpListenerStatus(const QString& error);   // titlebar "UDP ERROR"; empty clears it
     QString udpListenerError_;
     QPointer<QWidget> firstTimeSetup_;   // FirstTimeSetup while it is open

@@ -19,6 +19,15 @@ function storedTeamColorOverrides(): TeamColorOverrides {
   return normalizeTeamColorOverrides(store.get('teamColorOverrides', {}))
 }
 
+function storedUdpPort(): { port: number | null; error: string | null } {
+  const port = Number(store.get('udp.port', 20777))
+  if (Number.isInteger(port) && port >= 1 && port <= 65535) return { port, error: null }
+  return {
+    port: null,
+    error: `Invalid saved UDP port: ${String(store.get('udp.port', 20777))}. Expected an integer from 1 to 65535.`,
+  }
+}
+
 function storedForwardTargets(): UdpForwardTarget[] {
   if (!(store.get('udp.forwardingEnabled', false) as boolean)) return []
   const value = store.get('udp.forwardTargets', [])
@@ -243,6 +252,8 @@ type LiveLapCallback = (header: string, history: Uint8Array) => void
 // The surface of protocol_parser.node (node_addon/addon.cpp) this module uses.
 interface NativeEngine extends NativePairEngine {
   startUdp(): boolean
+  /** Rebinds the listener in place; resolves with "" or the bind error. */
+  restartUdp(port: number, bindAddress: string, forwardTargets: UdpForwardTarget[]): Promise<string>
   udpLastError?(): string
   destroy(): void
   flushRecording(): void
@@ -329,6 +340,9 @@ interface NativeAddon {
 let engine: NativeEngine | null = null
 let nextDataRequirementsRequestId = 0
 let rendererStreamMask = 0xFFFFFFFF
+// False until the renderer first declares its requirements; until then a new
+// engine stays closed.
+let rendererRequirementsDeclared = false
 let rendererV6Types: number[] = []
 let rendererV6HistoryTypes: number[] = []
 let rendererHistoryMask = 0
@@ -769,14 +783,11 @@ export function startBridge(): BridgeStartResult {
 
   try {
     const addon = loadAddon()
-    const storedPort = Number(store.get('udp.port', 20777))
-    const validPort = Number.isInteger(storedPort) && storedPort >= 1 && storedPort <= 65535
+    const { port: storedPort, error: portError } = storedUdpPort()
+    const validPort = storedPort !== null
     // An invalid port leaves the engine unbound, like a failed bind below.
-    let udpError: string | null = null
-    if (!validPort) {
-      udpError = `Invalid saved UDP port: ${String(store.get('udp.port', 20777))}. Expected an integer from 1 to 65535.`
-      console.error('[udp]', udpError)
-    }
+    let udpError: string | null = portError
+    if (udpError) console.error('[udp]', udpError)
     const config = {
       format: store.get('udp.protocol', 'auto'),
       // The addon rejects out-of-range ports; leave its default in place.
@@ -936,6 +947,10 @@ export function startBridge(): BridgeStartResult {
     engine.setDiagnosticsEnabled?.(additionalLoggingEnabled)
     engine.setNativeExceptionReporting?.(
       store.get('debug.nodeApiExceptions', false) === true)
+    // An engine created after the renderer mounted starts with no
+    // subscriptions; the renderer only declares them again when they change.
+    if (rendererRequirementsDeclared) applyAggregateDataRequirements()
+    if (lapHistoryCar !== null) engine.setLapHistoryCar(lapHistoryCar)
     // A failed bind leaves the engine running unbound: file analysis, playback
     // and pairing still work, and the error is reported as UDP status only.
     if (!udpError && !engine.startUdp()) {
@@ -1136,6 +1151,7 @@ export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFF
 export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask = 0,
                                           windowSeconds = 0, v6Types: number[] = [],
                                           v6HistoryTypes: number[] = []): void {
+  rendererRequirementsDeclared = true
   rendererStreamMask = streamMask >>> 0
   rendererHistoryMask = historyMask >>> 0
   rendererHistoryWindow = Math.max(-1, windowSeconds)
@@ -1201,9 +1217,12 @@ export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean;
 
 // The car whose lap-times view is open (-1 when closed). The engine then pushes
 // its driver_lap_history row on the ordinary row channel whenever it changes.
+let lapHistoryCar: number | null = null
+
 export function setLapHistoryCar(carIdx: number): void {
-  if (!engine || !Number.isSafeInteger(carIdx)) return
-  engine.setLapHistoryCar(carIdx)
+  if (!Number.isSafeInteger(carIdx)) return
+  lapHistoryCar = carIdx
+  engine?.setLapHistoryCar(carIdx)
 }
 
 export function analysisGetLapData(
@@ -1456,11 +1475,41 @@ export function getProtocolConfig(): {
   }
 }
 
-export function restartUdp(): string | null {
-  // To restart UDP on port changes, we stop and recreate the engine
-  stopBridge()
-  const { bridgeError, udpError } = startBridge()
-  return bridgeError ?? udpError
+// Applies the saved port, bind address and forwarding destinations by
+// rebinding the running engine's listener. The engine itself stays: its live
+// session, the renderer's subscriptions, an open recording and paired devices
+// are untouched. Resolves with the error, or null once bound.
+async function applyUdpSettings(): Promise<string | null> {
+  // No engine (the addon failed to load earlier): starting the bridge binds it.
+  if (!engine) {
+    const { bridgeError, udpError } = startBridge()
+    return bridgeError ?? udpError
+  }
+  const { port, error } = storedUdpPort()
+  if (port === null) return error
+  const bindAddress = String(store.get('udp.bindAddress', '0.0.0.0'))
+  const forwardTargets = storedForwardTargets()
+  if (additionalLoggingEnabled) {
+    console.info(`[udp] Restarting listener on ${bindAddress || '0.0.0.0'}:${port}`)
+  }
+  const target = engine
+  const nativeError = await target.restartUdp(port, bindAddress, forwardTargets)
+  if (engine === target) activeUdpConfig = { ...activeUdpConfig, port, bindAddress, forwardTargets }
+  if (nativeError) {
+    console.error(`[udp] Listener failed on ${bindAddress || '0.0.0.0'}:${port}: ${nativeError}`)
+    return nativeError
+  }
+  if (additionalLoggingEnabled) console.info(`[udp] Listener bound on ${bindAddress || '0.0.0.0'}:${port}`)
+  return null
+}
+
+// Restarts run one at a time, each reading the settings saved when it starts.
+let udpRestartQueue: Promise<unknown> = Promise.resolve()
+
+export function restartUdp(): Promise<string | null> {
+  const restart = udpRestartQueue.then(() => applyUdpSettings())
+  udpRestartQueue = restart.catch(() => undefined)
+  return restart
 }
 
 // ── Track maps (tnrp/TrackMaps.h) ───────────────────────────────────────────
@@ -1473,7 +1522,7 @@ const TRACK_MAPS_GENERATE_KEY = 'maps.generate'
 export interface TrackMapSettings { modded: boolean; generate: boolean }
 export interface TrackMapResult { ok: boolean; id: string; error: string }
 
-// The engine the bundled maps were last given to; a UDP restart makes a new one.
+// The engine the bundled maps were last given to; a bridge restart makes a new one.
 let builtinTrackMapsEngine: NativeEngine | null = null
 
 export function trackMapsDirectory(): string {

@@ -482,6 +482,57 @@ struct TrackMapResult {
     std::string error;
 };
 
+// [{address, port}] -> the engine's forwarding destinations; malformed entries are skipped.
+static std::vector<tnrp::UdpForwardTarget> readForwardTargets(const Napi::Value& value) {
+    std::vector<tnrp::UdpForwardTarget> result;
+    if (!value.IsArray()) return result;
+    Napi::Array targets = value.As<Napi::Array>();
+    const uint32_t count = std::min<uint32_t>(targets.Length(), tnrp::kMaxUdpForwardTargets);
+    result.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        Napi::Value item = targets.Get(i);
+        if (!item.IsObject()) continue;
+        Napi::Object targetObj = item.As<Napi::Object>();
+        if (!targetObj.Has("address") || !targetObj.Get("address").IsString() ||
+            !targetObj.Has("port") || !targetObj.Get("port").IsNumber()) continue;
+        const uint32_t targetPort = targetObj.Get("port").As<Napi::Number>().Uint32Value();
+        if (targetPort == 0 || targetPort > 65535) continue;
+        result.push_back({
+            targetObj.Get("address").As<Napi::String>().Utf8Value(),
+            static_cast<uint16_t>(targetPort)
+        });
+    }
+    return result;
+}
+
+// Rebinds the engine's UDP listener off the JS thread: the restart waits for
+// the receive thread, which may itself be waiting on the engine lock. Resolves
+// with the bind error, or "" once the listener is bound.
+class UdpRestartWorker : public Napi::AsyncWorker {
+public:
+    UdpRestartWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine, uint16_t port,
+                     std::string bindAddress, std::vector<tnrp::UdpForwardTarget> forwardTargets)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)), port_(port),
+          bindAddress_(std::move(bindAddress)), forwardTargets_(std::move(forwardTargets)),
+          deferred_(Napi::Promise::Deferred::New(env)) {}
+    void Execute() override {
+        if (engine_->restartUdp(port_, bindAddress_, std::move(forwardTargets_))) return;
+        error_ = engine_->udpLastError();
+        if (error_.empty()) error_ = "Failed to start the UDP listener.";
+    }
+    void OnOK() override { deferred_.Resolve(Napi::String::New(Env(), error_)); }
+    void OnError(const Napi::Error& error) override { deferred_.Reject(error.Value()); }
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    uint16_t port_;
+    std::string bindAddress_;
+    std::vector<tnrp::UdpForwardTarget> forwardTargets_;
+    std::string error_;
+    Napi::Promise::Deferred deferred_;
+};
+
 // Runs a track map call that reads a recording or the disk off the JS thread
 // and resolves with the JSON it returns.
 class TrackMapWorker : public Napi::AsyncWorker {
@@ -505,6 +556,7 @@ public:
         TRACE("Init: before DefineClass");
         Napi::Function func = DefineClass(env, "Engine", {
             InstanceMethod("startUdp", &TNRPAddon::StartUdp),
+            InstanceMethod("restartUdp", &TNRPAddon::RestartUdp),
             InstanceMethod("udpLastError", &TNRPAddon::UdpLastError),
             InstanceMethod("setDiagnosticsEnabled", &TNRPAddon::SetDiagnosticsEnabled),
             InstanceMethod("setNativeExceptionReporting", &TNRPAddon::SetNativeExceptionReporting),
@@ -607,24 +659,8 @@ public:
         if (configObj.Has("bindAddress") && configObj.Get("bindAddress").IsString()) {
             config.bindAddress = configObj.Get("bindAddress").As<Napi::String>().Utf8Value();
         }
-        if (configObj.Has("forwardTargets") && configObj.Get("forwardTargets").IsArray()) {
-            Napi::Array targets = configObj.Get("forwardTargets").As<Napi::Array>();
-            const uint32_t count = std::min<uint32_t>(targets.Length(), tnrp::kMaxUdpForwardTargets);
-            config.udpForwardTargets.reserve(count);
-            for (uint32_t i = 0; i < count; ++i) {
-                Napi::Value value = targets.Get(i);
-                if (!value.IsObject()) continue;
-                Napi::Object targetObj = value.As<Napi::Object>();
-                if (!targetObj.Has("address") || !targetObj.Get("address").IsString() ||
-                    !targetObj.Has("port") || !targetObj.Get("port").IsNumber()) continue;
-                const uint32_t targetPort = targetObj.Get("port").As<Napi::Number>().Uint32Value();
-                if (targetPort == 0 || targetPort > 65535) continue;
-                config.udpForwardTargets.push_back({
-                    targetObj.Get("address").As<Napi::String>().Utf8Value(),
-                    static_cast<uint16_t>(targetPort)
-                });
-            }
-        }
+        if (configObj.Has("forwardTargets"))
+            config.udpForwardTargets = readForwardTargets(configObj.Get("forwardTargets"));
         if (configObj.Has("binaryPlayback") && configObj.Get("binaryPlayback").IsBoolean()) {
             config.binaryPlayback = configObj.Get("binaryPlayback").As<Napi::Boolean>().Value();
         }
@@ -725,6 +761,7 @@ public:
         if (!destroyed_) {
             if (engine) {
                 engine->pairStop(false);
+                engine->stopUdp();
                 // ObjectWrap finalization can run while Node is dismantling the
                 // N-API environment. playerClose() emits playback_close through
                 // onRow(), so calling it here may touch an already-closing TSFN.
@@ -1164,6 +1201,27 @@ private:
         bool ok = engine->startUdp();
         TRACE("StartUdp: returned");
         return Napi::Boolean::New(info.Env(), ok);
+    }
+
+    // (port, bindAddress, forwardTargets) -> Promise<string>: "" or the bind error.
+    Napi::Value RestartUdp(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        const double port = info.Length() >= 1 && info[0].IsNumber()
+            ? info[0].As<Napi::Number>().DoubleValue() : 0.0;
+        if (!engine || !std::isfinite(port) || std::trunc(port) != port || port < 1 || port > 65535) {
+            auto deferred = Napi::Promise::Deferred::New(env);
+            deferred.Resolve(Napi::String::New(env, engine
+                ? "UDP port must be an integer from 1 to 65535"
+                : "The telemetry engine is not available."));
+            return deferred.Promise();
+        }
+        auto* worker = new UdpRestartWorker(env, engine, static_cast<uint16_t>(port),
+            info.Length() >= 2 && info[1].IsString()
+                ? info[1].As<Napi::String>().Utf8Value() : std::string("0.0.0.0"),
+            info.Length() >= 3 ? readForwardTargets(info[2]) : std::vector<tnrp::UdpForwardTarget>{});
+        Napi::Promise promise = worker->GetPromise();
+        worker->Queue();
+        return promise;
     }
 
     Napi::Value PairStart(const Napi::CallbackInfo& info) {
@@ -2061,7 +2119,12 @@ private:
     Napi::Value Destroy(const Napi::CallbackInfo& info) {
         if (destroyed_) return info.Env().Undefined();
         destroyed_ = true;
-        if (engine) engine->pairStop(false);
+        if (engine) {
+            engine->pairStop(false);
+            // A pending worker's reference can keep the engine alive past this
+            // call; its listener must not go on receiving into this sink.
+            engine->stopUdp();
+        }
         engine.reset();   // a pending PlayerLoadWorker holds its own ref
         tsfn.Release();
         if (hasBinCb_) tsfnBin.Release();

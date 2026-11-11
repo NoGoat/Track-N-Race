@@ -236,6 +236,9 @@ if(TNRP_BUILD_TESTS)
     add_executable(analysis_map_paint tests/AnalysisMapPaint.cpp)
     target_link_libraries(analysis_map_paint PRIVATE tnrp)
     add_test(NAME analysis_map_paint COMMAND analysis_map_paint)
+    add_executable(udp_restart tests/UdpRestart.cpp)
+    target_link_libraries(udp_restart PRIVATE tnrp)
+    add_test(NAME udp_restart COMMAND udp_restart)
 endif()
 
 # Offline length-prefixed UDP capture converter. Kept out of the default build;

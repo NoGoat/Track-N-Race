@@ -21,8 +21,8 @@ import android.os.IBinder
  * background behaviour did.
  *
  * The notification is the user's contract: the service keeps everything
- * running underneath it until they tap Stop, swipe the app's task away (the
- * sticky service is scheduled to restart and resume) or force-quit the app.
+ * running underneath it until they tap Stop, swipe the app's task away from
+ * recents or force-quit the app.
  * The state text follows the store's source state; discovery stays a
  * foreground feature and is never carried here.
  */
@@ -57,6 +57,16 @@ internal class ListenerService : Service() {
         controller.onListenerServiceStarted()
         notify(store.sourceStatus)
         return START_STICKY
+    }
+
+    /**
+     * The app was swiped away from recents: that closes it, listener
+     * included. Stopped here, the sticky service is not scheduled again.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        controller.onTaskRemoved()
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {

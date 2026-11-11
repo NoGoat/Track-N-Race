@@ -1390,6 +1390,9 @@ private fun ChartsTab(
                 }.filter { it > 0 }.distinct()
                 graphs.sync(family, longest.toDouble(), laps)
             }
+            // Listening for the game, the engine holds what the histories lack.
+            val shown = charts.map { windowFor(graphs, it.windowId, it.windowChoices) }
+            graphs.syncLive(families, (shown.maxOfOrNull { it.seconds } ?: 0).toDouble(), shown.any { it.isLap })
             extraSync?.invoke()
             delay(BACKFILL_TICK_MS)
         }

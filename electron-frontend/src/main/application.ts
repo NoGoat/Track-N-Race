@@ -539,9 +539,9 @@ ipcMain.handle('track-maps:generate', async (event) => {
   return trackMapsGenerate(filePaths[0])
 })
 
-ipcMain.on('udp-restart', (event) => {
+ipcMain.on('udp-restart', async (event) => {
   try {
-    const error = restartUdp()
+    const error = await restartUdp()
     publishUdpListenerStatus(error)
     event.reply('udp-restart-result', error ? { ok: false, error } : { ok: true })
   } catch (err) {

@@ -87,6 +87,7 @@ import com.nogoat.tracknrace.pages.RecordingsSheet
 import com.nogoat.tracknrace.pages.SettingsScreen
 import com.nogoat.tracknrace.pages.TimingScreen
 import com.nogoat.tracknrace.pages.TyresScreen
+import com.nogoat.tracknrace.pages.UdpScreen
 import com.nogoat.tracknrace.pages.tyreDisplay
 import kotlinx.coroutines.delay
 
@@ -98,6 +99,7 @@ private enum class AppScreen(val telemetryPage: PairedTelemetryPage, val isPrima
     ANALYSIS(PairedTelemetryPage.ANALYSIS),
     SETTINGS(PairedTelemetryPage.NONE, isPrimary = false),
     PAIRING(PairedTelemetryPage.NONE, isPrimary = false),
+    UDP(PairedTelemetryPage.NONE, isPrimary = false),
     LICENSES(PairedTelemetryPage.NONE, isPrimary = false),
 }
 
@@ -191,7 +193,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
 
     fun navigateBack() {
         screen = when (screen) {
-            AppScreen.PAIRING, AppScreen.LICENSES -> AppScreen.SETTINGS
+            AppScreen.PAIRING, AppScreen.UDP, AppScreen.LICENSES -> AppScreen.SETTINGS
             AppScreen.SETTINGS -> settingsReturn
             else -> screen
         }
@@ -381,6 +383,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             settings = rememberCurrentWhileActive(destinationActive) { store.settings },
                             onSource = telemetry::setSource,
                             onPairing = { screen = AppScreen.PAIRING },
+                            onUdp = { screen = AppScreen.UDP },
                             onRecording = telemetry::setRecording,
                             onThemeMode = telemetry::setThemeMode,
                             onWheelDisplay = telemetry::setWheelDisplay,
@@ -403,6 +406,10 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                                 }
                             },
                             onDone = { screen = AppScreen.SETTINGS },
+                        )
+                        AppScreen.UDP -> UdpScreen(
+                            settings = rememberCurrentWhileActive(destinationActive) { store.settings },
+                            onApply = telemetry::setUdpSettings,
                         )
                         AppScreen.LICENSES -> LicensesScreen()
                     }
@@ -656,6 +663,7 @@ private fun AppTopBar(
         AppScreen.ANALYSIS -> "Analysis"
         AppScreen.SETTINGS -> "Settings"
         AppScreen.PAIRING -> "Pair desktop"
+        AppScreen.UDP -> "UDP listener"
         AppScreen.LICENSES -> "Licenses"
     }
     TopAppBar(

@@ -249,11 +249,12 @@ Engine::Engine(const Config& config, Sink* sink)
 }
 
 Engine::~Engine() {
+    // First: the receive thread calls into everything torn down below.
+    udp_.stop();
     // Its thread reads liveV6_ and emits through the sink.
     trackMapTracker_.reset();
     pairServer_.stop(false);
     stopPlaybackThread();
-    udp_.stop();
     stopStrategyThread();
     liveV6_.reset();
     writer_.closeActiveStream("shutdown");
@@ -326,6 +327,7 @@ std::string Engine::pairPersistedStateJson() const {
 
 bool Engine::startUdp() {
     TRACE("Engine::startUdp: start");
+    std::lock_guard<std::mutex> control(udpControlMutex_);
     bool ok = udp_.start(config_.port, config_.bindAddress,
                       [this](const uint8_t* d, int n) { onDatagram(d, n); },
                       config_.udpForwardTargets);
@@ -333,32 +335,21 @@ bool Engine::startUdp() {
     return ok;
 }
 
-bool Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
+bool Engine::restartUdp(uint16_t port, const std::string& bindAddress,
+                        std::vector<UdpForwardTarget> forwardTargets) {
+    std::lock_guard<std::mutex> control(udpControlMutex_);
     udp_.stop();
-    {
-        std::lock_guard<std::mutex> lk(mutex_);
-        config_.port        = port;
-        config_.bindAddress = bindAddress;
-        parser_.reset();
-        strategy_.reset();
-        ++liveStrategyGeneration_;
-        enqueueLiveStrategyWork({StrategyWorkKind::Reset, liveStrategyGeneration_,
-                                 2025, config_.strategyMinimumStops, false, {}});
-        liveLatestRows_ = {};
-        liveLapHistoryRows_ = {};
-        writer_.resetSession();
-        if (liveV6_) liveV6_->invalidateReads();
-        liveLapStarts_.clear();
-        liveRetirementTimes_.fill(std::numeric_limits<float>::infinity());
-        liveStrategySequence_ = 0;
-        liveSessionTime_ = 0.0f;
-        liveLapStart_ = 0.0f;
-        liveLapNum_ = 0;
-        lastStrategyJson_.clear();
-    }
-    return udp_.start(port, bindAddress,
+    config_.port              = port;
+    config_.bindAddress       = bindAddress;
+    config_.udpForwardTargets = std::move(forwardTargets);
+    return udp_.start(config_.port, config_.bindAddress,
                       [this](const uint8_t* d, int n) { onDatagram(d, n); },
                       config_.udpForwardTargets);
+}
+
+void Engine::stopUdp() {
+    std::lock_guard<std::mutex> control(udpControlMutex_);
+    udp_.stop();
 }
 
 std::string Engine::udpLastError() const {

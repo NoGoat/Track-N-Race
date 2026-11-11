@@ -13,6 +13,7 @@ import android.system.ErrnoException
 import android.system.Os
 import com.journeyapps.barcodescanner.ScanOptions
 import com.nogoat.tracknrace.ui.theme.ThemeMode
+import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
@@ -22,7 +23,10 @@ internal class TelemetryController(
     internal val store: TelemetryStore,
 ) : NativeTelemetry.Listener, PairedTelemetryClient.Listener, PairDiscovery.Listener {
     companion object {
-        private const val UDP_PORT = 20777
+        private const val PREF_UDP_PORT = "udp.port"
+        private const val PREF_UDP_FORWARDING = "udp.forwardingEnabled"
+        // One "address:port" per line.
+        private const val PREF_UDP_FORWARD_TARGETS = "udp.forwardTargets"
         private const val PREF_THEME_MODE = "theme_mode"
         private const val PREF_WHEEL_DISPLAY = "wheel_display"
     }
@@ -53,7 +57,7 @@ internal class TelemetryController(
         ::driverLapsSupported,
         ::requestBrakingZones,
     )
-    internal val graphs = GraphsController(context, store) { requestId, lapNumber, channels ->
+    internal val graphs = GraphsController(context, store, ::requestLiveHistory) { requestId, lapNumber, channels ->
         requestLapData(requestId, -1, lapNumber, channels)
     }
 
@@ -62,6 +66,10 @@ internal class TelemetryController(
 
     @Volatile private var playback: OpenRecording? = null
     @Volatile private var activePage = PairedTelemetryPage.DASHBOARD
+    // The window the listening engine was last asked to refill the open graph
+    // page's histories over, for an engine started since; negative for the
+    // whole session.
+    @Volatile private var liveHistoryWindow = 0f
 
     @Volatile private var sourceRequested = false
     @Volatile private var sourceGeneration = 0
@@ -78,6 +86,9 @@ internal class TelemetryController(
     // listener does not happen while it runs.
     private var listenerServiceActive = false
     private var hostVisible = false
+    // The task was swiped away from recents; until the app is opened again,
+    // a late onHostStop must not hand the session back to the service.
+    private var taskRemoved = false
     private var backgroundWifiLock: WifiManager.WifiLock? = null
     private var backgroundWakeLock: PowerManager.WakeLock? = null
 
@@ -105,6 +116,7 @@ internal class TelemetryController(
         // that handoff instead of racing the activity-result pairing attempt.
         if (qrScannerActive) return
         hostVisible = true
+        taskRemoved = false
         holdLowLatencyWifi(true)
         sourceRequested = true
         if (!hasLocalNetworkAccess()) localNetworkRequester?.invoke()
@@ -134,6 +146,13 @@ internal class TelemetryController(
             // The service keeps the sources and holds the locks that work off
             // screen (acquired when it took over); the dashboard's session,
             // recording and chart histories carry on behind the drawer.
+            return
+        }
+        // The activity's stop can land after the service's onTaskRemoved; the
+        // service has already gone, and the app is closing with its task.
+        if (taskRemoved) {
+            sourceRequested = false
+            suspendSourcesAsync()
             return
         }
         // Without the local network permission there is nothing to carry: the
@@ -171,6 +190,11 @@ internal class TelemetryController(
             sourceRequested = true
             restartConfiguredSource()
         }
+    }
+
+    /** The service saw the app's task swiped away, and is stopping itself. */
+    fun onTaskRemoved() {
+        taskRemoved = true
     }
 
     /**
@@ -242,7 +266,11 @@ internal class TelemetryController(
         for ((family, history) in store.graphHistories) history.setEnabled(family in page.graphFamilies)
         pairedTelemetry.setPage(page)
         playbackCommand { directTelemetry.setRequirements(page.streamMask, page.v6Types.toIntArray()) }
-        if (!sourceExecutor.isShutdown) sourceExecutor.execute { applyLiveStrategy() }
+        if (!sourceExecutor.isShutdown) sourceExecutor.execute {
+            applyLiveStrategy()
+            // A graph page asks for its own history once it is up (requestLiveHistory).
+            if (page.graphFamilies.isEmpty()) applyLiveHistory()
+        }
     }
 
     /**
@@ -254,6 +282,46 @@ internal class TelemetryController(
     private fun applyLiveStrategy() {
         if (playback != null) return
         directTelemetry.setLiveStrategy(activePage.streamMask and DataRow.STRATEGY != 0)
+    }
+
+    /**
+     * Listening for the game, the engine keeps the whole session, so the open
+     * graph page's histories are read back from it: their own rows, the rows
+     * their held fields come from, and the lap rows that place samples by
+     * distance. Runs on the source executor, as [applyLiveStrategy].
+     */
+    private fun applyLiveHistory() {
+        if (playback != null) return
+        directTelemetry.setLiveHistory(liveHistoryRows(activePage), liveHistoryWindow)
+    }
+
+    private fun liveHistoryRows(page: PairedTelemetryPage): Int {
+        if (page.graphFamilies.isEmpty()) return 0
+        var rows = DataRow.LAP
+        for (family in page.graphFamilies) for (field in family.fields) {
+            rows = rows or when (field.source) {
+                RowFamily.STATUS -> DataRow.STATUS
+                RowFamily.TELEMETRY -> DataRow.TELEMETRY
+                RowFamily.DAMAGE -> DataRow.DAMAGE
+                RowFamily.MOTION -> DataRow.MOTION
+                RowFamily.MOTION_EX -> DataRow.MOTION_EX
+            }
+        }
+        return rows
+    }
+
+    /**
+     * Graphs, while listening for the game: has the engine refill the open
+     * graph page's histories, [windowSeconds] behind now or the whole session
+     * when infinite. False when their samples come from elsewhere: a
+     * recording, or the paired desktop.
+     */
+    private fun requestLiveHistory(windowSeconds: Double): Boolean {
+        if (playback != null || store.sourceStatus.state != "listening") return false
+        if (activePage.graphFamilies.isEmpty()) return false
+        liveHistoryWindow = if (windowSeconds.isFinite()) windowSeconds.toFloat() else -1f
+        sourceExecutor.execute { applyLiveHistory() }
+        return true
     }
 
     // ── A recording played on the phone ─────────────────────────────────────
@@ -423,6 +491,52 @@ internal class TelemetryController(
         }
         publishSettings()
     }
+
+    /**
+     * The Direct UDP listener's port and forwarding destinations. A listener
+     * that is running is rebound to them in place, keeping its session.
+     */
+    fun setUdpSettings(port: Int, forwardingEnabled: Boolean, forwardTargets: List<UdpForwardTarget>) {
+        val targets = forwardTargets
+            .map { it.copy(address = it.address.trim()) }
+            .take(MAX_UDP_FORWARD_TARGETS)
+        preferences().edit()
+            .putInt(PREF_UDP_PORT, port)
+            .putBoolean(PREF_UDP_FORWARDING, forwardingEnabled)
+            .putString(PREF_UDP_FORWARD_TARGETS, targets.joinToString("\n") { "${it.address}:${it.port}" })
+            .apply()
+        publishSettings()
+        // A recording stays open; it and a paired desktop pick the listener's
+        // settings up when Direct UDP next starts.
+        if (!sourceRequested || playback != null || !isDirectSource()) return
+        // Nothing bound to rebind (a failed bind, or still starting).
+        if (store.sourceStatus.state != "listening") {
+            restartConfiguredSource()
+            return
+        }
+        val generation = sourceGeneration
+        sourceExecutor.execute {
+            if (generation != sourceGeneration) return@execute
+            val error = directTelemetry.restartUdp(port, if (forwardingEnabled) targets else emptyList())
+            if (error != null) {
+                store.updateSource("error", error)
+            } else {
+                store.updateSource("listening", "UDP $port")
+            }
+        }
+    }
+
+    private fun udpPort(): Int = preferences().getInt(PREF_UDP_PORT, DEFAULT_UDP_PORT)
+
+    private fun storedForwardTargets(): List<UdpForwardTarget> =
+        preferences().getString(PREF_UDP_FORWARD_TARGETS, null).orEmpty()
+            .lineSequence()
+            .mapNotNull { line ->
+                val port = line.substringAfterLast(':', "").toIntOrNull() ?: return@mapNotNull null
+                UdpForwardTarget(line.substringBeforeLast(':'), port)
+            }
+            .take(MAX_UDP_FORWARD_TARGETS)
+            .toList()
 
     fun setThemeMode(mode: ThemeMode) {
         preferences().edit().putString(PREF_THEME_MODE, mode.key).apply()
@@ -630,6 +744,8 @@ internal class TelemetryController(
 
     override fun onTelemetryBinary(bytes: ByteArray) = store.acceptBinary(bytes)
 
+    override fun onTelemetryHistory(payload: ByteBuffer) = store.acceptLiveHistory(payload)
+
     override fun onRow(json: String) = store.acceptColdRow(json)
 
     override fun onBinary(bytes: ByteArray) = store.acceptBinary(bytes)
@@ -720,6 +836,9 @@ internal class TelemetryController(
         } else {
             null
         },
+        udpPort = udpPort(),
+        udpForwardingEnabled = preferences().getBoolean(PREF_UDP_FORWARDING, false),
+        udpForwardTargets = storedForwardTargets(),
     )
 
     private fun publishSettings() = store.updateSettings(currentSettings())
@@ -753,7 +872,10 @@ internal class TelemetryController(
                 store.updateSource("error", error.message)
                 ""
             }
-            val error = directTelemetry.start(UDP_PORT)
+            val port = udpPort()
+            val forwardTargets =
+                if (preferences().getBoolean(PREF_UDP_FORWARDING, false)) storedForwardTargets() else emptyList()
+            val error = directTelemetry.start(port, forwardTargets)
             if (error != null) {
                 store.updateSource("error", error)
                 return@execute
@@ -761,7 +883,8 @@ internal class TelemetryController(
             val recording = preferences().getBoolean(RecordingStorage.PREF_RECORDING, false)
             directTelemetry.setRecording(recording && recordingPath.isNotEmpty(), recordingPath)
             applyLiveStrategy()
-            store.updateSource("listening", "UDP $UDP_PORT")
+            applyLiveHistory()
+            store.updateSource("listening", "UDP $port")
         }
     }
 

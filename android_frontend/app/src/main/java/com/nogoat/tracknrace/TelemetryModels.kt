@@ -385,7 +385,27 @@ internal data class AndroidSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     /** Landscape hides the bars until tapped; null until chosen, when phones do and tablets don't. */
     val wheelDisplay: Boolean? = null,
+    /** The port Direct UDP listens on. */
+    val udpPort: Int = DEFAULT_UDP_PORT,
+    val udpForwardingEnabled: Boolean = false,
+    /** Where received packets are copied to while forwarding is on. */
+    val udpForwardTargets: List<UdpForwardTarget> = emptyList(),
 )
+
+internal const val DEFAULT_UDP_PORT = 20777
+
+/** libtnrp's kMaxUdpForwardTargets. */
+internal const val MAX_UDP_FORWARD_TARGETS = 15
+
+/** An IPv4 destination received packets are forwarded to. */
+internal data class UdpForwardTarget(val address: String, val port: Int)
+
+internal fun isIpv4Address(value: String): Boolean {
+    val parts = value.split('.')
+    return parts.size == 4 && parts.all { part ->
+        part.length in 1..3 && part.all(Char::isDigit) && part.toInt() <= 255
+    }
+}
 
 internal data class SourceStatus(
     val state: String = "starting",

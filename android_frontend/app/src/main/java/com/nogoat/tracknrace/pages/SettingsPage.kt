@@ -46,6 +46,7 @@ internal fun SettingsScreen(
     settings: AndroidSettings,
     onSource: (String) -> Unit,
     onPairing: () -> Unit,
+    onUdp: () -> Unit,
     onRecording: (Boolean) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
     onWheelDisplay: (Boolean) -> Unit,
@@ -72,7 +73,7 @@ internal fun SettingsScreen(
                 )
                 GroupDivider()
                 val wheel = wheelDisplay(settings.wheelDisplay, LocalConfiguration.current)
-                SwitchRow(
+                SettingsSwitchRow(
                     title = "Wheel display",
                     supporting = if (wheel) "Landscape hides the bars until you tap" else "Landscape keeps the bars on screen",
                     checked = wheel,
@@ -88,7 +89,7 @@ internal fun SettingsScreen(
                     supporting = if (paired) {
                         "Live or playback telemetry from Track N Race desktop"
                     } else {
-                        "UDP from the game on this network, port 20777"
+                        "UDP from the game on this network, port ${settings.udpPort}"
                     },
                     options = listOf("Direct UDP", "Paired desktop"),
                     selected = if (paired) 1 else 0,
@@ -100,6 +101,22 @@ internal fun SettingsScreen(
                             else -> onPairing()
                         }
                     },
+                )
+                GroupDivider()
+                LinkRow(
+                    title = "UDP listener",
+                    supporting = buildString {
+                        append("Port ${settings.udpPort}")
+                        val forwards = if (settings.udpForwardingEnabled) settings.udpForwardTargets.size else 0
+                        append(
+                            when (forwards) {
+                                0 -> " · not forwarding"
+                                1 -> " · forwarding to 1 destination"
+                                else -> " · forwarding to $forwards destinations"
+                            },
+                        )
+                    },
+                    onClick = onUdp,
                 )
                 GroupDivider()
                 LinkRow(
@@ -119,7 +136,7 @@ internal fun SettingsScreen(
         }
         item {
             SettingsGroup("Recording") {
-                SwitchRow(
+                SettingsSwitchRow(
                     title = "Record sessions",
                     supporting = if (settings.recordingEnabled) {
                         "Saving complete sessions as TNRD V6 files"
@@ -161,7 +178,7 @@ internal fun SettingsScreen(
 
 /** A group's label, then its rows in one container. */
 @Composable
-private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
+internal fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
     Text(
         title,
         Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
@@ -178,14 +195,14 @@ private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> 
 }
 
 @Composable
-private fun GroupDivider() {
+internal fun GroupDivider() {
     HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
 }
 
 private val RowColors @Composable get() = ListItemDefaults.colors(containerColor = Color.Transparent)
 
 @Composable
-private fun SwitchRow(title: String, supporting: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+internal fun SettingsSwitchRow(title: String, supporting: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     ListItem(
         headlineContent = { Text(title) },
         supportingContent = { Text(supporting) },

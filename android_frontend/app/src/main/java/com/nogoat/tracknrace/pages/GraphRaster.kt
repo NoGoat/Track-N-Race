@@ -41,6 +41,13 @@ internal const val COMPARISON_ALPHA = 0.35f
 /** A drop in lap distance larger than this is the start line, not noise. */
 internal const val LAP_WRAP_METRES = 100f
 
+// Adding samples to a drawing redraws the strip of pixel columns they touch
+// from the samples already in it: strokes laid end to end, each a fraction of
+// a pixel long, anti-alias to less than the line's colour. A strip holding
+// more samples than this (a car standing still, a whole race on one chart) is
+// added to as it is instead.
+private const val MAX_OVERLAP_SAMPLES = 512
+
 /**
  * Builds one line's path, and its fill when it has one, a sample at a time.
  * A gap ends a run: the line starts again and the fill is closed to its baseline.
@@ -105,16 +112,19 @@ internal class TracePaths {
 
 /**
  * The two bitmaps a chart draws into: the one on screen is never drawn over.
- * Adding to a drawing starts from the one on screen, but only the strip it
- * changed since the other was last brought up to date is copied, not the
- * whole bitmap. Background thread, one call at a time.
+ * Adding to a drawing starts from the one on screen, but only the columns
+ * where the two differ are copied, not the whole bitmap. Background thread,
+ * one call at a time.
  */
 internal class BitmapPair {
     private val bitmaps = arrayOfNulls<Bitmap>(2)
-    // The drawing each bitmap holds, and the x of the last sample drawn into it.
+    // The drawing each bitmap holds.
     private val frames = LongArray(2) { -1L }
-    private val lastX = FloatArray(2)
     private var nextFrame = 0L
+    // While both hold the same drawing: the columns drawn into one since they
+    // were last alike; empty when from >= to.
+    private var differFrom = 0
+    private var differTo = 0
     private val copyPaint = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC) }
     private val source = Rect()
 
@@ -124,16 +134,14 @@ internal class BitmapPair {
         val bitmap = ensure(slot, width, height)
         bitmap.eraseColor(android.graphics.Color.TRANSPARENT)
         frames[slot] = nextFrame++
-        lastX[slot] = 0f
         return slot
     }
 
     /**
      * The bitmap off screen brought up to [shown]'s drawing, to add to, or -1
-     * when [shown] is not one of these. [margin] covers a line's width and
-     * anti-aliasing either side of the strip.
+     * when [shown] is not one of these.
      */
-    fun continuing(shown: Bitmap, margin: Float): Int {
+    fun continuing(shown: Bitmap): Int {
         val shownSlot = bitmaps.indexOfFirst { it === shown }
         if (shownSlot < 0) return -1
         val slot = 1 - shownSlot
@@ -141,25 +149,30 @@ internal class BitmapPair {
         val sameDrawing = existing != null && existing.width == shown.width && existing.height == shown.height &&
             frames[slot] == frames[shownSlot]
         val bitmap = ensure(slot, shown.width, shown.height)
-        val from = floor(lastX[slot] - margin).toInt().coerceIn(0, shown.width)
-        val to = ceil(lastX[shownSlot] + margin).toInt().coerceIn(0, shown.width)
-        if (sameDrawing && from <= to) {
-            // Everything left of what this bitmap last drew is already the same.
-            source.set(from, 0, to, shown.height)
-            Canvas(bitmap).drawBitmap(shown, source, source, copyPaint)
-        } else {
+        if (!sameDrawing) {
             Canvas(bitmap).drawBitmap(shown, 0f, 0f, copyPaint)
+        } else if (differFrom < differTo) {
+            source.set(differFrom, 0, differTo, shown.height)
+            Canvas(bitmap).drawBitmap(shown, source, source, copyPaint)
         }
         frames[slot] = frames[shownSlot]
-        lastX[slot] = lastX[shownSlot]
+        differFrom = 0
+        differTo = 0
         return slot
     }
 
     fun bitmap(slot: Int): Bitmap = bitmaps[slot]!!
 
-    /** The last sample drawn into [slot] is at [x]. */
-    fun drew(slot: Int, x: Float) {
-        lastX[slot] = x
+    /** Columns [from] until [to] of a bitmap were drawn into. */
+    fun drew(from: Int, to: Int) {
+        if (from >= to) return
+        if (differFrom >= differTo) {
+            differFrom = from
+            differTo = to
+        } else {
+            differFrom = min(differFrom, from)
+            differTo = max(differTo, to)
+        }
     }
 
     private fun offScreen(shown: Bitmap?): Int = if (bitmaps[0] != null && bitmaps[0] === shown) 1 else 0
@@ -287,10 +300,9 @@ internal class TraceRasterizer(density: Float) {
             val max = maxOrNaN(previous.drawnMax, visibleMax(series, lines, request, drawnLast + 1, last))
             val (yMin, yMax) = range(max, request.fuelPeak)
             if (yMin == previous.yMin && yMax == previous.yMax) {
-                val slot = buffers.continuing(previous.bitmap, painter.margin)
+                val slot = buffers.continuing(previous.bitmap)
                 if (slot >= 0) {
-                    // From the last sample drawn, so the new lines join the old.
-                    if (!drawLines(slot, series, lines, request, yMin, yMax, drawnLast, last, gapSeconds, cancelled)) return null
+                    if (!drawLines(slot, series, lines, request, yMin, yMax, first, last, gapSeconds, cancelled, drawnLast)) return null
                     return raster(slot, request, yMin, yMax, series, first, last, max)
                 }
             }
@@ -339,13 +351,42 @@ internal class TraceRasterizer(density: Float) {
         last: Int,
         gapSeconds: Double,
         cancelled: () -> Boolean,
+        /** The last sample already drawn, when the ones after it are added to the drawing; else -1. */
+        drawnLast: Int = -1,
     ): Boolean {
         val xSpan = (request.to - request.from).takeIf { it > 0 } ?: 1.0
         val width = request.width.toFloat()
         val height = request.height.toFloat()
         val canvas = Canvas(buffers.bitmap(slot))
         val times = series.timeColumn()
-        var lastX = 0f
+        fun xOf(index: Int): Float = ((times[index] - request.from) / xSpan * width).toFloat()
+        var from = first
+        var stripFrom = 0
+        var stripTo = request.width
+        var redrawn = false
+        if (drawnLast >= 0) {
+            // The columns the new samples touch are drawn again whole, from
+            // the last sample clear of them (MAX_OVERLAP_SAMPLES).
+            stripFrom = floor(xOf(drawnLast) - painter.margin).toInt().coerceIn(0, request.width)
+            stripTo = ceil(xOf(last) + painter.margin).toInt().coerceIn(0, request.width)
+            val clear = stripFrom - painter.margin
+            from = drawnLast
+            var steps = 0
+            while (from > first && xOf(from) > clear && steps < MAX_OVERLAP_SAMPLES) {
+                from--
+                steps++
+            }
+            redrawn = from == first || xOf(from) <= clear
+            // Too many: from the last sample drawn, so the new lines join the old.
+            if (!redrawn) from = drawnLast
+        }
+        // Before drawing: a drawing given up part way is still put right.
+        buffers.drew(stripFrom, stripTo)
+        if (redrawn) {
+            canvas.save()
+            canvas.clipRect(stripFrom, 0, stripTo, request.height)
+            canvas.drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        }
         lines.forEachIndexed { line, spec ->
             if (!request.shown[line]) return@forEachIndexed
             val column = series.column(spec.field)
@@ -353,7 +394,7 @@ internal class TraceRasterizer(density: Float) {
             painter.paths.reset(spec.style, if (baseline == null) 0f else yPixel(baseline, yMin, yMax, height))
             var previousTime = Double.NaN
             var joined = false
-            for (index in first..last) {
+            for (index in from..last) {
                 if (index and 0x3fff == 0 && cancelled()) return false
                 val value = (column[index] * spec.scale).toDouble()
                 if (!value.isFinite()) {
@@ -361,15 +402,13 @@ internal class TraceRasterizer(density: Float) {
                     continue
                 }
                 val time = times[index]
-                val x = ((time - request.from) / xSpan * width).toFloat()
-                painter.paths.add(x, yPixel(value, yMin, yMax, height), joined && time - previousTime <= gapSeconds)
+                painter.paths.add(xOf(index), yPixel(value, yMin, yMax, height), joined && time - previousTime <= gapSeconds)
                 joined = true
                 previousTime = time
-                lastX = x
             }
             painter.paint(canvas, spec)
         }
-        buffers.drew(slot, lastX)
+        if (redrawn) canvas.restore()
         return !cancelled()
     }
 }
@@ -422,6 +461,8 @@ internal class LapRaster(
 internal class LapRasterizer(private val density: Float) {
     private val buffers = BitmapPair()
     private val painter = LinePainter(density)
+    // About where the comparison lap passes the columns last added to.
+    private var comparisonAt = 0
 
     /** The raster on screen; written on the main thread when one is shown. */
     @Volatile var displayed: LapRaster? = null
@@ -442,9 +483,9 @@ internal class LapRasterizer(private val density: Float) {
             val max = maxOrNaN(previous.drawnMax, visibleMax(current, lines, request, from + 1, last))
             val (yMin, yMax) = range(max, request.fuelPeak)
             if (yMin == previous.yMin && yMax == previous.yMax) {
-                val slot = buffers.continuing(previous.bitmap, painter.margin)
+                val slot = buffers.continuing(previous.bitmap)
                 if (slot >= 0) {
-                    drawLap(slot, current, from, last, lines, request, yMin, yMax, faded = false)
+                    addToLap(slot, current, from, last, lines, request, yMin, yMax)
                     if (cancelled()) return null
                     return LapRaster(buffers.bitmap(slot), yMin, yMax, request, last + 1, current.times[last], max)
                 }
@@ -456,8 +497,10 @@ internal class LapRasterizer(private val density: Float) {
         if (cancelled()) return null
         val (yMin, yMax) = range(max, request.fuelPeak)
         val slot = buffers.fresh(request.width, request.height, previous?.bitmap)
-        request.comparison?.let { drawLap(slot, it, 0, it.size - 1, lines, request, yMin, yMax, faded = true) }
-        if (current != null && last >= 0) drawLap(slot, current, 0, last, lines, request, yMin, yMax, faded = false)
+        val canvas = Canvas(buffers.bitmap(slot))
+        comparisonAt = 0
+        request.comparison?.let { drawLap(canvas, it, 0, it.size - 1, lines, request, yMin, yMax, faded = true) }
+        if (current != null && last >= 0) drawLap(canvas, current, 0, last, lines, request, yMin, yMax, faded = false)
         if (cancelled()) return null
         return LapRaster(
             buffers.bitmap(slot), yMin, yMax, request,
@@ -479,8 +522,71 @@ internal class LapRasterizer(private val density: Float) {
         return visibleMax
     }
 
-    private fun drawLap(
+    /**
+     * Adds the current lap's samples after [drawn] to the drawing. The
+     * columns they touch are drawn again whole, the comparison lap under
+     * them included, from the last sample clear of them (MAX_OVERLAP_SAMPLES).
+     */
+    private fun addToLap(
         slot: Int,
+        current: LapTrace,
+        drawn: Int,
+        last: Int,
+        lines: List<RasterLine>,
+        request: LapRasterRequest,
+        yMin: Double,
+        yMax: Double,
+    ) {
+        val length = request.trackLength.takeIf { it > 0 } ?: 1.0
+        fun xOf(trace: LapTrace, index: Int): Float = (trace.distance[index] / length * request.width).toFloat()
+        var lowest = Float.POSITIVE_INFINITY
+        var highest = Float.NEGATIVE_INFINITY
+        for (index in drawn..last) {
+            val x = xOf(current, index)
+            if (x.isNaN()) continue
+            lowest = min(lowest, x)
+            highest = max(highest, x)
+        }
+        if (lowest > highest) return
+        val stripFrom = floor(lowest - painter.margin).toInt().coerceIn(0, request.width)
+        val stripTo = ceil(highest + painter.margin).toInt().coerceIn(0, request.width)
+        val clear = stripFrom - painter.margin
+        var from = drawn
+        var steps = 0
+        while (from > 0 && !(xOf(current, from) <= clear) && steps < MAX_OVERLAP_SAMPLES) {
+            from--
+            steps++
+        }
+        val canvas = Canvas(buffers.bitmap(slot))
+        if (from == 0 || xOf(current, from) <= clear) {
+            canvas.save()
+            canvas.clipRect(stripFrom, 0, stripTo, request.height)
+            canvas.drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+            request.comparison?.let { comparison ->
+                if (comparison.size == 0) return@let
+                // The stretch of it over these columns, with a sample clear of them either side.
+                val beyond = stripTo + painter.margin
+                var first = comparisonAt.coerceIn(0, comparison.size - 1)
+                while (first > 0 && !(xOf(comparison, first) < clear)) first--
+                // A lap that began before the line starts on the far side of the track.
+                while (first + 1 < comparison.size && xOf(comparison, first) > beyond) first++
+                while (first + 1 < comparison.size && !(xOf(comparison, first + 1) >= clear)) first++
+                comparisonAt = first
+                var end = first
+                while (end + 1 < comparison.size && !(xOf(comparison, end) > beyond)) end++
+                drawLap(canvas, comparison, first, end, lines, request, yMin, yMax, faded = true)
+            }
+            drawLap(canvas, current, from, last, lines, request, yMin, yMax, faded = false)
+            canvas.restore()
+        } else {
+            // Too many: from the last sample drawn, so the new lines join the old.
+            drawLap(canvas, current, drawn, last, lines, request, yMin, yMax, faded = false)
+        }
+        buffers.drew(stripFrom, stripTo)
+    }
+
+    private fun drawLap(
+        canvas: Canvas,
         trace: LapTrace,
         first: Int,
         last: Int,
@@ -494,8 +600,6 @@ internal class LapRasterizer(private val density: Float) {
         val width = request.width.toFloat()
         val height = request.height.toFloat()
         val length = request.trackLength.takeIf { it > 0 } ?: 1.0
-        val canvas = Canvas(buffers.bitmap(slot))
-        var lastX = 0f
         lines.forEachIndexed { line, spec ->
             if (!request.shown[line]) return@forEachIndexed
             val baseline = spec.style.fillBaseline
@@ -514,12 +618,10 @@ internal class LapRasterizer(private val density: Float) {
                 painter.paths.add(x, yPixel(value, yMin, yMax, height), joined && metres >= previous - LAP_WRAP_METRES)
                 joined = true
                 previous = metres
-                lastX = x
             }
             // A comparison lap is faded and a little thinner, as on the desktop.
             if (faded) painter.paint(canvas, spec, COMPARISON_ALPHA, max(1f, spec.style.widthDp - 0.5f))
             else painter.paint(canvas, spec)
         }
-        if (!faded) buffers.drew(slot, lastX)
     }
 }

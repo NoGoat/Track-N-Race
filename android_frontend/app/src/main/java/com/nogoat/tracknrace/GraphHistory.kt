@@ -246,7 +246,8 @@ private const val SEEK_FORWARD_SECONDS = 5.0
  * The selected driver's samples of one [family], kept on the phone while a
  * graph page of that family is subscribed: the desktop streams latest state
  * only, so the history is built from what arrives, and backfilled from
- * recorded laps in playback. Rows are patches, so every sample carries the
+ * recorded laps in playback, or from the session the engine keeps while
+ * listening for the game. Rows are patches, so every sample carries the
  * last known value of each field. Every sample is kept: All Laps draws the
  * whole session. Main thread only, except [enabled].
  */
@@ -345,6 +346,8 @@ internal class SampleHistory(val family: GraphFamily) : SampleSeries {
         if (enabled == value) return
         enabled = value
         clear()
+        // Starting over, even from nothing held: a backfill runs again.
+        epoch++
         latest.fill(Float.NaN)
     }
 
@@ -508,7 +511,12 @@ internal class SampleHistory(val family: GraphFamily) : SampleSeries {
      * lap's track, and closes the previous one with [lastLapMs].
      */
     fun acceptLap(sessionTime: Double, lapNumber: Int, currentLapMs: Int, metres: Double, invalid: Boolean, lastLapMs: Int) {
-        if (!enabled || lapNumber <= 0 || !sessionTime.isFinite() || !metres.isFinite()) return
+        if (!enabled || !placeLap(sessionTime, lapNumber, currentLapMs, metres, invalid, lastLapMs)) return
+        version++
+    }
+
+    private fun placeLap(sessionTime: Double, lapNumber: Int, currentLapMs: Int, metres: Double, invalid: Boolean, lastLapMs: Int): Boolean {
+        if (lapNumber <= 0 || !sessionTime.isFinite() || !metres.isFinite()) return false
         // A lower lap number is a new session; history already restarts on its time.
         if (lapNumber < currentLap) {
             lapTracks.clear()
@@ -525,6 +533,36 @@ internal class SampleHistory(val family: GraphFamily) : SampleSeries {
         if (invalid) track.invalid = true
         currentLap = maxOf(currentLap, lapNumber)
         track.append(sessionTime, metres.toFloat())
+        return true
+    }
+
+    /**
+     * Lap rows older than the lap tracks held, oldest first: placed in front
+     * of them as [acceptLap] would have, with what the stream has delivered
+     * since following lap by lap.
+     */
+    fun backfillLaps(rows: HistoryLapRows) {
+        if (!enabled || rows.times.isEmpty()) return
+        val held = lapTracks.values.toList()
+        val limit = held.filter { it.size > 0 }.minOfOrNull { it.times[0] } ?: Double.POSITIVE_INFINITY
+        if (rows.times[0] >= limit) return
+        lapTracks.clear()
+        currentLap = 0
+        for (index in rows.times.indices) {
+            if (rows.times[index] >= limit) break
+            placeLap(
+                rows.times[index], rows.lapNumbers[index], rows.currentLapMs[index],
+                rows.metres[index], rows.invalid[index], rows.lastLapMs[index],
+            )
+        }
+        for (track in held) {
+            val target = lapTracks.getOrPut(track.lapNumber) { LiveLapTrack(track.lapNumber, track.startTime) }
+            for (index in 0 until track.size) target.append(track.times[index], track.distance[index])
+            if (track.lapMs > 0) target.lapMs = track.lapMs
+            if (track.invalid) target.invalid = true
+            currentLap = maxOf(currentLap, track.lapNumber)
+        }
+        while (lapTracks.size > MAX_LAP_TRACKS) lapTracks.remove(lapTracks.keys.first())
         version++
     }
 
