@@ -126,6 +126,11 @@ struct PairIncomingMessage {
     int driverIndex{-1};
     int currentDriver{-1};
     int comparisonDriver{-1};
+    // request_analysis_map: the layer, the phone's theme and its lap colours.
+    std::string layer;
+    bool dark{true};
+    std::string currentColor;
+    std::string comparisonColor;
 };
 
 // The part of playback_lap_blocks a phone reads. The full row also carries the
@@ -154,6 +159,9 @@ struct PairLapBlocksRow {
     bool                      deltaAvailable{};
     int                       trackLengthM{};
     int                       playbackDriverIndex{-1};
+    // Every race_event row of the recording, as the desktop Session page lists
+    // them up to the cursor; the phone's Session tab does the same.
+    std::vector<glz::raw_json> events;
 };
 
 // The full row's blocks, read for the fields above plus each status sample's
@@ -177,6 +185,7 @@ struct PairLapBlocksSource {
     bool                            deltaAvailable{};
     int                             trackLengthM{};
     int                             playbackDriverIndex{-1};
+    std::vector<glz::raw_json>      events;
 };
 
 // One driver's entry in the full row's analysisDrivers, and its phone form.
@@ -235,7 +244,7 @@ struct PairWelcomeFrame {
     std::vector<std::string> capabilities{
         "subscribe", "latest-state", "playback-state", "lap-delta",
         "v6-requirements", "driver-restriction", "lap-data", "driver-laps",
-        "braking-zones"
+        "braking-zones", "driver-lap-history", "analysis-map"
     };
 };
 
@@ -278,11 +287,16 @@ constexpr int64_t kSendStallMs = 15'000;
 // closes the socket to abort a send that shutdown() did not interrupt.
 constexpr int64_t kWriterExitGraceMs = 2'000;
 constexpr uint8_t kPlaybackStateKeyType = 0xff;
-// Bit 15 is the derived Strategy snapshot, for the dashboard's Strategy tab.
+// Bit 6 is race_event, for the dashboard's Session tab (the phone ignores the
+// repeat when a subscription snapshot replays the last one). Bit 15 is the
+// derived Strategy snapshot, for the dashboard's Strategy tab.
 constexpr uint32_t kAndroidPageMask =
-    (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
+    (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) |
     (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13) | (1u << 15);
 constexpr uint32_t kParticipantsMask = 1u << 8;
+constexpr uint32_t kRaceEventMask = 1u << 6;
+// As many live events as the desktop store keeps (MAX_RACE_EVENTS).
+constexpr size_t kMaxLiveRaceEvents = 500;
 // The reader ignores ids it does not know; this only bounds a phone's list.
 constexpr size_t kMaxV6TypesPerClient = 32;
 constexpr size_t kMaxLapDataChannels = 64;
@@ -712,6 +726,7 @@ std::string phoneLapBlocks(const std::string& json) {
     row.deltaAvailable = source.deltaAvailable;
     row.trackLengthM = source.trackLengthM;
     row.playbackDriverIndex = source.playbackDriverIndex;
+    row.events = std::move(source.events);
     return writeJson(row);
 }
 
@@ -815,6 +830,8 @@ struct PairServer::Impl {
     LapDeltaCallback lapDeltaCallback;
     LapDataCallback lapDataCallback;
     DriverLapsCallback driverLapsCallback;
+    DriverLapHistoryCallback driverLapHistoryCallback;
+    AnalysisMapCallback analysisMapCallback;
     BrakingZonesCallback brakingZonesCallback;
     DiagnosticCallback diagnosticCallback;
     mutable std::mutex mutex;
@@ -852,6 +869,12 @@ struct PairServer::Impl {
     // under its state key so a new phone's snapshot carries all of them.
     std::map<uint64_t, std::string> latestPatches;
     std::array<std::vector<uint8_t>, 16> latestBinary;
+    // The live session's race events, oldest first, flashbacks included so a
+    // replay rewinds as the original did. The one exception to paired mode's
+    // no-backfill rule: the desktop Session page lists every event since the
+    // session began, so a phone subscribing to events gets them all too. In
+    // playback the lap catalogue carries the recording's events instead.
+    std::deque<std::string> liveRaceEvents;
     uint64_t participantsRevision{};
     std::optional<uint64_t> sessionUid;
     std::atomic<uint64_t> nextConnectionId{0};
@@ -1143,9 +1166,13 @@ struct PairServer::Impl {
             if (!latestPlaybackLapBlocks.empty()) rows.push_back(latestPlaybackLapBlocks);
             if (!latestDriverRestriction.empty()) rows.push_back(latestDriverRestriction);
             if (!latestLapMeasures.empty()) rows.push_back(latestLapMeasures);
+            // The whole live event backlog rather than only the newest event.
+            if ((client->streamMask & kRaceEventMask) != 0)
+                rows.insert(rows.end(), liveRaceEvents.begin(), liveRaceEvents.end());
             for (size_t type = 1; type < latestRows.size(); ++type) {
                 if ((client->streamMask & (1u << type)) == 0 || latestRows[type].empty())
                     continue;
+                if (type == 6) continue;  // events: the backlog above, or the lap catalogue
                 if (type == 8 &&
                     client->participantsRevision == participantsRevision) continue;
                 rows.push_back(latestRows[type]);
@@ -1511,6 +1538,18 @@ struct PairServer::Impl {
                 std::to_string(message.requestId) + ",\"driverIndex\":" +
                 std::to_string(message.driverIndex) + ",\"data\":" +
                 (data.empty() ? "null" : data) + "}"});
+        } else if (message.type == "request_driver_lap_history") {
+            // A pull rather than a claim: the engine's own lap-history claim
+            // belongs to the desktop dialog, so the phone asks again while its
+            // sheet is open. The reply is the ordinary driver_lap_history row.
+            DriverLapHistoryCallback callback;
+            {
+                std::lock_guard lock(mutex);
+                callback = driverLapHistoryCallback;
+            }
+            std::string row;
+            if (callback && message.driverIndex >= 0) row = callback(message.driverIndex);
+            if (!row.empty()) sendRows(client, {row});
         } else if (message.type == "request_braking_zones") {
             BrakingZonesCallback callback;
             {
@@ -1523,6 +1562,21 @@ struct PairServer::Impl {
                                 message.currentDriver, message.comparisonDriver);
             }
             sendRows(client, {"{\"type\":\"braking_zones\",\"requestId\":" +
+                std::to_string(message.requestId) + ",\"data\":" +
+                (data.empty() ? "null" : data) + "}"});
+        } else if (message.type == "request_analysis_map") {
+            AnalysisMapCallback callback;
+            {
+                std::lock_guard lock(mutex);
+                callback = analysisMapCallback;
+            }
+            std::string data;
+            if (callback && message.currentLap > 0 && message.comparisonLap >= 0) {
+                data = callback(message.layer, message.currentLap, message.comparisonLap,
+                                message.currentDriver, message.comparisonDriver, message.dark,
+                                message.currentColor, message.comparisonColor);
+            }
+            sendRows(client, {"{\"type\":\"analysis_map\",\"requestId\":" +
                 std::to_string(message.requestId) + ",\"data\":" +
                 (data.empty() ? "null" : data) + "}"});
         } else if (message.type == "ping") {
@@ -2047,6 +2101,16 @@ struct PairServer::Impl {
 PairServer::PairServer() : impl_(std::make_unique<Impl>()) {}
 PairServer::~PairServer() = default;
 
+void PairServer::setDriverLapHistoryCallback(DriverLapHistoryCallback callback) {
+    std::lock_guard lock(impl_->mutex);
+    impl_->driverLapHistoryCallback = std::move(callback);
+}
+
+void PairServer::setAnalysisMapCallback(AnalysisMapCallback callback) {
+    std::lock_guard lock(impl_->mutex);
+    impl_->analysisMapCallback = std::move(callback);
+}
+
 void PairServer::configure(PairServerConfig config, StateCallback stateCallback,
                            RequirementsCallback requirementsCallback,
                            LapDeltaCallback lapDeltaCallback,
@@ -2171,6 +2235,8 @@ void PairServer::noteSession(uint64_t sessionUid) {
         const bool changed = impl_->sessionUid.has_value();
         impl_->sessionUid = sessionUid;
         if (!changed) return;
+        // A new game session: the previous one's events are not this one's.
+        impl_->liveRaceEvents.clear();
 
         // Participants rows intentionally omit timestamps and session identity
         // so identical five-second updates dedupe cleanly. Invalidate only that
@@ -2205,6 +2271,7 @@ void PairServer::publishRow(const std::string& source) {
             impl_->latestRows = {};
             impl_->latestPatches.clear();
             impl_->latestBinary = {};
+            impl_->liveRaceEvents.clear();
             ++impl_->participantsRevision;
         }
         if (json.starts_with("{\"type\":\"protocol_status\""))
@@ -2214,12 +2281,18 @@ void PairServer::publishRow(const std::string& source) {
             impl_->latestPlaybackLapBlocks.clear();
             impl_->latestDriverRestriction.clear();
             impl_->latestLapMeasures.clear();
+            impl_->liveRaceEvents.clear();
         } else if (json.starts_with("{\"type\":\"playback_lap_blocks\"")) {
             impl_->latestPlaybackLapBlocks = json;
         } else if (json.starts_with("{\"type\":\"driver_restriction\"")) {
             impl_->latestDriverRestriction = json;
         } else if (json.starts_with("{\"type\":\"lap_measures\"")) {
             impl_->latestLapMeasures = json;
+        }
+        if (type == 6 && impl_->latestPlaybackLapBlocks.empty()) {
+            impl_->liveRaceEvents.push_back(json);
+            if (impl_->liveRaceEvents.size() > kMaxLiveRaceEvents)
+                impl_->liveRaceEvents.pop_front();
         }
         if (type > 0 && type < impl_->latestRows.size()) {
             if (type == 8 && impl_->latestRows[type] != json) {

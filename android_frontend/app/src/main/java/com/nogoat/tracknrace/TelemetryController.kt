@@ -56,6 +56,7 @@ internal class TelemetryController(
         ::requestDriverLaps,
         ::driverLapsSupported,
         ::requestBrakingZones,
+        ::requestAnalysisMap,
     )
     internal val graphs = GraphsController(context, store, ::requestLiveHistory) { requestId, lapNumber, channels ->
         requestLapData(requestId, -1, lapNumber, channels)
@@ -107,6 +108,7 @@ internal class TelemetryController(
         store.setAnalysisDeltaSink(analysis::onDeltaReply)
         store.setAnalysisDriverLapsSink(analysis::onDriverLaps)
         store.setAnalysisBrakingSink(analysis::onBrakingZones)
+        store.setAnalysisMapSink(analysis::onAnalysisMap)
         publishSettings()
     }
 
@@ -259,6 +261,22 @@ internal class TelemetryController(
 
     fun requestDriverRestriction() {
         if (!isDirectSource()) pairedTelemetry.requestDriverRestriction()
+    }
+
+    /**
+     * One car's laps for the Timing page's laps sheet, which asks again while
+     * it is open: from the phone's own engine (listening or a recording it
+     * plays), else from the desktop. The row arrives through the store either way.
+     */
+    fun requestDriverLapHistory(car: Int) {
+        if (playback != null || isDirectSource()) {
+            if (lapExecutor.isShutdown) return
+            lapExecutor.execute {
+                directTelemetry.driverLapHistory(car)?.let(store::acceptColdRow)
+            }
+        } else {
+            pairedTelemetry.requestDriverLapHistory(car)
+        }
     }
 
     fun setActivePage(page: PairedTelemetryPage) {
@@ -447,6 +465,16 @@ internal class TelemetryController(
                 request.comparisonDriver,
             )
             store.acceptColdRow("{\"type\":\"braking_zones\",\"requestId\":${request.requestId},\"data\":${data ?: "null"}}")
+        }
+        return true
+    }
+
+    /** Analysis map layers: from the phone's recording when one is open, else the desktop. */
+    private fun requestAnalysisMap(request: AnalysisMapRequest): Boolean {
+        if (playback == null) return pairedTelemetry.requestAnalysisMap(request)
+        lapExecutor.execute {
+            val data = directTelemetry.analysisMap(request)
+            store.acceptColdRow("{\"type\":\"analysis_map\",\"requestId\":${request.requestId},\"data\":${data ?: "null"}}")
         }
         return true
     }

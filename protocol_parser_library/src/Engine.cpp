@@ -1,5 +1,6 @@
 #include "tnrp/Engine.h"
 #include "tnrp/AnalysisMap.h"
+#include "tnrp/AnalysisMapPaint.h"
 #include "tnrp/BinaryRows.h"
 #include "tnrp/LapDelta.h"
 #include "tnrp/TimeUtils.h"
@@ -216,6 +217,16 @@ Engine::Engine(const Config& config, Sink* sink)
     writer_.setRecordingScopes(config_.recordingScopes);
     writer_.setLogging(config.loggingEnabled, config.outputDirectory);
     TRACE("Engine ctor: writer_.setLogging done");
+    pairServer_.setDriverLapHistoryCallback([this](int carIdx) {
+        return driverLapHistoryJson(carIdx);
+    });
+    pairServer_.setAnalysisMapCallback(
+        [this](const std::string& layer, int currentLap, int comparisonLap,
+               int currentDriver, int comparisonDriver, bool dark,
+               const std::string& currentColor, const std::string& comparisonColor) {
+            return playerAnalysisMapJson(layer, currentLap, comparisonLap, currentDriver,
+                                         comparisonDriver, dark, currentColor, comparisonColor);
+        });
     pairServer_.configure({config.pairPort, config.pairName,
                            config.pairStateJson, config.pairEnabled},
         [this](const std::string& publicJson,
@@ -1158,8 +1169,22 @@ void Engine::onDatagram(const uint8_t* data, int length) {
             strategyRows.push_back({rowTime, ++liveStrategySequence_,
                                     std::make_shared<const std::string>(row)});
         }
-        if (type < liveLatestRows_.size()) liveLatestRows_[type] = row;
-        if (r.rewindSessionTime || type == 0 || (consumerRowMask_ & (1u << type))) emitRow(row);
+        // A live race event carries the lap the streamed car was on when it
+        // happened, so a phone replaying the paired event backlog can file
+        // each event under its own lap rather than the lap it received it on.
+        // Recording above keeps the row as the game produced it.
+        static constexpr std::string_view kRaceEventPrefix = "{\"type\":\"race_event\"";
+        const std::string* out = &row;
+        std::string stamped;
+        if (type == 6 && config_.binaryPlayback && row.starts_with(kRaceEventPrefix)) {
+            stamped.reserve(row.size() + 16);
+            stamped.append(kRaceEventPrefix);
+            stamped.append(",\"lap_num\":").append(std::to_string(liveLapNum_));
+            stamped.append(row, kRaceEventPrefix.size());
+            out = &stamped;
+        }
+        if (type < liveLatestRows_.size()) liveLatestRows_[type] = *out;
+        if (r.rewindSessionTime || type == 0 || (consumerRowMask_ & (1u << type))) emitRow(*out);
     }
     if (lapHistoryChanged && lapHistoryCar_ >= 0) {
         if (std::string row = lapHistoryRowLocked(false); !row.empty()) emitRow(row);
@@ -1348,6 +1373,97 @@ std::string Engine::playerBrakingZonesJson(int currentLap, int comparisonLap,
         "braking", current, comparisonLap > 0 ? &comparison : nullptr);
     if (!result.hasCurrent) return std::string{};
     return writeJson(result.braking);
+}
+
+// Named (not anonymous): glaze reflection needs these types to have linkage.
+namespace phone_map {
+
+// A corner's slowest speed, for the phone's apex labels on the Speed layer.
+struct PhoneMapApex {
+    float distanceM{};
+    float speedKph{};
+    int side{};
+};
+
+// One lap's layer, painted: a colour per binM metres from the timing line, or
+// spread evenly over the lap when binM is 0 (Track Dominance).
+struct PhoneMapLap {
+    float binM{};
+    float trackLengthM{};
+    std::vector<std::string> colors;
+    bool restricted{};
+    std::vector<PhoneMapApex> apexes;
+};
+
+// request_analysis_map's data. The scales are for the phone's legend.
+struct PhoneAnalysisMap {
+    std::string layer;
+    std::optional<PhoneMapLap> current;
+    std::optional<PhoneMapLap> comparison;
+    float speedMinKph{};
+    float speedMaxKph{};
+    float ersPeakKw{};
+    float harvestPeakKw{};
+};
+
+} // namespace phone_map
+
+using phone_map::PhoneMapApex;
+using phone_map::PhoneMapLap;
+using phone_map::PhoneAnalysisMap;
+
+std::string Engine::playerAnalysisMapJson(const std::string& layer, int currentLap,
+                                          int comparisonLap, int currentDriver,
+                                          int comparisonDriver, bool dark,
+                                          const std::string& currentColor,
+                                          const std::string& comparisonColor) const {
+    if (!inPlayback_.load() || currentLap <= 0) return std::string{};
+    if (layer != "dominance" && layer != "ers" && layer != "harvest" &&
+        layer != "inputs" && layer != "speed") return std::string{};
+    const RecordingAccess access =
+        [this](const std::function<void(const TnrdReader&)>& read) {
+            return playerReadRecording(read);
+        };
+    const AnalysisMapLap current{access, currentLap, currentDriver};
+    const AnalysisMapLap comparison{access, comparisonLap, comparisonDriver};
+    const AnalysisMapResult result = buildAnalysisMap(
+        layer, current, comparisonLap > 0 ? &comparison : nullptr);
+    if (!result.hasCurrent) return std::string{};
+
+    PhoneAnalysisMap out;
+    out.layer = layer;
+    out.speedMinKph = result.speedScaleMinKph;
+    out.speedMaxKph = result.speedScaleMaxKph;
+    out.ersPeakKw = std::max(result.current.normalPeakKw, result.current.reducedPeakKw);
+    out.harvestPeakKw = result.currentHarvest.peakKw;
+    const auto lapOf = [&](int lap) -> std::optional<PhoneMapLap> {
+        const AnalysisMapPaint paint = analysisMapPaint(result, lap, dark, currentColor, comparisonColor);
+        if (paint.colors.empty()) {
+            // Restricted ERS still says so, so the phone can explain the blank map.
+            const bool restricted = layer == "ers"
+                ? (lap == 0 ? result.current : result.comparison).restricted
+                : layer == "harvest"
+                    ? (lap == 0 ? result.currentHarvest : result.comparisonHarvest).restricted
+                    : false;
+            if (!restricted) return std::nullopt;
+            PhoneMapLap blank;
+            blank.restricted = true;
+            return blank;
+        }
+        PhoneMapLap entry;
+        entry.binM = paint.binM;
+        entry.trackLengthM = paint.trackLengthM;
+        entry.colors = paint.colors;
+        if (layer == "speed") {
+            const SpeedMap& speed = lap == 0 ? result.currentSpeed : result.comparisonSpeed;
+            for (const CornerApex& apex : speed.apexes)
+                entry.apexes.push_back({apex.distanceM, apex.speedKph, apex.side});
+        }
+        return entry;
+    };
+    out.current = lapOf(0);
+    if (comparisonLap > 0 && result.hasComparison) out.comparison = lapOf(1);
+    return writeJson(out);
 }
 
 void Engine::setPhoneRequirements(uint32_t streamRowMask, const std::vector<uint8_t>& v6Types) {
@@ -2111,6 +2227,14 @@ std::string Engine::lapMeasuresRowLocked(bool force) {
     (void)glz::write_json(row, json);
     if (!force && json == lastLapMeasuresJson_) return {};
     lastLapMeasuresJson_ = json;
+    return json;
+}
+
+std::string Engine::driverLapHistoryJson(int carIdx) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (carIdx < 0 || carIdx >= static_cast<int>(liveLapHistoryRows_.size())) return {};
+    std::string json;
+    (void)glz::write_json(driverLapHistoryLocked(carIdx), json);
     return json;
 }
 

@@ -244,7 +244,13 @@ function brakingObservationText(observation: BrakingObservation, labels: [string
     case 'lift_only':
       return `${lap} takes it on a lift where ${other} brakes`
     case 'tighter_track_limits':
-      return `${lap} takes a ${observation.value.toFixed(1)} m tighter line but breaks track limits`
+      return `${lap} runs ${observation.value.toFixed(1)} m further inside at the apex but breaks track limits`
+    case 'straighter_line': {
+      const line = `${lap} runs a wider arc, ${observation.value.toFixed(1)} m further inside at the apex`
+      if (observation.other > 0) return `${line}, and is ${observation.other.toFixed(3)} s quicker`
+      if (observation.other < 0) return `${line}, but is ${(-observation.other).toFixed(3)} s slower`
+      return line
+    }
     case 'tighter_helped':
       return `${lap} takes a ${observation.value.toFixed(1)} m tighter line and is ${observation.other.toFixed(3)} s quicker`
     case 'tighter_no_gain':
@@ -426,8 +432,8 @@ export function BrakingTooltip({ fill, zone, phase, fromM, splitM, toM, current,
 const brakeAtText = (point: BrakingPointResult) =>
   point.liftOnly ? `lift ${Math.round(point.distanceM).toLocaleString()} m` : formatM(point.distanceM)
 const metresText = (metres: number) => metres < 0 ? '—' : `${Math.round(metres).toLocaleString()} m`
-/** A lap's line against the other's at a corner, named on the tighter lap. */
-const lineText = (gapM: number) => gapM === 0 ? 'level' : gapM > 0 ? `${gapM.toFixed(1)} m tighter` : '—'
+/** A lap's line against the other's at a corner's apex, named on the lap further inside. */
+const lineText = (gapM: number) => gapM === 0 ? 'level' : gapM > 0 ? `${gapM.toFixed(1)} m inside` : '—'
 // Apexes this close on two laps are the same corner.
 const CORNER_MATCH_M = 80
 /** Which way a corner turns, after its apex label. */

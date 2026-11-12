@@ -79,12 +79,14 @@ import com.nogoat.tracknrace.pages.MenuSource
 import com.nogoat.tracknrace.pages.DashboardScreen
 import com.nogoat.tracknrace.pages.GraphWindowSheet
 import com.nogoat.tracknrace.pages.windowPillText
+import com.nogoat.tracknrace.pages.DataTablesScreen
 import com.nogoat.tracknrace.pages.GraphsScreen
 import com.nogoat.tracknrace.pages.LicensesScreen
 import com.nogoat.tracknrace.pages.PARTICIPANTS_RETRY_DELAY_MS
 import com.nogoat.tracknrace.pages.PairingScreen
 import com.nogoat.tracknrace.pages.RecordingsSheet
 import com.nogoat.tracknrace.pages.SettingsScreen
+import com.nogoat.tracknrace.pages.dataTablesSummary
 import com.nogoat.tracknrace.pages.TimingScreen
 import com.nogoat.tracknrace.pages.TyresScreen
 import com.nogoat.tracknrace.pages.UdpScreen
@@ -95,12 +97,13 @@ private enum class AppScreen(val telemetryPage: PairedTelemetryPage, val isPrima
     DASHBOARD(PairedTelemetryPage.DASHBOARD),
     TIMING(PairedTelemetryPage.TIMING),
     TYRES(PairedTelemetryPage.TYRES),
-    GRAPHS(PairedTelemetryPage.GRAPHS_POWER),
+    GRAPHS(PairedTelemetryPage.GRAPHS_SPEED),
     ANALYSIS(PairedTelemetryPage.ANALYSIS),
     SETTINGS(PairedTelemetryPage.NONE, isPrimary = false),
     PAIRING(PairedTelemetryPage.NONE, isPrimary = false),
     UDP(PairedTelemetryPage.NONE, isPrimary = false),
     LICENSES(PairedTelemetryPage.NONE, isPrimary = false),
+    DATA_TABLES(PairedTelemetryPage.NONE, isPrimary = false),
 }
 
 // Matched to the roster retry: both recover a control row the desktop already
@@ -130,6 +133,12 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     // The Tyres page's Charts tab is showing: the app bar offers the chart window there too.
     var tyreChartsShown by rememberSaveable { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    // Edit layout, on the Charts page and the Tyres page's Charts tab: the charts show as blocks until Done.
+    var chartsEditRequested by remember { mutableStateOf(false) }
+    val chartsEditable = screen == AppScreen.GRAPHS || (screen == AppScreen.TYRES && tyreChartsShown)
+    val chartsEditing = chartsEditRequested && chartsEditable
+    // Leaving the charts ends it.
+    LaunchedEffect(chartsEditable) { if (!chartsEditable) chartsEditRequested = false }
     val localRecording = store.localRecording
     // The recording player stays a sliver until tapped open.
     var playerOpen by rememberSaveable { mutableStateOf(false) }
@@ -193,7 +202,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
 
     fun navigateBack() {
         screen = when (screen) {
-            AppScreen.PAIRING, AppScreen.UDP, AppScreen.LICENSES -> AppScreen.SETTINGS
+            AppScreen.PAIRING, AppScreen.UDP, AppScreen.LICENSES, AppScreen.DATA_TABLES -> AppScreen.SETTINGS
             AppScreen.SETTINGS -> settingsReturn
             else -> screen
         }
@@ -259,6 +268,9 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
     BackHandler(enabled = playerOpen && isPrimary) {
         playerOpen = false
     }
+    BackHandler(enabled = chartsEditing) {
+        chartsEditRequested = false
+    }
 
     Scaffold(
         topBar = {
@@ -272,6 +284,8 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                     graphReferenceLap = telemetry.graphs.globalLap(),
                     onGraphWindow = { graphWindowOpen = true },
                     onMenu = { menuOpen = true },
+                    editingLayout = chartsEditing,
+                    onDoneEditing = { chartsEditRequested = false },
                     timingCars = { timingCars },
                 )
             }
@@ -357,6 +371,10 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             labels = rememberCurrentWhileActive(destinationActive) { coldLabels },
                             active = destinationActive,
                             onRequestParticipants = telemetry::requestParticipants,
+                            // A tapped row's laps sheet: read by the sheet itself.
+                            lapHistory = { store.driverLapHistory },
+                            fastestLapCar = { store.raceEvents.lastOrNull { it.code == "FTLP" }?.carIndex },
+                            onRequestLapHistory = telemetry::requestDriverLapHistory,
                         )
                         AppScreen.TYRES -> TyresScreen(
                             display = { tyreRows },
@@ -366,11 +384,13 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             // The allocation and the charts each ask the desktop for their own data.
                             onPage = telemetry::setActivePage,
                             onChartsShown = { tyreChartsShown = it },
+                            editing = chartsEditing,
                         )
                         AppScreen.GRAPHS -> GraphsScreen(
                             store = store,
                             graphs = telemetry.graphs,
                             active = destinationActive,
+                            editing = chartsEditing,
                             // Each graph tab asks the desktop for its own data.
                             onPage = telemetry::setActivePage,
                         )
@@ -391,6 +411,8 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             onDefaultDirectory = telemetry::useDefaultRecordingDirectory,
                             onForgetDesktop = telemetry::forgetDesktop,
                             onLicenses = { screen = AppScreen.LICENSES },
+                            dataTables = dataTablesSummary(telemetry.graphs),
+                            onDataTables = { screen = AppScreen.DATA_TABLES },
                         )
                         AppScreen.PAIRING -> PairingScreen(
                             telemetry = telemetry,
@@ -412,6 +434,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             onApply = telemetry::setUdpSettings,
                         )
                         AppScreen.LICENSES -> LicensesScreen()
+                        AppScreen.DATA_TABLES -> DataTablesScreen(telemetry.graphs)
                     }
                 }
 
@@ -478,6 +501,8 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                         graphReferenceLap = telemetry.graphs.globalLap(),
                         onGraphWindow = { graphWindowOpen = true },
                         onMenu = { menuOpen = true },
+                        editingLayout = chartsEditing,
+                        onDoneEditing = { chartsEditRequested = false },
                         timingCars = { timingCars },
                     )
                 }
@@ -539,6 +564,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
             onOpenRecordings = { recordingsOpen = true },
             onCloseRecording = telemetry::closeRecording,
             onReconnect = telemetry::reconnect,
+            onEditLayout = { chartsEditRequested = true }.takeIf { chartsEditable },
             onSettings = openSettings,
             onDismiss = { menuOpen = false },
         )
@@ -653,9 +679,12 @@ private fun AppTopBar(
     onMenu: () -> Unit,
     /** The cars in the running order, shown beside the Timing page's menu. Read only there. */
     timingCars: () -> Int,
+    /** Edit layout is on: the bar names it and offers Done in place of its actions. */
+    editingLayout: Boolean,
+    onDoneEditing: () -> Unit,
 ) {
     val primary = screen.isPrimary
-    val title = when (screen) {
+    val title = if (editingLayout) "Edit layout" else when (screen) {
         AppScreen.DASHBOARD -> "Dashboard"
         AppScreen.TIMING -> "Timing"
         AppScreen.TYRES -> "Tyres"
@@ -665,6 +694,7 @@ private fun AppTopBar(
         AppScreen.PAIRING -> "Pair desktop"
         AppScreen.UDP -> "UDP listener"
         AppScreen.LICENSES -> "Licenses"
+        AppScreen.DATA_TABLES -> "Data tables"
     }
     TopAppBar(
         modifier = Modifier.staticLayer(),
@@ -691,7 +721,9 @@ private fun AppTopBar(
             )
         },
         actions = {
-            if (primary) {
+            if (editingLayout) {
+                TextButton(onClick = onDoneEditing) { Text("Done") }
+            } else if (primary) {
                 if (showsGraphWindow) {
                     // The window every chart follows unless it picks its own.
                     TextButton(onClick = onGraphWindow) {

@@ -20,9 +20,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ElevatedAssistChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -69,19 +67,6 @@ internal class BrakingLaps(
 
 // An exit that spun shows in this colour instead of its lap's, as on the desktop.
 private val SpinWarningColor = Color(0xfff59e0b)
-
-/** The Map view's way into the braking zones, at the bottom of the map. */
-@Composable
-internal fun BrakingPointsChip(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    ElevatedAssistChip(
-        onClick = onClick,
-        label = { Text("Braking points") },
-        modifier = modifier,
-        leadingIcon = {
-            Icon(painterResource(R.drawable.ic_braking_points), contentDescription = null, modifier = Modifier.size(AssistChipDefaults.IconSize))
-        },
-    )
-}
 
 /** A zone's colour on the map and in the list: the lap quicker through it, else neutral. */
 internal fun brakingZoneColor(zone: BrakingZone, laps: BrakingLaps, neutral: Color): Color = when (zone.quicker) {
@@ -406,7 +391,7 @@ private fun headToHead(zone: BrakingZone): List<HeadToHeadRow> {
     )
     rows += HeadToHeadRow("Coast", current?.let(::coastText), comparison?.let(::coastText), null)
     // One apex row per corner, flat-out ones included, each with which lap
-    // took the tighter line there when both recorded their positions.
+    // ran further inside at the apex when both recorded their positions.
     val corners = alignCorners(current?.apexes.orEmpty(), comparison?.apexes.orEmpty())
     corners.forEachIndexed { index, (a, b) ->
         val side = sideText((a ?: b)!!.side)
@@ -530,7 +515,12 @@ private fun observationText(observation: BrakingObservation, laps: BrakingLaps):
         "earlier_throttle" -> "$lap is back on throttle ${value.roundToInt()} m earlier than $other"
         "faster_to_full" -> "$lap is flat out ${value.roundToInt()} m sooner than $other"
         "lift_only" -> "$lap takes it on a lift where $other brakes"
-        "tighter_track_limits" -> "$lap takes a ${tenth(value)} m tighter line but breaks track limits"
+        "tighter_track_limits" -> "$lap runs ${tenth(value)} m further inside at the apex but breaks track limits"
+        "straighter_line" -> "$lap runs a wider arc, ${tenth(value)} m further inside at the apex" + when {
+            second > 0 -> ", and is ${seconds(second)} s quicker"
+            second < 0 -> ", but is ${seconds(-second)} s slower"
+            else -> ""
+        }
         "tighter_helped" -> "$lap takes a ${tenth(value)} m tighter line and is ${seconds(second)} s quicker"
         "tighter_no_gain" -> "$lap's ${tenth(value)} m tighter line gains no time"
         "tighter_lost_speed" -> "$lap takes a ${tenth(value)} m tighter line but loses ${second.roundToInt()} km/h through the apex"
@@ -561,10 +551,10 @@ private fun spinText(point: BrakingPoint) =
 
 private fun harvestText(kj: Double) = String.format(Locale.US, "+%,d kJ", kj.roundToLong())
 
-/** A lap's line against the other's at a corner, named on the tighter lap. */
+/** A lap's line against the other's at a corner's apex, named on the lap further inside. */
 private fun lineText(gapM: Double) = when {
     gapM == 0.0 -> "level"
-    gapM > 0 -> "${String.format(Locale.US, "%.1f", gapM)} m tighter"
+    gapM > 0 -> "${String.format(Locale.US, "%.1f", gapM)} m inside"
     else -> "—"
 }
 

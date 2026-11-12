@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Race event: an overtake, one car up and one down. -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M7,20V5M3,9l4,-4 4,4M17,4v15M13,15l4,4 4,-4"
+        android:strokeColor="@android:color/white"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+</vector>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Weather: light rain. -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M7,15h10a4,4 0,0 0,0.5 -8A6,6 0,0 0,6.1 8.1A3.5,3.5 0,0 0,7 15z"
+        android:strokeColor="@android:color/white"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="1.8" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M8.5,18l-1,2.5M12.5,18l-1,2.5M16.5,18l-1,2.5"
+        android:strokeColor="@android:color/white"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="1.8" />
+</vector>

@@ -273,6 +273,23 @@ internal data class BrakingZonesRequest(
     val comparisonDriver: Int,
 )
 
+/**
+ * One request for an Analysis map layer painted for [currentLap], and for
+ * [comparisonLap] (0 = none): [layer] is "dominance", "ers", "harvest",
+ * "inputs" or "speed"; colours are "#rrggbb".
+ */
+internal data class AnalysisMapRequest(
+    val requestId: Long,
+    val layer: String,
+    val currentLap: Int,
+    val comparisonLap: Int,
+    val currentDriver: Int,
+    val comparisonDriver: Int,
+    val dark: Boolean,
+    val currentColor: String,
+    val comparisonColor: String,
+)
+
 internal data class PlaybackLapDeltaRequest(
     val requestId: Long,
     val currentLap: Int,

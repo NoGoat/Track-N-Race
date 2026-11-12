@@ -75,6 +75,18 @@ internal enum class PairedTelemetryPage(
             DataConsumer.STRATEGY,
         ),
     ),
+    // Conditions and race control: the session packet, the event feed, the
+    // names events mention, and the lap rows that place each event on a lap
+    // and count the laps remaining.
+    DASHBOARD_SESSION(
+        "dashboard-session",
+        listOf(
+            DataConsumer.DRIVER_ROSTER,
+            DataConsumer.SESSION_INFO,
+            DataConsumer.RACE_EVENTS,
+            DataConsumer.LAP_PROGRESS,
+        ),
+    ),
     TIMING(
         "timing",
         listOf(
@@ -422,6 +434,20 @@ internal class PairedTelemetryClient(
         )
     }
 
+    /**
+     * Asks for one car's driver_lap_history row, which arrives as an ordinary
+     * row. False when the desktop cannot answer (an older desktop build).
+     */
+    fun requestDriverLapHistory(car: Int): Boolean {
+        val connection = admitted()?.takeIf { it.driverLapHistorySupported } ?: return false
+        return connection.send(
+            JSONObject()
+                .put("type", "request_driver_lap_history")
+                .put("driverIndex", car)
+                .toString(),
+        )
+    }
+
     /** Whether the desktop can send braking zones. */
     fun brakingZonesSupported(): Boolean = admitted()?.brakingZonesSupported == true
 
@@ -437,6 +463,27 @@ internal class PairedTelemetryClient(
                 .put("requestId", request.requestId)
                 .put("currentLap", request.currentLap)
                 .put("comparisonLap", request.comparisonLap)
+                .apply {
+                    if (request.currentDriver >= 0) put("currentDriver", request.currentDriver)
+                    if (request.comparisonDriver >= 0) put("comparisonDriver", request.comparisonDriver)
+                }
+                .toString(),
+        )
+    }
+
+    /** Asks for one Analysis map layer, painted per lap. False when the desktop cannot answer. */
+    fun requestAnalysisMap(request: AnalysisMapRequest): Boolean {
+        val connection = admitted()?.takeIf { it.analysisMapSupported } ?: return false
+        return connection.send(
+            JSONObject()
+                .put("type", "request_analysis_map")
+                .put("requestId", request.requestId)
+                .put("layer", request.layer)
+                .put("currentLap", request.currentLap)
+                .put("comparisonLap", request.comparisonLap)
+                .put("dark", request.dark)
+                .put("currentColor", request.currentColor)
+                .put("comparisonColor", request.comparisonColor)
                 .apply {
                     if (request.currentDriver >= 0) put("currentDriver", request.currentDriver)
                     if (request.comparisonDriver >= 0) put("comparisonDriver", request.comparisonDriver)
@@ -630,6 +677,10 @@ internal class PairedTelemetryClient(
             private set
 
         @Volatile var brakingZonesSupported = false
+            private set
+
+        @Volatile var driverLapHistorySupported = false
+        @Volatile var analysisMapSupported = false
             private set
 
         fun start() {
@@ -842,6 +893,8 @@ internal class PairedTelemetryClient(
             driverRestrictionSupported = "driver-restriction" in advertised
             driverLapsSupported = "driver-laps" in advertised
             brakingZonesSupported = "braking-zones" in advertised
+            driverLapHistorySupported = "driver-lap-history" in advertised
+            analysisMapSupported = "analysis-map" in advertised
             val page = synchronized(lock) {
                 if (current !== this) return
                 admitted = true

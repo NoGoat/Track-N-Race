@@ -267,6 +267,11 @@ public:
     // it changes: a completed lap (live), the cursor passing a lap end or a
     // seek (playback), or a new recording. Nothing polls for it.
     void setLapHistoryCar(int carIdx);
+    // One car's driver_lap_history row, read now without claiming the
+    // lap-times view (the desktop's own dialog keeps setLapHistoryCar): for
+    // the Android app and paired phones, which ask again while their sheet is
+    // open. Empty for a car index out of range.
+    std::string driverLapHistoryJson(int carIdx) const;
     bool playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
                                       int driverIndex = -1) const;
     // Runs `read` on the loaded recording under the engine lock; false when
@@ -289,6 +294,16 @@ public:
     // current lap cannot be read.
     std::string playerBrakingZonesJson(int currentLap, int comparisonLap,
                                        int currentDriver = -1, int comparisonDriver = -1) const;
+    // A phone's request_analysis_map: one Analysis map layer ("dominance",
+    // "ers", "harvest", "inputs" or "speed") painted for each lap
+    // (tnrp/AnalysisMapPaint.h) in the phone's theme, as JSON. Track
+    // Dominance paints the current lap only, in the two lap colours
+    // ("#rrggbb"). comparisonLap 0 means the current lap alone. Empty when
+    // nothing is playing, the layer is unknown or the current lap cannot be read.
+    std::string playerAnalysisMapJson(const std::string& layer, int currentLap, int comparisonLap,
+                                      int currentDriver, int comparisonDriver, bool dark,
+                                      const std::string& currentColor,
+                                      const std::string& comparisonColor) const;
     void playerGetAllLapsData(uint64_t requestId = 0, uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerGetWindowData(float windowSeconds, uint64_t requestId = 0,
                              uint32_t rowTypeMask = 0xFFFFFFFFu);

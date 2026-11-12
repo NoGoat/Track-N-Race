@@ -64,18 +64,24 @@ constexpr float kObserveExitM = 5.0f;
 constexpr float kObserveLevelS = 0.01f;
 constexpr size_t kMaxBrakingObservations = 4;
 // Lines at a corner. Closer than kLineLevelM counts as the same line; a verdict
-// needs kObserveLineM. The bend's inside comes from the lap's path
+// needs kObserveLineM. The bend's inside is the way the corner turns, square
+// to the lap's path across kLineTangentM either side of the point. A corner
+// found from speed alone has no side: its inside comes from the lap's path
 // kLineChordM either side of the apex, and is not trusted below kLineMinTurn
 // (the two unit tangents' difference: about 3 degrees of turn). The other lap
 // is searched kLineSearchM either side, and is too far away to compare beyond
 // kLineMaxGapM. Apexes this close on two laps are the same corner.
 constexpr float kLineLevelM = 0.5f;
 constexpr float kObserveLineM = 1.0f;
+constexpr float kLineTangentM = 5.0f;
 constexpr float kLineChordM = 25.0f;
 constexpr double kLineMinTurn = 0.05;
 constexpr float kLineSearchM = 60.0f;
 constexpr double kLineMaxGapM = 30.0;
 constexpr float kLineCornerMatchM = 80.0f;
+// A lap's own radius through a corner has to be this much larger than the
+// other lap's to say it ran the wider arc. Not yet checked against recordings.
+constexpr float kObserveRadiusShare = 0.05f;
 // A track-limits penalty event can follow the corner it is for; it counts for
 // a zone up to this long after the zone ends.
 constexpr float kTrackLimitLagS = 2.0f;
@@ -336,6 +342,8 @@ std::vector<CornerApex> findCorners(const detail::ProgressMap& progress,
                 }
             }
             out.push_back({corner.apexM, slowest.value_or(atApex), corner.side});
+            out.back().fromM = corner.fromM;
+            out.back().toM = corner.toM;
         }
         return out;
     }
@@ -368,7 +376,15 @@ std::vector<CornerApex> findCorners(const detail::ProgressMap& progress,
         }
         if (at < from || at > to) continue;
         const float m = distanceAtTime(progress, at);
-        if (m >= 0.0f) out.push_back({m, slowest, corner.side});
+        if (!(m >= 0.0f)) continue;
+        out.push_back({m, slowest, corner.side});
+        // The corner runs for as long as the wheel is turned.
+        const float fromM = distanceAtTime(progress, samples[corner.first].session_time);
+        const float toM = distanceAtTime(progress, samples[corner.last].session_time);
+        if (fromM >= 0.0f && toM >= fromM) {
+            out.back().fromM = fromM;
+            out.back().toM = toM;
+        }
     }
     return out;
 }
@@ -651,33 +667,73 @@ std::optional<WorldPoint> positionAtTime(const std::vector<PlayerPositionPoint>&
     return WorldPoint{before.x + (after->x - before.x) * ratio, before.z + (after->z - before.z) * ratio};
 }
 
-// How much further inside the bend lap `a` runs than lap `b` at a corner, in
-// metres (negative when wider). The inside is where lap `a`'s path turns
-// towards, and the gap is to the nearest point of lap `b`'s path, because equal
-// lap distances are not level with each other on different lines. Nullopt
-// where the positions do not cover the corner or it barely turns.
-std::optional<float> lineGap(const LapRead& a, const detail::ProgressMap& progressA, float apexA,
-                             const LapRead& b, const detail::ProgressMap& progressB, float apexB) {
-    const auto at = [&](float distance) { return positionAtTime(a.positions, timeAtDistance(progressA, distance)); };
-    const auto before = at(apexA - kLineChordM);
-    const auto apex = at(apexA);
-    const auto after = at(apexA + kLineChordM);
-    if (!before || !apex || !after) return std::nullopt;
+// Session time at a lap distance, held at the lap's first and last recorded
+// distances past them, so a stretch reaching over the line stops at it.
+float timeAtDistanceClamped(const detail::ProgressMap& progress, float distance) {
+    if (progress.points.size() < 2) return std::numeric_limits<float>::quiet_NaN();
+    const float first = progress.points.front().lap_distance_m;
+    return timeAtDistance(progress, std::max(first, std::min(distance, progress.maxDistance)));
+}
+
+// The unit vector towards the inside of the bend where a lap's path is at a
+// lap distance. `side` is the way the corner turns (-1 left, 1 right): the
+// inside is square to the path on that side, so neighbouring corners cannot
+// tip it over. Positive curvature is turning right (TrackPathAverage::corners),
+// which in (x, z) is the path's direction turned a quarter towards +z. With no
+// side, it is where the path turns towards across kLineChordM either side.
+// Nullopt where the positions do not cover it or, with no side, it barely turns.
+std::optional<WorldPoint> insideAt(const LapRead& lap, const detail::ProgressMap& progress,
+                                   float distance, int side) {
+    if (lap.positions.size() < 2) return std::nullopt;
+    // Held at the ends of the lap's positions: a point next to the line still
+    // has a direction.
+    const auto near = [&](float d) -> std::optional<WorldPoint> {
+        const float time = timeAtDistanceClamped(progress, d);
+        if (!std::isfinite(time)) return std::nullopt;
+        return positionAtTime(lap.positions, std::max(lap.positions.front().session_time,
+                                                      std::min(time, lap.positions.back().session_time)));
+    };
     const auto heading = [](const WorldPoint& from, const WorldPoint& to) -> std::optional<WorldPoint> {
         const double dx = to.x - from.x, dz = to.z - from.z, length = std::hypot(dx, dz);
         if (!(length > 0.0)) return std::nullopt;
         return WorldPoint{dx / length, dz / length};
     };
-    const auto in = heading(*before, *apex);
-    const auto out = heading(*apex, *after);
+    if (side != 0) {
+        const auto before = near(distance - kLineTangentM);
+        const auto after = near(distance + kLineTangentM);
+        if (!before || !after) return std::nullopt;
+        const auto along = heading(*before, *after);
+        if (!along) return std::nullopt;
+        return WorldPoint{-along->z * side, along->x * side};
+    }
+    const auto before = near(distance - kLineChordM);
+    const auto at = near(distance);
+    const auto after = near(distance + kLineChordM);
+    if (!before || !at || !after) return std::nullopt;
+    const auto in = heading(*before, *at);
+    const auto out = heading(*at, *after);
     if (!in || !out) return std::nullopt;
-    WorldPoint inside{out->x - in->x, out->z - in->z};
+    const WorldPoint inside{out->x - in->x, out->z - in->z};
     const double turn = std::hypot(inside.x, inside.z);
     if (turn < kLineMinTurn) return std::nullopt;
-    inside = {inside.x / turn, inside.z / turn};
+    return WorldPoint{inside.x / turn, inside.z / turn};
+}
 
-    const float t0 = timeAtDistance(progressB, apexB - kLineSearchM);
-    const float t1 = timeAtDistance(progressB, apexB + kLineSearchM);
+// How much further inside the bend lap `a` runs than lap `b` at one point of a
+// corner, in metres (negative when wider): lap `a` at `distanceA`, against the
+// nearest point of lap `b`'s path around `distanceB`, because equal lap
+// distances are not level with each other on different lines. Nullopt where
+// the positions do not cover the point or the inside cannot be told.
+std::optional<float> lineGap(const LapRead& a, const detail::ProgressMap& progressA, float distanceA, int side,
+                             const LapRead& b, const detail::ProgressMap& progressB, float distanceB) {
+    const auto apex = positionAtTime(a.positions, timeAtDistance(progressA, distanceA));
+    if (!apex) return std::nullopt;
+    const auto found = insideAt(a, progressA, distanceA, side);
+    if (!found) return std::nullopt;
+    const WorldPoint inside = *found;
+
+    const float t0 = timeAtDistanceClamped(progressB, distanceB - kLineSearchM);
+    const float t1 = timeAtDistanceClamped(progressB, distanceB + kLineSearchM);
     if (!std::isfinite(t0) || !std::isfinite(t1)) return std::nullopt;
     double nearest = kLineMaxGapM;
     std::optional<WorldPoint> closest;
@@ -694,6 +750,73 @@ std::optional<float> lineGap(const LapRead& a, const detail::ProgressMap& progre
     }
     if (!closest) return std::nullopt;
     return static_cast<float>((apex->x - closest->x) * inside.x + (apex->z - closest->z) * inside.z);
+}
+
+// The tightest radius a lap's own path turns at through a corner, in metres:
+// its positions taken metre by metre of the distance it travelled, with the
+// heading and curvature windows the track corners use, so two laps read alike.
+// Turning the corner's way only, when its side is known. 0 when the corner's
+// extent is unknown, the positions do not cover it, the car jumped, or the
+// path never turns tighter than kTrackCornerEndRadiusM there.
+float cornerRadius(const LapRead& lap, const detail::ProgressMap& progress, const CornerApex& apex) {
+    if (apex.fromM < 0.0f || apex.toM < 0.0f || progress.points.size() < 2) return 0.0f;
+    // A corner across the line is cut at it, on the apex's side.
+    const float fromM = apex.fromM <= apex.distanceM ? apex.fromM : progress.points.front().lap_distance_m;
+    const float toM = apex.toM >= apex.distanceM ? apex.toM : progress.maxDistance;
+    const int margin = kPathHeadingM + kPathCurvatureM;
+    const float t0 = timeAtDistanceClamped(progress, fromM);
+    const float t1 = timeAtDistanceClamped(progress, toM);
+    const float w0 = timeAtDistanceClamped(progress, fromM - static_cast<float>(margin));
+    const float w1 = timeAtDistanceClamped(progress, toM + static_cast<float>(margin));
+    if (!std::isfinite(t0) || !std::isfinite(t1) || !std::isfinite(w0) || !std::isfinite(w1) || !(t1 > t0))
+        return 0.0f;
+
+    // The path around the corner, and how far along it each position is.
+    std::vector<WorldPoint> raw;
+    std::vector<double> travelled;
+    double cornerFrom = -1.0, cornerTo = -1.0;
+    for (const auto& p : lap.positions) {
+        if (p.session_time < w0) continue;
+        if (p.session_time > w1) break;
+        double along = 0.0;
+        if (!raw.empty()) {
+            const double step = std::hypot(p.x - raw.back().x, p.z - raw.back().z);
+            if (step > kPathMaxStepM) return 0.0f;
+            along = travelled.back() + step;
+        }
+        if (cornerFrom < 0.0 && p.session_time >= t0) cornerFrom = along;
+        if (p.session_time <= t1) cornerTo = along;
+        raw.push_back({p.x, p.z});
+        travelled.push_back(along);
+    }
+    if (raw.size() < 2 || cornerFrom < 0.0 || cornerTo < cornerFrom) return 0.0f;
+    const int count = static_cast<int>(travelled.back()) + 1;
+    if (count <= 2 * margin) return 0.0f;
+    std::vector<WorldPoint> path(static_cast<size_t>(count));
+    size_t j = 0;
+    for (int k = 0; k < count; ++k) {
+        while (j + 2 < raw.size() && travelled[j + 1] < k) ++j;
+        const double span = travelled[j + 1] - travelled[j];
+        const double ratio = span > 0.0 ? std::clamp((k - travelled[j]) / span, 0.0, 1.0) : 0.0;
+        path[static_cast<size_t>(k)] = {raw[j].x + (raw[j + 1].x - raw[j].x) * ratio,
+                                        raw[j].z + (raw[j + 1].z - raw[j].z) * ratio};
+    }
+    const auto heading = [&](int k) {
+        const auto& before = path[static_cast<size_t>(k - kPathHeadingM)];
+        const auto& after = path[static_cast<size_t>(k + kPathHeadingM)];
+        return std::atan2(after.z - before.z, after.x - before.x);
+    };
+    // Where both windows fit inside the path read.
+    const int first = std::max(margin, static_cast<int>(std::lround(cornerFrom)));
+    const int last = std::min(count - 1 - margin, static_cast<int>(std::lround(cornerTo)));
+    double peak = 0.0;
+    for (int k = first; k <= last; ++k) {
+        const double turn = std::remainder(heading(k + kPathCurvatureM) - heading(k - kPathCurvatureM),
+                                           2.0 * std::numbers::pi);
+        const double curvature = turn / (2.0 * kPathCurvatureM);
+        peak = std::max(peak, apex.side != 0 ? curvature * apex.side : std::abs(curvature));
+    }
+    return peak > 1.0 / kTrackCornerEndRadiusM ? static_cast<float>(1.0 / peak) : 0.0f;
 }
 
 // The corners of a zone a lap was called for track limits at, as indices into
@@ -745,8 +868,12 @@ void describeBrakingZones(BrakingPointsMap& braking, const LapRead& current, con
         const auto& quick = quicker == 0 ? a : b;
         const auto& slow = quicker == 0 ? b : a;
 
+        // Each lap's own radius through each corner.
+        for (auto& apex : a.apexes) apex.radiusM = cornerRadius(current, progressA, apex);
+        for (auto& apex : b.apexes) apex.radiusM = cornerRadius(comparison, progressB, apex);
+
         // Each corner's lines, and the corner where they differ most.
-        float widestGap = 0.0f;   // > 0: the current lap is on the tighter line
+        float widestGap = 0.0f;   // > 0: the current lap is further inside at the apex
         int widestA = -1, widestB = -1;
         for (size_t i = 0; i < a.apexes.size(); ++i) {
             auto& apex = a.apexes[i];
@@ -758,12 +885,29 @@ void describeBrakingZones(BrakingPointsMap& braking, const LapRead& current, con
             }
             if (match < 0) continue;
             auto& other = b.apexes[static_cast<size_t>(match)];
-            const auto gap = lineGap(current, progressA, apex.distanceM, comparison, progressB, other.distanceM);
+            const auto gap = lineGap(current, progressA, apex.distanceM, apex.side,
+                                     comparison, progressB, other.distanceM);
             if (!gap) continue;
-            const float shown = std::abs(*gap) < kLineLevelM ? 0.0f : *gap;
+            const auto level = [](float metres) { return std::abs(metres) < kLineLevelM ? 0.0f : metres; };
+            const float shown = level(*gap);
             apex.hasLine = other.hasLine = true;
             apex.lineGapM = shown;
             other.lineGapM = -shown;
+            // The same at turn-in and at the exit, where the corner has both
+            // on this lap: with the apex they give the line's shape.
+            if (apex.fromM >= 0.0f && apex.fromM <= apex.distanceM && apex.toM >= apex.distanceM) {
+                const auto entry = lineGap(current, progressA, apex.fromM, apex.side,
+                                           comparison, progressB, apex.fromM);
+                const auto exit = lineGap(current, progressA, apex.toM, apex.side,
+                                          comparison, progressB, apex.toM);
+                if (entry && exit) {
+                    apex.hasLineEnds = other.hasLineEnds = true;
+                    apex.lineEntryM = level(*entry);
+                    apex.lineExitM = level(*exit);
+                    other.lineEntryM = -apex.lineEntryM;
+                    other.lineExitM = -apex.lineExitM;
+                }
+            }
             if (std::abs(shown) > std::abs(widestGap)) {
                 widestGap = shown;
                 widestA = static_cast<int>(i);
@@ -771,9 +915,13 @@ void describeBrakingZones(BrakingPointsMap& braking, const LapRead& current, con
             }
         }
 
-        // Whether the tighter line helped or hurt. A track-limits call at that
-        // corner decides it; otherwise the time through the zone does, and a
-        // lap that lost time is told why.
+        // What the lap further inside at that apex did, and whether it helped
+        // or hurt. A track-limits call at that corner decides it. Otherwise
+        // the line's shape does: inside at the apex from a wider turn-in and
+        // exit, or on a larger radius of its own, is the wider arc; anything
+        // else is the tighter line, and one that lost time is told why. Time
+        // is taken over the corner itself when the zone has more than one, so
+        // another corner's time does not count for this one's line.
         const float previousToM = zone > 0 ? braking.pairs[zone - 1].toM : -1.0f;
         const auto limitsA = trackLimitCorners(current, progressA, a, pair, previousToM);
         const auto limitsB = trackLimitCorners(comparison, progressB, b, pair, previousToM);
@@ -786,16 +934,44 @@ void describeBrakingZones(BrakingPointsMap& braking, const LapRead& current, con
             const auto& limits = lap == 0 ? limitsA : limitsB;
             const int corner = lap == 0 ? widestA : widestB;
             const int rivalCorner = lap == 0 ? widestB : widestA;
+            const auto& mine = tight.apexes[static_cast<size_t>(corner)];
+            const auto& theirs = rival.apexes[static_cast<size_t>(rivalCorner)];
+            const bool wideEnds = mine.hasLineEnds && mine.lineEntryM <= -kObserveLineM &&
+                                  mine.lineExitM <= -kObserveLineM;
+            const bool largerRadius = mine.radiusM > 0.0f && theirs.radiusM > 0.0f &&
+                                      mine.radiusM >= theirs.radiusM * (1.0f + kObserveRadiusShare);
+            // Seconds the lap gained on the other: over the corner, from the
+            // earlier turn-in to the later exit, or over the zone when this is
+            // its only corner or the corner's extent is unknown.
+            bool lineTimed = timed;
+            float gained = lap == 0 ? pair.comparisonTimeS - pair.currentTimeS
+                                    : pair.currentTimeS - pair.comparisonTimeS;
+            const auto whole = [](const CornerApex& apex) {
+                return apex.fromM >= 0.0f && apex.fromM <= apex.distanceM && apex.toM >= apex.distanceM;
+            };
+            if ((a.apexes.size() > 1 || b.apexes.size() > 1) && whole(mine) && whole(theirs)) {
+                const float fromM = std::min(mine.fromM, theirs.fromM);
+                const float toM = std::max(mine.toM, theirs.toM);
+                const auto over = [&](const detail::ProgressMap& progress) {
+                    return detail::interpolateElapsed(progress, toM) - detail::interpolateElapsed(progress, fromM);
+                };
+                const double tightS = over(lap == 0 ? progressA : progressB);
+                const double rivalS = over(lap == 0 ? progressB : progressA);
+                if (std::isfinite(tightS) && std::isfinite(rivalS) && tightS > 0.0 && rivalS > 0.0) {
+                    lineTimed = true;
+                    gained = static_cast<float>(rivalS - tightS);
+                }
+            }
             if (std::find(limits.begin(), limits.end(), corner) != limits.end()) {
                 out.push_back({"tighter_track_limits", lap, metres, 0.0f});
                 limitsSaid[lap] = true;
-            } else if (timed) {
-                const float gained = lap == 0 ? pair.comparisonTimeS - pair.currentTimeS
-                                              : pair.currentTimeS - pair.comparisonTimeS;
-                const float apexLoss = rival.apexes[static_cast<size_t>(rivalCorner)].speedKph -
-                                       tight.apexes[static_cast<size_t>(corner)].speedKph;
-                const auto laterBy = [](float mine, float theirs) {
-                    return mine >= 0.0f && theirs >= 0.0f ? mine - theirs : 0.0f;
+            } else if (wideEnds || largerRadius) {
+                out.push_back({"straighter_line", lap, metres,
+                               lineTimed && std::abs(gained) >= kObserveLevelS ? gained : 0.0f});
+            } else if (lineTimed) {
+                const float apexLoss = theirs.speedKph - mine.speedKph;
+                const auto laterBy = [](float tightM, float rivalM) {
+                    return tightM >= 0.0f && rivalM >= 0.0f ? tightM - rivalM : 0.0f;
                 };
                 const float exitLoss = std::max(laterBy(tight.throttleOnM, rival.throttleOnM),
                                                 laterBy(tight.fullThrottleM, rival.fullThrottleM));

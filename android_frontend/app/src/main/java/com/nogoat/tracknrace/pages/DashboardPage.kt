@@ -233,6 +233,7 @@ private enum class DashboardTab(val title: String, val page: PairedTelemetryPage
     MAP("Map", PairedTelemetryPage.DASHBOARD_MAP),
     DAMAGE("Damage", PairedTelemetryPage.DASHBOARD_DAMAGE),
     STRATEGY("Strategy", PairedTelemetryPage.DASHBOARD_STRATEGY),
+    SESSION("Session", PairedTelemetryPage.DASHBOARD_SESSION),
 }
 
 @Composable
@@ -271,13 +272,19 @@ internal fun DashboardScreen(
                 divider = {},
             ) {
                 DashboardTab.entries.forEachIndexed { index, tab ->
+                    // Five tabs leave about 78dp each on a phone; the text-only
+                    // Tab's 16dp side padding would clip "Strategy", so the
+                    // label is laid out here with the same height and style.
                     Tab(
                         selected = current == index,
                         onClick = { scope.launch { pager.animateScrollToPage(index) } },
-                        text = { Text(tab.title, maxLines = 1) },
                         selectedContentColor = MaterialTheme.colorScheme.primary,
                         unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    ) {
+                        Box(Modifier.height(48.dp).padding(horizontal = 4.dp), contentAlignment = Alignment.Center) {
+                            Text(tab.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, softWrap = false)
+                        }
+                    }
                 }
             }
             HorizontalPager(pager, Modifier.fillMaxWidth().weight(1f), beyondViewportPageCount = 0) { page ->
@@ -288,6 +295,7 @@ internal fun DashboardScreen(
                         DashboardTab.MAP -> MapTab(store, active && current == page)
                         DashboardTab.DAMAGE -> DamageTab(store, landscape)
                         DashboardTab.STRATEGY -> StrategyTab(store, landscape)
+                        DashboardTab.SESSION -> SessionTab(store, landscape)
                     }
                 }
             }

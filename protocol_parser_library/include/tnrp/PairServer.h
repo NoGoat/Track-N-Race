@@ -10,8 +10,9 @@
 namespace tnrp {
 
 // A playback_lap_blocks row as a paired phone receives it: each block's lap,
-// times and fitted compound, without the per-block status history. Also used
-// by the Android app for recordings it plays itself.
+// times and fitted compound, without the per-block status history, plus the
+// recording's race events for the Session tab. Also used by the Android app
+// for recordings it plays itself.
 std::string pairPhoneLapBlocks(const std::string& json);
 
 // One driver's laps from a full playback_lap_blocks row's analysisDrivers, in
@@ -67,6 +68,18 @@ public:
                                                            int currentDriver,
                                                            int comparisonDriver)>;
     using DiagnosticCallback = std::function<void(const std::string& message)>;
+    // One car's driver_lap_history row (Engine::driverLapHistoryJson), for a
+    // phone's Timing laps sheet. Empty when there is no such car.
+    using DriverLapHistoryCallback = std::function<std::string(int carIdx)>;
+    // One Analysis map layer painted for one lap, or two (comparisonLap 0 for
+    // one), in the phone's theme and lap colours (Engine::playerAnalysisMapJson).
+    // Empty when nothing is playing.
+    using AnalysisMapCallback = std::function<std::string(const std::string& layer,
+                                                          int currentLap, int comparisonLap,
+                                                          int currentDriver, int comparisonDriver,
+                                                          bool dark,
+                                                          const std::string& currentColor,
+                                                          const std::string& comparisonColor)>;
 
     PairServer();
     ~PairServer();
@@ -80,6 +93,12 @@ public:
                    DriverLapsCallback driverLapsCallback,
                    BrakingZonesCallback brakingZonesCallback,
                    DiagnosticCallback diagnosticCallback = {});
+    // Answers request_driver_lap_history (advertised as "driver-lap-history");
+    // the Engine sets it before configure(). Unset, requests go unanswered.
+    void setDriverLapHistoryCallback(DriverLapHistoryCallback callback);
+    // Answers request_analysis_map (advertised as "analysis-map"); the Engine
+    // sets it before configure(). Unset, requests are answered with null data.
+    void setAnalysisMapCallback(AnalysisMapCallback callback);
 
     bool start(std::string* error = nullptr);
     void stop(bool persistDisabled = true);

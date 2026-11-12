@@ -83,6 +83,8 @@ internal fun AppMenuSheet(
     onOpenRecordings: () -> Unit,
     onCloseRecording: () -> Unit,
     onReconnect: () -> Unit,
+    /** Starts Edit layout on the page behind the sheet; null where the page has none. */
+    onEditLayout: (() -> Unit)?,
     onSettings: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -106,6 +108,7 @@ internal fun AppMenuSheet(
             Spacer(Modifier.height(8.dp))
             driver?.let { DriverRow(it, it.onPick?.let { pick -> { close(pick) } }) }
             MenuRow(R.drawable.ic_folder_open, "Open recording", "Play a session saved on this phone") { close(onOpenRecordings) }
+            onEditLayout?.let { edit -> MenuRow(R.drawable.ic_tune, "Edit layout", "Show or hide this page's charts") { close(edit) } }
             MenuRow(R.drawable.ic_settings, "Settings", "Source, pairing and recording") { close(onSettings) }
         }
     }

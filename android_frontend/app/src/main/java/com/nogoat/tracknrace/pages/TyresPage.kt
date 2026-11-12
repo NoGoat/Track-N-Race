@@ -157,6 +157,8 @@ internal fun TyresScreen(
     onPage: (PairedTelemetryPage) -> Unit = {},
     /** Told whether the Charts tab is the one shown, so the app bar can offer the chart window. */
     onChartsShown: (Boolean) -> Unit = {},
+    /** Edit layout is on: the Charts tab shows its charts as blocks to show or hide. */
+    editing: Boolean = false,
 ) {
     var saved by rememberSaveable { mutableIntStateOf(0) }
     val pager = rememberPagerState(initialPage = saved) { TyresTab.entries.size }
@@ -188,7 +190,7 @@ internal fun TyresScreen(
         HorizontalPager(pager, Modifier.fillMaxWidth().weight(1f), beyondViewportPageCount = 0) { page ->
             when (TyresTab.entries[page]) {
                 TyresTab.ALLOCATION -> TyreAllocation(display)
-                TyresTab.CHARTS -> TyreChartsTab(store, graphs, active && current == page, onPage)
+                TyresTab.CHARTS -> TyreChartsTab(store, graphs, active && current == page, onPage, editing)
             }
         }
     }

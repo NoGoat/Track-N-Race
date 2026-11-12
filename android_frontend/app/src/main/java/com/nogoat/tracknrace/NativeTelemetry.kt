@@ -23,6 +23,10 @@ internal class NativeTelemetry(
             System.loadLibrary("tracknrace_android")
         }
 
+        /** Analysis map layer colours (tnrp/AnalysisMapPaint.h): {"dark":…,"light":…}, for the map legends. */
+        @JvmStatic
+        external fun nativeAnalysisMapPaletteJson(): String
+
         /**
          * A recording's details read from its index without loading it, as
          * JSON: protocol, trackName, sessionName, sessionType, startTime (ms),
@@ -118,12 +122,28 @@ internal class NativeTelemetry(
     /** A paired phone's driver_laps data for one driver of the open recording, or null. */
     fun driverLaps(driver: Int): String? = nativeDriverLaps(driver)
 
+    /** One car's driver_lap_history row (laps, sectors, best and stint), live or at the cursor, or null. */
+    fun driverLapHistory(car: Int): String? = nativeDriverLapHistory(car)
+
     /**
      * A paired phone's braking_zones data for the open recording, or null:
      * [currentLap]'s braking zones, matched with [comparisonLap]'s (0 = none).
      */
     fun brakingZones(currentLap: Int, comparisonLap: Int, currentDriver: Int, comparisonDriver: Int): String? =
         nativeBrakingZones(currentLap, comparisonLap, currentDriver, comparisonDriver)
+
+    /** A paired phone's analysis_map data for the open recording, or null. */
+    fun analysisMap(request: AnalysisMapRequest): String? =
+        nativeAnalysisMap(
+            request.layer,
+            request.currentLap,
+            request.comparisonLap,
+            request.currentDriver,
+            request.comparisonDriver,
+            request.dark,
+            request.currentColor,
+            request.comparisonColor,
+        )
 
     @Suppress("unused") // Invoked by JNI on libtnrp worker threads.
     private fun onNativeRow(json: String) {
@@ -180,11 +200,21 @@ internal class NativeTelemetry(
 
     private external fun nativeDriverLaps(driver: Int): String?
 
+    private external fun nativeDriverLapHistory(car: Int): String?
+
     private external fun nativeBrakingZones(currentLap: Int, comparisonLap: Int, currentDriver: Int, comparisonDriver: Int): String?
 
-    // Analysis map layer colours (tnrp/AnalysisMapPaint.h): {"dark":…,"light":…}.
-    // Not wired to any UI yet.
-    external fun nativeAnalysisMapPaletteJson(): String
+    private external fun nativeAnalysisMap(
+        layer: String,
+        currentLap: Int,
+        comparisonLap: Int,
+        currentDriver: Int,
+        comparisonDriver: Int,
+        dark: Boolean,
+        currentColor: String,
+        comparisonColor: String,
+    ): String?
+
 
     // Track maps (tnrp/TrackMaps.h), the current session's library. Not wired
     // to any UI yet. Changes return {"ok","id","error"} JSON.

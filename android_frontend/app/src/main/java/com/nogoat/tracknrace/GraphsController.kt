@@ -23,6 +23,8 @@ private const val MIN_CACHED_LAPS = 4
 private const val MAX_LAPS_IN_FLIGHT = 2
 private const val PREF_GRAPH_WINDOW = "graphs.window_mode"
 private const val PREF_GRAPH_WINDOW_OVERRIDES = "graphs.window_mode_overrides"
+private const val PREF_GRAPH_TABLE_TABS = "graphs.table_tabs"
+private const val PREF_GRAPH_HIDDEN_CHARTS = "graphs.hidden_charts"
 
 /**
  * What a chart's x axis spans, as the desktop's window selector: the last
@@ -168,6 +170,16 @@ internal class GraphsController(
         }
     }
 
+    /** Charts tabs shown as a data table rather than charts, by tab id. */
+    val tableTabs = mutableStateMapOf<String, Boolean>().apply {
+        for (id in preferences.getStringSet(PREF_GRAPH_TABLE_TABS, null).orEmpty()) put(id, true)
+    }
+
+    /** Charts hidden with Edit layout, by chart id. */
+    val hiddenCharts = mutableStateMapOf<String, Boolean>().apply {
+        for (id in preferences.getStringSet(PREF_GRAPH_HIDDEN_CHARTS, null).orEmpty()) put(id, true)
+    }
+
     /** The lap each Selected chart compares against, by chart id; for this recording only. */
     val referenceLaps = mutableStateMapOf<String, Int>()
 
@@ -197,6 +209,20 @@ internal class GraphsController(
         val json = JSONObject()
         for ((key, value) in windowOverrides) json.put(key, value.id)
         preferences.edit().putString(PREF_GRAPH_WINDOW_OVERRIDES, json.toString()).apply()
+    }
+
+    fun showsTable(tabId: String): Boolean = tableTabs[tabId] == true
+
+    fun setTable(tabId: String, table: Boolean) {
+        if (table) tableTabs[tabId] = true else tableTabs.remove(tabId)
+        preferences.edit().putStringSet(PREF_GRAPH_TABLE_TABS, tableTabs.keys.toSet()).apply()
+    }
+
+    fun showsChart(chartId: String): Boolean = hiddenCharts[chartId] != true
+
+    fun setChartShown(chartId: String, shown: Boolean) {
+        if (shown) hiddenCharts.remove(chartId) else hiddenCharts[chartId] = true
+        preferences.edit().putStringSet(PREF_GRAPH_HIDDEN_CHARTS, hiddenCharts.keys.toSet()).apply()
     }
 
     /** Keeps [window] for [chartId] whatever the global window: for charts with windows of their own. */

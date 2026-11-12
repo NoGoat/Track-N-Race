@@ -157,7 +157,7 @@ export const BRAKING_LEVEL_S = 0.01
 export interface BrakingObservation {
   kind: 'quicker_despite_coast' | 'apex_speed' | 'later_but_slower' | 'more_harvest' | 'low_battery'
     | 'wheelspin' | 'earlier_throttle_spin' | 'earlier_throttle' | 'faster_to_full' | 'lift_only'
-    | 'tighter_track_limits' | 'tighter_helped' | 'tighter_no_gain' | 'tighter_lost_speed'
+    | 'tighter_track_limits' | 'straighter_line' | 'tighter_helped' | 'tighter_no_gain' | 'tighter_lost_speed'
     | 'tighter_wheelspin' | 'tighter_slower_exit' | 'tighter_slower' | 'track_limits'
   lap: 0 | 1
   value: number
@@ -213,8 +213,14 @@ export interface BrakingPointResult {
    *  count: where half its steering is done, the slowest speed through it,
    *  and which way it turns (-1 left, 1 right, 0 when found from speed alone).
    *  With two laps, `lineGapM` is metres further inside the bend than the
-   *  other lap when `hasLine`: negative when wider, 0 when level. */
-  apexes: { distanceM: number; speedKph: number; side: number; hasLine: boolean; lineGapM: number }[]
+   *  other lap at the apex when `hasLine`: negative when wider, 0 when level;
+   *  `lineEntryM` and `lineExitM` are the same at the corner's turn-in
+   *  (`fromM`) and exit (`toM`) when `hasLineEnds`, and `radiusM` is the
+   *  tightest radius of the lap's own path through it (0 when unknown). */
+  apexes: {
+    distanceM: number; speedKph: number; side: number; hasLine: boolean; lineGapM: number
+    fromM: number; toM: number; hasLineEnds: boolean; lineEntryM: number; lineExitM: number; radiusM: number
+  }[]
   /** Where the zone ends: full throttle, else the next braking point. */
   endM: number
   /** Corner exit; -1 where it did not happen before the next braking zone. */

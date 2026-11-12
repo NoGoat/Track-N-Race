@@ -208,6 +208,7 @@ internal class TelemetryStore {
     @Volatile private var analysisDeltaSink: ((Long, JSONObject?) -> Unit)? = null
     @Volatile private var analysisDriverLapsSink: ((JSONObject) -> Unit)? = null
     @Volatile private var analysisBrakingSink: ((JSONObject) -> Unit)? = null
+    @Volatile private var analysisMapSink: ((JSONObject) -> Unit)? = null
 
     /** The laps of the recording the desktop is playing, for Analysis. */
     var playbackCatalog by mutableStateOf(PlaybackCatalog())
@@ -280,6 +281,29 @@ internal class TelemetryStore {
 
     /** The selected car's damage; main thread only. */
     var damage by mutableStateOf(CarDamageState())
+        private set
+
+    /** The Session packet, for the Dashboard's Session tab; main thread only. */
+    var sessionConditions by mutableStateOf(SessionConditions())
+        private set
+
+    /** What the Session tab lists, oldest first: the events received, or a recording's up to the cursor. */
+    var raceEvents by mutableStateOf<List<RaceEventEntry>>(emptyList())
+        private set
+
+    // Events as they arrive, live or from a desktop playing a recording; main thread only.
+    private var receivedRaceEvents: List<RaceEventEntry> = emptyList()
+    // A recording's every event, from its lap catalogue; main thread only.
+    private var recordingRaceEvents: List<RaceEventEntry> = emptyList()
+    // The lap the last lap row named, for the events that follow it; socket thread.
+    @Volatile private var latestLapNumber = 0
+
+    /** The car whose laps the Timing page's laps sheet last asked for, as the engine reported them; main thread only. */
+    var driverLapHistory by mutableStateOf<DriverLapHistory?>(null)
+        private set
+
+    /** The streamed car's lap, changing once a lap, for the Session tab's laps remaining; main thread only. */
+    var sessionLapNumber by mutableIntStateOf(0)
         private set
     private val lapComparison = AtomicReference(DashboardLapComparisonState())
     var timing by mutableStateOf(TimingTowerState())
@@ -435,6 +459,10 @@ internal class TelemetryStore {
                 val sector = row.optionalInt("sector")
                 val invalid = row.optionalBoolean("lap_invalid")
                 val position = row.optionalInt("position")
+                if (lapNumber != null && lapNumber != latestLapNumber) {
+                    latestLapNumber = lapNumber
+                    post { sessionLapNumber = lapNumber }
+                }
                 post {
                     // Merge into the last sample: a patch omits what did not change.
                     val previous = liveLapState
@@ -481,6 +509,8 @@ internal class TelemetryStore {
             "playback_loaded" -> post {
                 lapMeasures = emptyMap()
                 strategy = null
+                clearRaceEvents()
+                sessionConditions = SessionConditions()
                 resetAllLapComparison()
                 resetGraphHistories()
                 playbackActive = row.optBoolean("ok")
@@ -533,6 +563,21 @@ internal class TelemetryStore {
                 val fastestLap = row.optInt("fastestLapNum")
                 val deltaAvailable = row.optBoolean("deltaAvailable")
                 val playbackTrackLengthM = row.optDouble("trackLengthM")
+                // Every event of the recording, kept in the phone's trimmed
+                // copy of the row (tnrp::pairPhoneLapBlocks) both for the
+                // phone's own playback and from a desktop playing one.
+                val recordingEvents = row.optJSONArray("events")?.let { array ->
+                    var events = emptyList<RaceEventEntry>()
+                    repeat(array.length()) { index ->
+                        val source = array.optJSONObject(index) ?: return@repeat
+                        val time = source.optDouble("session_time", 0.0)
+                        val lap = laps.lastOrNull { it.startSessionTime.isFinite() && it.startSessionTime <= time }?.lapNumber ?: 0
+                        parseRaceEvent(source, lap)?.let { event ->
+                            if (event.code != "FLBK") events = appendRaceEvent(events, event)
+                        }
+                    }
+                    events
+                }
                 post {
                     installPlaybackMetadata(
                         laps,
@@ -541,12 +586,18 @@ internal class TelemetryStore {
                         playbackTrackLengthM,
                         playbackDriver ?: -1,
                     )
+                    if (recordingEvents != null) {
+                        recordingRaceEvents = recordingEvents
+                        publishRaceEvents()
+                    }
                 }
             }
 
             "driver_laps" -> analysisDriverLapsSink?.invoke(row)
 
             "braking_zones" -> analysisBrakingSink?.invoke(row)
+
+            "analysis_map" -> analysisMapSink?.invoke(row)
 
             "lap_delta" -> {
                 val requestId = row.optLong("requestId")
@@ -629,6 +680,8 @@ internal class TelemetryStore {
             "playback_close" -> post {
                 lapMeasures = emptyMap()
                 strategy = null
+                clearRaceEvents()
+                sessionConditions = SessionConditions()
                 resetAllLapComparison()
                 resetGraphHistories()
                 newParticipantsRoster = true   // live rows bring their own grid
@@ -763,7 +816,22 @@ internal class TelemetryStore {
                         trackId = trackId,
                         slmTrackStatus = slmTrackStatus,
                     )
+                    if (changedSession && !playbackActive) clearRaceEvents()
+                    sessionConditions = parseSessionConditions(
+                        row,
+                        if (changedSession) SessionConditions() else sessionConditions,
+                    )
                 }
+            }
+
+            "race_event" -> {
+                val event = parseRaceEvent(row, latestLapNumber) ?: return
+                post { acceptRaceEvent(event) }
+            }
+
+            "driver_lap_history" -> {
+                val history = parseDriverLapHistory(row) ?: return
+                post { if (history != driverLapHistory) driverLapHistory = history }
             }
 
             // A whole snapshot each time, so it simply replaces the last.
@@ -977,6 +1045,12 @@ internal class TelemetryStore {
                 mapPositions.lazySet(MapPositions())
                 post {
                     if (strategy != null) strategyStale = true
+                    // Streamed playback events from before a seek may now be
+                    // ahead of the cursor; the recording's catalogue is kept.
+                    if (playbackActive) {
+                        receivedRaceEvents = emptyList()
+                        publishRaceEvents()
+                    }
                     resetPlaybackCursorComparison()
                     graphHistories.values.forEach { it.clear() }
                     stint.reset()
@@ -998,6 +1072,10 @@ internal class TelemetryStore {
                     resetGraphHistories()
                     newParticipantsRoster = true
                     timing = timing.copy(drivers = emptyMap(), hasParticipants = false)
+                    if (!playbackActive) {
+                        clearRaceEvents()
+                        sessionConditions = SessionConditions()
+                    }
                 }
             }
 
@@ -1124,6 +1202,11 @@ internal class TelemetryStore {
         analysisBrakingSink = sink
     }
 
+    /** Receives `analysis_map` replies: the map layer Analysis shows, painted per lap. */
+    fun setAnalysisMapSink(sink: ((JSONObject) -> Unit)?) {
+        analysisMapSink = sink
+    }
+
     fun resetLapComparison() = post { resetAllLapComparison() }
 
     fun notifyPairingSucceeded() = post { pairingSuccessId++ }
@@ -1227,6 +1310,53 @@ internal class TelemetryStore {
     private fun setPlaybackCursor(sessionTime: Double) {
         playbackCursorSessionTime = sessionTime
         playbackCursorPublished = sessionTime
+        if (recordingRaceEvents.isNotEmpty()) publishRaceEvents()
+    }
+
+    private fun acceptRaceEvent(event: RaceEventEntry) {
+        if (event.code == "FLBK") {
+            // A flashback rewinds the session: what followed it never happened.
+            val target = event.flashbackSessionTime
+            if (target != null && target.isFinite() && target >= 0.0) {
+                receivedRaceEvents = receivedRaceEvents.filter { it.sessionTime <= target }
+                publishRaceEvents()
+            }
+            return
+        }
+        val next = appendRaceEvent(receivedRaceEvents, event)
+        if (next === receivedRaceEvents) return
+        receivedRaceEvents = next
+        publishRaceEvents()
+    }
+
+    private fun clearRaceEvents() {
+        receivedRaceEvents = emptyList()
+        recordingRaceEvents = emptyList()
+        publishRaceEvents()
+    }
+
+    /**
+     * The phone's own playback lists the recording's events up to the cursor,
+     * as the desktop does; otherwise the events received so far.
+     */
+    private fun publishRaceEvents() {
+        val next = if (playbackActive && recordingRaceEvents.isNotEmpty()) {
+            val cursor = playbackCursorSessionTime
+            if (!cursor.isFinite()) {
+                raceEvents
+            } else {
+                val count = recordingRaceEvents.indexOfFirst { it.sessionTime > cursor }
+                    .let { if (it == -1) recordingRaceEvents.size else it }
+                if (count == raceEvents.size && raceEvents.lastOrNull() === recordingRaceEvents.getOrNull(count - 1)) {
+                    raceEvents
+                } else {
+                    recordingRaceEvents.subList(0, count).toList()
+                }
+            }
+        } else {
+            receivedRaceEvents
+        }
+        if (next !== raceEvents) raceEvents = next
     }
 
     private fun resetPlaybackCursorComparison() {

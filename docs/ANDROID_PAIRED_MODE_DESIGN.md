@@ -833,6 +833,34 @@ desktop's own Braking Zones panel (`buildAnalysisMap("braking")`):
 be read. The `welcome` frame advertises `braking-zones`; without it the phone
 says the desktop needs an update.
 
+The Map view's layers (Track Dominance, Driver Inputs, Speed, ERS Usage, ERS
+Harvest) are calculated and coloured on the desktop by libtnrp
+(`buildAnalysisMap`, `analysisMapPaint`), in the phone's theme and lap colours:
+
+```json
+{"type":"request_analysis_map","requestId":1099511627791,"layer":"speed",
+ "currentLap":4,"comparisonLap":5,"dark":true,
+ "currentColor":"#5794F2","comparisonColor":"#C4162A"}
+```
+
+```json
+{"type":"analysis_map","requestId":1099511627791,"data":{
+  "layer":"speed","speedMinKph":82.0,"speedMaxKph":322.0,"ersPeakKw":0.0,"harvestPeakKw":0.0,
+  "current":{"binM":10.0,"trackLengthM":4309.0,"colors":["#c8577f",…],
+             "restricted":false,"apexes":[{"distanceM":321.0,"speedKph":95.0,"side":-1},…]},
+  "comparison":{…}}}
+```
+
+Each lap's `colors` run from the timing line, one per `binM` metres, or spread
+evenly over the lap when `binM` is 0 (Track Dominance, which paints `current`
+only, in the two lap colours). A lap with nothing to paint is absent, except a
+Restricted car's ERS, which comes back as `{"restricted":true}`. `layer` is
+`dominance`, `ers`, `harvest`, `inputs` or `speed`; Racing Line needs no
+request, since the phone draws each lap's recorded positions. `data` is `null`
+when nothing is playing, the layer is unknown or the current lap cannot be
+read. The `welcome` frame advertises `analysis-map`; without it the phone says
+the desktop needs an update.
+
 ### 10.5 Delivery and backpressure
 
 Every Android page is a latest-state display, so the desktop delivers the newest

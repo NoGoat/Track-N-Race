@@ -8,6 +8,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -57,6 +58,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -85,6 +87,9 @@ import com.nogoat.tracknrace.DEFAULT_DELTA_NEGATIVE_COLOR
 import com.nogoat.tracknrace.DEFAULT_DELTA_POSITIVE_COLOR
 import com.nogoat.tracknrace.DEFAULT_LAP_A_LABEL
 import com.nogoat.tracknrace.DEFAULT_LAP_B_LABEL
+import com.nogoat.tracknrace.MapApex
+import com.nogoat.tracknrace.MapLapView
+import com.nogoat.tracknrace.MapLayer
 import com.nogoat.tracknrace.PairedTelemetryClient
 import com.nogoat.tracknrace.R
 import com.nogoat.tracknrace.TelemetryStore
@@ -184,20 +189,36 @@ internal fun AnalysisScreen(
     val sectorDelta = config.sectorBoundaries && config.sectorDelta
     val distanceMode = catalog.deltaAvailable
 
-    // The Map view's braking zones: hidden behind their chip, listed, or one
-    // zone's head to head. They are fetched only while shown.
+    // The Map view's braking zones: switched on and off from the map's tool
+    // rail, and while on, listed or one zone's head to head in the drawer.
+    // Closing the drawer leaves them on the map. They are fetched only while on.
+    var brakingOn by rememberSaveable { mutableStateOf(false) }
     var brakingPanel by rememberSaveable { mutableStateOf(BrakingPanel.CLOSED) }
     var brakingZoneIndex by rememberSaveable { mutableIntStateOf(0) }
-    val brakingShown = config.view == AnalysisView.MAP && brakingPanel != BrakingPanel.CLOSED
+    val brakingZonesOn = config.view == AnalysisView.MAP && brakingOn
+    val brakingShown = brakingZonesOn && brakingPanel != BrakingPanel.CLOSED
+    // The map layer sheet, from the rail; the layer is painted for the theme shown.
+    var layersOpen by rememberSaveable { mutableStateOf(false) }
+    // The map's playback control: a small pill, or opened out into the full bar.
+    var playbackExpanded by rememberSaveable { mutableStateOf(false) }
+    val darkTheme = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val mapLayer = if (config.view == AnalysisView.GRAPH) MapLayer.NONE else config.mapLayer
 
     // Fetch the shown laps, and ask again on a slow tick if a reply went missing.
-    LaunchedEffect(active, catalog, currentKey, comparisonKey, channels, sectorDelta, brakingShown) {
+    LaunchedEffect(
+        active, catalog, currentKey, comparisonKey, channels, sectorDelta, brakingZonesOn,
+        mapLayer, darkTheme, config.mapCurrentColor, config.mapComparisonColor,
+    ) {
         if (!active) return@LaunchedEffect
         while (true) {
             analysis.syncDriverLaps(catalog, listOf(currentDriver, comparisonDriver))
             analysis.sync(catalog, listOf(currentKey, comparisonKey), channels)
             analysis.syncDelta(catalog, currentKey, comparisonKey, sectorDelta)
-            analysis.syncBraking(catalog, currentKey, comparisonKey, brakingShown)
+            analysis.syncBraking(catalog, currentKey, comparisonKey, brakingZonesOn)
+            analysis.syncMapLayer(
+                catalog, mapLayer, currentKey, comparisonKey,
+                darkTheme, config.mapCurrentColor, config.mapComparisonColor,
+            )
             delay(LAP_SYNC_INTERVAL_MS)
         }
     }
@@ -495,14 +516,15 @@ internal fun AnalysisScreen(
                             if (config.view == AnalysisView.GRAPH) chips(Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 26.dp))
                         }
                     }
-                    // The braking zones of the laps on show, marked on the Map view's map.
+                    // The braking zones of the laps on show, marked on the Map view's map,
+                    // named as the label settings name them everywhere else.
                     val brakingLaps = BrakingLaps(
-                        currentLabel = listOfNotNull(slotA.driver, "L$currentLapNumber").joinToString(" "),
+                        currentLabel = primaryLabel,
                         currentColor = currentColor,
-                        comparisonLabel = listOfNotNull(slotB.driver, "L$comparisonLapNumber").joinToString(" "),
+                        comparisonLabel = comparisonLabel,
                         comparisonColor = comparisonColor,
                     )
-                    val brakingZones = if (brakingShown) analysis.brakingZonesFor(currentKey, comparisonKey) else null
+                    val brakingZones = if (brakingZonesOn) analysis.brakingZonesFor(currentKey, comparisonKey) else null
                     val zoneRows = brakingZones?.zones.orEmpty()
                     val zoneIndex = brakingZoneIndex.coerceIn(0, max(0, zoneRows.lastIndex))
                     val neutralZone = MaterialTheme.colorScheme.onSurfaceVariant
@@ -512,36 +534,169 @@ internal fun AnalysisScreen(
                         brakingZoneIndex = index
                         brakingPanel = BrakingPanel.ZONE
                     }
+                    // The map layer, painted by libtnrp for the laps, theme and lap colours shown.
+                    val layerPaint = if (mapLayer.native != null) {
+                        analysis.mapLayerFor(
+                            mapLayer, currentKey, comparisonKey,
+                            darkTheme, config.mapCurrentColor, config.mapComparisonColor,
+                        )
+                    } else {
+                        null
+                    }
+                    val currentName = MapLapName(if (currentLapNumber > 0) "L$currentLapNumber" else primaryLabel, currentColor)
+                    val comparisonName = MapLapName(if (comparisonLapNumber > 0) "L$comparisonLapNumber" else comparisonLabel, comparisonColor)
+                    // A per-lap layer with two laps offers the lap strip; alone, it shows the one lap.
+                    val lapChoice = mapLayer.perLap && comparisonSelected
+                    val lapView = if (lapChoice) config.mapLapView else MapLapView.CURRENT
+                    val lapPaint = when (lapView) {
+                        MapLapView.COMPARISON -> layerPaint?.comparison
+                        else -> layerPaint?.current
+                    }
+                    val layerMessage = when {
+                        mapLayer.native == null -> null
+                        analysis.mapLayerUnavailable -> "Update Track N Race on the desktop to see map layers"
+                        lapPaint?.restricted == true -> "No ERS data: this car's telemetry is Restricted"
+                        mapLayer == MapLayer.DOMINANCE && !comparisonSelected -> "Choose a comparison lap"
+                        else -> null
+                    }
                     // [braking]: the Map view, whose map carries the braking zones.
                     val map: @Composable (Modifier, Boolean) -> Unit = { modifier, braking ->
-                        Column(modifier) {
-                            Box(Modifier.fillMaxWidth().weight(1f)) {
-                                AnalysisMap(
-                                    trackId,
-                                    mapLaps,
-                                    mapElapsed,
-                                    aeroMode,
-                                    Modifier.fillMaxSize(),
-                                    focusSector = stripSelection?.takeIf { it != WHOLE_LAP },
-                                    slmTrackStatus = slmTrackStatus,
-                                    zoneMarks = if (braking) zoneMarks else emptyList(),
-                                    selectedZone = if (braking && zoneOpen) zoneIndex else -1,
-                                    onZone = openZone,
-                                )
-                                if (braking) {
-                                    // The chip sits at the bottom of the map, the others beside it.
-                                    Row(
-                                        Modifier.align(Alignment.BottomCenter).padding(8.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        if (brakingPanel == BrakingPanel.CLOSED) BrakingPointsChip(onClick = { brakingPanel = BrakingPanel.LIST })
-                                        chips(Modifier)
-                                    }
-                                } else {
-                                    chips(Modifier.align(Alignment.BottomEnd).padding(8.dp))
-                                }
+                        // The maps' zoom: shared, so the two maps of the Both view zoom together and the rail can reset it.
+                        val mapZoom = remember { MapZoomControl() }
+                        // One map: its laps, its paint, the Speed layer's corner speeds, and whether it carries the zones.
+                        val layerMap: @Composable (Modifier, List<MapLap>, MapTrackPaint?, List<MapApex>, Boolean) -> Unit =
+                            { mapModifier, lapsShown, paint, apexes, zones ->
+                            AnalysisMap(
+                                trackId,
+                                lapsShown,
+                                mapElapsed,
+                                aeroMode,
+                                mapModifier,
+                                focusSector = stripSelection?.takeIf { it != WHOLE_LAP },
+                                slmTrackStatus = slmTrackStatus,
+                                zoneMarks = if (zones) zoneMarks else emptyList(),
+                                selectedZone = if (zones && zoneOpen) zoneIndex else -1,
+                                onZone = openZone,
+                                trackPaint = paint,
+                                apexes = apexes,
+                                // Dragging a car moves through the lap, as reading the graph does.
+                                onScrub = scrub,
+                                zoomControl = mapZoom,
+                            )
+                        }
+                        Box(modifier) {
+                            val single: MapTrackPaint? = when (mapLayer) {
+                                MapLayer.NONE -> null
+                                MapLayer.RACING_LINE -> MapTrackPaint.RacingLine
+                                else -> MapTrackPaint.Layer(lapPaint)
                             }
-                            if (fixed) AnalysisPlaybackBar(clock, mapElapsed, mapTotal, current?.sectorSplits?.map { it.elapsedSeconds }.orEmpty())
+                            when (lapView) {
+                                MapLapView.BOTH -> BoxWithConstraints(Modifier.fillMaxSize()) {
+                                    // Each lap on a map of its own: stacked on a tall pane, side by side on a wide one.
+                                    val tall = maxHeight > maxWidth
+                                    val first = mapLaps.firstOrNull()
+                                    val second = mapLaps.getOrNull(1)
+                                    val firstMap: @Composable (Modifier) -> Unit = { half ->
+                                        Box(half) {
+                                            layerMap(
+                                                Modifier.fillMaxSize(), listOfNotNull(first),
+                                                MapTrackPaint.Layer(layerPaint?.current), emptyList(), braking,
+                                            )
+                                            MapLapTag(currentName, Modifier.align(Alignment.TopStart).padding(12.dp))
+                                        }
+                                    }
+                                    val secondMap: @Composable (Modifier) -> Unit = { half ->
+                                        Box(half) {
+                                            layerMap(
+                                                Modifier.fillMaxSize(), listOfNotNull(second),
+                                                MapTrackPaint.Layer(layerPaint?.comparison), emptyList(), false,
+                                            )
+                                            MapLapTag(comparisonName, Modifier.align(Alignment.TopStart).padding(12.dp))
+                                        }
+                                    }
+                                    if (tall) {
+                                        Column(Modifier.fillMaxSize()) {
+                                            firstMap(Modifier.fillMaxWidth().weight(1f))
+                                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                            secondMap(Modifier.fillMaxWidth().weight(1f))
+                                        }
+                                    } else {
+                                        Row(Modifier.fillMaxSize()) {
+                                            firstMap(Modifier.fillMaxHeight().weight(1f))
+                                            VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                            secondMap(Modifier.fillMaxHeight().weight(1f))
+                                        }
+                                    }
+                                }
+                                MapLapView.COMBINED -> layerMap(
+                                    Modifier.fillMaxSize(), mapLaps,
+                                    MapTrackPaint.Bands(layerPaint?.current, layerPaint?.comparison), emptyList(), braking,
+                                )
+                                else -> layerMap(Modifier.fillMaxSize(), mapLaps, single, lapPaint?.apexes.orEmpty(), braking)
+                            }
+                            // Fixed corners over the map: the rail top right, the legend top left
+                            // (below the first map's lap name in the Both view) with the layer's
+                            // status under it, and the playback control bottom right with the
+                            // zoom and back-to-live chips above it.
+                            MapToolRail(
+                                onLayers = { layersOpen = true },
+                                layersOpen = layersOpen,
+                                brakingOn = if (braking) brakingOn else null,
+                                onBraking = {
+                                    if (brakingOn) {
+                                        brakingOn = false
+                                        brakingPanel = BrakingPanel.CLOSED
+                                    } else {
+                                        brakingOn = true
+                                        brakingPanel = BrakingPanel.LIST
+                                    }
+                                },
+                                zoomed = mapZoom.zoomed,
+                                onResetZoom = mapZoom::reset,
+                                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                            )
+                            Column(
+                                Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(start = 8.dp, end = 8.dp, top = if (lapView == MapLapView.BOTH) 40.dp else 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                MapLayerLegend(
+                                    layer = mapLayer,
+                                    paint = layerPaint,
+                                    dark = darkTheme,
+                                    compact = false,
+                                )
+                                MapLayerStatus(
+                                    loading = mapLayer.native != null && analysis.mapLayerLoading,
+                                    message = layerMessage,
+                                )
+                            }
+                            Column(
+                                Modifier.align(Alignment.BottomEnd).padding(8.dp),
+                                horizontalAlignment = Alignment.End,
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                chips(Modifier)
+                                MapPlaybackControl(
+                                    clock = if (fixed) clock else null,
+                                    elapsed = mapElapsed,
+                                    total = mapTotal,
+                                    sectorMarks = current?.sectorSplits?.map { it.elapsedSeconds }.orEmpty(),
+                                    expanded = playbackExpanded,
+                                    onExpand = { playbackExpanded = it },
+                                    lapChoice = if (lapChoice) {
+                                        MapLapChoice(
+                                            view = config.mapLapView,
+                                            onView = { view -> analysis.updateConfig { it.copy(mapLapView = view) } },
+                                            current = currentName,
+                                            comparison = comparisonName,
+                                        )
+                                    } else {
+                                        null
+                                    },
+                                )
+                            }
                         }
                     }
                     // The zone list, or one zone's head to head: below the map
@@ -643,6 +798,13 @@ internal fun AnalysisScreen(
             lapBColor = comparisonColor,
             drivers = sheetDrivers,
             onDismiss = { lapPicker = null },
+        )
+    }
+    if (layersOpen) {
+        MapLayerSheet(
+            selected = config.mapLayer,
+            onSelect = { layer -> analysis.updateConfig { it.copy(mapLayer = layer) } },
+            onDismiss = { layersOpen = false },
         )
     }
     if (analysis.settingsOpen) {

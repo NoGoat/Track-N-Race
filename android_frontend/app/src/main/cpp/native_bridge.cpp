@@ -52,8 +52,8 @@ public:
 
     void onRow(const std::string& json) override {
         // A recording's lap catalogue carries every block's status history;
-        // the phone needs only each lap's times and compound, as a paired
-        // phone receives it.
+        // the phone needs only each lap's times and compound, and the
+        // recording's race events, as a paired phone receives it.
         if (std::string_view(json).starts_with("{\"type\":\"playback_lap_blocks\"")) {
             deliver(tnrp::pairPhoneLapBlocks(json));
             return;
@@ -169,8 +169,9 @@ private:
 
 // Logical row ids (Engine's rowTypeOf) the Kotlin store consumes: telemetry (its
 // packed binary lane is gated by this bit too), status, damage, lap, session,
-// timing, participants, all_status, tyre_sets and positions. Everything else
-// libtnrp can produce -- race_event, motion, session_history_fastest (a full
+// race_event (the Session tab's event feed, which has to accumulate whatever
+// page is open), timing, participants, all_status, tyre_sets and positions.
+// Everything else libtnrp can produce -- motion, session_history_fastest (a full
 // lap/stint history per car in V6) -- would be marshalled through JNI and
 // JSON-parsed on the source thread only to be discarded. Strategy is added
 // only while its tab is open (nativeSetLiveStrategy), motion and motion_ex
@@ -178,7 +179,7 @@ private:
 // (protocol_*, recording_error, ...) carry no row id and are never masked, and
 // recording ignores the mask, so TNRD files still contain every row.
 constexpr uint32_t kAndroidRowMask =
-    (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
+    (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) |
     (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13);
 constexpr uint32_t kStrategyRowBit = 1u << 15;
 // The chart families a graph page may have refilled (Engine's historical rows):
@@ -472,6 +473,16 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeDriverLaps(JNIEnv* env, jobject
     return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
 }
 
+// One car's driver_lap_history row, live or at the playback cursor, for the
+// Timing page's laps sheet; null with no engine or no such car.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeDriverLapHistory(JNIEnv* env, jobject, jint car) {
+    auto current = session();
+    if (!current) return nullptr;
+    const std::string data = current->engine->driverLapHistoryJson(car);
+    return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_nogoat_tracknrace_NativeTelemetry_nativeBrakingZones(
     JNIEnv* env, jobject, jint currentLap, jint comparisonLap,
@@ -480,6 +491,26 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeBrakingZones(
     if (!current) return nullptr;
     const std::string data = current->engine->playerBrakingZonesJson(
         currentLap, comparisonLap, currentDriver, comparisonDriver);
+    return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeAnalysisMap(
+    JNIEnv* env, jobject, jstring layer, jint currentLap, jint comparisonLap,
+    jint currentDriver, jint comparisonDriver, jboolean dark,
+    jstring currentColor, jstring comparisonColor) {
+    auto current = session();
+    if (!current) return nullptr;
+    const auto text = [env](jstring value) {
+        if (!value) return std::string{};
+        const char* chars = env->GetStringUTFChars(value, nullptr);
+        std::string out = chars ? chars : "";
+        if (chars) env->ReleaseStringUTFChars(value, chars);
+        return out;
+    };
+    const std::string data = current->engine->playerAnalysisMapJson(
+        text(layer), currentLap, comparisonLap, currentDriver, comparisonDriver,
+        dark == JNI_TRUE, text(currentColor), text(comparisonColor));
     return data.empty() ? nullptr : env->NewStringUTF(data.c_str());
 }
 
@@ -697,9 +728,9 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsSetOptions(
 }
 
 // The Analysis map layer colours (tnrp/AnalysisMapPaint.h) as
-// {"dark": palette, "light": palette}. Not wired to any UI yet.
+// {"dark": palette, "light": palette}, for the map legends.
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_nogoat_tracknrace_NativeTelemetry_nativeAnalysisMapPaletteJson(JNIEnv* env, jobject) {
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeAnalysisMapPaletteJson(JNIEnv* env, jclass) {
     return javaString(env, tnrp::analysisMapPaletteJson());
 }
 

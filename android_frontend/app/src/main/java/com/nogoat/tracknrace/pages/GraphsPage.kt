@@ -3,7 +3,10 @@ package com.nogoat.tracknrace.pages
 import android.content.res.Configuration
 import android.graphics.Paint
 import android.graphics.RectF
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -25,6 +28,8 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.AlertDialog
@@ -36,10 +41,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -51,6 +58,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +74,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -177,6 +186,12 @@ private const val LAP_DOT_RADIUS_DP = 3f
 private const val LAP_LABEL_OFFSET_DP = 4f
 private const val LAP_LABEL_GAP_DP = 6f
 private val DISTANCE_STEPS = doubleArrayOf(100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0)
+private const val TABLE_ROW_DP = 30f
+// A table's column names over the newest values.
+private const val TABLE_HEADER_DP = 46f
+private const val TABLE_CELL_GAP_DP = 8f
+// A table reads its rows again this often, as the desktop's bounded refresh.
+private const val TABLE_REFRESH_MS = 100L
 
 /** The charts' ids: the desktop's graph sections, which key their windows. */
 private val POWER_CHART_IDS = listOf("powerSplit", "powerHarvest", "powerStore", "powerFuel")
@@ -195,19 +210,33 @@ private enum class GraphsTab(
     val chartIds: List<String>,
     val page: PairedTelemetryPage,
     val lapPage: PairedTelemetryPage,
+    /** What the tab's data table lists, as Settings describes it; null for a tab without one. */
+    val tableContents: String? = null,
 ) {
-    POWER("Power", POWER_CHART_IDS, PairedTelemetryPage.GRAPHS_POWER, PairedTelemetryPage.GRAPHS_POWER_LAPS),
-    INPUTS("Inputs", INPUT_CHART_IDS, PairedTelemetryPage.GRAPHS_INPUTS, PairedTelemetryPage.GRAPHS_INPUTS_LAPS),
-    SPEED("Speed", SPEED_CHART_IDS, PairedTelemetryPage.GRAPHS_SPEED, PairedTelemetryPage.GRAPHS_SPEED_LAPS),
-    MISC("Misc", MISC_CHART_IDS, PairedTelemetryPage.GRAPHS_MISC, PairedTelemetryPage.GRAPHS_MISC_LAPS),
+    SPEED("Speed", SPEED_CHART_IDS, PairedTelemetryPage.GRAPHS_SPEED, PairedTelemetryPage.GRAPHS_SPEED_LAPS, "Speed, RPM, ERS"),
+    INPUTS("Inputs", INPUT_CHART_IDS, PairedTelemetryPage.GRAPHS_INPUTS, PairedTelemetryPage.GRAPHS_INPUTS_LAPS, "Gear, Accelerator / Brake, Steering"),
+    POWER("Power", POWER_CHART_IDS, PairedTelemetryPage.GRAPHS_POWER, PairedTelemetryPage.GRAPHS_POWER_LAPS, "Power, ERS Harvest, ERS Store, Fuel History"),
+    MISC("Misc", MISC_CHART_IDS, PairedTelemetryPage.GRAPHS_MISC, PairedTelemetryPage.GRAPHS_MISC_LAPS, "G-Force, Ride Height"),
     TRENDS("Trends", TREND_CHART_IDS, PairedTelemetryPage.GRAPHS_TRENDS, PairedTelemetryPage.GRAPHS_TRENDS),
+    ;
+
+    /** Names the tab's table: in Settings, and as the id its window is kept under. */
+    val tableId: String get() = "table$title"
 }
+
+/** A Charts tab that can show as a data table, for Settings. */
+internal class DataTableTab(val id: String, val title: String, val contents: String)
+
+internal val DATA_TABLE_TABS: List<DataTableTab> =
+    GraphsTab.entries.mapNotNull { tab -> tab.tableContents?.let { DataTableTab(tab.tableId, tab.title, it) } }
 
 @Composable
 internal fun GraphsScreen(
     store: TelemetryStore,
     graphs: GraphsController,
     active: Boolean = true,
+    /** Edit layout is on: each tab shows its charts as blocks to show or hide. */
+    editing: Boolean = false,
     /** Called with the stream the visible tab needs. */
     onPage: (PairedTelemetryPage) -> Unit = {},
 ) {
@@ -215,7 +244,11 @@ internal fun GraphsScreen(
     val pager = rememberPagerState(initialPage = saved) { GraphsTab.entries.size }
     val scope = rememberCoroutineScope()
     val current = pager.currentPage
-    val lapMode = GraphsTab.entries[current].chartIds.any { graphs.windowOf(it).isLap }
+    /** The id of [tab]'s table when Settings shows it as one, else null; Edit layout lays out the tab's charts. */
+    fun tableOf(tab: GraphsTab): String? = tab.tableId.takeIf { !editing && tab.tableContents != null && graphs.showsTable(it) }
+    val lapMode = GraphsTab.entries[current].let { tab ->
+        tableOf(tab)?.let { graphs.windowOf(it).isLap } ?: tab.chartIds.any { graphs.windowOf(it).isLap }
+    }
     LaunchedEffect(current, active, lapMode) {
         saved = current
         val tab = GraphsTab.entries[current]
@@ -264,11 +297,11 @@ internal fun GraphsScreen(
         }
         HorizontalPager(pager, Modifier.fillMaxWidth().weight(1f), beyondViewportPageCount = 0) { page ->
             when (GraphsTab.entries[page]) {
-                GraphsTab.POWER -> PowerTab(store, graphs, active && current == page)
-                GraphsTab.INPUTS -> InputsTab(store, graphs, active && current == page)
-                GraphsTab.SPEED -> SpeedTab(store, graphs, active && current == page)
-                GraphsTab.MISC -> MiscTab(store, graphs, active && current == page)
-                GraphsTab.TRENDS -> TrendsTab(store, graphs, active && current == page)
+                GraphsTab.SPEED -> SpeedTab(store, graphs, active && current == page, tableOf(GraphsTab.SPEED), editing)
+                GraphsTab.INPUTS -> InputsTab(store, graphs, active && current == page, tableOf(GraphsTab.INPUTS), editing)
+                GraphsTab.POWER -> PowerTab(store, graphs, active && current == page, tableOf(GraphsTab.POWER), editing)
+                GraphsTab.MISC -> MiscTab(store, graphs, active && current == page, tableOf(GraphsTab.MISC), editing)
+                GraphsTab.TRENDS -> TrendsTab(store, graphs, active && current == page, editing)
             }
         }
     }
@@ -452,6 +485,8 @@ private class ChartSpec(
     val windowChoices: List<GraphWindow>? = null,
     /** Per-lap lines over the samples, each on its own axis: the Trends combined chart. */
     val lapOverlay: LapOverlay? = null,
+    /** Names an unnamed value's column in the tab's data table. */
+    val column: String = title,
 )
 
 /** One per-lap line: a value of each lap, on overlay axis [axis]. */
@@ -508,6 +543,7 @@ private fun powerCharts(isDark: Boolean, hasMguh: Boolean, harvestLimit: Double)
             id = POWER_CHART_IDS[1],
             family = GraphFamily.STATUS,
             title = "ERS Harvest",
+            column = "Harvest",
             series = listOfNotNull(
                 SeriesSpec("MGU-K", GraphField.HARVEST_MGUK_J, harvestK, scale = 0.001f),
                 SeriesSpec("MGU-H", GraphField.HARVEST_MGUH_J, harvestH, scale = 0.001f).takeIf { hasMguh },
@@ -530,6 +566,7 @@ private fun powerCharts(isDark: Boolean, hasMguh: Boolean, harvestLimit: Double)
             id = POWER_CHART_IDS[2],
             family = GraphFamily.STATUS,
             title = "ERS Store",
+            column = "Store",
             series = listOf(SeriesSpec("ERS", GraphField.ERS_PCT, ice)),
             range = { _, _ -> 0.0 to 100.0 },
             tick = { "${it.roundToLong()}%" },
@@ -549,6 +586,7 @@ private fun powerCharts(isDark: Boolean, hasMguh: Boolean, harvestLimit: Double)
             id = POWER_CHART_IDS[3],
             family = GraphFamily.STATUS,
             title = "Fuel History",
+            column = "Fuel",
             series = listOf(SeriesSpec("Fuel", GraphField.FUEL_KG, fuel)),
             // The starting load plus a kilogram, as on the desktop.
             range = { visibleMax, fuelPeak ->
@@ -714,12 +752,17 @@ private fun separateSpeedCharts(isDark: Boolean): List<ChartSpec> {
 }
 
 @Composable
-private fun SpeedTab(store: TelemetryStore, graphs: GraphsController, active: Boolean) {
+private fun SpeedTab(store: TelemetryStore, graphs: GraphsController, active: Boolean, tableId: String?, editing: Boolean) {
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    if (tableId != null) {
+        // The combined chart names each of its values, which the table's columns need.
+        TableTab(store, graphs, active, remember(isDark) { speedCharts(isDark) }, tableId)
+        return
+    }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // Landscape has the width for the desktop's combined chart; portrait gives each its own.
     val charts = remember(isDark, landscape) { if (landscape) speedCharts(isDark) else separateSpeedCharts(isDark) }
-    ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0)))
+    ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0)), editing = editing)
 }
 
 // ── Tyres ───────────────────────────────────────────────────────────────────
@@ -857,6 +900,7 @@ internal fun TyreChartsTab(
     graphs: GraphsController,
     active: Boolean,
     onPage: (PairedTelemetryPage) -> Unit,
+    editing: Boolean = false,
 ) {
     val lapMode = TYRE_CHART_IDS.any { graphs.windowOf(it).isLap }
     LaunchedEffect(active, lapMode) {
@@ -864,7 +908,7 @@ internal fun TyreChartsTab(
     }
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val charts = remember(isDark) { tyreCharts(isDark) }
-    ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0, 1), listOf(2, 3)))
+    ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0, 1), listOf(2, 3)), editing = editing)
 }
 
 // ── Misc ────────────────────────────────────────────────────────────────────
@@ -924,10 +968,10 @@ private fun miscCharts(isDark: Boolean): List<ChartSpec> {
 }
 
 @Composable
-private fun MiscTab(store: TelemetryStore, graphs: GraphsController, active: Boolean) {
+private fun MiscTab(store: TelemetryStore, graphs: GraphsController, active: Boolean, tableId: String?, editing: Boolean) {
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val charts = remember(isDark) { miscCharts(isDark) }
-    ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0), listOf(1)))
+    if (tableId != null) TableTab(store, graphs, active, charts, tableId) else ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0), listOf(1)), editing = editing)
 }
 
 // ── Trends ──────────────────────────────────────────────────────────────────
@@ -1080,7 +1124,7 @@ private fun trendOverlay(data: State<TrendData>, colors: TrendColors): LapOverla
 }
 
 @Composable
-private fun TrendsTab(store: TelemetryStore, graphs: GraphsController, active: Boolean) {
+private fun TrendsTab(store: TelemetryStore, graphs: GraphsController, active: Boolean, editing: Boolean) {
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val colors = remember(isDark) { TrendColors(isDark) }
@@ -1096,18 +1140,22 @@ private fun TrendsTab(store: TelemetryStore, graphs: GraphsController, active: B
     ChartsTab(
         store, graphs, active, charts,
         landscapeRows = listOf(listOf(0)),
+        editing = editing,
+        portraitSections = lapSpecs.map { LayoutSection(it.id, it.title) },
         portrait = { chart, board ->
             val divider = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
             @Composable
             fun Trend(spec: LapTrendSpec, modifier: Modifier) =
                 LapTrendChart(spec, data, windowFor(graphs, spec.id, TREND_WINDOWS), board, { rangePicker = spec }, modifier)
-            // Four charts stacked, each the full width.
+            // Four charts stacked, each the full width, less those Edit layout hides.
+            val shownSpecs = lapSpecs.filter { graphs.showsChart(it.id) }
+            val wearShown = graphs.showsChart(charts[0].id)
             Column(Modifier.fillMaxSize()) {
-                lapSpecs.forEach { spec ->
+                shownSpecs.forEachIndexed { index, spec ->
                     Trend(spec, Modifier.fillMaxWidth().weight(1f))
-                    HorizontalDivider(color = divider)
+                    if (wearShown || index < shownSpecs.lastIndex) HorizontalDivider(color = divider)
                 }
-                chart(0, true, Modifier.fillMaxWidth().weight(1f))
+                if (wearShown) chart(0, true, Modifier.fillMaxWidth().weight(1f))
             }
         },
     )
@@ -1296,11 +1344,15 @@ private fun formatSteeringAxis(value: Double): String = when {
 }
 
 @Composable
-private fun InputsTab(store: TelemetryStore, graphs: GraphsController, active: Boolean) {
+private fun InputsTab(store: TelemetryStore, graphs: GraphsController, active: Boolean, tableId: String?, editing: Boolean) {
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val charts = remember(isDark) { inputCharts(isDark) }
+    if (tableId != null) {
+        TableTab(store, graphs, active, charts, tableId)
+        return
+    }
     // Landscape as the desktop's grid: Gear beside the pedals, Steering beneath.
-    ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0, 1), listOf(2)))
+    ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0, 1), listOf(2)), editing = editing)
 }
 
 private fun Float.orZero(): Float = if (isNaN()) 0f else this
@@ -1312,14 +1364,14 @@ private fun expand(lower: Double, initialUpper: Double, visibleMax: Double): Pai
     lower to if (visibleMax.isFinite() && visibleMax > initialUpper) ceil(visibleMax) else initialUpper
 
 @Composable
-private fun PowerTab(store: TelemetryStore, graphs: GraphsController, active: Boolean) {
+private fun PowerTab(store: TelemetryStore, graphs: GraphsController, active: Boolean, tableId: String?, editing: Boolean) {
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val hasMguh by remember(store) { derivedStateOf(structuralEqualityPolicy()) { store.cold.hasMguh } }
     val harvestLimit by remember(store) {
         derivedStateOf(structuralEqualityPolicy()) { if (store.cold.presentationYear == 2026) 8000.0 else 4000.0 }
     }
     val charts = remember(isDark, hasMguh, harvestLimit) { powerCharts(isDark, hasMguh, harvestLimit) }
-    ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0, 1), listOf(2, 3)))
+    if (tableId != null) TableTab(store, graphs, active, charts, tableId) else ChartsTab(store, graphs, active, charts, landscapeRows = listOf(listOf(0, 1), listOf(2, 3)), editing = editing)
 }
 
 /** A chart's window: its own pick among [choices], else the first of them; without choices, as any chart's. */
@@ -1331,6 +1383,47 @@ private fun windowFor(graphs: GraphsController, id: String, choices: List<GraphW
 /** Picks [window] for chart [id]; a chart with its own [choices] keeps the pick whatever the global window. */
 private fun selectWindow(graphs: GraphsController, id: String, choices: List<GraphWindow>?, window: GraphWindow) {
     if (choices == null) graphs.selectChartWindow(id, window) else graphs.pinChartWindow(id, window)
+}
+
+/** A part of a Charts tab that Edit layout shows or hides: a chart's id and its title. */
+internal class LayoutSection(val id: String, val title: String)
+
+/**
+ * Edit layout, as the desktop's schematic: each of the tab's sections is a
+ * block where it sits on the page, and a tap shows or hides it. Applied and
+ * kept at once.
+ */
+@Composable
+private fun LayoutEditor(graphs: GraphsController, rows: List<List<LayoutSection>>) {
+    val colors = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxSize()) {
+        rows.forEachIndexed { rowIndex, row ->
+            if (rowIndex > 0) HorizontalDivider(color = colors.outlineVariant)
+            Row(Modifier.fillMaxWidth().weight(1f)) {
+                row.forEachIndexed { index, section ->
+                    if (index > 0) VerticalDivider(color = colors.outlineVariant)
+                    val shown = graphs.showsChart(section.id)
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .background(if (shown) colors.secondaryContainer else colors.surface)
+                            .toggleable(value = shown, role = Role.Switch) { graphs.setChartShown(section.id, it) }
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            section.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (shown) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -1349,9 +1442,33 @@ private fun ChartsTab(
     extraSync: (() -> Unit)? = null,
     /** A portrait layout of its own, given the charts and the tab's readout board; null to stack the charts. */
     portrait: (@Composable (chart: @Composable (Int, Boolean, Modifier) -> Unit, board: ReadoutBoard) -> Unit)? = null,
+    /** Edit layout is on: the tab shows its sections as blocks to show or hide. */
+    editing: Boolean = false,
+    /** What [portrait] draws above the charts, for Edit layout. */
+    portraitSections: List<LayoutSection> = emptyList(),
 ) {
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val sections = charts.map { LayoutSection(it.id, it.title) }
+    // The tab's sections where they sit: one to a row in portrait, the landscape grid in landscape.
+    val sectionRows = if (landscape) landscapeRows.map { row -> row.map { sections[it] } } else (portraitSections + sections).map { listOf(it) }
+    if (editing) {
+        LayoutEditor(graphs, sectionRows)
+        return
+    }
+    if (sectionRows.none { row -> row.any { graphs.showsChart(it.id) } }) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "Every chart on this tab is hidden",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+    // Only the charts Edit layout shows fetch their data.
+    val shownCharts = charts.filter { graphs.showsChart(it.id) }
     val history = graphs.history(charts.first().family)
-    val families = remember(charts) { charts.map { it.family }.distinct() }
+    val families = remember(shownCharts) { shownCharts.map { it.family }.distinct() }
     val board = remember { ReadoutBoard() }
     val beat = remember { RasterBeat() }
     LaunchedEffect(active) { if (active) beat.run() }
@@ -1365,20 +1482,19 @@ private fun ChartsTab(
     val headerColors = HeaderColors(colors.onSurface, colors.onSurfaceVariant, colors.outline)
     // Series switched off by tapping their values in a chart's header, by chart and label.
     val hidden = remember { mutableStateMapOf<String, Boolean>() }
-    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     LaunchedEffect(active) {
         if (!active) return@LaunchedEffect
         while (true) withFrameNanos { clock.follow(store, history, it) }
     }
-    LaunchedEffect(active) {
+    LaunchedEffect(active, shownCharts) {
         if (!active) return@LaunchedEffect
         while (true) {
             // Per family: enough history for its longest time window, and every
             // lap its lap modes draw: the distance laps first, then the span laps
             // oldest first, so each arriving lap is added to the end of what is drawn.
             for (family in families) {
-                val windows = charts.filter { it.family == family }.map { it.windowId to windowFor(graphs, it.windowId, it.windowChoices) }
+                val windows = shownCharts.filter { it.family == family }.map { it.windowId to windowFor(graphs, it.windowId, it.windowChoices) }
                 val longest = windows.maxOfOrNull { it.second.seconds } ?: 0
                 val laps = buildList {
                     for ((id, window) in windows) {
@@ -1391,7 +1507,7 @@ private fun ChartsTab(
                 graphs.sync(family, longest.toDouble(), laps)
             }
             // Listening for the game, the engine holds what the histories lack.
-            val shown = charts.map { windowFor(graphs, it.windowId, it.windowChoices) }
+            val shown = shownCharts.map { windowFor(graphs, it.windowId, it.windowChoices) }
             graphs.syncLive(families, (shown.maxOfOrNull { it.seconds } ?: 0).toDouble(), shown.any { it.isLap })
             extraSync?.invoke()
             delay(BACKFILL_TICK_MS)
@@ -1425,20 +1541,22 @@ private fun ChartsTab(
     CompositionLocalProvider(LocalYGutter provides yGutter) {
         Box(Modifier.fillMaxSize()) {
             if (landscape) {
+                val rows = landscapeRows.map { row -> row.filter { graphs.showsChart(charts[it].id) } }.filter { it.isNotEmpty() }
                 Column(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
-                    landscapeRows.forEachIndexed { rowIndex, row ->
+                    rows.forEachIndexed { rowIndex, row ->
                         Row(Modifier.fillMaxWidth().weight(1f)) {
-                            row.forEach { index -> Chart(index, rowIndex == landscapeRows.lastIndex, Modifier.weight(1f).fillMaxHeight()) }
+                            row.forEach { index -> Chart(index, rowIndex == rows.lastIndex, Modifier.weight(1f).fillMaxHeight()) }
                         }
                     }
                 }
             } else if (portrait != null) {
                 portrait({ index, showXAxis, modifier -> Chart(index, showXAxis, modifier) }, board)
             } else {
+                val indices = charts.indices.filter { graphs.showsChart(charts[it].id) }
                 Column(Modifier.fillMaxSize()) {
-                    charts.indices.forEach { index ->
-                        if (index > 0) HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.5f))
-                        Chart(index, index == charts.lastIndex, Modifier.fillMaxWidth().weight(1f))
+                    indices.forEach { index ->
+                        if (index != indices.first()) HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.5f))
+                        Chart(index, index == indices.last(), Modifier.fillMaxWidth().weight(1f))
                     }
                 }
             }
@@ -1467,6 +1585,418 @@ private fun ChartsTab(
             laps = store.playbackCatalog.takeIf { spec.windowChoices == null },
             referenceLap = graphs.comparisonLap(spec.family, GraphWindow.SELECTED, spec.windowId),
             onReferenceLap = { lap -> graphs.selectReferenceLap(spec.windowId, lap) },
+        )
+    }
+}
+
+// ── Data table ──────────────────────────────────────────────────────────────
+// A tab as one table, the desktop's Chart → Table view for a phone: a time or
+// distance column, then a column for each value its charts' headers show,
+// oldest at the top. It stays on the newest row until scrolled away from it;
+// then it holds still, and Latest returns to the newest. Drawn on a canvas
+// from rows read on a slow tick, so a new sample recomposes nothing.
+
+/** One column of a tab's table: value [token] of chart [chart]'s readout. */
+private class TableColumn(val chart: Int, val token: Int, val label: String, val unit: String?, val color: Color)
+
+private fun tableColumns(charts: List<ChartSpec>): List<TableColumn> = buildList {
+    charts.forEachIndexed { index, spec ->
+        val tokens = spec.readout(FloatArray(spec.series.size) { Float.NaN }, BooleanArray(spec.series.size) { true })
+        tokens.forEachIndexed { position, token ->
+            add(TableColumn(index, position, (token.name ?: spec.column).uppercase(Locale.US), token.unit, token.color))
+        }
+    }
+}
+
+/** A table's rows as last read: where each is, in session seconds or lap metres, and each chart's values there. */
+private class TableRows(
+    val size: Int,
+    private val at: (row: Int) -> Double,
+    private val read: (chart: Int, row: Int) -> FloatArray?,
+) {
+    fun position(row: Int): Double = at(row)
+
+    /** Chart [chart]'s series values at [row], scaled as its readout takes them; null where it has none. */
+    fun values(chart: Int, row: Int): FloatArray? = read(chart, row)
+
+    companion object {
+        val EMPTY = TableRows(0, { Double.NaN }, { _, _ -> null })
+    }
+}
+
+/** Index of the last of [times] at or before [time], or -1. */
+private fun indexAtTime(times: FloatArray, time: Float): Int {
+    var lo = 0
+    var hi = times.size
+    while (lo < hi) {
+        val mid = (lo + hi) ushr 1
+        if (times[mid] <= time) lo = mid + 1 else hi = mid
+    }
+    return lo - 1
+}
+
+/**
+ * The rows a table of [charts] shows in [window] up to [edge]: one per sample
+ * of the first chart's family. A chart of another family gives its newest
+ * values at or before each row.
+ */
+private fun tableRows(
+    store: TelemetryStore,
+    graphs: GraphsController,
+    charts: List<ChartSpec>,
+    window: GraphWindow,
+    tableId: String,
+    edge: Double,
+): TableRows {
+    val families = charts.map { it.family }.distinct()
+    val lead = families.first()
+    if (window.isDistance) {
+        val frames = families.associateWith { lapFrame(store, graphs, it, window, tableId, edge) }
+        val trace = frames.getValue(lead).current ?: return TableRows.EMPTY
+        val count = frames.getValue(lead).lastIndex + 1
+        if (count <= 0) return TableRows.EMPTY
+        return TableRows(count, { trace.distance[it].toDouble() }) { chart, row ->
+            val spec = charts[chart]
+            val frame = frames.getValue(spec.family)
+            val other = frame.current
+            val index = when {
+                other == null -> -1
+                other === trace -> row
+                else -> min(indexAtTime(other.times, trace.times[row]), frame.lastIndex)
+            }
+            if (other == null || index < 0) null else FloatArray(spec.series.size) { other.value(spec.series[it].field, index) * spec.series[it].scale }
+        }
+    }
+    val series = families.associateWith { if (window.isSpan) graphs.spanSeries(it, window) else graphs.history(it) }
+    val rows = series.getValue(lead)
+    val from = if (window.isSpan) graphs.spanStart(window, rows) else edge - window.seconds
+    if (!edge.isFinite() || !from.isFinite() || rows.size == 0) return TableRows.EMPTY
+    var first = rows.indexAtOrBefore(from)
+    if (first < 0 || rows.time(first) < from) first++
+    val count = rows.indexAtOrBefore(edge) - first + 1
+    if (count <= 0) return TableRows.EMPTY
+    // The histories keep changing between reads: a row they no longer hold reads as unknown.
+    return TableRows(count, { if (first + it < rows.size) rows.time(first + it) else Double.NaN }) { chart, row ->
+        val spec = charts[chart]
+        val other = series.getValue(spec.family)
+        val index = when {
+            first + row >= rows.size -> -1
+            other === rows -> first + row
+            else -> other.indexAtOrBefore(rows.time(first + row))
+        }
+        if (index < 0 || index >= other.size) null else FloatArray(spec.series.size) { other.value(spec.series[it].field, index) * spec.series[it].scale }
+    }
+}
+
+/** A table's rows and where it is scrolled to. Main thread only. */
+@Stable
+private class TableState(
+    /** A lap's rows are held as read while scrolled away; a time window's are read again up to where it stopped. */
+    private val holdsRows: Boolean,
+) {
+    /** The rows up to the newest sample. */
+    var live by mutableStateOf(TableRows.EMPTY)
+        private set
+
+    /** The rows held still while scrolled away from the newest. */
+    private var held by mutableStateOf<TableRows?>(null)
+
+    /** Following the newest row. */
+    var pinned by mutableStateOf(true)
+        private set
+
+    /** Px scrolled from the first row, while not [pinned]. */
+    var offset by mutableFloatStateOf(0f)
+        private set
+
+    /** The furthest [offset]: set as the rows are drawn. */
+    var maxOffset = 0f
+
+    private var edge = Double.NaN
+    private var heldEdge = Double.NaN
+
+    val shown: TableRows get() = if (pinned) live else held ?: live
+
+    fun refresh(edge: Double, rows: (edge: Double) -> TableRows) {
+        this.edge = edge
+        live = rows(edge)
+        if (!pinned && !holdsRows) held = rows(heldEdge)
+    }
+
+    /** A drag or fling of [delta] px; returns what it moved. Only [latest] follows the newest row again, as on the desktop. */
+    fun scrollBy(delta: Float): Float {
+        val current = if (pinned) maxOffset else offset.coerceIn(0f, maxOffset)
+        val next = (current - delta).coerceIn(0f, maxOffset)
+        if (pinned) {
+            if (next >= maxOffset) return 0f
+            heldEdge = edge
+            held = live
+            pinned = false
+        }
+        offset = next
+        return current - next
+    }
+
+    fun latest() {
+        pinned = true
+        held = null
+    }
+}
+
+private class TablePaints(cellPx: Float, labelPx: Float, valuePx: Float) {
+    val position: Paint = textPaint(cellPx, FontWeight.Normal.weight)
+    val cell: Paint = textPaint(cellPx, FontWeight.Medium.weight)
+    val label: Paint = textPaint(labelPx, FontWeight.Medium.weight).apply { letterSpacing = 0.06f }
+    val value: Paint = textPaint(valuePx, FontWeight.Light.weight)
+    val unit: Paint = textPaint(labelPx, FontWeight.Normal.weight)
+    val empty: Paint = textPaint(cellPx, FontWeight.Normal.weight).apply { textAlign = Paint.Align.CENTER }
+}
+
+private class TableColors(val text: Color, val dim: Color, val line: Color)
+
+/** Session time as the desktop's table writes it: m:ss.mmm. */
+private fun formatTableTime(seconds: Double): String {
+    val clamped = max(0.0, seconds)
+    val minutes = floor(clamped / 60).toInt()
+    return String.format(Locale.US, "%d:%06.3f", minutes, floor((clamped - minutes * 60) * 1000) / 1000)
+}
+
+private fun tablePosition(window: GraphWindow, value: Double): String = when {
+    !value.isFinite() -> "—"
+    window.isDistance -> formatDistance(value)
+    else -> formatTableTime(value)
+}
+
+/** Where a table's columns are: the first as wide as its longest text, the rest sharing what is left. */
+private class TableLayout(scope: DrawScope, paints: TablePaints, window: GraphWindow, columns: Int) {
+    val inset = HEADER_INSET_DP * scope.density
+    val gap = TABLE_CELL_GAP_DP * scope.density
+    private val first = paints.position.measureText(if (window.isDistance) "88888 m" else "888:88.888") + gap * 2
+    val share = ((scope.size.width - inset * 2 - first) / max(columns, 1)).coerceAtLeast(1f)
+
+    fun left(column: Int): Float = inset + first + column * share
+}
+
+/** Draws [text] from [x], narrowed to fit [width]. */
+private fun DrawScope.drawFitted(text: String, x: Float, baseline: Float, width: Float, paint: Paint) {
+    val wide = paint.measureText(text)
+    if (wide > width && wide > 0f) paint.textScaleX = width / wide
+    drawContext.canvas.nativeCanvas.drawText(text, x, baseline, paint)
+    paint.textScaleX = 1f
+}
+
+/** The column names over the newest row's values, each in its series' colour. */
+private fun DrawScope.drawTableHeader(
+    rows: TableRows,
+    charts: List<ChartSpec>,
+    columns: List<TableColumn>,
+    shown: List<BooleanArray>,
+    window: GraphWindow,
+    paints: TablePaints,
+    colors: TableColors,
+) {
+    val layout = TableLayout(this, paints, window, columns.size)
+    val labelBaseline = size.height * 0.36f
+    val valueBaseline = size.height * 0.82f
+    val last = rows.size - 1
+    paints.label.color = colors.dim.toArgb()
+    paints.unit.color = colors.dim.toArgb()
+    drawFitted(if (window.isDistance) "DISTANCE" else "TIME", layout.inset, labelBaseline, layout.left(0) - layout.inset - layout.gap, paints.label)
+    if (last >= 0) {
+        paints.value.color = colors.text.toArgb()
+        drawFitted(tablePosition(window, rows.position(last)), layout.inset, valueBaseline, layout.left(0) - layout.inset - layout.gap, paints.value)
+    }
+    val tokens = charts.indices.map { chart ->
+        if (last < 0) null else rows.values(chart, last)?.let { charts[chart].readout(it, shown[chart]) }
+    }
+    columns.forEachIndexed { index, column ->
+        val x = layout.left(index)
+        val room = layout.share - layout.gap
+        drawFitted(column.label, x, labelBaseline, room, paints.label)
+        val value = tokens[column.chart]?.getOrNull(column.token)?.value ?: "—"
+        paints.value.color = (if (column.color.isSpecified) column.color else colors.text).toArgb()
+        drawFitted(value, x, valueBaseline, room, paints.value)
+        // The unit only where it fits beside the value.
+        val unit = column.unit ?: return@forEachIndexed
+        val after = paints.value.measureText(value) + UNIT_SPACE_DP * density
+        if (after + paints.unit.measureText(unit) <= room) {
+            drawContext.canvas.nativeCanvas.drawText(unit, x + after, valueBaseline, paints.unit)
+        }
+    }
+}
+
+private const val UNIT_SPACE_DP = 2f
+
+/** The rows in view, and how far the table can scroll, kept in [state]. */
+private fun DrawScope.drawTableRows(
+    state: TableState,
+    charts: List<ChartSpec>,
+    columns: List<TableColumn>,
+    shown: List<BooleanArray>,
+    window: GraphWindow,
+    paints: TablePaints,
+    colors: TableColors,
+) {
+    val rows = state.shown
+    val rowHeight = TABLE_ROW_DP * density
+    val furthest = max(0f, rows.size * rowHeight - size.height)
+    state.maxOffset = furthest
+    val canvas = drawContext.canvas.nativeCanvas
+    if (rows.size == 0) {
+        paints.empty.color = colors.dim.toArgb()
+        canvas.drawText("No data", size.width / 2f, size.height / 2f, paints.empty)
+        return
+    }
+    val scroll = if (state.pinned) furthest else state.offset.coerceIn(0f, furthest)
+    val layout = TableLayout(this, paints, window, columns.size)
+    val bounds = android.graphics.Rect()
+    paints.cell.getTextBounds("8", 0, 1, bounds)
+    val rise = bounds.height() / 2f
+    val firstRow = floor(scroll / rowHeight).toInt().coerceAtLeast(0)
+    val lastRow = min(rows.size - 1, firstRow + ceil(size.height / rowHeight).toInt())
+    paints.position.color = colors.dim.toArgb()
+    for (row in firstRow..lastRow) {
+        val top = row * rowHeight - scroll
+        val baseline = top + rowHeight / 2f + rise
+        drawFitted(tablePosition(window, rows.position(row)), layout.inset, baseline, layout.left(0) - layout.inset - layout.gap, paints.position)
+        var chart = -1
+        var tokens: List<HeaderToken>? = null
+        columns.forEachIndexed { index, column ->
+            if (column.chart != chart) {
+                chart = column.chart
+                tokens = rows.values(chart, row)?.let { charts[chart].readout(it, shown[chart]) }
+            }
+            paints.cell.color = (if (column.color.isSpecified) column.color else colors.text).toArgb()
+            drawFitted(tokens?.getOrNull(column.token)?.value ?: "—", layout.left(index), baseline, layout.share - layout.gap, paints.cell)
+        }
+        drawLine(colors.line, Offset(0f, top + rowHeight), Offset(size.width, top + rowHeight), 1f)
+    }
+}
+
+/**
+ * A tab of [charts] as one data table, in place of [ChartsTab]. Its window is
+ * kept under [tableId]: the global one unless it picks its own, as any chart's.
+ */
+@Composable
+private fun TableTab(
+    store: TelemetryStore,
+    graphs: GraphsController,
+    active: Boolean,
+    charts: List<ChartSpec>,
+    tableId: String,
+) {
+    val window = graphs.windowOf(tableId)
+    val lead = charts.first().family
+    val history = graphs.history(lead)
+    val families = remember(charts) { charts.map { it.family }.distinct() }
+    val columns = remember(charts) { tableColumns(charts) }
+    // Every series counts toward a total: a table hides none.
+    val shown = remember(charts) { charts.map { spec -> BooleanArray(spec.series.size) { true } } }
+    val clock = remember { GraphClock() }
+    val state = remember(window, charts) { TableState(holdsRows = window.isDistance) }
+    val scroll = rememberScrollableState { state.scrollBy(it) }
+
+    LaunchedEffect(active, state) {
+        if (!active) return@LaunchedEffect
+        while (true) {
+            clock.follow(store, history, System.nanoTime())
+            state.refresh(clock.right) { edge -> tableRows(store, graphs, charts, window, tableId, edge) }
+            delay(TABLE_REFRESH_MS)
+        }
+    }
+    LaunchedEffect(active, window, families) {
+        if (!active) return@LaunchedEffect
+        while (true) {
+            // As a charts tab: each family's history for a time window, its laps for a lap one.
+            for (family in families) {
+                val laps = buildList {
+                    if (window.isDistance) add(graphs.currentLap(family))
+                    if (window.isSpan) addAll(graphs.spanLaps(window))
+                }.filter { it > 0 }.distinct()
+                graphs.sync(family, window.seconds.toDouble(), laps)
+            }
+            graphs.syncLive(families, window.seconds.toDouble(), window.isLap)
+            delay(BACKFILL_TICK_MS)
+        }
+    }
+
+    val colors = MaterialTheme.colorScheme
+    val typography = MaterialTheme.typography
+    val density = LocalDensity.current
+    val paints = remember(density, typography) {
+        with(density) {
+            TablePaints(typography.bodyMedium.fontSize.toPx(), typography.labelSmall.fontSize.toPx(), typography.titleMedium.fontSize.toPx())
+        }
+    }
+    val tableColors = TableColors(colors.onSurface, colors.onSurfaceVariant, colors.outlineVariant.copy(alpha = 0.5f))
+    var windowPicker by remember { mutableStateOf(false) }
+
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(top = 4.dp)) {
+            // The charts' header row: what the table lists, then its window.
+            Row(
+                Modifier.fillMaxWidth().height(HEADER_HEIGHT_DP.dp).padding(horizontal = HEADER_INSET_DP.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    charts.joinToString(" · ") { it.column },
+                    Modifier.weight(1f, fill = false),
+                    style = typography.labelMedium,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val lap = if (window == GraphWindow.SELECTED) graphs.comparisonLap(lead, window, tableId) else 0
+                WindowPill(
+                    windowPillText(window, narrow = false, referenceLap = lap),
+                    emphasised = tableId in graphs.windowOverrides ||
+                        (window == GraphWindow.SELECTED && tableId in graphs.referenceLaps),
+                    description = "Table window",
+                    onClick = { windowPicker = true },
+                )
+            }
+            HorizontalDivider(color = tableColors.line)
+            Spacer(
+                Modifier
+                    .fillMaxWidth()
+                    .height(TABLE_HEADER_DP.dp)
+                    .graphicsLayer()
+                    .drawBehind { drawTableHeader(state.live, charts, columns, shown, window, paints, tableColors) },
+            )
+            HorizontalDivider(color = tableColors.line)
+            Spacer(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clipToBounds()
+                    .scrollable(scroll, Orientation.Vertical)
+                    .graphicsLayer()
+                    .drawBehind { drawTableRows(state, charts, columns, shown, window, paints, tableColors) },
+            )
+        }
+        if (!state.pinned) {
+            FilledTonalButton(onClick = state::latest, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp)) {
+                Icon(painterResource(R.drawable.ic_arrow_down), contentDescription = null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Latest")
+            }
+        }
+    }
+
+    if (windowPicker) {
+        GraphWindowSheet(
+            title = "Table window",
+            selected = window,
+            options = GraphWindow.entries.filter(graphs::available),
+            onSelect = {
+                graphs.selectChartWindow(tableId, it)
+                windowPicker = false
+            },
+            onDismiss = { windowPicker = false },
+            laps = store.playbackCatalog,
+            referenceLap = graphs.comparisonLap(lead, GraphWindow.SELECTED, tableId),
+            onReferenceLap = { lap -> graphs.selectReferenceLap(tableId, lap) },
         )
     }
 }

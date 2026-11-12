@@ -245,6 +245,9 @@ internal data class AnalysisConfig(
     val mapCurrentColor: Int = DEFAULT_MAP_CURRENT_COLOR,
     val mapComparisonColor: Int = DEFAULT_MAP_COMPARISON_COLOR,
     val series: List<AnalysisSeries> = DEFAULT_SERIES,
+    /** The Map view's layer, and how a per-lap layer shows the two laps. */
+    val mapLayer: MapLayer = MapLayer.NONE,
+    val mapLapView: MapLapView = MapLapView.CURRENT,
 ) {
     val deltaSeries: AnalysisSeries? get() = series.firstOrNull { it.metricId == AnalysisCatalog.DELTA_ID }
 
@@ -260,6 +263,8 @@ internal data class AnalysisConfig(
         .put("lapBLabel", lapBLabel)
         .put("mapCurrentColor", hexColor(mapCurrentColor))
         .put("mapComparisonColor", hexColor(mapComparisonColor))
+        .put("mapLayer", mapLayer.id)
+        .put("mapLapView", mapLapView.id)
         .put("series", JSONArray().apply {
             series.forEach { item ->
                 put(JSONObject().apply {
@@ -344,7 +349,13 @@ internal data class AnalysisConfig(
                     AnalysisSeries(id, color, visible = visible, showYAxis = showYAxis)
                 }
             }
-            if (items == null) return AnalysisConfig().copy(view = readView(root))
+            if (items == null) {
+                return AnalysisConfig().copy(
+                    view = readView(root),
+                    mapLayer = MapLayer.fromId(root.optString("mapLayer")),
+                    mapLapView = MapLapView.fromId(root.optString("mapLapView")),
+                )
+            }
             if (AnalysisCatalog.DELTA_ID !in seen) series += DEFAULT_SERIES.last()
             fun label(key: String) = root.optString(key).take(40)
             return AnalysisConfig(
@@ -359,6 +370,8 @@ internal data class AnalysisConfig(
                 mapCurrentColor = parseColor(root.optString("mapCurrentColor")) ?: DEFAULT_MAP_CURRENT_COLOR,
                 mapComparisonColor = parseColor(root.optString("mapComparisonColor")) ?: DEFAULT_MAP_COMPARISON_COLOR,
                 series = series,
+                mapLayer = MapLayer.fromId(root.optString("mapLayer")),
+                mapLapView = MapLapView.fromId(root.optString("mapLapView")),
             )
         }
 

@@ -54,6 +54,9 @@ internal fun SettingsScreen(
     onDefaultDirectory: () -> Unit,
     onForgetDesktop: () -> Unit,
     onLicenses: () -> Unit,
+    /** Which Charts tabs show as tables, in a few words. */
+    dataTables: String,
+    onDataTables: () -> Unit,
 ) {
     val context = LocalContext.current
     val version = remember(context) {
@@ -78,6 +81,15 @@ internal fun SettingsScreen(
                     supporting = if (wheel) "Landscape hides the bars until you tap" else "Landscape keeps the bars on screen",
                     checked = wheel,
                     onCheckedChange = onWheelDisplay,
+                )
+            }
+        }
+        item {
+            SettingsGroup("Charts") {
+                LinkRow(
+                    title = "Data tables",
+                    supporting = dataTables,
+                    onClick = onDataTables,
                 )
             }
         }
@@ -226,7 +238,7 @@ private fun LinkRow(title: String, supporting: String, onClick: () -> Unit) {
 
 /** An action that happens at once, named in the primary or error colour. */
 @Composable
-private fun ActionRow(title: String, onClick: () -> Unit, destructive: Boolean = false) {
+internal fun ActionRow(title: String, onClick: () -> Unit, destructive: Boolean = false) {
     ListItem(
         headlineContent = {
             Text(

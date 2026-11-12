@@ -1,6 +1,7 @@
 package com.nogoat.tracknrace.pages
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,7 +22,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -46,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nogoat.tracknrace.DriverLapHistory
 import com.nogoat.tracknrace.TimingCarEntry
 import com.nogoat.tracknrace.TimingDriver
 import com.nogoat.tracknrace.TimingTowerState
@@ -86,7 +90,13 @@ internal fun TimingScreen(
     labels: Map<String, String>,
     onRequestParticipants: () -> Unit,
     active: Boolean = true,
+    /** The laps the Driver laps sheet last received, and how to ask for a car's. */
+    lapHistory: () -> DriverLapHistory? = { null },
+    fastestLapCar: () -> Int? = { null },
+    onRequestLapHistory: (Int) -> Unit = {},
 ) {
+    // The car whose laps sheet is open, -1 for none: a tapped row opens it.
+    var openCar by rememberSaveable { mutableIntStateOf(-1) }
     // Timing rows arrive several times a second and nearly every row's gap
     // changes each time. The newest state is shown as it arrives, at most once
     // a frame (snapshot changes are applied per frame). An outgoing page stops
@@ -100,7 +110,18 @@ internal fun TimingScreen(
             value = it
         }
     }
-    TimingTower(shown, rows, labels, onRequestParticipants, active)
+    TimingTower(shown, rows, labels, onRequestParticipants, active, onOpen = { openCar = it })
+    if (openCar >= 0 && active) {
+        DriverLapsSheet(
+            carIndex = openCar,
+            tower = latest,
+            history = lapHistory,
+            fastestLapCar = fastestLapCar,
+            labels = labels,
+            onRequest = onRequestLapHistory,
+            onDismiss = { openCar = -1 },
+        )
+    }
 }
 
 /** One car's row values, each a state written only when it changes. */
@@ -140,6 +161,7 @@ private fun TimingTower(
     labels: Map<String, String>,
     onRequestParticipants: () -> Unit,
     active: Boolean,
+    onOpen: (Int) -> Unit,
 ) {
     // The list holds only the running order: it recomposes when a car moves
     // up or down, not when a car's lap or tyre changes. Each row reads its own
@@ -201,6 +223,7 @@ private fun TimingTower(
                     labels = labels,
                     isPlayer = carIndex == playerIndex,
                     fastestLastLap = fastestLastLap,
+                    onOpen = onOpen,
                 )
             }
         }
@@ -221,6 +244,7 @@ private fun TimingItem(
     labels: Map<String, String>,
     isPlayer: Boolean,
     fastestLastLap: Int,
+    onOpen: (Int) -> Unit,
 ) {
     val driver = row.driver
     val tyre = row.tyre
@@ -230,7 +254,14 @@ private fun TimingItem(
     // The player's row is tinted across the full width.
     val background = if (isPlayer) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f) else Color.Transparent
     // Its own drawing list: another row changing does not re-record this one.
-    Column(Modifier.fillMaxWidth().graphicsLayer().background(background)) {
+    // A tap opens the car's laps, as clicking a tower row does on the desktop.
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .graphicsLayer()
+            .background(background)
+            .clickable(onClickLabel = "Show laps") { onOpen(carIndex) },
+    ) {
         if (wide) {
             TimingTableRow(car = shown, gap = gap, driver = driver, tyre = tyre, labels = labels, isPlayer = isPlayer, fastest = fastest)
         } else {
@@ -572,7 +603,7 @@ private fun tableStatus(car: TimingCarEntry): String = buildList {
     if (car.stopGoPenalties > 0) add("Stop-go")
 }.joinToString(" · ")
 
-private fun compoundText(tyre: TimingTyreStatus, labels: Map<String, String>): String =
+internal fun compoundText(tyre: TimingTyreStatus, labels: Map<String, String>): String =
     labels["tyre.actual.${tyre.actualCompound}"] ?: compoundLabel(tyre.actualCompound)
 
 private fun compoundLabel(compound: Int) = when (compound) {
@@ -585,7 +616,7 @@ private fun compoundLabel(compound: Int) = when (compound) {
  * surface, and the soft's red is lifted on a dark one so small text stays legible.
  */
 @Composable
-private fun tyreTextColor(visualCompound: Int): Color {
+internal fun tyreTextColor(visualCompound: Int): Color {
     val light = MaterialTheme.colorScheme.surface.luminance() >= 0.5f
     return when {
         visualCompound == 18 && light -> Color.Black
@@ -601,7 +632,7 @@ private fun compoundColor(compound: Int) = when (compound) {
 
 /** The fastest-lap purple, darkened on a light surface. */
 @Composable
-private fun fastestLapColor(): Color =
+internal fun fastestLapColor(): Color =
     if (MaterialTheme.colorScheme.surface.luminance() >= 0.5f) Color(0xff6a3fb5) else Color(0xffc5b3f0)
 
 private fun parseColor(value: String?): Color = try {

@@ -7,6 +7,7 @@ internal object DataRow {
     const val DAMAGE = 1 shl 3
     const val LAP = 1 shl 4
     const val SESSION = 1 shl 5
+    const val RACE_EVENT = 1 shl 6
     const val TIMING = 1 shl 7
     const val PARTICIPANTS = 1 shl 8
     const val ALL_STATUS = 1 shl 9
@@ -63,8 +64,11 @@ internal enum class DataConsumer(
     /** Roster names: the app bar's selected driver, timing rows. */
     DRIVER_ROSTER(DataRow.PARTICIPANTS),
 
-    /** Session type, lap count and track. */
+    /** Session type, lap count and track; on the Session tab also weather, forecast, zones and pit facts. */
     SESSION_INFO(DataRow.SESSION),
+
+    /** Race control events (flags, penalties, fastest laps, overtakes) for the Session tab. */
+    RACE_EVENTS(DataRow.RACE_EVENT),
 
     /** Speed, gear and the RPM behind the shift lights. */
     DRIVING_INPUTS(

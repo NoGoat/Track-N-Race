@@ -46,6 +46,7 @@ internal class AnalysisController(
     private val driverLapsRequester: (Long, Int) -> Boolean,
     private val driverLapsSupported: () -> Boolean,
     private val brakingRequester: (BrakingZonesRequest) -> Boolean,
+    private val mapLayerRequester: (AnalysisMapRequest) -> Boolean,
 ) {
     private data class PendingLap(
         val requestId: Long,
@@ -60,6 +61,16 @@ internal class AnalysisController(
 
     /** The laps braking zones are found for; a comparison lap of 0 is none. */
     private data class BrakingKey(val current: AnalysisLapKey, val comparison: AnalysisLapKey)
+
+    /** A painted map layer: its laps, the theme and the lap colours it was painted in. */
+    private data class MapLayerKey(
+        val layer: MapLayer,
+        val current: AnalysisLapKey,
+        val comparison: AnalysisLapKey,
+        val dark: Boolean,
+        val currentColor: Int,
+        val comparisonColor: Int,
+    )
 
     private val preferences = RecordingStorage.preferences(context)
     private val main = Handler(Looper.getMainLooper())
@@ -78,6 +89,9 @@ internal class AnalysisController(
     private var brakingKey: BrakingKey? = null
     private var brakingRequestId = 0L
     private var brakingSentAt = 0L
+    private var mapLayerKey: MapLayerKey? = null
+    private var mapLayerRequestId = 0L
+    private var mapLayerSentAt = 0L
 
     var config by mutableStateOf(AnalysisConfig.fromJson(preferences.getString(PREF_ANALYSIS_CONFIG, null)))
         private set
@@ -119,6 +133,18 @@ internal class AnalysisController(
 
     /** True when the source cannot find braking zones (an older desktop build). */
     var brakingUnavailable by mutableStateOf(false)
+        private set
+
+    /** The map layer last asked for with [syncMapLayer], painted per lap, once it arrives. */
+    var mapLayerPaint by mutableStateOf<MapLayerPaint?>(null)
+        private set
+
+    /** True while a map layer is asked for and not yet answered. */
+    var mapLayerLoading by mutableStateOf(false)
+        private set
+
+    /** True when the source cannot paint map layers (an older desktop build). */
+    var mapLayerUnavailable by mutableStateOf(false)
         private set
 
     /** The chart settings sheet, opened from the app bar. */
@@ -295,6 +321,101 @@ internal class AnalysisController(
         }
     }
 
+    private fun mapLayerKeyOf(
+        layer: MapLayer,
+        current: AnalysisLapKey,
+        comparison: AnalysisLapKey,
+        dark: Boolean,
+        currentColor: Int,
+        comparisonColor: Int,
+    ) = MapLayerKey(
+        layer,
+        current,
+        if (comparison.lap > 0) comparison else AnalysisLapKey(-1, 0),
+        dark,
+        currentColor and 0xffffff,
+        comparisonColor and 0xffffff,
+    )
+
+    /** The fetched map layer, if it is the one of these laps, theme and colours. */
+    fun mapLayerFor(
+        layer: MapLayer,
+        current: AnalysisLapKey,
+        comparison: AnalysisLapKey,
+        dark: Boolean,
+        currentColor: Int,
+        comparisonColor: Int,
+    ): MapLayerPaint? = mapLayerPaint?.takeIf {
+        mapLayerKey == mapLayerKeyOf(layer, current, comparison, dark, currentColor, comparisonColor)
+    }
+
+    /**
+     * Requests [layer] painted for [current], and for [comparison] when it is
+     * a lap, in the given theme and lap colours, while the layer needs libtnrp.
+     * Idempotent, and called on a slow tick so a lost reply is asked for again.
+     */
+    fun syncMapLayer(
+        catalog: PlaybackCatalog,
+        layer: MapLayer,
+        current: AnalysisLapKey,
+        comparison: AnalysisLapKey,
+        dark: Boolean,
+        currentColor: Int,
+        comparisonColor: Int,
+    ) {
+        resetIfNewCatalogue(catalog)
+        val key = if (layer.native != null && catalog.active && current.lap > 0) {
+            mapLayerKeyOf(layer, current, comparison, dark, currentColor, comparisonColor)
+        } else {
+            null
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (key == mapLayerKey) {
+            // Asked again only once a sent request has gone unanswered for a while.
+            if (key == null || mapLayerPaint != null) return
+            if (mapLayerRequestId != 0L && now - mapLayerSentAt < LAP_REQUEST_RETRY_MS) return
+        } else {
+            mapLayerPaint = null
+            mapLayerKey = key
+        }
+        mapLayerRequestId = 0L
+        mapLayerLoading = false
+        if (key == null) return
+        val request = AnalysisMapRequest(
+            requestId = requestIds.incrementAndGet(),
+            layer = key.layer.native ?: return,
+            currentLap = key.current.lap,
+            comparisonLap = key.comparison.lap,
+            currentDriver = key.current.driver,
+            comparisonDriver = key.comparison.driver,
+            dark = key.dark,
+            currentColor = hexColor(key.currentColor),
+            comparisonColor = hexColor(key.comparisonColor),
+        )
+        if (mapLayerRequester(request)) {
+            mapLayerRequestId = request.requestId
+            mapLayerSentAt = now
+            mapLayerLoading = true
+            mapLayerUnavailable = false
+        } else {
+            mapLayerUnavailable = true
+        }
+    }
+
+    /** Socket or lap-reader thread: an `analysis_map` reply. */
+    fun onAnalysisMap(row: JSONObject) {
+        val requestId = row.optLong("requestId")
+        val paint = MapLayerPaint.parse(row.optJSONObject("data"))
+        main.post {
+            if (requestId != mapLayerRequestId) return@post
+            val layer = mapLayerKey?.layer ?: return@post
+            mapLayerRequestId = 0L
+            mapLayerLoading = false
+            // An empty reply (nothing playing, an unreadable lap) shows as an unpainted map.
+            mapLayerPaint = paint ?: MapLayerPaint(layer, null, null, 0.0, 0.0, 0.0, 0.0)
+        }
+    }
+
     /** Socket or lap-reader thread: a `braking_zones` reply. */
     fun onBrakingZones(row: JSONObject) {
         val requestId = row.optLong("requestId")
@@ -404,6 +525,10 @@ internal class AnalysisController(
         brakingRequestId = 0L
         brakingLoading = false
         brakingZones = null
+        mapLayerKey = null
+        mapLayerRequestId = 0L
+        mapLayerLoading = false
+        mapLayerPaint = null
         // Chosen laps belonged to the previous recording or driver.
         compareLap = 0
         compareDriver = -1

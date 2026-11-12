@@ -243,7 +243,15 @@ QString observationText(const tnrp::BrakingObservation& o, const Labels& labels)
     if (k == "lift_only")
         return QStringLiteral("%1 takes it on a lift where %2 brakes").arg(lap, other);
     if (k == "tighter_track_limits")
-        return QStringLiteral("%1 takes a %2 m tighter line but breaks track limits").arg(lap).arg(o.value, 0, 'f', 1);
+        return QStringLiteral("%1 runs %2 m further inside at the apex but breaks track limits")
+            .arg(lap).arg(o.value, 0, 'f', 1);
+    if (k == "straighter_line") {
+        const QString line = QStringLiteral("%1 runs a wider arc, %2 m further inside at the apex")
+            .arg(lap).arg(o.value, 0, 'f', 1);
+        if (o.other > 0.0f) return line + QStringLiteral(", and is %1 s quicker").arg(o.other, 0, 'f', 3);
+        if (o.other < 0.0f) return line + QStringLiteral(", but is %1 s slower").arg(-o.other, 0, 'f', 3);
+        return line;
+    }
     if (k == "tighter_helped")
         return QStringLiteral("%1 takes a %2 m tighter line and is %3 s quicker")
             .arg(lap).arg(o.value, 0, 'f', 1).arg(o.other, 0, 'f', 3);
@@ -306,10 +314,10 @@ QString coastText(const tnrp::BrakingPoint& point) {
     return point.coastS > 0 ? QStringLiteral("%1 s · %2 m").arg(point.coastS, 0, 'f', 1).arg(qRound(point.coastM))
                             : QStringLiteral("none");
 }
-// A lap's line against the other's at a corner, named on the tighter lap.
+// A lap's line against the other's at a corner's apex, named on the lap further inside.
 QString lineText(float gapM) {
     return gapM == 0.0f ? QStringLiteral("level")
-        : gapM > 0.0f ? QStringLiteral("%1 m tighter").arg(gapM, 0, 'f', 1) : QStringLiteral("—");
+        : gapM > 0.0f ? QStringLiteral("%1 m inside").arg(gapM, 0, 'f', 1) : QStringLiteral("—");
 }
 QString spinText(const tnrp::BrakingPoint& point) {
     return point.wheelspin ? QStringLiteral("%1% · %2 s").arg(qRound(point.wheelspinPct)).arg(point.wheelspinS, 0, 'f', 1)
@@ -388,7 +396,7 @@ QString brakingCard(int zone, Phase phase, double fromM, double splitM, double t
         rows.push_back({name, opt(current, a ? kph(a->speedKph) : QStringLiteral("—")),
                         opt(comparison, b ? kph(b->speedKph) : QStringLiteral("—")),
                         a && b ? pick(a->speedKph, b->speedKph, true, 0.5) : -1});
-        // Which lap took the tighter line there, when both recorded positions.
+        // Which lap ran further inside at the apex, when both recorded positions.
         if (a && b && a->hasLine && b->hasLine)
             rows.push_back({corners.size() > 1 ? QStringLiteral("Line %1").arg(i + 1) : QStringLiteral("Line"),
                             lineText(a->lineGapM), lineText(b->lineGapM)});
