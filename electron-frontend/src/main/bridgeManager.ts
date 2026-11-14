@@ -335,7 +335,18 @@ interface NativeAddon {
   networkInterfacesJson?(): string
   firewallStatusJson?(port: number, programPath: string): Promise<string>
   firewallAllowProgram?(programPath: string): Promise<string>
+  updateServiceUrl?(): string
+  updateServiceOverridden?(): boolean
+  updateCheckPath?(product: string, os: string, arch: string, format: string, currentVersion: string): string
+  updateEvaluateJson?(response: string, product: string, os: string, arch: string, format: string, currentVersion: string): string
+  updateCompareVersions?(left: string, right: string): number | null
+  updateVerifyFile?(path: string, sha512: string, size: number): Promise<string>
 }
+
+/** The self-update entry points of the addon (tnrp/Updates.h). */
+export type NativeUpdates = Required<Pick<NativeAddon,
+  'updateServiceUrl' | 'updateServiceOverridden' | 'updateCheckPath' | 'updateEvaluateJson' |
+  'updateCompareVersions' | 'updateVerifyFile'>>
 
 let engine: NativeEngine | null = null
 let nextDataRequirementsRequestId = 0
@@ -1366,6 +1377,19 @@ export async function allowThroughFirewall(): Promise<string> {
   } catch (error) {
     console.error('[setup] firewall allow failed:', error)
     return String(error)
+  }
+}
+
+// null when the addon cannot load or predates self-update.
+export function nativeUpdates(): NativeUpdates | null {
+  try {
+    const addon = loadAddon()
+    if (!addon.updateServiceUrl || !addon.updateServiceOverridden || !addon.updateCheckPath ||
+        !addon.updateEvaluateJson || !addon.updateCompareVersions || !addon.updateVerifyFile) return null
+    return addon as NativeUpdates
+  } catch (error) {
+    console.error('[updates] native addon unavailable:', error)
+    return null
   }
 }
 

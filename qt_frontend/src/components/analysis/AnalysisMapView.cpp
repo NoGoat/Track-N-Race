@@ -242,6 +242,13 @@ QString observationText(const tnrp::BrakingObservation& o, const Labels& labels)
         return QStringLiteral("%1 is flat out %2 m sooner than %3").arg(lap).arg(qRound(o.value)).arg(other);
     if (k == "lift_only")
         return QStringLiteral("%1 takes it on a lift where %2 brakes").arg(lap, other);
+    if (k == "flat_out")
+        return QStringLiteral("%1 takes it flat out where %2 %3")
+            .arg(lap, other, o.other > 0.0f ? QStringLiteral("lifts") : QStringLiteral("brakes"));
+    if (k == "no_lift")
+        return QStringLiteral("%1 keeps %2% throttle where %3 %4")
+            .arg(lap).arg(qRound(o.value))
+            .arg(other, o.other > 0.0f ? QStringLiteral("lifts") : QStringLiteral("brakes"));
     if (k == "tighter_track_limits")
         return QStringLiteral("%1 runs %2 m further inside at the apex but breaks track limits")
             .arg(lap).arg(o.value, 0, 'f', 1);
@@ -307,7 +314,11 @@ std::vector<ApexPair> alignCorners(const std::vector<tnrp::CornerApex>& a,
     return rows;
 }
 
+// Where a lap braked, that it only lifted (and where), or took it without either.
 QString brakeAtText(const tnrp::BrakingPoint& point) {
+    if (point.flatOut)
+        return point.partThrottle ? QStringLiteral("no lift · %1%").arg(qRound(point.minThrottle * 100.0f))
+                                  : QStringLiteral("flat out");
     return point.liftOnly ? QStringLiteral("lift ") + metres(point.distanceM) : metres(point.distanceM);
 }
 QString coastText(const tnrp::BrakingPoint& point) {
@@ -347,6 +358,9 @@ QString brakingCard(int zone, Phase phase, double fromM, double splitM, double t
     const bool braking = phase != Phase::Acceleration;
     const bool acceleration = phase != Phase::Braking;
     const bool both = current && comparison;
+    // A corner every lap shown takes without the brake or a lift: no braking,
+    // coasting or exit to compare.
+    const bool cornerOnly = (!current || current->flatOut) && (!comparison || comparison->flatOut);
     double times[2] = {-1, -1};
     if (pair) {
         if (phase == Phase::Braking) { times[0] = pair->currentBrakingS; times[1] = pair->comparisonBrakingS; }
@@ -375,19 +389,22 @@ QString brakingCard(int zone, Phase phase, double fromM, double splitM, double t
     }
     std::vector<Row> rows;
     if (braking) {
-        rows.push_back({QStringLiteral("Brakes at"), opt(current, current ? brakeAtText(*current) : QString()),
+        rows.push_back({cornerOnly ? QStringLiteral("Taken") : QStringLiteral("Brakes at"),
+                        opt(current, current ? brakeAtText(*current) : QString()),
                         opt(comparison, comparison ? brakeAtText(*comparison) : QString()),
                         sameBrake ? pick(current->distanceM, comparison->distanceM, true, 0.5) : -1});
-        rows.push_back({QStringLiteral("Braking"),
-                        opt(current, current ? metresOrDash(current->brakingDistanceM) : QString()),
-                        opt(comparison, comparison ? metresOrDash(comparison->brakingDistanceM) : QString()),
-                        sameBrake && current->brakingDistanceM >= 0 && comparison->brakingDistanceM >= 0
-                            ? pick(current->brakingDistanceM, comparison->brakingDistanceM, false, 0.5) : -1});
+        if (!cornerOnly)
+            rows.push_back({QStringLiteral("Braking"),
+                            opt(current, current ? metresOrDash(current->brakingDistanceM) : QString()),
+                            opt(comparison, comparison ? metresOrDash(comparison->brakingDistanceM) : QString()),
+                            sameBrake && current->brakingDistanceM >= 0 && comparison->brakingDistanceM >= 0
+                                ? pick(current->brakingDistanceM, comparison->brakingDistanceM, false, 0.5) : -1});
         rows.push_back({QStringLiteral("Entry"), opt(current, current ? kph(current->speedKph) : QString()),
                         opt(comparison, comparison ? kph(comparison->speedKph) : QString()),
-                        sameBrake ? pick(current->speedKph, comparison->speedKph, true, 0.5) : -1});
-        rows.push_back({QStringLiteral("Coast"), opt(current, current ? coastText(*current) : QString()),
-                        opt(comparison, comparison ? coastText(*comparison) : QString())});
+                        both && (sameBrake || cornerOnly) ? pick(current->speedKph, comparison->speedKph, true, 0.5) : -1});
+        if (!cornerOnly)
+            rows.push_back({QStringLiteral("Coast"), opt(current, current ? coastText(*current) : QString()),
+                            opt(comparison, comparison ? coastText(*comparison) : QString())});
     }
     for (size_t i = 0; i < corners.size(); ++i) {
         const auto& [a, b] = corners[i];
@@ -410,7 +427,7 @@ QString brakingCard(int zone, Phase phase, double fromM, double splitM, double t
                         pair->currentHarvestKj >= 0 && pair->comparisonHarvestKj >= 0
                             ? pick(pair->currentHarvestKj, pair->comparisonHarvestKj, true, 0.5) : -1});
     }
-    if (acceleration) {
+    if (acceleration && !cornerOnly) {
         rows.push_back({QStringLiteral("Throttle on"),
                         opt(current, current ? metresOrDash(current->throttleOnM) : QString()),
                         opt(comparison, comparison ? metresOrDash(comparison->throttleOnM) : QString()),
@@ -448,9 +465,11 @@ QString brakingCard(int zone, Phase phase, double fromM, double splitM, double t
 
     QString html = QStringLiteral("<div style='white-space:nowrap'>");
     html += QStringLiteral("<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-                           "<td style='color:%1'><small>%2 ZONE %3%4</small></td>"
+                           "<td style='color:%1'><small>%2 %3%4</small></td>"
                            "<td align='right' style='color:%1'><small>&nbsp;&nbsp;%5 – %6</small></td></tr></table>")
-                .arg(muted, phase == Phase::Acceleration ? QStringLiteral("ACCELERATION") : QStringLiteral("BRAKING"))
+                .arg(muted, cornerOnly ? QStringLiteral("CORNER")
+                            : phase == Phase::Acceleration ? QStringLiteral("ACCELERATION ZONE")
+                                                           : QStringLiteral("BRAKING ZONE"))
                 .arg(zone)
                 .arg(corners.size() > 1 ? QStringLiteral(" · %1 CORNERS").arg(corners.size()) : QString())
                 .arg(metres(shownFrom), metres(shownTo));
@@ -524,36 +543,42 @@ QVector<TrackMapWidget::Mark> brakingMarks(const tnrp::AnalysisMapResult* result
         const double quicker = comparisonS - currentS;
         return std::abs(quicker) < kBrakingLevelS ? level : quicker > 0 ? labels.currentColor : labels.comparisonColor;
     };
-    const auto halves = [&](double fromM, double splitM, double toM, const QColor& brakingColor,
+    const auto halves = [&](int row, double fromM, double splitM, double toM, const QColor& brakingColor,
                             const QColor& accelerationColor, int zone, const tnrp::BrakingPoint* a,
                             const tnrp::BrakingPoint* b, const tnrp::BrakingPointPair* pair) {
+        // Clicking either half selects the zone's row in the Braking Zones panel.
+        const auto push = [&](double from, double to, const QColor& color, double opacity, Phase phase) {
+            TrackMapWidget::Mark mark{from / length, to / length, color, opacity,
+                                      brakingCard(zone, phase, fromM, splitM, toM, a, b, pair, labels, palette)};
+            mark.clickId = row;
+            marks.push_back(mark);
+        };
         if (splitM < 0) {
-            marks.push_back({fromM / length, toM / length, accelerationColor, 1.0,
-                             brakingCard(zone, Phase::Whole, fromM, splitM, toM, a, b, pair, labels, palette)});
+            push(fromM, toM, accelerationColor, 1.0, Phase::Whole);
             return;
         }
-        marks.push_back({fromM / length, splitM / length, brakingColor, kBrakingHalfOpacity,
-                         brakingCard(zone, Phase::Braking, fromM, splitM, toM, a, b, pair, labels, palette)});
-        marks.push_back({splitM / length, toM / length, accelerationColor, 1.0,
-                         brakingCard(zone, Phase::Acceleration, fromM, splitM, toM, a, b, pair, labels, palette)});
+        push(fromM, splitM, brakingColor, kBrakingHalfOpacity, Phase::Braking);
+        push(splitM, toM, accelerationColor, 1.0, Phase::Acceleration);
     };
     if (braking.comparison.empty()) {
         for (size_t i = 0; i < braking.current.size(); ++i) {
             const tnrp::BrakingPoint& point = braking.current[i];
             const double toM = std::max(point.distanceM, point.endM);
-            const double split = point.minSpeedM - point.distanceM >= kPhaseMinM && toM - point.minSpeedM >= kPhaseMinM
+            const double split = !point.flatOut && point.minSpeedM - point.distanceM >= kPhaseMinM &&
+                                         toM - point.minSpeedM >= kPhaseMinM
                 ? point.minSpeedM : -1.0;
-            halves(point.distanceM, split, toM, labels.currentColor, labels.currentColor, int(i) + 1, &point,
+            halves(int(i), point.distanceM, split, toM, labels.currentColor, labels.currentColor, int(i) + 1, &point,
                    nullptr, nullptr);
         }
         return marks;
     }
-    for (const tnrp::BrakingPointPair& pair : braking.pairs) {
+    for (size_t row = 0; row < braking.pairs.size(); ++row) {
+        const tnrp::BrakingPointPair& pair = braking.pairs[row];
         const tnrp::BrakingPoint* a = pair.current >= 0 && size_t(pair.current) < braking.current.size()
             ? &braking.current[size_t(pair.current)] : nullptr;
         const tnrp::BrakingPoint* b = pair.comparison >= 0 && size_t(pair.comparison) < braking.comparison.size()
             ? &braking.comparison[size_t(pair.comparison)] : nullptr;
-        halves(pair.fromM, pair.splitM, pair.toM, winner(pair.currentBrakingS, pair.comparisonBrakingS),
+        halves(int(row), pair.fromM, pair.splitM, pair.toM, winner(pair.currentBrakingS, pair.comparisonBrakingS),
                pair.splitM < 0 ? winner(pair.currentTimeS, pair.comparisonTimeS)
                                : winner(pair.currentAccelerationS, pair.comparisonAccelerationS),
                pair.current + 1, a, b, &pair);
@@ -651,6 +676,7 @@ AnalysisMapView::AnalysisMapView(QWidget* parent) : QWidget(parent) {
         (*map)->setDark(dark());
         (*map)->setViewEnabled(true);
         (*map)->installEventFilter(this);
+        connect(*map, &TrackMapWidget::markClicked, this, &AnalysisMapView::brakingZoneClicked);
     }
     for (auto [from, to] : {std::pair{map_, comparisonMap_}, std::pair{comparisonMap_, map_}})
         connect(from, &TrackMapWidget::viewChanged, this, [this, other = to](const TrackMapWidget::View& view) {

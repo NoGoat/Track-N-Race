@@ -79,6 +79,8 @@ public:
 signals:
     void cursorElapsedChanged(double seconds);
     void zoomChanged(double zoom);
+    // A braking zone was clicked on the map: its row, as brakingZoneCard counts them.
+    void brakingZoneClicked(int row);
 
 protected:
     void hideEvent(QHideEvent* event) override;

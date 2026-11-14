@@ -253,7 +253,7 @@ internal fun BrakingZoneDrawer(
             }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    verdict?.first ?: "Zone ${zone.number}",
+                    verdict?.first ?: "${zoneName(zone)} ${zone.number}",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = verdict?.second ?: colors.onSurface,
@@ -261,7 +261,7 @@ internal fun BrakingZoneDrawer(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "Zone ${zone.number} · ${formatMetres(zone.fromM)} – ${formatMetres(zone.toM)}".uppercase(Locale.ROOT),
+                    "${zoneName(zone)} ${zone.number} · ${formatMetres(zone.fromM)} – ${formatMetres(zone.toM)}".uppercase(Locale.ROOT),
                     style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.6.sp, fontFeatureSettings = "tnum"),
                     color = colors.onSurfaceVariant,
                     maxLines = 1,
@@ -369,15 +369,18 @@ private fun headToHead(zone: BrakingZone): List<HeadToHeadRow> {
     // Braking points compare only when both laps first brake for the same
     // corner; one lap can take it on a lift.
     val sameBrake = both && (pair?.sameBrakingPoint ?: true)
+    // A corner every lap shown takes without the brake or a lift: no braking,
+    // coasting or exit to compare.
+    val flatCorner = cornerOnly(zone)
     fun pick(a: Double, b: Double, higher: Boolean, margin: Double = 0.0): Int? =
         if (abs(a - b) <= margin) null else if ((a > b) == higher) 0 else 1
     fun known(value: Double) = value >= 0
     val rows = ArrayList<HeadToHeadRow>()
     rows += HeadToHeadRow(
-        "Brakes at", current?.let(::brakeAtText), comparison?.let(::brakeAtText),
+        if (flatCorner) "Taken" else "Brakes at", current?.let(::brakeAtText), comparison?.let(::brakeAtText),
         if (sameBrake) pick(current!!.distanceM, comparison!!.distanceM, true, 0.5) else null,
     )
-    rows += HeadToHeadRow(
+    if (!flatCorner) rows += HeadToHeadRow(
         "Braking", current?.let { metresText(it.brakingDistanceM) }, comparison?.let { metresText(it.brakingDistanceM) },
         if (sameBrake && current!!.brakingDistanceM >= 0 && comparison!!.brakingDistanceM >= 0) {
             pick(current.brakingDistanceM, comparison.brakingDistanceM, false, 0.5)
@@ -387,9 +390,9 @@ private fun headToHead(zone: BrakingZone): List<HeadToHeadRow> {
     )
     rows += HeadToHeadRow(
         "Entry", current?.let { "${it.speedKph.roundToInt()} km/h" }, comparison?.let { "${it.speedKph.roundToInt()} km/h" },
-        if (sameBrake) pick(current!!.speedKph, comparison!!.speedKph, true, 0.5) else null,
+        if (both && (sameBrake || flatCorner)) pick(current!!.speedKph, comparison!!.speedKph, true, 0.5) else null,
     )
-    rows += HeadToHeadRow("Coast", current?.let(::coastText), comparison?.let(::coastText), null)
+    if (!flatCorner) rows += HeadToHeadRow("Coast", current?.let(::coastText), comparison?.let(::coastText), null)
     // One apex row per corner, flat-out ones included, each with which lap
     // ran further inside at the apex when both recorded their positions.
     val corners = alignCorners(current?.apexes.orEmpty(), comparison?.apexes.orEmpty())
@@ -419,6 +422,25 @@ private fun headToHead(zone: BrakingZone): List<HeadToHeadRow> {
     // Corner exit. Back on the throttle earlier wins unless it spins the
     // rears, which hands it to the other lap; flat out sooner only counts
     // without wheelspin.
+    if (!flatCorner) rows += exitRows(current, comparison, both, ::pick)
+    val timed = pair != null && pair.currentTimeS >= 0 && pair.comparisonTimeS >= 0
+    if (timed) {
+        rows += HeadToHeadRow(
+            "Time", "${seconds(pair!!.currentTimeS)} s", "${seconds(pair.comparisonTimeS)} s",
+            pick(pair.currentTimeS, pair.comparisonTimeS, false, BRAKING_LEVEL_S / 2),
+        )
+    }
+    return rows.filter { it.current != null || it.comparison != null }
+}
+
+/** The corner exit rows: throttle on, full throttle, 0 → 100% and wheelspin. */
+private fun exitRows(
+    current: BrakingPoint?,
+    comparison: BrakingPoint?,
+    both: Boolean,
+    pick: (Double, Double, Boolean, Double) -> Int?,
+): List<HeadToHeadRow> {
+    val rows = ArrayList<HeadToHeadRow>()
     rows += HeadToHeadRow(
         "Throttle on", current?.let { metresText(it.throttleOnM) }, comparison?.let { metresText(it.throttleOnM) },
         if (both) exitBetter(current!!.throttleOnM, comparison!!.throttleOnM, current.wheelspin, comparison.wheelspin) else null,
@@ -445,15 +467,16 @@ private fun headToHead(zone: BrakingZone): List<HeadToHeadRow> {
             null
         },
     )
-    val timed = pair != null && pair.currentTimeS >= 0 && pair.comparisonTimeS >= 0
-    if (timed) {
-        rows += HeadToHeadRow(
-            "Time", "${seconds(pair!!.currentTimeS)} s", "${seconds(pair.comparisonTimeS)} s",
-            pick(pair.currentTimeS, pair.comparisonTimeS, false, BRAKING_LEVEL_S / 2),
-        )
-    }
-    return rows.filter { it.current != null || it.comparison != null }
+    return rows
 }
+
+/** A corner every lap shown takes without the brake or a lift. */
+private fun cornerOnly(zone: BrakingZone): Boolean {
+    val points = listOfNotNull(zone.current, zone.comparison)
+    return points.isNotEmpty() && points.all { it.flatOut }
+}
+
+private fun zoneName(zone: BrakingZone) = if (cornerOnly(zone)) "Corner" else "Zone"
 
 // Apexes this close on two laps are the same corner.
 private const val CORNER_MATCH_M = 80.0
@@ -515,6 +538,8 @@ private fun observationText(observation: BrakingObservation, laps: BrakingLaps):
         "earlier_throttle" -> "$lap is back on throttle ${value.roundToInt()} m earlier than $other"
         "faster_to_full" -> "$lap is flat out ${value.roundToInt()} m sooner than $other"
         "lift_only" -> "$lap takes it on a lift where $other brakes"
+        "flat_out" -> "$lap takes it flat out where $other ${if (second > 0) "lifts" else "brakes"}"
+        "no_lift" -> "$lap keeps ${value.roundToInt()}% throttle where $other ${if (second > 0) "lifts" else "brakes"}"
         "tighter_track_limits" -> "$lap runs ${tenth(value)} m further inside at the apex but breaks track limits"
         "straighter_line" -> "$lap runs a wider arc, ${tenth(value)} m further inside at the apex" + when {
             second > 0 -> ", and is ${seconds(second)} s quicker"
@@ -537,9 +562,12 @@ internal fun formatMetres(metres: Double): String = String.format(Locale.US, "%,
 
 private fun seconds(value: Double) = String.format(Locale.US, "%.3f", value)
 
-/** Where a lap braked, or that it only lifted (and where). */
-private fun brakeAtText(point: BrakingPoint) =
-    if (point.liftOnly) "lift ${formatMetres(point.distanceM)}" else formatMetres(point.distanceM)
+/** Where a lap braked, that it only lifted (and where), or took it without either. */
+private fun brakeAtText(point: BrakingPoint) = when {
+    point.flatOut -> if (point.partThrottle) "no lift · ${(point.minThrottle * 100).roundToInt()}%" else "flat out"
+    point.liftOnly -> "lift ${formatMetres(point.distanceM)}"
+    else -> formatMetres(point.distanceM)
+}
 
 private fun metresText(metres: Double) = if (metres < 0) "—" else formatMetres(metres)
 

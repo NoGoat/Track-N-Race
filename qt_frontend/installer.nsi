@@ -2,6 +2,8 @@ Unicode true
 SetCompressor /SOLID lzma
 
 !include "MUI2.nsh"
+!include "FileFunc.nsh"
+!include "LogicLib.nsh"
 
 !ifndef SOURCE_DIR
     !error "SOURCE_DIR is required"
@@ -51,6 +53,45 @@ ShowUninstDetails nevershow
 
 !insertmacro MUI_LANGUAGE "English"
 
+; The app's self-update runs this setup with /S /UPDATE: wait for the app to
+; exit, install over it silently, then start it again.
+Var IsUpdate
+
+Function .onInit
+    StrCpy $IsUpdate 0
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "/UPDATE" $R1
+    ${IfNot} ${Errors}
+        StrCpy $IsUpdate 1
+        Call WaitForAppExit
+    ${EndIf}
+FunctionEnd
+
+; The running executable cannot be opened for writing; poll for up to 30 s.
+Function WaitForAppExit
+    StrCpy $R2 0
+    ${DoWhile} ${FileExists} "$INSTDIR\${APP_EXE}"
+        ClearErrors
+        FileOpen $R3 "$INSTDIR\${APP_EXE}" a
+        ${IfNot} ${Errors}
+            FileClose $R3
+            ${Break}
+        ${EndIf}
+        IntOp $R2 $R2 + 1
+        ${If} $R2 >= 60
+            ${Break}
+        ${EndIf}
+        Sleep 500
+    ${Loop}
+FunctionEnd
+
+Function .onInstSuccess
+    ${If} $IsUpdate == 1
+        Exec '"$INSTDIR\${APP_EXE}"'
+    ${EndIf}
+FunctionEnd
+
 Section "Install ${PRODUCT_NAME}"
     SectionIn RO
     SetOutPath "$INSTDIR"
@@ -59,7 +100,11 @@ Section "Install ${PRODUCT_NAME}"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
     CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\${APP_EXE}"
-    CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${APP_EXE}"
+    ; An update keeps the user's choice: no desktop shortcut if they removed it.
+    ${If} $IsUpdate != 1
+    ${OrIf} ${FileExists} "$DESKTOP\${PRODUCT_NAME}.lnk"
+        CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${APP_EXE}"
+    ${EndIf}
 
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
@@ -67,6 +112,9 @@ Section "Install ${PRODUCT_NAME}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "Track N Race"
+!ifdef APP_VERSION
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${APP_VERSION}"
+!endif
     WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1
     WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 1
 

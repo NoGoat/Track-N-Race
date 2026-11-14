@@ -1504,6 +1504,12 @@ export default function AnalyzeScreen({
   const brakingResult = useAnalysisMap(
     (mapActive && config.brakingPoints) || zonesWanted ? 'braking' : null,
     mapCurrentDriver, mapCurrentLap, mapComparisonDriver, mapComparisonLap, mapFilesKey)
+  // A zone clicked on the map, for the Braking Zones panel to select when it
+  // is open; seq tells a repeat click on the same zone from the last one.
+  const [zoneRequest, setZoneRequest] = useState<{ row: number; seq: number } | null>(null)
+  const requestZone = useCallback((row: number) => {
+    setZoneRequest(previous => ({ row, seq: (previous?.seq ?? 0) + 1 }))
+  }, [])
   // A chosen zone puts the cursors at its braking point, without changing the view.
   const inspectZone = useCallback((distanceM: number) => {
     const progress = buildLapProgressMap(current)
@@ -2238,6 +2244,7 @@ export default function AnalyzeScreen({
               mapColoring={config.mapColoring}
               mapResult={mapResult}
               brakingResult={config.brakingPoints ? brakingResult : null}
+              onBrakingZoneClick={zonesOpen && !mismatchedFiles ? requestZone : undefined}
               showInputPanel={config.inputPanel}
               comparisonSelected={comparisonSelected}
               sectorColors={sectorColors}
@@ -2282,6 +2289,7 @@ export default function AnalyzeScreen({
             comparisonLabel={comparisonLabel}
             comparisonColor={config.mapComparisonColor}
             onZoneActivated={inspectZone}
+            selectRequest={zoneRequest}
             listRatio={config.zonesListRatio}
             onListRatioCommit={saveZonesListRatio}
           />

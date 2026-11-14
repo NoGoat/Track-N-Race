@@ -178,6 +178,11 @@ struct DriverInputsMap {
 //   earlier_throttle       value = m earlier on the throttle, without wheelspin
 //   faster_to_full         value = m earlier to full throttle, without wheelspin
 //   lift_only              `lap` takes the zone on a lift where the other lap brakes
+//   flat_out               `lap` takes the corner flat out; other = 0 where the
+//                          other lap brakes, 1 where it lifts
+//   no_lift                `lap` takes the corner without braking or lifting, on
+//                          part throttle; value = its lowest throttle %, other
+//                          as for flat_out
 // Where the laps' lines differ at a corner, `lap` is the one further inside at
 // the apex and `value` is by how many metres. Times are through that corner,
 // from the earlier turn-in to the later exit, or through the zone when it is
@@ -270,12 +275,22 @@ struct CornerApex {
 
 // One braking zone of one lap: from a braking point to full throttle, or to
 // the next braking point when the car never gets back to full throttle first.
+// Every corner of the lap is in a zone: one the lap neither brakes nor lifts
+// for is a zone of its own (flatOut).
 struct BrakingPoint {
     float endM{};           // lap distance where the zone ends
-    // Taken on a lift, without the brake: matched to a zone the other lap
-    // brakes for. distanceM is then where the throttle came off, and the
-    // coasting is the whole lift.
+    // Taken on a lift, without the brake: for a zone the other lap brakes
+    // for, or a corner the lap lifts for. distanceM is then where the throttle
+    // came off, and the coasting is the whole lift.
     bool liftOnly{};
+    // A corner taken without the brake or a lift: distanceM is its turn-in
+    // (its apex when that is unknown), endM its exit, apexes the corner alone,
+    // and there are no coasting, braking or exit figures. partThrottle when
+    // the throttle was not flat out all through it; minThrottle is its lowest
+    // throttle there (0-1).
+    bool flatOut{};
+    bool partThrottle{};
+    float minThrottle{-1.0f};
     float distanceM{};      // lap distance where the brake goes on
     float speedKph{};       // speed there
     // Coasting into it: off both pedals right before braking. Zero when the
@@ -338,8 +353,8 @@ struct SpeedMap {
     // The lap's slowest and fastest samples (km/h).
     float minKph{};
     float maxKph{};
-    // Each corner in the lap's braking zones (findBrakingPoints), with its
-    // slowest speed, in lap order.
+    // Each corner of the lap, flat-out ones included, with its slowest speed,
+    // in lap order.
     std::vector<CornerApex> apexes;
 };
 
@@ -418,10 +433,13 @@ std::vector<BrakingPoint> findBrakingPoints(const AnalysisLapProgress& lap,
                                             const std::vector<InputSample>& samples,
                                             const TrackCorners* corners = nullptr);
 
-// Each lap's braking zones, in lap order. With a comparison lap, braking
-// points pair one to one: nearest within kBrakingPairM, then zones that
-// overlap; a zone only one lap brakes for pairs with the other lap's lift.
-// Each lap's corners come from its own recording's track corners, when known.
+// Each lap's braking zones, in lap order, then a zone for every corner no
+// zone covers: a lift zone where the lap lifts for it, otherwise a flatOut
+// zone. With a comparison lap, braking points pair one to one: nearest within
+// kBrakingPairM, then zones that overlap; a zone only one lap brakes for pairs
+// with the other lap's lift. Corner zones then pair with the other lap's
+// zones through the same corner. Each lap's corners come from its own
+// recording's track corners, when known.
 BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
                                         const std::vector<InputSample>& currentInputs,
                                         const AnalysisLapProgress* comparison,

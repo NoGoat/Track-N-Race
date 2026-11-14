@@ -223,6 +223,17 @@ void AnalysisBrakingZones::rebuild() {
     showDetail();
 }
 
+void AnalysisBrakingZones::selectZone(int row) {
+    QTreeWidgetItem* item = list_->topLevelItem(row);
+    if (!item) return;
+    {
+        const QSignalBlocker guard(list_);
+        list_->setCurrentItem(item);
+    }
+    list_->scrollToItem(item);
+    showDetail();
+}
+
 void AnalysisBrakingZones::showDetail() {
     QTreeWidgetItem* item = list_->currentItem();
     if (!result_ || !item) {

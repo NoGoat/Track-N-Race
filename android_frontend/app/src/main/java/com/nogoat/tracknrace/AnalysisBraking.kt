@@ -27,6 +27,11 @@ internal class BrakingApex(
 /** One braking zone of one lap. -1 marks a figure that never happened or is unknown. */
 internal class BrakingPoint(
     val liftOnly: Boolean,
+    /** A corner taken without the brake or a lift; [partThrottle] when not flat out all through it. */
+    val flatOut: Boolean,
+    val partThrottle: Boolean,
+    /** Lowest throttle through a [flatOut] corner, 0-1; -1 unknown. */
+    val minThrottle: Double,
     val distanceM: Double,
     val speedKph: Double,
     val coastM: Double,
@@ -136,6 +141,9 @@ internal class BrakingZones(
         private fun points(array: JSONArray?): List<BrakingPoint> = objects(array).map { point ->
             BrakingPoint(
                 liftOnly = point.optBoolean("liftOnly"),
+                flatOut = point.optBoolean("flatOut"),
+                partThrottle = point.optBoolean("partThrottle"),
+                minThrottle = point.optDouble("minThrottle", -1.0),
                 distanceM = point.optDouble("distanceM", 0.0),
                 speedKph = point.optDouble("speedKph", 0.0),
                 coastM = point.optDouble("coastM", 0.0),

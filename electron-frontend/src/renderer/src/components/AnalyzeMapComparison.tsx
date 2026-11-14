@@ -38,6 +38,10 @@ interface Props {
   comparisonSelected: boolean
   /** libtnrp's braking points for these laps; null when they are switched off. */
   brakingResult: AnalysisMapResult | null
+  /** A braking zone clicked on the map, as its row in the Braking Zones
+   *  panel (its pair, or with one lap its zone); left out when nothing
+   *  listens. */
+  onBrakingZoneClick?: (row: number) => void
   showInputPanel: boolean
   mapDimmed: boolean
   reduceAnimations: boolean
@@ -243,6 +247,10 @@ function brakingObservationText(observation: BrakingObservation, labels: [string
       return `${lap} is flat out ${Math.round(observation.value)} m sooner than ${other}`
     case 'lift_only':
       return `${lap} takes it on a lift where ${other} brakes`
+    case 'flat_out':
+      return `${lap} takes it flat out where ${other} ${observation.other ? 'lifts' : 'brakes'}`
+    case 'no_lift':
+      return `${lap} keeps ${Math.round(observation.value)}% throttle where ${other} ${observation.other ? 'lifts' : 'brakes'}`
     case 'tighter_track_limits':
       return `${lap} runs ${observation.value.toFixed(1)} m further inside at the apex but breaks track limits`
     case 'straighter_line': {
@@ -298,6 +306,8 @@ export function BrakingTooltip({ fill, zone, phase, fromM, splitM, toM, current,
   const braking = phase !== 'acceleration'
   const acceleration = phase !== 'braking'
   const both = current !== undefined && comparison !== undefined
+  // A corner every lap shown takes without the brake or a lift.
+  const cornerOnly = (current?.flatOut ?? true) && (comparison?.flatOut ?? true)
   // Each lap's time over this half, or over the whole zone when unsplit.
   const times = !pair ? null
     : phase === 'braking' ? [pair.currentBrakingS, pair.comparisonBrakingS]
@@ -329,15 +339,20 @@ export function BrakingTooltip({ fill, zone, phase, fromM, splitM, toM, current,
     return splitM < 0 || (braking && at <= splitM) || (acceleration && at > splitM)
   })
   const rows: Row[] = [
+    // A corner taken flat out has no braking, coasting or exit to compare.
     ...(braking ? [
-      ['Brakes at', current ? brakeAtText(current) : null, comparison ? brakeAtText(comparison) : null,
+      [cornerOnly ? 'Taken' : 'Brakes at', current ? brakeAtText(current) : null, comparison ? brakeAtText(comparison) : null,
         both && sameBrake ? pick(current.distanceM, comparison.distanceM, true, 0.5) : null],
-      ['Braking', current ? metresText(current.brakingDistanceM) : null, comparison ? metresText(comparison.brakingDistanceM) : null,
-        both && sameBrake && current.brakingDistanceM >= 0 && comparison.brakingDistanceM >= 0
-          ? pick(current.brakingDistanceM, comparison.brakingDistanceM, false, 0.5) : null],
+      ...(cornerOnly ? [] : [
+        ['Braking', current ? metresText(current.brakingDistanceM) : null, comparison ? metresText(comparison.brakingDistanceM) : null,
+          both && sameBrake && current.brakingDistanceM >= 0 && comparison.brakingDistanceM >= 0
+            ? pick(current.brakingDistanceM, comparison.brakingDistanceM, false, 0.5) : null],
+      ] satisfies Row[]),
       ['Entry', current ? `${Math.round(current.speedKph)} km/h` : null, comparison ? `${Math.round(comparison.speedKph)} km/h` : null,
-        both && sameBrake ? pick(current.speedKph, comparison.speedKph, true, 0.5) : null],
-      ['Coast', current ? coastText(current) : null, comparison ? coastText(comparison) : null, null],
+        both && (sameBrake || cornerOnly) ? pick(current.speedKph, comparison.speedKph, true, 0.5) : null],
+      ...(cornerOnly ? [] : [
+        ['Coast', current ? coastText(current) : null, comparison ? coastText(comparison) : null, null],
+      ] satisfies Row[]),
     ] satisfies Row[] : []),
     // One apex row per corner, flat-out ones included, each with which lap
     // took the tighter line there when both recorded their positions.
@@ -361,7 +376,7 @@ export function BrakingTooltip({ fill, zone, phase, fromM, splitM, toM, current,
     // Corner exit. Back on the throttle earlier wins unless it spins the
     // rears, which hands it to the other lap; flat out sooner only counts
     // without wheelspin.
-    ...(acceleration ? [
+    ...(acceleration && !cornerOnly ? [
       ['Throttle on', current ? metresText(current.throttleOnM) : null,
         comparison ? metresText(comparison.throttleOnM) : null,
         both ? exitBetter(current.throttleOnM, comparison.throttleOnM, current.wheelspin, comparison.wheelspin) : null,
@@ -388,23 +403,28 @@ export function BrakingTooltip({ fill, zone, phase, fromM, splitM, toM, current,
     .map(observation => brakingObservationText(observation, [currentLabel, comparisonLabel]))
   const [shownFrom, shownTo] = phase === 'braking' ? [fromM, splitM] : phase === 'acceleration' ? [splitM, toM] : [fromM, toM]
   const lapHead = (label: string, color: string, align: 'left' | 'right') => (
-    <th className={`pb-1 text-[9px] font-bold ${align === 'left' ? 'text-left' : 'text-right'}`} style={{ color }}>
+    <th className={`pb-1 text-[9px] font-bold ${align === 'left' ? 'pl-3 text-left' : 'pr-3 text-right'}`} style={{ color }}>
       {label}
     </th>
   )
   // A warning (an exit that spun) shows in the warning colour instead of the lap's.
   const cell = (value: string | null, wins: boolean, warn: boolean, color: string, align: 'left' | 'right') => (
-    <td className={`border-t border-[var(--border)] py-[3px] ${align === 'left' ? 'text-left' : 'text-right'} ${wins || warn ? 'font-bold' : ''} ${warn ? 'text-amber-500' : ''}`}
+    <td className={`border-t border-[var(--border)] py-[3px] ${align === 'left' ? 'pl-3 text-left' : 'pr-3 text-right'} ${wins || warn ? 'font-bold' : ''} ${warn ? 'text-amber-500' : ''}`}
       style={wins && !warn ? { color } : undefined}>{value ?? '—'}</td>
   )
 
   return <div className={`flex ${fill ? 'w-full' : 'w-[270px]'} flex-col gap-2 whitespace-nowrap tabular-nums`}>
-    <div className="flex items-baseline justify-between gap-3 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">
-      <span>{phase === 'acceleration' ? 'Acceleration' : 'Braking'} zone {zone}{corners.length > 1 ? ` · ${corners.length} corners` : ''}</span>
-      <span>{formatM(shownFrom)} – {formatM(shownTo)}</span>
+    {/* The range drops to its own line, still right-aligned, rather than
+        running past the table's edge when the title is long. */}
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">
+      <span>{cornerOnly ? 'Corner' : `${phase === 'acceleration' ? 'Acceleration' : 'Braking'} zone`} {zone}{corners.length > 1 ? ` · ${corners.length} corners` : ''}</span>
+      <span className="ml-auto">{formatM(shownFrom)} – {formatM(shownTo)}</span>
     </div>
     {verdict && <div className="text-[12px] font-bold" style={verdict.color ? { color: verdict.color } : undefined}>{verdict.text}</div>}
-    <table className="w-full border-collapse">
+    {/* The table and the observations' divider run through the card's 12px
+        side padding (px-3 / p-3 around it), so the separators reach its
+        edges; the outer cells take that padding back for their text. */}
+    <table className="-mx-3 w-[calc(100%+1.5rem)] max-w-none border-collapse">
       <thead><tr>
         {current && lapHead(currentLabel, currentColor, 'left')}
         <th />
@@ -420,7 +440,7 @@ export function BrakingTooltip({ fill, zone, phase, fromM, splitM, toM, current,
     </table>
     {/* Observations are sentences: they wrap inside the card, each line hanging
         under its marker, rather than running past its edge. */}
-    {observations.length > 0 && <div className="flex flex-col gap-1 whitespace-normal border-t border-[var(--border)] pt-1.5 leading-snug text-[var(--text-secondary)]">
+    {observations.length > 0 && <div className="flex flex-col gap-1 whitespace-normal -mx-3 border-t border-[var(--border)] px-3 pt-1.5 leading-snug text-[var(--text-secondary)]">
       {observations.map(text => <div key={text} className="flex gap-1.5">
         <span className="shrink-0 text-[var(--text-muted)]">▸</span><span className="min-w-0">{text}</span>
       </div>)}
@@ -428,9 +448,10 @@ export function BrakingTooltip({ fill, zone, phase, fromM, splitM, toM, current,
   </div>
 }
 
-/** Where a lap braked, or that it only lifted (and where). */
+/** Where a lap braked, that it only lifted (and where), or took it without either. */
 const brakeAtText = (point: BrakingPointResult) =>
-  point.liftOnly ? `lift ${Math.round(point.distanceM).toLocaleString()} m` : formatM(point.distanceM)
+  point.flatOut ? (point.partThrottle ? `no lift · ${Math.round(point.minThrottle * 100)}%` : 'flat out')
+    : point.liftOnly ? `lift ${Math.round(point.distanceM).toLocaleString()} m` : formatM(point.distanceM)
 const metresText = (metres: number) => metres < 0 ? '—' : `${Math.round(metres).toLocaleString()} m`
 /** A lap's line against the other's at a corner's apex, named on the lap further inside. */
 const lineText = (gapM: number) => gapM === 0 ? 'level' : gapM > 0 ? `${gapM.toFixed(1)} m inside` : '—'
@@ -502,7 +523,7 @@ function InputsLegend({ isDark }: { isDark: boolean }) {
 // re-render when the laps, colours or view settings around it change.
 export default memo(function AnalyzeMapComparison({
   comparison, comparisonColor, comparisonLabel, compatibleCircuit, current, currentColor, currentLabel,
-  fixedMode, isDark, mapColoring, mapResult, comparisonSelected, brakingResult, showInputPanel,
+  fixedMode, isDark, mapColoring, mapResult, comparisonSelected, brakingResult, onBrakingZoneClick, showInputPanel,
   mapDimmed, reduceAnimations,
   sectorColors, trackId, focus,
 }: Props) {
@@ -603,29 +624,33 @@ export default memo(function AnalyzeMapComparison({
     }
     // A zone as its braking half, dimmed, then its acceleration half, each
     // with its own tooltip; whole when it has no split.
-    const halves = (fromM: number, splitM: number, toM: number, brakingColor: string, accelerationColor: string,
-      card: (phase: BrakingPhase, fromM: number, splitM: number, toM: number) => ReactNode): TrackMark[] =>
-      splitM < 0
+    // Clicking either half selects the zone's row in the Braking Zones panel.
+    const halves = (row: number, fromM: number, splitM: number, toM: number, brakingColor: string,
+      accelerationColor: string,
+      card: (phase: BrakingPhase, fromM: number, splitM: number, toM: number) => ReactNode): TrackMark[] => {
+      const onClick = onBrakingZoneClick ? () => onBrakingZoneClick(row) : undefined
+      return splitM < 0
         ? [{ fromFraction: fromM / length, toFraction: toM / length, color: accelerationColor,
-             tooltip: card(null, fromM, splitM, toM) }]
+             tooltip: card(null, fromM, splitM, toM), onClick }]
         : [{ fromFraction: fromM / length, toFraction: splitM / length, color: brakingColor,
-             opacity: BRAKING_HALF_OPACITY, tooltip: card('braking', fromM, splitM, toM) },
+             opacity: BRAKING_HALF_OPACITY, tooltip: card('braking', fromM, splitM, toM), onClick },
            { fromFraction: splitM / length, toFraction: toM / length, color: accelerationColor,
-             tooltip: card('acceleration', fromM, splitM, toM) }]
+             tooltip: card('acceleration', fromM, splitM, toM), onClick }]
+    }
     if (braking.comparison.length === 0)
       return braking.current.flatMap((point, index) => {
         const toM = Math.max(point.distanceM, point.endM)
-        const split = point.minSpeedM - point.distanceM >= PHASE_MIN_M && toM - point.minSpeedM >= PHASE_MIN_M
-          ? point.minSpeedM : -1
-        return halves(point.distanceM, split, toM, currentColor, currentColor,
+        const split = !point.flatOut && point.minSpeedM - point.distanceM >= PHASE_MIN_M &&
+          toM - point.minSpeedM >= PHASE_MIN_M ? point.minSpeedM : -1
+        return halves(index, point.distanceM, split, toM, currentColor, currentColor,
           tooltip(index + 1, point, undefined, undefined))
       })
-    return braking.pairs.flatMap(pair => halves(pair.fromM, pair.splitM, pair.toM,
+    return braking.pairs.flatMap((pair, row) => halves(row, pair.fromM, pair.splitM, pair.toM,
       winner(pair.currentBrakingS, pair.comparisonBrakingS),
       pair.splitM < 0 ? winner(pair.currentTimeS, pair.comparisonTimeS)
         : winner(pair.currentAccelerationS, pair.comparisonAccelerationS),
       tooltip(pair.current + 1, braking.current[pair.current], braking.comparison[pair.comparison], pair)))
-  }, [brakingResult, comparisonColor, comparisonLabel, currentColor, currentLabel, isDark])
+  }, [brakingResult, comparisonColor, comparisonLabel, currentColor, currentLabel, isDark, onBrakingZoneClick])
   // The Speed map marks each lap's corners on its own map, over any braking
   // zones. Racing Line has no track, so its zones follow a lap's own path.
   const currentMarks = useMemo<TrackMark[] | null>(() => {

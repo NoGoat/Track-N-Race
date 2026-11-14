@@ -157,6 +157,7 @@ export const BRAKING_LEVEL_S = 0.01
 export interface BrakingObservation {
   kind: 'quicker_despite_coast' | 'apex_speed' | 'later_but_slower' | 'more_harvest' | 'low_battery'
     | 'wheelspin' | 'earlier_throttle_spin' | 'earlier_throttle' | 'faster_to_full' | 'lift_only'
+    | 'flat_out' | 'no_lift'
     | 'tighter_track_limits' | 'straighter_line' | 'tighter_helped' | 'tighter_no_gain' | 'tighter_lost_speed'
     | 'tighter_wheelspin' | 'tighter_slower_exit' | 'tighter_slower' | 'track_limits'
   lap: 0 | 1
@@ -195,9 +196,15 @@ export interface BrakingPairResult {
 
 /** One braking zone of one lap from libtnrp. */
 export interface BrakingPointResult {
-  /** Taken on a lift where the other lap brakes: distanceM is where the
-   *  throttle came off and the coast is the whole lift. */
+  /** Taken on a lift without the brake: distanceM is where the throttle came
+   *  off and the coast is the whole lift. */
   liftOnly: boolean
+  /** A corner taken without the brake or a lift: distanceM is its turn-in.
+   *  partThrottle when not flat out all through it; minThrottle is the lowest
+   *  throttle there (0-1, -1 unknown). */
+  flatOut: boolean
+  partThrottle: boolean
+  minThrottle: number
   /** Lap distance (m) where the brake goes on, and the speed there. */
   distanceM: number
   speedKph: number

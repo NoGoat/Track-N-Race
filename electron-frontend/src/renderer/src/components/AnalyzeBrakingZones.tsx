@@ -18,6 +18,8 @@ interface Props {
   comparisonColor: string
   /** The user chose a zone: its braking point's lap distance, in metres. */
   onZoneActivated: (distanceM: number) => void
+  /** A zone clicked on the map, as its row; selected when its seq is new. */
+  selectRequest?: { row: number; seq: number } | null
   /** The zone list's share of the height above the detail card. */
   listRatio: number
   onListRatioCommit: (ratio: number) => void
@@ -41,13 +43,13 @@ const formatGap = (seconds: number) => {
   return `${value > 0 ? '+' : ''}${value.toFixed(3)}`
 }
 
-const ROW_COLUMNS = 'grid grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 px-3'
+const ROW_COLUMNS ='grid grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 px-3'
 
 /** Every braking zone with the time gap through it; the chosen one head to
  *  head below, and the map's cursors moved to it. */
 export default memo(function AnalyzeBrakingZones({
   result, lapChosen, currentLabel, currentColor, comparisonLabel, comparisonColor, onZoneActivated,
-  listRatio, onListRatioCommit,
+  selectRequest, listRatio, onListRatioCommit,
 }: Props) {
   // Live ratio while the divider is dragged; persisted on release.
   const [draftListRatio, setDraftListRatio] = useState<number | null>(null)
@@ -89,6 +91,12 @@ export default memo(function AnalyzeBrakingZones({
 
   // The chosen row stays put when the laps change, as far as the new list allows.
   const [chosen, setChosen] = useState(0)
+  // A zone clicked on the map is chosen; one clicked before the panel opened is not.
+  const [seenRequest, setSeenRequest] = useState(selectRequest?.seq ?? 0)
+  if (selectRequest && selectRequest.seq !== seenRequest) {
+    setSeenRequest(selectRequest.seq)
+    setChosen(selectRequest.row)
+  }
   const selected = Math.min(chosen, rows.length - 1)
   const row = selected >= 0 ? rows[selected] : undefined
   const listRef = useRef<HTMLDivElement>(null)

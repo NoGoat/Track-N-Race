@@ -6,6 +6,7 @@
 #include <tnrp/CardColors.h>
 #include <tnrp/LapDelta.h>
 #include <tnrp/NetworkSetup.h>
+#include <tnrp/Updates.h>
 #include <tnrp/TnrdReader.h>
 #include <tnrp/TeamColors.h>
 #include <tnrp/TrackMaps.h>
@@ -2411,6 +2412,50 @@ Napi::Value FirewallAllowProgram(const Napi::CallbackInfo& info) {
     return promise;
 }
 
+// Self-update (tnrp/Updates.h). Module-level, no Engine needed.
+static std::string StringArg(const Napi::CallbackInfo& info, size_t index) {
+    return info.Length() > index && info[index].IsString() ? info[index].As<Napi::String>().Utf8Value() : std::string{};
+}
+
+Napi::Value UpdateServiceUrl(const Napi::CallbackInfo& info) {
+    return Napi::String::New(info.Env(), tnrp::updateServiceUrl());
+}
+
+Napi::Value UpdateServiceOverridden(const Napi::CallbackInfo& info) {
+    return Napi::Boolean::New(info.Env(), tnrp::updateServiceOverridden());
+}
+
+// updateCheckPath(product, os, arch, format, currentVersion) -> string
+Napi::Value UpdateCheckPath(const Napi::CallbackInfo& info) {
+    return Napi::String::New(info.Env(), tnrp::updateCheckPath(StringArg(info, 0), StringArg(info, 1),
+        StringArg(info, 2), StringArg(info, 3), StringArg(info, 4)));
+}
+
+// updateEvaluateJson(response, product, os, arch, format, currentVersion) -> string JSON
+Napi::Value UpdateEvaluateJson(const Napi::CallbackInfo& info) {
+    return Napi::String::New(info.Env(), tnrp::evaluateUpdateJson(StringArg(info, 0), StringArg(info, 1),
+        StringArg(info, 2), StringArg(info, 3), StringArg(info, 4), StringArg(info, 5)));
+}
+
+// updateCompareVersions(left, right) -> 1 | 0 | -1 | null
+Napi::Value UpdateCompareVersions(const Napi::CallbackInfo& info) {
+    const auto order = tnrp::compareVersions(StringArg(info, 0), StringArg(info, 1));
+    return order ? Napi::Number::New(info.Env(), *order) : info.Env().Null();
+}
+
+// updateVerifyFile(path, sha512, size) -> Promise<string>: "" when it matches.
+Napi::Value UpdateVerifyFile(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const std::string path = StringArg(info, 0);
+    const std::string sha512 = StringArg(info, 1);
+    const uint64_t size = info.Length() > 2 && info[2].IsNumber()
+        ? static_cast<uint64_t>(info[2].As<Napi::Number>().Int64Value()) : 0;
+    auto* worker = new StringTaskWorker(env, [path, sha512, size] { return tnrp::verifyUpdateFile(path, sha512, size); });
+    Napi::Promise promise = worker->GetPromise();
+    worker->Queue();
+    return promise;
+}
+
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     TRACE("InitAll: module loading");
     TNRPAddon::Init(env, exports);
@@ -2422,6 +2467,12 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     exports.Set("networkInterfacesJson", Napi::Function::New(env, NetworkInterfacesJson));
     exports.Set("firewallStatusJson", Napi::Function::New(env, FirewallStatusJson));
     exports.Set("firewallAllowProgram", Napi::Function::New(env, FirewallAllowProgram));
+    exports.Set("updateServiceUrl", Napi::Function::New(env, UpdateServiceUrl));
+    exports.Set("updateServiceOverridden", Napi::Function::New(env, UpdateServiceOverridden));
+    exports.Set("updateCheckPath", Napi::Function::New(env, UpdateCheckPath));
+    exports.Set("updateEvaluateJson", Napi::Function::New(env, UpdateEvaluateJson));
+    exports.Set("updateCompareVersions", Napi::Function::New(env, UpdateCompareVersions));
+    exports.Set("updateVerifyFile", Napi::Function::New(env, UpdateVerifyFile));
     return exports;
 }
 

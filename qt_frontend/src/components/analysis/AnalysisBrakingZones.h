@@ -30,6 +30,9 @@ public:
     // The list | detail split, for the page's settings. Empty or unreadable
     // state keeps the default 60 / 40.
     QByteArray splitState() const;
+    // Selects zone `row` (as clicked on the map) and shows its detail, without
+    // moving the cursors.
+    void selectZone(int row);
     void restoreSplitState(const QByteArray& state);
 
 signals:

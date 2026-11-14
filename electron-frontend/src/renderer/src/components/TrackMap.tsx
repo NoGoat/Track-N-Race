@@ -36,6 +36,8 @@ export interface TrackMark {
   /** On the Racing Line layer: the stretch along a lap's own path, in world
    *  coordinates, since there is no lap line to follow. */
   points?: readonly { x: number; z: number }[]
+  /** Clicking the stretch (not dragging the map) calls this. */
+  onClick?: () => void
 }
 
 /** One lap's recorded path, in world coordinates. */
@@ -811,6 +813,29 @@ function drawRacingLines(
   }
 }
 
+// The hover card sits this far from the pointer.
+const MARK_CARD_GAP_PX = 12
+
+/** Where a mark's hover card goes inside the map: below and right of the
+ *  pointer, flipped above or to the left where it would run past the map's
+ *  edge (and so under the playback bar), and held inside the map when it fits
+ *  on neither side. Hidden until its size is measured. */
+function markCardPlacement(at: { x: number; y: number }, size: { width: number; height: number } | null,
+  width: number, height: number): React.CSSProperties {
+  if (!size) return { left: 0, top: 0, visibility: 'hidden' }
+  const place = (pointer: number, extent: number, room: number) => {
+    const after = pointer + MARK_CARD_GAP_PX
+    if (after + extent <= room) return after
+    const before = pointer - MARK_CARD_GAP_PX - extent
+    if (before >= 0) return before
+    return Math.max(0, room - extent)
+  }
+  return { left: place(at.x, size.width, width), top: place(at.y, size.height, height) }
+}
+
+// A press that moves further than this before release is a drag, not a click.
+const MARK_CLICK_SLOP_PX = 4
+
 // How close the pointer must be to a highlight to show its tooltip, in CSS pixels.
 const MARK_HOVER_PX = 8
 
@@ -1312,18 +1337,15 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   // Where the background last drew each mark, and the one under the pointer.
   const markPositionsRef = useRef<Array<Array<[number, number]>>>([])
   const [hoveredMark, setHoveredMark] = useState<{ index: number; x: number; y: number } | null>(null)
-  const handleMarkHover = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    const marks = trackMarksRef.current
-    if (dragRef.current || !marks?.some(mark => mark.tooltip)) return
-    const rect = event.currentTarget.getBoundingClientRect()
-    const px = event.clientX - rect.left
-    const py = event.clientY - rect.top
-    // The nearest highlighted stretch, by its closest point to the pointer.
+  // The nearest highlighted stretch that `wanted` accepts, by its closest
+  // point to the pointer; index -1 when none is within MARK_HOVER_PX.
+  const markAt = useCallback((px: number, py: number, wanted: (mark: TrackMark) => boolean) => {
+    const marks = trackMarksRef.current ?? []
     let best = -1
     let bestDistance = MARK_HOVER_PX
     let bestPoint: [number, number] = [px, py]
     markPositionsRef.current.forEach((path, index) => {
-      if (!marks[index]?.tooltip) return
+      if (!marks[index] || !wanted(marks[index])) return
       // Along each segment, not just at its ends: zoomed in they are far apart.
       path.forEach(([x1, y1], k) => {
         const [x2, y2] = path[Math.min(k + 1, path.length - 1)]
@@ -1334,11 +1356,47 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
         if (distance <= bestDistance) { best = index; bestDistance = distance; bestPoint = [x, y] }
       })
     })
+    return { index: best, point: bestPoint }
+  }, [])
+  const handleMarkHover = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const marks = trackMarksRef.current
+    if (dragRef.current || !marks?.some(mark => mark.tooltip)) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const { index: best, point: bestPoint } = markAt(event.clientX - rect.left, event.clientY - rect.top,
+      mark => !!mark.tooltip)
     setHoveredMark(previous => {
       if (best < 0) return previous === null ? previous : null
       return previous?.index === best ? previous : { index: best, x: bestPoint[0], y: bestPoint[1] }
     })
+  }, [markAt])
+  // A click on a stretch, not the end of a drag across the map.
+  const pressRef = useRef<{ x: number; y: number } | null>(null)
+  const handleMarkPress = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    pressRef.current = event.button === 0 ? { x: event.clientX, y: event.clientY } : null
   }, [])
+  const handleMarkClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const press = pressRef.current
+    pressRef.current = null
+    if (!press || Math.hypot(event.clientX - press.x, event.clientY - press.y) > MARK_CLICK_SLOP_PX) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const { index } = markAt(event.clientX - rect.left, event.clientY - rect.top, mark => !!mark.onClick)
+    if (index >= 0) trackMarksRef.current?.[index]?.onClick?.()
+  }, [markAt])
+  // The hover card's measured size, so it is placed inside the map: beside
+  // the pointer, flipped above or to its left where it would run off.
+  const markCardRef = useRef<HTMLDivElement>(null)
+  const [markCardSize, setMarkCardSize] = useState<{ width: number; height: number } | null>(null)
+  useLayoutEffect(() => {
+    const card = markCardRef.current
+    if (!card) { setMarkCardSize(null); return }
+    const measure = () => setMarkCardSize(previous =>
+      previous?.width === card.offsetWidth && previous.height === card.offsetHeight
+        ? previous : { width: card.offsetWidth, height: card.offsetHeight })
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(card)
+    return () => observer.disconnect()
+  }, [hoveredMark])
   // A new set of marks invalidates what was hovered.
   const [hoverMarks, setHoverMarks] = useState(trackMarks)
   if (hoverMarks !== trackMarks) {
@@ -1705,15 +1763,14 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
 
   return (
     <div ref={wrapRef} className="relative w-full h-full"
-      onMouseMove={handleMarkHover} onMouseLeave={() => setHoveredMark(null)}>
+      style={hoveredMark && trackMarks?.[hoveredMark.index]?.onClick ? { cursor: 'pointer' } : undefined}
+      onMouseMove={handleMarkHover} onMouseLeave={() => setHoveredMark(null)}
+      onPointerDown={handleMarkPress} onClick={handleMarkClick}>
       {hoveredMark && trackMarks?.[hoveredMark.index]?.tooltip && <div
+        ref={markCardRef}
         key={hoveredMark.index}
         className="braking-card pointer-events-none absolute z-20 w-max rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] px-3 py-2.5 text-[10px] font-mono text-[var(--text-primary)] shadow-[0_6px_20px_rgba(0,0,0,0.4)]"
-        style={{
-          left: hoveredMark.x > width - 310 ? undefined : hoveredMark.x + 12,
-          right: hoveredMark.x > width - 310 ? width - hoveredMark.x + 12 : undefined,
-          top: Math.min(hoveredMark.y + 12, Math.max(0, height - 400)),
-        }}
+        style={markCardPlacement(hoveredMark, markCardSize, width, height)}
       >{trackMarks[hoveredMark.index].tooltip}</div>}
       <canvas
         ref={backgroundCanvasRef}

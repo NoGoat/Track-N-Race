@@ -79,6 +79,9 @@ constexpr double kLineMinTurn = 0.05;
 constexpr float kLineSearchM = 60.0f;
 constexpr double kLineMaxGapM = 30.0;
 constexpr float kLineCornerMatchM = 80.0f;
+// A lap's corner listed this close to one of a zone's corners is that corner:
+// found again over a different stretch, a corner from speed dips can move.
+constexpr float kSameCornerM = 5.0f;
 // A lap's own radius through a corner has to be this much larger than the
 // other lap's to say it ran the wider arc. Not yet checked against recordings.
 constexpr float kObserveRadiusShare = 0.05f;
@@ -988,8 +991,19 @@ void describeBrakingZones(BrakingPointsMap& braking, const LapRead& current, con
             if (!limitsSaid[lap] && !(lap == 0 ? limitsA : limitsB).empty())
                 out.push_back({"track_limits", lap, 0.0f, 0.0f});
 
-        // One lap takes it on a lift where the other brakes.
-        if (a.liftOnly != b.liftOnly) out.push_back({"lift_only", a.liftOnly ? 0 : 1, 0.0f, 0.0f});
+        // One lap takes it on a lift where the other brakes, or without
+        // braking or lifting where the other does either.
+        const auto brakes = [](const BrakingPoint& point) { return !point.liftOnly && !point.flatOut; };
+        if (a.liftOnly && brakes(b)) out.push_back({"lift_only", 0, 0.0f, 0.0f});
+        else if (b.liftOnly && brakes(a)) out.push_back({"lift_only", 1, 0.0f, 0.0f});
+        for (int lap = 0; lap < 2; ++lap) {
+            const auto& point = lap == 0 ? a : b;
+            const auto& rival = lap == 0 ? b : a;
+            if (!point.flatOut || rival.flatOut) continue;
+            const float rivalLifts = rival.liftOnly ? 1.0f : 0.0f;
+            if (point.partThrottle) out.push_back({"no_lift", lap, point.minThrottle * 100.0f, rivalLifts});
+            else out.push_back({"flat_out", lap, 0.0f, rivalLifts});
+        }
         // Quicker despite coasting longer: the lift cost nothing.
         if (quicker >= 0 && quick.coastS - slow.coastS >= kObserveCoastS)
             out.push_back({"quicker_despite_coast", quicker, gainS, quick.coastS - slow.coastS});
@@ -1601,6 +1615,71 @@ std::optional<BrakingPoint> liftZone(const detail::ProgressMap& progress,
     return point;
 }
 
+// Whether a zone takes in a corner: its apex is inside the zone, or is one of
+// the zone's corners.
+bool zoneHasCorner(const BrakingPoint& zone, const CornerApex& apex) {
+    if (apex.distanceM >= zone.distanceM && apex.distanceM <= zone.endM) return true;
+    return std::any_of(zone.apexes.begin(), zone.apexes.end(), [&](const CornerApex& listed) {
+        return std::abs(listed.distanceM - apex.distanceM) <= kSameCornerM;
+    });
+}
+
+// Every corner of a lap that none of `zones` takes in, as a zone of its own:
+// the lap's lift for it, or a flatOut zone when it neither brakes nor lifts.
+// Each lift is looked for after the end of the zone before it.
+std::vector<BrakingPoint> cornerZones(const AnalysisLapProgress& lap, const std::vector<InputSample>& samples,
+                                      const std::vector<BrakingPoint>& zones, const TrackCorners* corners) {
+    std::vector<BrakingPoint> out;
+    const auto progress = detail::buildProgressMap(lap);
+    if (progress.points.size() < 2 || samples.empty()) return out;
+    const auto covered = [&](const CornerApex& apex) {
+        const auto has = [&](const BrakingPoint& zone) { return zoneHasCorner(zone, apex); };
+        return std::any_of(zones.begin(), zones.end(), has) || std::any_of(out.begin(), out.end(), has);
+    };
+    const auto endBefore = [&](float fromM) {
+        float end = 0.0f;
+        for (const std::vector<BrakingPoint>* list : {&zones, static_cast<const std::vector<BrakingPoint>*>(&out)})
+            for (const auto& zone : *list)
+                if (zone.distanceM < fromM) end = std::max(end, zone.endM);
+        return end;
+    };
+    for (const auto& apex : findCorners(progress, samples, lap.startSessionTime, lap.endSessionTime, corners)) {
+        if (covered(apex)) continue;
+        // Turn-in to exit, a corner across the line cut at it on the apex's side.
+        const float fromM = apex.fromM >= 0.0f && apex.fromM <= apex.distanceM ? apex.fromM : apex.distanceM;
+        const float toM = apex.toM >= apex.distanceM ? apex.toM : apex.distanceM;
+        // A lift counts for this corner only when it takes the corner in.
+        if (auto lift = liftZone(progress, samples, fromM, toM, endBefore(fromM), corners);
+            lift && zoneHasCorner(*lift, apex)) {
+            out.push_back(std::move(*lift));
+            continue;
+        }
+        BrakingPoint point;
+        point.flatOut = true;
+        point.distanceM = fromM;
+        point.endM = toM;
+        point.speedKph = apex.speedKph;
+        const float t0 = timeAtDistanceClamped(progress, fromM);
+        const float t1 = timeAtDistanceClamped(progress, toM);
+        if (std::isfinite(t0) && std::isfinite(t1)) {
+            bool entered = false;
+            for (const auto& sample : samples) {
+                if (sample.session_time < t0) continue;
+                if (sample.session_time > t1) break;
+                if (!entered) point.speedKph = sample.speed_kph;
+                entered = true;
+                point.minThrottle = point.minThrottle < 0.0f ? sample.throttle
+                                                             : std::min(point.minThrottle, sample.throttle);
+            }
+        }
+        point.partThrottle = point.minThrottle >= 0.0f && point.minThrottle < kFullThrottle;
+        point.apexes.push_back(apex);
+        setMinimumFromApexes(point);
+        out.push_back(std::move(point));
+    }
+    return out;
+}
+
 } // namespace
 
 BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
@@ -1612,7 +1691,13 @@ BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
     BrakingPointsMap result;
     result.trackLengthM = current.trackLengthM;
     result.current = findBrakingPoints(current, currentInputs, currentCorners);
-    if (!comparison || !comparisonInputs) return result;
+    if (!comparison || !comparisonInputs) {
+        for (auto& zone : cornerZones(current, currentInputs, result.current, currentCorners))
+            result.current.push_back(std::move(zone));
+        std::stable_sort(result.current.begin(), result.current.end(),
+            [](const BrakingPoint& x, const BrakingPoint& y) { return x.distanceM < y.distanceM; });
+        return result;
+    }
     if (!(result.trackLengthM > 0.0f)) result.trackLengthM = comparison->trackLengthM;
     result.comparison = findBrakingPoints(*comparison, *comparisonInputs, comparisonCorners);
 
@@ -1680,6 +1765,42 @@ BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
         }
     }
 
+    // Every corner neither lap's zones take in is a zone of its own on that
+    // lap. Those pair, closest first, with the other lap's zone through the
+    // same corner, and then with any left over that they overlap.
+    const size_t currentZones = result.current.size();
+    const size_t comparisonZones = result.comparison.size();
+    for (auto& zone : cornerZones(current, currentInputs, result.current, currentCorners))
+        result.current.push_back(std::move(zone));
+    for (auto& zone : cornerZones(*comparison, *comparisonInputs, result.comparison, comparisonCorners))
+        result.comparison.push_back(std::move(zone));
+    currentTaken.assign(result.current.size(), false);
+    comparisonTaken.assign(result.comparison.size(), false);
+    for (const auto& [ci, bi] : matched) currentTaken[ci] = comparisonTaken[bi] = true;
+    {
+        struct Candidate { float gap; size_t current; size_t comparison; };
+        std::vector<Candidate> candidates;
+        for (size_t i = 0; i < result.current.size(); ++i) {
+            if (currentTaken[i]) continue;
+            for (size_t j = 0; j < result.comparison.size(); ++j) {
+                if (comparisonTaken[j] || (i < currentZones && j < comparisonZones)) continue;
+                float nearest = std::numeric_limits<float>::infinity();
+                for (const auto& x : result.current[i].apexes)
+                    for (const auto& y : result.comparison[j].apexes)
+                        nearest = std::min(nearest, std::abs(x.distanceM - y.distanceM));
+                if (nearest <= kLineCornerMatchM) candidates.push_back({nearest, i, j});
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate& x, const Candidate& y) { return x.gap < y.gap; });
+        for (const auto& candidate : candidates) {
+            if (currentTaken[candidate.current] || comparisonTaken[candidate.comparison]) continue;
+            currentTaken[candidate.current] = comparisonTaken[candidate.comparison] = true;
+            matched.push_back({candidate.current, candidate.comparison});
+        }
+    }
+    pairUp(true);
+
     // Each lap's zones back in lap order, the pairs following them.
     const auto inLapOrder = [](std::vector<BrakingPoint>& points) {
         std::vector<size_t> order(points.size());
@@ -1711,7 +1832,8 @@ BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
         pair.current = static_cast<int>(currentAt[ci]);
         pair.comparison = static_cast<int>(comparisonAt[bi]);
         pair.gapM = x.distanceM - y.distanceM;
-        pair.sameBrakingPoint = !x.liftOnly && !y.liftOnly && std::abs(pair.gapM) <= kBrakingPairM;
+        pair.sameBrakingPoint = !x.liftOnly && !y.liftOnly && !x.flatOut && !y.flatOut &&
+                                std::abs(pair.gapM) <= kBrakingPairM;
         // From the earlier braking point to the later of the two zone ends.
         pair.fromM = std::min(x.distanceM, y.distanceM);
         pair.toM = std::max(x.endM, y.endM);
@@ -1742,9 +1864,10 @@ BrakingPointsMap calculateBrakingPoints(const AnalysisLapProgress& current,
         pair.currentTimeS = timeOver(a, pair.fromM, pair.toM);
         pair.comparisonTimeS = timeOver(b, pair.fromM, pair.toM);
         // Braking and acceleration, split at one distance for both laps so
-        // their halves are timed over the same stretch.
+        // their halves are timed over the same stretch. A corner both laps
+        // take flat out has neither.
         const float split = (x.minSpeedM + y.minSpeedM) / 2.0f;
-        if (std::abs(x.minSpeedM - y.minSpeedM) <= kPhaseAgreeM &&
+        if (!(x.flatOut && y.flatOut) && std::abs(x.minSpeedM - y.minSpeedM) <= kPhaseAgreeM &&
             split - pair.fromM >= kPhaseMinM && pair.toM - split >= kPhaseMinM) {
             pair.splitM = split;
             pair.currentBrakingS = timeOver(a, pair.fromM, split);
@@ -1842,12 +1965,17 @@ SpeedMap calculateSpeed(const AnalysisLapProgress& lap,
     fillGaps(speeds);
     result.speedKph.reserve(count);
     for (const auto& value : speeds) result.speedKph.push_back(value.value_or(lowest));
-    // A track corner two zones both reach is listed once.
-    for (const auto& zone : findBrakingPoints(lap, samples, corners))
+    // Every corner, braked for or not; a track corner two zones both reach is
+    // listed once.
+    auto zones = findBrakingPoints(lap, samples, corners);
+    for (auto& zone : cornerZones(lap, samples, zones, corners)) zones.push_back(std::move(zone));
+    for (const auto& zone : zones)
         for (const auto& apex : zone.apexes)
             if (apex.side == 0 || std::none_of(result.apexes.begin(), result.apexes.end(),
                     [&](const CornerApex& listed) { return listed.distanceM == apex.distanceM; }))
                 result.apexes.push_back(apex);
+    std::stable_sort(result.apexes.begin(), result.apexes.end(),
+        [](const CornerApex& x, const CornerApex& y) { return x.distanceM < y.distanceM; });
     return result;
 }
 

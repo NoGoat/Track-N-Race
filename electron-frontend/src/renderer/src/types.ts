@@ -754,6 +754,14 @@ export interface AvailableUpdate {
   latestVersion: string
   releaseUrl: string
   publishedAt: string | null
+  /** The app can download and install this update itself. */
+  installable: boolean
+}
+
+export interface UpdateProgress {
+  phase: 'downloading' | 'verifying' | 'installing'
+  received: number
+  total: number
 }
 
 export interface PairAvailability {
@@ -891,6 +899,9 @@ declare global {
       checkOnStartup: () => Promise<AvailableUpdate | null>
       skipVersion: (version: string) => void
       openDownloadPage: () => Promise<void>
+      /** Resolves with "" once the installer has started, else the error. */
+      install: () => Promise<string>
+      onProgress: (callback: (progress: UpdateProgress) => void) => () => void
     }
     pairingBridge: {
       getState: () => Promise<PairServiceState>

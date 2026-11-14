@@ -19,6 +19,7 @@
 #include "tnrp/PairServer.h"
 #include "tnrp/Sink.h"
 #include "tnrp/TnrdReader.h"
+#include "tnrp/Updates.h"
 
 namespace {
 
@@ -732,6 +733,41 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeTrackMapsSetOptions(
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_nogoat_tracknrace_NativeTelemetry_nativeAnalysisMapPaletteJson(JNIEnv* env, jclass) {
     return javaString(env, tnrp::analysisMapPaletteJson());
+}
+
+// Self-update (tnrp/Updates.h). Plumbed only: Android has no update UI yet.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeUpdateServiceUrl(JNIEnv* env, jclass) {
+    return javaString(env, tnrp::updateServiceUrl());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeUpdateCheckPath(
+    JNIEnv* env, jclass, jstring product, jstring os, jstring arch, jstring format, jstring currentVersion) {
+    return javaString(env, tnrp::updateCheckPath(utf8(env, product), utf8(env, os), utf8(env, arch),
+                                                 utf8(env, format), utf8(env, currentVersion)));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeUpdateEvaluateJson(
+    JNIEnv* env, jclass, jstring response, jstring product, jstring os, jstring arch, jstring format,
+    jstring currentVersion) {
+    return javaString(env, tnrp::evaluateUpdateJson(utf8(env, response), utf8(env, product), utf8(env, os),
+                                                    utf8(env, arch), utf8(env, format), utf8(env, currentVersion)));
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeUpdateCompareVersions(JNIEnv* env, jclass, jstring left,
+                                                                        jstring right) {
+    const auto order = tnrp::compareVersions(utf8(env, left), utf8(env, right));
+    return order ? *order : 2;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeUpdateVerifyFile(JNIEnv* env, jclass, jstring path,
+                                                                   jstring sha512, jlong size) {
+    return javaString(env, tnrp::verifyUpdateFile(utf8(env, path), utf8(env, sha512),
+                                                  static_cast<uint64_t>(size < 0 ? 0 : size)));
 }
 
 extern "C" JNIEXPORT jstring JNICALL

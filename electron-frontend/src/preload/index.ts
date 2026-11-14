@@ -284,6 +284,12 @@ const updateBridge = {
   checkOnStartup: (): Promise<unknown> => ipcRenderer.invoke('updates:check-on-startup'),
   skipVersion: (version: string): void => ipcRenderer.send('updates:skip-version', version),
   openDownloadPage: (): Promise<void> => ipcRenderer.invoke('updates:open-download-page'),
+  install: (): Promise<string> => ipcRenderer.invoke('updates:install'),
+  onProgress: (callback: (progress: unknown) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: unknown) => callback(progress)
+    ipcRenderer.on('updates:progress', listener)
+    return () => ipcRenderer.removeListener('updates:progress', listener)
+  },
 }
 
 const pairingBridge = {

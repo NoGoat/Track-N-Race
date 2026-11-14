@@ -54,8 +54,9 @@ $outputFile = [System.IO.Path]::GetFullPath(
 New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 
 $makeNsis = Resolve-MakeNsis $MakeNsisPath
-& $makeNsis "/DSOURCE_DIR=$sourceDir" "/DOUTPUT_FILE=$outputFile" `
-    "$PSScriptRoot\installer.nsi"
+$nsisDefines = @("/DSOURCE_DIR=$sourceDir", "/DOUTPUT_FILE=$outputFile")
+if ($env:TNR_APP_VERSION) { $nsisDefines += "/DAPP_VERSION=$env:TNR_APP_VERSION" }
+& $makeNsis @nsisDefines "$PSScriptRoot\installer.nsi"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "Installer: $outputFile" -ForegroundColor Green

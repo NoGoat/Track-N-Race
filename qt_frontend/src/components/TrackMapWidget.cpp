@@ -62,6 +62,7 @@ constexpr int    LABEL_GAP = 5;
 constexpr int    LABEL_R   = 3;
 constexpr int    ACCENT_W  = 3;
 constexpr double MARK_HOVER_PX = 8.0;   // how close the pointer must be to a mark
+constexpr double MARK_CLICK_SLOP_PX = 4.0;   // a press moving further is a drag, not a click
 // A caret mark, in pixels at 1x zoom: the gap from the track's edge to its tip,
 // its length, and half its base.
 constexpr double CARET_GAP_PX = 1.6;
@@ -885,6 +886,8 @@ void TrackMapWidget::wheelEvent(QWheelEvent* event) {
 }
 
 void TrackMapWidget::mousePressEvent(QMouseEvent* event) {
+    pressed_ = event->button() == Qt::LeftButton;
+    pressStart_ = event->position();
     if (!viewEnabled_ || view_.zoom <= 1.0 || event->button() != Qt::LeftButton) {
         QWidget::mousePressEvent(event);
         return;
@@ -897,6 +900,15 @@ void TrackMapWidget::mousePressEvent(QMouseEvent* event) {
 }
 
 void TrackMapWidget::mouseReleaseEvent(QMouseEvent* event) {
+    // A press released where it began is a click on the mark under it.
+    if (pressed_ && event->button() == Qt::LeftButton) {
+        pressed_ = false;
+        const QPointF moved = event->position() - pressStart_;
+        if (std::hypot(moved.x(), moved.y()) <= MARK_CLICK_SLOP_PX) {
+            const int index = markAt(event->position(), true);
+            if (index >= 0) emit markClicked(marks_[index].clickId);
+        }
+    }
     if (!dragging_ || event->button() != Qt::LeftButton) {
         QWidget::mouseReleaseEvent(event);
         return;
@@ -1075,13 +1087,19 @@ void TrackMapWidget::mouseMoveEvent(QMouseEvent* event) {
         if (moveView(next)) emit viewChanged(view_);
         return;
     }
-    const QPointF pointer = event->position();
+    QPointF bestPoint;
+    const int best = markAt(event->position(), false, &bestPoint);
+    if (best != hoveredMark_) showHoveredMark(best, bestPoint);
+}
+
+int TrackMapWidget::markAt(const QPointF& pointer, bool clickable, QPointF* at) const {
     // The nearest highlighted stretch, by its closest point to the pointer.
     int best = -1;
     double bestDistance = MARK_HOVER_PX;
     QPointF bestPoint = pointer;
     for (size_t index = 0; index < markPaths_.size() && index < size_t(marks_.size()); ++index) {
-        if (marks_[int(index)].tooltip.isEmpty()) continue;
+        const Mark& mark = marks_[int(index)];
+        if (clickable ? mark.clickId < 0 : mark.tooltip.isEmpty()) continue;
         // Along each segment, not just at its ends: zoomed in they are far apart.
         const QPolygonF& path = markPaths_[index];
         for (int k = 0; k < path.size(); ++k) {
@@ -1095,7 +1113,8 @@ void TrackMapWidget::mouseMoveEvent(QMouseEvent* event) {
             if (distance <= bestDistance) { best = int(index); bestDistance = distance; bestPoint = point; }
         }
     }
-    if (best != hoveredMark_) showHoveredMark(best, bestPoint);
+    if (at) *at = bestPoint;
+    return best;
 }
 
 void TrackMapWidget::leaveEvent(QEvent* event) {

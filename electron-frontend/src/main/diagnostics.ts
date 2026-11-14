@@ -414,9 +414,19 @@ function logStartupMetadata(diagnostics: Diagnostics, appVersion: string): void 
  */
 export function initializeDiagnostics(appVersion: string): Diagnostics {
   const directory = path.join(app.getPath('userData'), 'launch-diagnostics')
+  // Best effort: a previous instance's GPU or utility process can still hold
+  // chromium.log for a moment after it quits (an update or relaunch starts the
+  // app right away). Windows then refuses the delete with EPERM, which must
+  // not stop the launch; the file is overwritten or appended to instead.
+  const leftovers: string[] = []
   if (fs.existsSync(directory)) {
-    for (const entry of fs.readdirSync(directory))
-      fs.rmSync(path.join(directory, entry), { recursive: true, force: true })
+    for (const entry of fs.readdirSync(directory)) {
+      try {
+        fs.rmSync(path.join(directory, entry), { recursive: true, force: true })
+      } catch (error) {
+        leftovers.push(`${entry} (${(error as NodeJS.ErrnoException).code ?? String(error)})`)
+      }
+    }
   } else {
     fs.mkdirSync(directory, { recursive: true })
   }
@@ -454,6 +464,7 @@ export function initializeDiagnostics(appVersion: string): Diagnostics {
     compress: false,
   })
 
+  if (leftovers.length) console.warn('[diagnostics] could not clear from the last launch:', leftovers.join(', '))
   console.log('[diagnostics] RAM usage log:', diagnostics.ramUsageLogPath)
   logStartupMetadata(diagnostics, appVersion)
   return diagnostics

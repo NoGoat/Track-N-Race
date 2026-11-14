@@ -42,6 +42,9 @@ public:
         // On the Racing Line layer: the stretch along a lap's own path, as
         // world x and z, since there is no lap line to follow.
         QPolygonF world;
+        // Clicking the stretch (not dragging the map) emits markClicked with
+        // this; -1 leaves it unclickable.
+        int clickId = -1;
     };
     // One lap's recorded path, as world x and z.
     struct RacingLine { QPolygonF world; QColor color; };
@@ -106,6 +109,8 @@ signals:
     // the map to fill the session view, or restores it.
     void fullscreenToggled();
     void viewChanged(const TrackMapWidget::View& view);
+    // A mark with a clickId was clicked.
+    void markClicked(int clickId);
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -169,6 +174,9 @@ private:
     std::vector<QPolygonF> drawMarks(QPainter& p, const Layout& l, double tzf) const;
     QPointF drawCaret(QPainter& p, const Layout& l, double tzf, const Mark& mark, double to) const;
     void showHoveredMark(int index, const QPointF& at);
+    // The nearest mark to `pointer` within MARK_HOVER_PX that has a tooltip
+    // (or, with `clickable`, a clickId), and its closest point; -1 for none.
+    int markAt(const QPointF& pointer, bool clickable, QPointF* at = nullptr) const;
     void rebuildPrepared();
     void rebuildStaticLayer();
     void drawTrack(QPainter& p, const Layout& l, double effZoom) const;   // vector track render
@@ -199,6 +207,8 @@ private:
     bool        dragging_ = false;
     QPointF     dragStart_;
     View        dragView_;
+    bool        pressed_ = false;   // a left press that may end as a click
+    QPointF     pressStart_;
     std::vector<QPolygonF> markPaths_;   // device points along each mark, for hover
     int         hoveredMark_ = -1;
     QLabel*     markCard_ = nullptr;

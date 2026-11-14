@@ -27,6 +27,28 @@ internal class NativeTelemetry(
         @JvmStatic
         external fun nativeAnalysisMapPaletteJson(): String
 
+        /** Self-update service base URL (tnrp/Updates.h); TNR_UPDATE_ENDPOINT overrides it. */
+        @JvmStatic
+        external fun nativeUpdateServiceUrl(): String
+
+        /** "/v1/check?…" for one install, appended to [nativeUpdateServiceUrl]. */
+        @JvmStatic
+        external fun nativeUpdateCheckPath(product: String, os: String, arch: String, format: String,
+                                           currentVersion: String): String
+
+        /** Verifies the service's signed manifest and picks this install's file: {"status","version","url",…}. */
+        @JvmStatic
+        external fun nativeUpdateEvaluateJson(response: String, product: String, os: String, arch: String,
+                                              format: String, currentVersion: String): String
+
+        /** 1 / 0 / -1 by semantic versioning; 2 when either is not a version. */
+        @JvmStatic
+        external fun nativeUpdateCompareVersions(left: String, right: String): Int
+
+        /** "" when the file matches the signed size and SHA-512. Reads the whole file: call off the main thread. */
+        @JvmStatic
+        external fun nativeUpdateVerifyFile(path: String, sha512: String, size: Long): String
+
         /**
          * A recording's details read from its index without loading it, as
          * JSON: protocol, trackName, sessionName, sessionType, startTime (ms),

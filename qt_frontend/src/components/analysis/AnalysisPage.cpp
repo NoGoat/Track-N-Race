@@ -236,6 +236,11 @@ AnalysisPage::AnalysisPage(SessionModel* model, QWidget* parent)
     // changing the view.
     connect(zones_, &AnalysisBrakingZones::zoneActivated, this,
             [this](double distanceM) { inspectMap(distanceM, true, false); });
+    // A zone clicked on the map is selected in the Braking Zones panel when
+    // it is open; a closed panel stays closed.
+    connect(map_, &AnalysisMapView::brakingZoneClicked, this, [this](int row) {
+        if (zones_->isVisible()) zones_->selectZone(row);
+    });
     connect(contentSplitter_, &AnalysisSplitter::ratioChanged, this, [this](double ratio) {
         settings_.setValue("analyze/splitRatio", ratio);
     });

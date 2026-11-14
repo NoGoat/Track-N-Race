@@ -18,7 +18,7 @@ import {
 } from './pairHostAdapter'
 import { setFatalFlushHandler } from './diagnostics'
 import { hasFirstTimeSetupSwitch, registerFirstTimeSetupIpc, requestFirstTimeSetup } from './firstTimeSetup'
-import { checkForUpdateOnStartup, RELEASE_PAGE_URL, skipUpdateVersion, type AvailableUpdate } from './updateChecker'
+import { checkForUpdateOnStartup, installPendingUpdate, RELEASE_PAGE_URL, skipUpdateVersion, type AvailableUpdate } from './updateChecker'
 import {
   setOverride,
   getTeamColorConfig,
@@ -262,6 +262,10 @@ ipcMain.on('updates:skip-version', (_event, version: string) => {
 })
 
 ipcMain.handle('updates:open-download-page', () => shell.openExternal(RELEASE_PAGE_URL))
+
+ipcMain.handle('updates:install', (event) => installPendingUpdate(progress => {
+  if (!event.sender.isDestroyed()) event.sender.send('updates:progress', progress)
+}))
 
 ipcMain.handle('pairing:get-state', () => getPairServiceState())
 ipcMain.handle('pairing:set-enabled', (_event, enabled: boolean) =>

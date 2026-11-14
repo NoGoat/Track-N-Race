@@ -1,0 +1,11 @@
+name = "track-n-race-updates"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[vars]
+# Versions to stop offering, comma-separated (e.g. "1.7.0,1.7.1").
+BLOCKED_VERSIONS = ""
+
+# Optional, raises GitHub's API limit: npx wrangler secret put GITHUB_TOKEN
+# (a fine-grained token with no permissions is enough for a public repo).
