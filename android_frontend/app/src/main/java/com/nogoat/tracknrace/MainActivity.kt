@@ -16,6 +16,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import com.nogoat.tracknrace.pages.FirstTimeSetupScreen
 import com.nogoat.tracknrace.ui.immersiveLandscape
 import com.nogoat.tracknrace.ui.theme.TrackNRaceTheme
 import com.nogoat.tracknrace.ui.theme.isDark
@@ -45,7 +46,11 @@ class MainActivity : ComponentActivity() {
             val wheelDisplay = telemetry.store.settings.wheelDisplay
             LaunchedEffect(wheelDisplay) { updateSystemBars() }
             TrackNRaceTheme(dark) {
-                TrackNRaceApp(telemetry)
+                if (telemetry.store.settings.setupComplete) {
+                    TrackNRaceApp(telemetry)
+                } else {
+                    FirstTimeSetupScreen(telemetry)
+                }
             }
         }
         // The theme's window background covers the launch until Compose draws.
@@ -72,6 +77,8 @@ class MainActivity : ComponentActivity() {
      */
     private fun askForNotifications() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        // First-time setup explains and asks on its Allow access screen.
+        if (!telemetry.store.settings.setupComplete) return
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
         ) return

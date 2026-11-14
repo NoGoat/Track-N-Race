@@ -407,6 +407,8 @@ internal data class AndroidSettings(
     val udpForwardingEnabled: Boolean = false,
     /** Where received packets are copied to while forwarding is on. */
     val udpForwardTargets: List<UdpForwardTarget> = emptyList(),
+    /** First-time setup has been finished (or the install predates it). */
+    val setupComplete: Boolean = true,
 )
 
 internal const val DEFAULT_UDP_PORT = 20777

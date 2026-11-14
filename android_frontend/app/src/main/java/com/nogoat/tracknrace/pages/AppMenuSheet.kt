@@ -254,7 +254,7 @@ private fun DriverRow(driver: MenuDriver, onPick: (() -> Unit)?) {
  * phone is hosting shows up too; ConnectivityManager doesn't report that one.
  */
 @Composable
-private fun rememberDeviceAddresses(): List<String> {
+internal fun rememberDeviceAddresses(): List<String> {
     val context = LocalContext.current
     var addresses by remember { mutableStateOf(deviceAddresses()) }
     DisposableEffect(context) {

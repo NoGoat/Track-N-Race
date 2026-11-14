@@ -29,6 +29,7 @@ internal class TelemetryController(
         private const val PREF_UDP_FORWARD_TARGETS = "udp.forwardTargets"
         private const val PREF_THEME_MODE = "theme_mode"
         private const val PREF_WHEEL_DISPLAY = "wheel_display"
+        private const val PREF_SETUP_COMPLETE = "setup.completed"
     }
 
     private val context: Context = context.applicationContext
@@ -109,6 +110,31 @@ internal class TelemetryController(
         store.setAnalysisDriverLapsSink(analysis::onDriverLaps)
         store.setAnalysisBrakingSink(analysis::onBrakingZones)
         store.setAnalysisMapSink(analysis::onAnalysisMap)
+        decideFirstTimeSetup()
+        publishSettings()
+    }
+
+    /**
+     * Decided once, on the first launch of a build that has first-time setup:
+     * an install that already holds settings (a source, a theme, recording,
+     * a UDP port or a paired desktop) was set up before it existed, so it
+     * skips setup. Setup's own choices write those keys too, which is why
+     * the answer is stored rather than worked out on each launch.
+     */
+    private fun decideFirstTimeSetup() {
+        val preferences = preferences()
+        if (preferences.contains(PREF_SETUP_COMPLETE)) return
+        val existingInstall = preferences.contains(PairedTelemetryClient.PREF_SOURCE) ||
+            preferences.contains(PREF_THEME_MODE) ||
+            preferences.contains(RecordingStorage.PREF_RECORDING) ||
+            preferences.contains(PREF_UDP_PORT) ||
+            PairedTelemetryClient.hasSavedDesktop(context)
+        preferences.edit().putBoolean(PREF_SETUP_COMPLETE, existingInstall).apply()
+    }
+
+    /** First-time setup's Start: the app opens normally from now on. */
+    fun completeSetup() {
+        preferences().edit().putBoolean(PREF_SETUP_COMPLETE, true).apply()
         publishSettings()
     }
 
@@ -867,6 +893,7 @@ internal class TelemetryController(
         udpPort = udpPort(),
         udpForwardingEnabled = preferences().getBoolean(PREF_UDP_FORWARDING, false),
         udpForwardTargets = storedForwardTargets(),
+        setupComplete = preferences().getBoolean(PREF_SETUP_COMPLETE, true),
     )
 
     private fun publishSettings() = store.updateSettings(currentSettings())
