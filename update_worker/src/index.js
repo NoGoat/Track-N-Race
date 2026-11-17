@@ -11,8 +11,9 @@
 // Nothing about the caller is logged or stored.
 //
 // Settings (wrangler.toml [vars] or the dashboard):
-//   BLOCKED_VERSIONS  comma-separated versions to stop offering, e.g. "1.7.0"
-//   GITHUB_TOKEN      optional secret; raises GitHub's API rate limit
+//   BLOCKED_VERSIONS     comma-separated versions to stop offering, e.g. "1.7.0"
+//   INCLUDE_PRERELEASES  "true" also offers GitHub prereleases (staging only)
+//   GITHUB_TOKEN         optional secret; raises GitHub's API rate limit
 //   GITHUB_API        repository API base (local testing only)
 
 const DEFAULT_API = 'https://api.github.com/repos/NoGoat/Track-N-Race'
@@ -49,10 +50,11 @@ async function check(url, env, ctx) {
 
   const api = (env.GITHUB_API || DEFAULT_API).replace(/\/+$/, '')
   const blocked = new Set((env.BLOCKED_VERSIONS || '').split(',').map(value => value.trim().replace(/^v/, '')).filter(Boolean))
-  const releases = await cachedFetch(`${api}/releases?per_page=30`, RELEASES_TTL, env, ctx, 'json')
+  const includePrereleases = env.INCLUDE_PRERELEASES === 'true'
+  const releases = await cachedFetch(url, `${api}/releases?per_page=30`, RELEASES_TTL, env, ctx, 'json')
 
   const candidates = releases
-    .filter(release => !release.draft && !release.prerelease && parseVersion(release.tag_name))
+    .filter(release => !release.draft && (includePrereleases || !release.prerelease) && parseVersion(release.tag_name))
     .filter(release => !blocked.has(release.tag_name.replace(/^v/, '')))
     .filter(release => compareVersions(release.tag_name, current) > 0)
     .sort((a, b) => compareVersions(b.tag_name, a.tag_name))
@@ -62,8 +64,8 @@ async function check(url, env, ctx) {
     const signatureAsset = release.assets?.find(asset => asset.name === 'manifest.json.sig')
     if (!manifestAsset || !signatureAsset) continue
 
-    const manifest = await cachedFetch(manifestAsset.browser_download_url, ASSET_TTL, env, ctx, 'text')
-    const signature = (await cachedFetch(signatureAsset.browser_download_url, ASSET_TTL, env, ctx, 'text')).trim()
+    const manifest = await cachedFetch(url, manifestAsset.browser_download_url, ASSET_TTL, env, ctx, 'text')
+    const signature = (await cachedFetch(url, signatureAsset.browser_download_url, ASSET_TTL, env, ctx, 'text')).trim()
     let parsed
     try {
       parsed = JSON.parse(manifest)
@@ -77,9 +79,11 @@ async function check(url, env, ctx) {
   return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } })
 }
 
-async function cachedFetch(target, ttl, env, ctx, kind) {
+// The Cache API works only on a zone (api.track-n-race.com); on workers.dev (staging) every call goes to GitHub.
+// Keys use the Worker's own hostname so they stay inside its zone.
+async function cachedFetch(requestUrl, target, ttl, env, ctx, kind) {
   const cache = caches.default
-  const key = new Request(`https://cache.tracknrace.internal/${kind}?u=${encodeURIComponent(target)}`)
+  const key = new Request(`${requestUrl.origin}/__cache/${kind}?u=${encodeURIComponent(target)}`)
   const hit = await cache.match(key)
   if (hit) return kind === 'json' ? hit.json() : hit.text()
 

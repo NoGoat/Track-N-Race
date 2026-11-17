@@ -52,9 +52,10 @@ using update_wire::ServiceResponse;
 // private key never enters the repo.
 constexpr std::string_view kReleasePublicKey = "w6xcQVUaTnS2eKJdyLopSmSFdr8Vv+6DWe+74wGNBCg=";
 
-// The deployed update_worker. Empty means none is deployed yet; frontends then
-// fall back to the GitHub release check, which can only point at the download page.
-constexpr std::string_view kUpdateServiceUrl = "";
+// The deployed update_worker (update_worker/wrangler.toml). If it can't be
+// reached, frontends fall back to the GitHub release check, which can only
+// point at the download page.
+constexpr std::string_view kUpdateServiceUrl = "https://api.track-n-race.com";
 
 constexpr glz::opts kLenient{.error_on_unknown_keys = false};
 

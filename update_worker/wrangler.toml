@@ -1,11 +1,29 @@
 name = "track-n-race-updates"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
-workers_dev = true
+
+# Production: https://api.track-n-race.com (kUpdateServiceUrl in protocol_parser_library/src/Updates.cpp).
+# Deploying creates the DNS record and certificate on the track-n-race.com zone.
+workers_dev = false
+routes = [{ pattern = "api.track-n-race.com", custom_domain = true }]
 
 [vars]
 # Versions to stop offering, comma-separated (e.g. "1.7.0,1.7.1").
 BLOCKED_VERSIONS = ""
+# Published releases only. Staging (below) also offers prereleases.
+INCLUDE_PRERELEASES = ""
 
 # Optional, raises GitHub's API limit: npx wrangler secret put GITHUB_TOKEN
 # (a fine-grained token with no permissions is enough for a public repo).
+# Secrets are per environment: repeat with --env staging for staging.
+
+# Staging: npx wrangler deploy --env staging
+# A separate Worker (track-n-race-updates-staging) on workers.dev only, no custom domain. It also offers
+# GitHub prereleases, so a release can be tested end to end before it's published as a full release.
+# Apps reach it only with TNR_UPDATE_ENDPOINT set. Vars aren't inherited, so every var is repeated here.
+[env.staging]
+workers_dev = true
+
+[env.staging.vars]
+BLOCKED_VERSIONS = ""
+INCLUDE_PRERELEASES = "true"
