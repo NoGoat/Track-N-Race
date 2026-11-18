@@ -143,34 +143,42 @@ plus a note on the first-install confirmation behaviour.
 
 ## End-to-end test (on the phone)
 
-1. Build two release-signed APKs, `build-signed-apk 0.9.1` and `0.9.2`.
-   Because the debug override in step 9 must be in a release-signed build,
-   either temporarily enable it for this test or add a `releaseTest` build type
-   signed with the release key. Remove that afterwards.
-2. Put the 0.9.2 APK in a folder and sign a test manifest:
-   `node publish-release.mjs manifest 0.9.2 --dir <folder> --base-url http://127.0.0.1:8789/download`.
-3. Start the stand-in GitHub server: `node update_worker/mock-github.mjs <folder> 8789`.
-   It lists a draft 9.9.9 (which must never be offered) and a published 0.9.2
-   with every file in the folder, and serves `/download/<name>`. Start the Worker with
-   `npx wrangler dev --port 8790 --var GITHUB_API:http://127.0.0.1:8789/repos/NoGoat/Track-N-Race`.
-   Port 8787 may be taken by the website's dev server.
-4. `adb reverse tcp:8790 tcp:8790` and `adb reverse tcp:8789 tcp:8789`, set the
-   endpoint override, and `adb install` 0.9.1.
-5. Check, with screenshots from the phone:
+Test builds are R8 release builds signed with the debug key, with the update
+endpoint built in (`-PtnrUpdateTestEndpoint`, see `app/build.gradle`). Gradle
+refuses that property without `-PtnrLocalReleaseSigning`, so a test build can
+never install over a real user's copy, and `build-signed-apk` never passes it.
+
+1. Build two test APKs from `android_frontend/` (add `-PtnrX86` for an x86_64
+   emulator):
+   `./gradlew :app:assembleRelease -PtnrLocalReleaseSigning -PtnrUpdateTestEndpoint=http://127.0.0.1:8790 -PtnrVersionName=0.9.1 -PtnrVersionCode=901`,
+   then the same with `0.9.2` / `902`. Copy the 0.9.2 APK into a folder as
+   `Track-N-Race-Android.apk`.
+2. Start the local Worker and publish 0.9.2 to its local bucket
+   (`update_worker/README.md`, "Testing locally"):
+   `npx wrangler dev --port 8790 --var LOCAL_DOWNLOADS:true` in `update_worker/`, then
+   `node publish-release.mjs publish 0.9.2 --dir <folder> --local` and
+   `node publish-release.mjs promote 0.9.2 stable --local`.
+3. `adb reverse tcp:8790 tcp:8790` and `adb install` 0.9.1. A higher installed
+   versionCode refuses the downgrade on release builds; uninstall first.
+4. Check, with screenshots from the phone:
    - the dialog appears with 0.9.1 → 0.9.2
    - "Install unknown apps" is asked once
    - the system confirmation appears
    - after the update, the app reports 0.9.2 (`adb shell dumpsys package com.nogoat.tracknrace | grep versionName`)
    - the "Updated" notification appears
    - reopening the app shows no update dialog
-6. Install 0.9.1 again (`adb install -d`, or uninstall first) and update once
-   more. This time Track N Race is the recorded installer, so note whether
-   Android skips the confirmation.
-7. Tampered APK: serve a copy with one byte flipped and the original manifest.
-   The dialog must show the SHA-512 mismatch and stay on 0.9.1.
-8. A debug-key build must show **Download**, not **Update now**.
-9. Clean up: reinstall your real version, `adb reverse --remove-all`, clear the
-   setprop.
+5. Second update: build 0.9.3 the same way, publish and promote it. Track N
+   Race is now the recorded installer, so note whether Android skips the
+   confirmation. (On the API 37 emulator on 2026-11-17 it still asked.)
+6. Tampered APK: publish 0.9.3, then flip one byte of the APK in the local
+   bucket (re-upload with `npx wrangler r2 object put --local`, leaving the
+   manifest). The dialog must show the SHA-512 mismatch and stay on 0.9.2.
+7. A build without the test property must show **Download**, not
+   **Update now**.
+8. Clean up: reinstall your real version and `adb reverse --remove-all`.
+
+Google Play Protect asks to scan every APK it hasn't seen before installing
+it. Choose "Install without scanning"; "Scan app" uploads the APK to Google.
 
 ## Out of scope
 

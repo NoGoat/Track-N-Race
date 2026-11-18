@@ -221,6 +221,11 @@ struct StrategySnapshotRow {
     double wear_rl{};
     double wear_rr{};
     std::vector<StrategyWearWarning> wear_warnings;
+    // Green-flag pit loss in use: the track's catalogue value corrected by
+    // the clean stops seen this session (pit_loss_samples of them).
+    double pit_loss_ms{};
+    int pit_loss_samples{};
+    bool red_flag{};
 };
 
 // Stateful reducer over normalized cold rows. snapshot() is deterministic and
@@ -287,6 +292,19 @@ private:
         int tainted_lap{-1};
         // A pit visit that began with an unserved drive-through/stop-go.
         bool penalty_visit{};
+        // Gap to the player (+ = behind) when the car entered the pits for
+        // its latest strategic stop; the gap after it includes the pit loss.
+        std::optional<double> pit_entry_gap_ms;
+        // Latched per lap, like tainted_lap: the lap touched the pit lane,
+        // or was driven under a Safety Car, VSC or red flag.
+        int pit_touched_lap{-1};
+        int neutral_lap{-1};
+        // The stop in progress, for measuring pit loss: the laps that touched
+        // the pit lane, against the car's clean pace before it.
+        double stop_sum_ms{};
+        int stop_laps{};
+        double stop_ref_ms{};
+        bool stop_clean{};
         std::vector<RivalLapSample> recent_laps;
     };
 
@@ -316,7 +334,31 @@ private:
         int result_status{};
     };
 
+    // When the forecast first wants another tyre type, as a session time.
+    // Forecast offsets are coarse buckets counted from "now", so a change
+    // recomputed from each packet slides later until the bucket steps down.
+    // The earliest bound seen for an unchanged forecast is kept instead.
+    struct ForecastAnchor {
+        int category{-1};
+        int offset_min{};
+        float change_time{};
+    };
+    // A set's lap delta against the outgoing tyres, kept across a stop.
+    struct PreStopDelta {
+        int idx{-1};
+        int actual_compound{};
+        int lap_delta_ms{};
+    };
+
     int playerIndex() const;
+    float latestInputTime() const;
+    PitLoss calibratedPitLoss() const;
+    void startRedFlag();
+    const WeatherSample* forecastChange(const std::vector<WeatherSample>& forecast,
+                                        bool likelyOnly) const;
+    void updateForecastAnchor(ForecastAnchor& anchor, const WeatherSample* sample) const;
+    int forecastLapFor(const ForecastAnchor& anchor, const WeatherSample& sample,
+                       double lapDuration, float now) const;
     void refreshRivals();
     bool isRivalThreatCandidate(int idx, bool ahead) const;
     double rivalPaceMs(int idx) const;
@@ -375,6 +417,28 @@ private:
     int playerTaintedLap_{-1};
     // First lap of the player's current tyre stint for the pace model.
     int paceStintStartLap_{};
+    // Pace on the outgoing tyres and the game's set deltas against them,
+    // captured at a tyre change: until the new stint has a clean lap its pace
+    // is that pace plus the fitted set's delta, not the old tyres' laps.
+    double preStopPaceMs_{};
+    std::vector<PreStopDelta> preStopDeltas_;
+    ForecastAnchor forecastCardAnchor_;
+    ForecastAnchor forecastPlanAnchor_;
+    // Pit losses measured from clean green-flag stops this session.
+    std::vector<double> pitLossSamples_;
+    // The player's latest lap driven, in part or whole, under SC/VSC/red flag.
+    int neutralisedLap_{-1};
+    // Red flag: from the flag until the player leaves the pit lane again.
+    bool redFlag_{};
+    bool redFlagSawPits_{};
+    int redFlagLap_{};
+    // First stop of each plan (defend, attack) as last committed, so a
+    // one-lap wobble in the tyre estimates does not move the stop.
+    std::array<int,2> heldFirstStop_{};
+    // Set while completeLap() captures the outgoing lap's targets: that pass
+    // still has the old lap number with the new lap's inputs, so it reads the
+    // held stops but must not move them.
+    bool capturingLap_{};
     int aheadTrend_{-1};
     int behindTrend_{-1};
     struct StintProgress {
@@ -412,5 +476,5 @@ template <> struct glz::meta<tnrp::StrategyWeatherDecision> { using T=tnrp::Stra
 template <> struct glz::meta<tnrp::StrategyDecisionRecord> { using T=tnrp::StrategyDecisionRecord; static constexpr auto value=glz::object("event",&T::event,"lap_num",&T::lap_num,"session_time",&T::session_time,"recommendation",&T::recommendation,"reason",&T::reason,"target_idx",&T::target_idx,"target_name",&T::target_name,"start_position",&T::start_position,"projected_position",&T::projected_position,"start_num_pit_stops",&T::start_num_pit_stops,"actual_position",&T::actual_position,"followed",&T::followed,"successful",&T::successful); };
 template <> struct glz::meta<tnrp::StrategySnapshotRow> {
     using T=tnrp::StrategySnapshotRow;
-    static constexpr auto value=glz::object("type",&T::type,"session_time",&T::session_time,"state",&T::state,"lap_num",&T::lap_num,"total_laps",&T::total_laps,"current_actual_compound",&T::current_actual_compound,"current_visual_compound",&T::current_visual_compound,"current_tyre_age_laps",&T::current_tyre_age_laps,"current_compound_name",&T::current_compound_name,"average_wear",&T::average_wear,"wear_per_lap",&T::wear_per_lap,"limiting_corner",&T::limiting_corner,"limiting_wear",&T::limiting_wear,"limiting_wear_per_lap",&T::limiting_wear_per_lap,"cliff_lap",&T::cliff_lap,"laps_until_cliff",&T::laps_until_cliff,"is_monaco",&T::is_monaco,"confidence",&T::confidence,"data_age_s",&T::data_age_s,"explanation",&T::explanation,"conservative",&T::conservative,"aggressive",&T::aggressive,"call",&T::call,"neutralisation",&T::neutralisation,"weather_strategy",&T::weather_strategy,"decision_history",&T::decision_history,"rivals",&T::rivals,"positions",&T::positions,"wear_fl",&T::wear_fl,"wear_fr",&T::wear_fr,"wear_rl",&T::wear_rl,"wear_rr",&T::wear_rr,"wear_warnings",&T::wear_warnings);
+    static constexpr auto value=glz::object("type",&T::type,"session_time",&T::session_time,"state",&T::state,"lap_num",&T::lap_num,"total_laps",&T::total_laps,"current_actual_compound",&T::current_actual_compound,"current_visual_compound",&T::current_visual_compound,"current_tyre_age_laps",&T::current_tyre_age_laps,"current_compound_name",&T::current_compound_name,"average_wear",&T::average_wear,"wear_per_lap",&T::wear_per_lap,"limiting_corner",&T::limiting_corner,"limiting_wear",&T::limiting_wear,"limiting_wear_per_lap",&T::limiting_wear_per_lap,"cliff_lap",&T::cliff_lap,"laps_until_cliff",&T::laps_until_cliff,"is_monaco",&T::is_monaco,"confidence",&T::confidence,"data_age_s",&T::data_age_s,"explanation",&T::explanation,"conservative",&T::conservative,"aggressive",&T::aggressive,"call",&T::call,"neutralisation",&T::neutralisation,"weather_strategy",&T::weather_strategy,"decision_history",&T::decision_history,"rivals",&T::rivals,"positions",&T::positions,"wear_fl",&T::wear_fl,"wear_fr",&T::wear_fr,"wear_rl",&T::wear_rl,"wear_rr",&T::wear_rr,"wear_warnings",&T::wear_warnings,"pit_loss_ms",&T::pit_loss_ms,"pit_loss_samples",&T::pit_loss_samples,"red_flag",&T::red_flag);
 };

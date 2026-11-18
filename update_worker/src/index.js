@@ -1,26 +1,29 @@
 // Track N Race update service.
 //
 // GET /v1/check?product=qt&os=windows&arch=x64&format=installer&v=1.6.2
-//   200 {"manifest": "<manifest.json text>", "signature": "<base64>"} for the
-//       newest published release that is newer than v and has a file for this
+//   200 {"manifest": "<manifest.json text>", "signature": "<base64>"} when this
+//       Worker's channel offers a release newer than v with a file for this
 //       install. The apps verify the signature themselves (tnrp/Updates.h), so
-//       this service only finds the right manifest and caches GitHub.
+//       this service only finds the right manifest.
 //   204 when there is nothing newer.
 //
-// Downloads are never proxied: the manifest points straight at GitHub.
-// Nothing about the caller is logged or stored.
+// Releases live in the R2 bucket bound as RELEASES (publish-release.mjs writes them):
+//   <version>/<file>                 the release files, served from downloads.track-n-race.com
+//   <version>/manifest.json(.sig)    the signed manifest
+//   channels/<channel>.json          {"version": "1.7.0"}: what that channel offers
+// Downloads are never proxied in production: the manifest points at the bucket's
+// own domain. Nothing about the caller is logged or stored.
 //
 // Settings (wrangler.toml [vars] or the dashboard):
-//   BLOCKED_VERSIONS     comma-separated versions to stop offering, e.g. "1.7.0"
-//   INCLUDE_PRERELEASES  "true" also offers GitHub prereleases (staging only)
-//   GITHUB_TOKEN         optional secret; raises GitHub's API rate limit
-//   GITHUB_API        repository API base (local testing only)
+//   CHANNEL           "stable" (production) or "staging"
+//   BLOCKED_VERSIONS  comma-separated versions to stop offering, e.g. "1.7.0"
+//   LOCAL_DOWNLOADS   "true" serves /files/<key> from the bucket (local testing only)
 
-const DEFAULT_API = 'https://api.github.com/repos/NoGoat/Track-N-Race'
-const RELEASES_TTL = 600            // seconds; how quickly a new release shows up
-const ASSET_TTL = 600               // a manifest is re-signed when another machine adds its files
+const POINTER_TTL = 600             // seconds; how quickly a promoted release shows up
+const MANIFEST_TTL = 600            // a manifest is re-signed when another machine adds its files
 const TOKEN = /^[a-z0-9_]{1,24}$/
 const VERSION = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
+const CHANNEL = /^[a-z]{1,16}$/
 
 export default {
   async fetch(request, env, ctx) {
@@ -33,6 +36,7 @@ export default {
         return json({ error: String(error?.message || error) }, 502)
       }
     }
+    if (env.LOCAL_DOWNLOADS === 'true' && url.pathname.startsWith('/files/')) return download(url, env)
     if (url.pathname === '/') return new Response('Track N Race update service\n', { headers: { 'Content-Type': 'text/plain' } })
     return new Response(null, { status: 404 })
   },
@@ -48,56 +52,58 @@ async function check(url, env, ctx) {
   const current = url.searchParams.get('v') || ''
   if (!parseVersion(current)) return json({ error: 'missing or invalid v' }, 400)
 
-  const api = (env.GITHUB_API || DEFAULT_API).replace(/\/+$/, '')
+  const channel = env.CHANNEL || 'stable'
+  if (!CHANNEL.test(channel)) throw new Error('CHANNEL is not a channel name')
+  const pointer = await cachedObject(url, `channels/${channel}.json`, POINTER_TTL, env, ctx)
+  if (pointer === null) return nothing()
+  const version = String(JSON.parse(pointer).version || '').replace(/^v/, '')
+  if (!parseVersion(version)) throw new Error(`channels/${channel}.json has no valid version`)
+
   const blocked = new Set((env.BLOCKED_VERSIONS || '').split(',').map(value => value.trim().replace(/^v/, '')).filter(Boolean))
-  const includePrereleases = env.INCLUDE_PRERELEASES === 'true'
-  const releases = await cachedFetch(url, `${api}/releases?per_page=30`, RELEASES_TTL, env, ctx, 'json')
+  if (blocked.has(version) || compareVersions(version, current) <= 0) return nothing()
 
-  const candidates = releases
-    .filter(release => !release.draft && (includePrereleases || !release.prerelease) && parseVersion(release.tag_name))
-    .filter(release => !blocked.has(release.tag_name.replace(/^v/, '')))
-    .filter(release => compareVersions(release.tag_name, current) > 0)
-    .sort((a, b) => compareVersions(b.tag_name, a.tag_name))
-
-  for (const release of candidates) {
-    const manifestAsset = release.assets?.find(asset => asset.name === 'manifest.json')
-    const signatureAsset = release.assets?.find(asset => asset.name === 'manifest.json.sig')
-    if (!manifestAsset || !signatureAsset) continue
-
-    const manifest = await cachedFetch(url, manifestAsset.browser_download_url, ASSET_TTL, env, ctx, 'text')
-    const signature = (await cachedFetch(url, signatureAsset.browser_download_url, ASSET_TTL, env, ctx, 'text')).trim()
-    let parsed
-    try {
-      parsed = JSON.parse(manifest)
-    } catch {
-      continue
-    }
-    const hasFile = Array.isArray(parsed.files) && parsed.files.some(file =>
-      file.product === want.product && file.os === want.os && file.arch === want.arch && file.format === want.format)
-    if (hasFile) return json({ manifest, signature }, 200)
-  }
-  return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } })
+  const manifest = await cachedObject(url, `${version}/manifest.json`, MANIFEST_TTL, env, ctx)
+  const signature = await cachedObject(url, `${version}/manifest.json.sig`, MANIFEST_TTL, env, ctx)
+  if (manifest === null || signature === null) throw new Error(`release ${version} has no signed manifest`)
+  const parsed = JSON.parse(manifest)
+  const hasFile = Array.isArray(parsed.files) && parsed.files.some(file =>
+    file.product === want.product && file.os === want.os && file.arch === want.arch && file.format === want.format)
+  return hasFile ? json({ manifest, signature: signature.trim() }, 200) : nothing()
 }
 
-// The Cache API works only on a zone (api.track-n-race.com); on workers.dev (staging) every call goes to GitHub.
-// Keys use the Worker's own hostname so they stay inside its zone.
-async function cachedFetch(requestUrl, target, ttl, env, ctx, kind) {
-  const cache = caches.default
-  const key = new Request(`${requestUrl.origin}/__cache/${kind}?u=${encodeURIComponent(target)}`)
-  const hit = await cache.match(key)
-  if (hit) return kind === 'json' ? hit.json() : hit.text()
+// Local testing only: the release files, as downloads.track-n-race.com serves them in production.
+async function download(url, env) {
+  const key = decodeURIComponent(url.pathname.slice('/files/'.length))
+  if (!key || key.includes('..') || key.startsWith('channels/')) return new Response(null, { status: 404 })
+  const object = await env.RELEASES.get(key)
+  if (!object) return new Response(null, { status: 404 })
+  return new Response(object.body, {
+    headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(object.size) },
+  })
+}
 
-  const headers = { 'User-Agent': 'Track-N-Race-Update-Service' }
-  if (kind === 'json') {
-    headers.Accept = 'application/vnd.github+json'
-    headers['X-GitHub-Api-Version'] = '2022-11-28'
-  }
-  if (env.GITHUB_TOKEN && new URL(target).hostname === 'api.github.com') headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`
-  const response = await fetch(target, { headers, redirect: 'follow' })
-  if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status} for ${new URL(target).pathname}`)
-  const body = await response.text()
-  ctx.waitUntil(cache.put(key, new Response(body, { headers: { 'Cache-Control': `public, max-age=${ttl}` } })))
-  return kind === 'json' ? JSON.parse(body) : body
+// Most checks find nothing newer after reading only the cached pointer, which
+// keeps R2 reads far under the free tier's 10 million a month.
+// The Cache API works only on a zone (api.track-n-race.com); on workers.dev
+// (staging) every call reads R2. Keys use the Worker's own hostname so they
+// stay inside its zone.
+async function cachedObject(requestUrl, key, ttl, env, ctx) {
+  const cache = caches.default
+  const cacheKey = new Request(`${requestUrl.origin}/__cache/${encodeURIComponent(key)}`)
+  const hit = await cache.match(cacheKey)
+  if (hit) return hit.status === 404 ? null : hit.text()
+
+  const object = await env.RELEASES.get(key)
+  const body = object ? await object.text() : null
+  const cached = body === null
+    ? new Response('', { status: 404, headers: { 'Cache-Control': `public, max-age=${ttl}` } })
+    : new Response(body, { headers: { 'Cache-Control': `public, max-age=${ttl}` } })
+  ctx.waitUntil(cache.put(cacheKey, cached))
+  return body
+}
+
+function nothing() {
+  return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } })
 }
 
 function json(value, status) {

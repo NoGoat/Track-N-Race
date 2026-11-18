@@ -125,13 +125,15 @@ void appendStints(uint16_t format, RawPlan& out, int pit, int total,
 }
 
 RawPlan buildPlan(uint16_t format, int lap, int total, int firstPit,
-                  int curActual, int curVisual, const std::vector<TyreSet>& pool) {
+                  int curActual, int curVisual, const std::vector<TyreSet>& pool,
+                  int wearLimitLap) {
     RawPlan out;
     int clamped = std::min(firstPit, total);
     // Tyres that reach their cliff with a few laps left are run to the flag:
     // a stop for those laps costs a whole pit loss. Required stops are added
-    // afterwards by enforceMinimumStops.
-    if (total - clamped <= 3) clamped = total;
+    // afterwards by enforceMinimumStops. Laps past the game's life are cheap;
+    // laps past the wear limit are not, so the flag must come before it.
+    if (total - clamped <= 3 && total <= wearLimitLap) clamped = total;
     out.stints.push_back({tyreName(format,curActual),curActual,curVisual,
                           std::max(0,clamped-lap),lap,clamped>=total?-1:clamped,-1,clamped>=total});
     if (clamped >= total) return out;
@@ -264,6 +266,18 @@ double medianLapMs(const std::vector<int>& laps) {
 
 double robustWeightedPace(std::vector<std::pair<int,int>> laps, int currentLap) {
     if (laps.empty()) return 0.0;
+    // Two newest laps both outside the outlier band on the same side are a
+    // change of conditions (rain arriving, a drying track), not two outliers:
+    // the older laps no longer describe the pace, so only those two count.
+    if (laps.size() >= 3) {
+        std::vector<int> older;
+        for (size_t i = 0; i + 2 < laps.size(); ++i) older.push_back(laps[i].second);
+        const double reference = medianLapMs(older);
+        const auto side = [&](int ms) { return ms > reference * 1.04 ? 1 : ms < reference * .94 ? -1 : 0; };
+        const int previous = side(laps[laps.size() - 2].second);
+        if (previous != 0 && previous == side(laps.back().second))
+            laps.erase(laps.begin(), laps.end() - 2);
+    }
     std::vector<int> values;
     values.reserve(laps.size());
     for (const auto& lap : laps) values.push_back(lap.second);
@@ -307,6 +321,10 @@ void StrategyProcessor::reset(){
     haveAheadGap_=haveBehindGap_=false;aheadTrend_=behindTrend_=-1;
     aheadGapIdx_=behindGapIdx_=-1;
     playerTaintedLap_=-1;paceStintStartLap_=0;
+    preStopPaceMs_=0;preStopDeltas_.clear();
+    forecastCardAnchor_={};forecastPlanAnchor_={};
+    pitLossSamples_.clear();neutralisedLap_=-1;
+    redFlag_=redFlagSawPits_=false;redFlagLap_=0;heldFirstStop_={};
     stints_.clear();
 }
 
@@ -331,7 +349,9 @@ void StrategyProcessor::completeLap(int nextLap, int milliseconds) {
         // Capture the last recommendation from the outgoing lap's inputs.
         // This runs for live input AND replay, regardless of page visibility.
         // The internal calculation omits full-race rows and serialization.
+        capturingLap_ = true;
         const auto plan = makeSnapshot(false, true);
+        capturingLap_ = false;
         const StrategyPlan* plans[] = {&plan.conservative, &plan.aggressive};
         for (size_t i = 0; i < 2; ++i)
             for (const auto& stint : plans[i]->stints)
@@ -370,6 +390,8 @@ void StrategyProcessor::ingest(const SessionRow& r){
         ?*r.session_uid!=*session_->session_uid
         :(session_->track_id!=r.track_id||session_->session_type!=r.session_type)&&lap_&&lap_->lap_num>1);
     if(newSession)reset();
+    if(session_&&r.num_red_flag_periods>session_->num_red_flag_periods)startRedFlag();
+    if((r.safety_car_status==1||r.safety_car_status==2)&&lap_)neutralisedLap_=lap_->lap_num;
     const int oldStatus=session_?session_->safety_car_status:0;
     if((r.safety_car_status==1||r.safety_car_status==2)&&r.safety_car_status!=oldStatus){
         neutralisationStartLap_=lap_?lap_->lap_num:0;
@@ -385,6 +407,11 @@ void StrategyProcessor::ingest(const SessionRow& r){
     }
     session_=r;
     observeStint();
+    if(status_){
+        const auto forecast=currentSessionForecast(r);
+        updateForecastAnchor(forecastCardAnchor_,forecastChange(forecast,false));
+        updateForecastAnchor(forecastPlanAnchor_,forecastChange(forecast,true));
+    }
     // Session rows arrive at a fixed rate in live and replay alike, so SC/VSC
     // hysteresis advances on inputs rather than on how often a UI polls.
     if(r.safety_car_status==1||r.safety_car_status==2)commitDecisions();
@@ -396,6 +423,18 @@ void StrategyProcessor::ingest(const StatusRow&r){
         // Freeze the outgoing stint's expected interval before replacing tyres.
         commitDecisions();
         wearHistory_.clear();lastWearLap_=-1;
+        heldFirstStop_={};
+        // V6 delivers a tyre change as several partial rows; only the first
+        // still sees the outgoing stint's laps and set deltas.
+        if(lap_->lap_num>paceStintStartLap_||preStopPaceMs_<=0){
+            preStopPaceMs_=playerPaceMs();
+            preStopDeltas_.clear();
+            if(tyreSets_&&std::any_of(tyreSets_->sets.begin(),tyreSets_->sets.end(),[&](const TyreSet&s){
+                   return s.fitted&&s.actual_compound==status_->tyre_compound;}))
+                for(const auto&s:tyreSets_->sets)
+                    if(s.available&&!s.fitted)preStopDeltas_.push_back({s.idx,s.actual_compound,s.lap_delta_ms});
+            lapTimes_.clear();
+        }
     }
     status_=r;
     if(dryVisual(r.visual_compound))usedDryVisualCompounds_.insert(r.visual_compound);
@@ -419,6 +458,10 @@ void StrategyProcessor::ingest(const TyreSetsRow&r){
     // describe our options. Rows without a car index predate that field.
     if(r.car_idx>=0&&r.car_idx!=playerIndex())return;
     tyreSets_=r;
+    // life_span is the laps a set has left and reaches zero on a worn-out set.
+    // Only a packet without the field at all may fall back to usable_life.
+    if(std::any_of(r.sets.begin(),r.sets.end(),[](const TyreSet&s){return s.life_span>0;}))
+        for(auto&s:tyreSets_->sets)if(s.life_span<=0)s.usable_life=0;
     // Deltas are against the fitted set, so they are comparable only while it
     // is the tyre on the car; right after a stop the packet can lag.
     const TyreSet* fitted=nullptr;
@@ -445,7 +488,7 @@ void StrategyProcessor::ingest(const AllStatusRow&r){
             car.tyre_age_laps+1<experience.tyre_age_laps)){
             experience.recent_laps.clear();
             // Penalties can be served at a tyre stop; the tyre change makes it strategic.
-            if(experience.penalty_visit&&experience.observed_lap>=0){
+            if(experience.penalty_visit&&experience.observed_lap>=0&&!redFlag_){
                 experience.last_pit_lap=experience.observed_lap;
                 experience.penalty_visit=false;
             }
@@ -457,10 +500,86 @@ void StrategyProcessor::ingest(const AllStatusRow&r){
 }
 void StrategyProcessor::ingest(const RaceEventRow&r){
     if(r.code=="SSTA"){reset();return;}
+    if(r.code=="RDFL"){startRedFlag();return;}
     if(r.code=="RTMT"&&r.car_idx){
         retiredCars_.insert(*r.car_idx);
         refreshRivals();
     }
+}
+
+// The catalogue value is a prior. Clean green-flag stops seen this session
+// pull it toward their median, a few samples at a time and never far.
+PitLoss StrategyProcessor::calibratedPitLoss() const{
+    PitLoss pit=pitLossForTrack(session_?session_->track_id:-1);
+    if(pitLossSamples_.size()<2||pit.total_ms<=0)return pit;
+    std::vector<double> sorted=pitLossSamples_;
+    std::sort(sorted.begin(),sorted.end());
+    const size_t mid=sorted.size()/2;
+    const double median=sorted.size()%2?sorted[mid]:(sorted[mid-1]+sorted[mid])/2.0;
+    const double weight=sorted.size()/(sorted.size()+3.0);
+    const double total=std::clamp(pit.total_ms*(1.0-weight)+median*weight,pit.total_ms*.75,pit.total_ms*1.25);
+    const double scale=total/pit.total_ms;
+    pit.inlap_ms*=scale;pit.outlap_ms*=scale;pit.total_ms=total;
+    return pit;
+}
+
+// A red flag sends every car to the pit lane and allows a free tyre change.
+// Until the player is back on track those visits are not strategic stops,
+// the laps are not pace or wear samples, and nothing is called.
+void StrategyProcessor::startRedFlag(){
+    if(redFlag_)return;
+    redFlag_=true;redFlagSawPits_=false;
+    redFlagLap_=lap_?lap_->lap_num:0;
+    if(lap_)neutralisedLap_=lap_->lap_num;
+    neutralisationStartLap_=0;neutralisationStartTime_=0;
+    frozenNeutralCars_.clear();neutralisationRecommendation_.clear();
+    heldFirstStop_={};
+}
+
+float StrategyProcessor::latestInputTime() const{
+    return std::max({lap_?lap_->session_time:0.0f,status_?status_->session_time:0.0f,
+        damage_?damage_->session_time:0.0f,timing_?timing_->session_time:0.0f,
+        tyreSets_?tyreSets_->session_time:0.0f,allStatus_?allStatus_->session_time:0.0f});
+}
+
+// The first sample within the hour whose weather wants neither the fitted
+// tyre nor the current weather's (the current weather is judged by pace).
+// likelyOnly keeps a change the forecast thinks likely: at least an even
+// chance of rain to go wetter, at most an even chance to go drier.
+const WeatherSample* StrategyProcessor::forecastChange(const std::vector<WeatherSample>& forecast,
+                                                       bool likelyOnly) const{
+    if(!status_||!session_)return nullptr;
+    const int fittedCategory=tyreCategory(status_->tyre_compound);
+    const int nowCategory=weatherCategory(session_->weather);
+    for(const auto&sample:forecast){
+        if(sample.time_offset<=0||sample.time_offset>60)continue;
+        const int target=weatherCategory(sample.weather);
+        if(target==fittedCategory||target==nowCategory)continue;
+        if(likelyOnly&&(target>fittedCategory?sample.rain_percentage<50:sample.rain_percentage>50))continue;
+        return &sample;
+    }
+    return nullptr;
+}
+
+void StrategyProcessor::updateForecastAnchor(ForecastAnchor& anchor,const WeatherSample* sample) const{
+    if(!sample){anchor={};return;}
+    const int target=weatherCategory(sample->weather);
+    const float bound=latestInputTime()+sample->time_offset*60.0f;
+    // A later offset for the same change is a revised forecast: follow it.
+    const bool same=anchor.category==target&&sample->time_offset<=anchor.offset_min;
+    anchor={target,sample->time_offset,same?std::min(anchor.change_time,bound):bound};
+}
+
+int StrategyProcessor::forecastLapFor(const ForecastAnchor& anchor,const WeatherSample& sample,
+                                      double lapDuration,float now) const{
+    double untilMs=sample.time_offset*60000.0;
+    if(anchor.category==weatherCategory(sample.weather)&&anchor.offset_min==sample.time_offset)
+        untilMs=std::max(0.0,(double)(anchor.change_time-now)*1000.0);
+    // Counted from the start of the lap in progress, so the lap does not
+    // step within a lap as the time left shrinks.
+    const double intoLap=lap_?std::clamp((double)lap_->current_lap_ms,0.0,lapDuration):0.0;
+    const int lap=lap_?lap_->lap_num:0;
+    return lap+std::max(1,(int)std::ceil((untilMs+intoLap)/lapDuration));
 }
 
 void StrategyProcessor::refreshRivals(){
@@ -525,7 +644,13 @@ double StrategyProcessor::rivalPaceMs(int idx) const{
     if(session_&&session_->safety_car_status!=0)return 0.0;
     if(timing_){
         const TimingCar* car=findCar(*timing_,idx);
-        if(car&&!car->lap_invalid&&car->pit_status==0&&validRaceLapMs(car->last_lap_ms))return car->last_lap_ms;
+        if(car&&!car->lap_invalid&&car->pit_status==0&&validRaceLapMs(car->last_lap_ms)){
+            // A raw last lap that touched the pits, was neutralised or was
+            // invalid is no pace, nor is one within two laps of a stop.
+            if(it!=rivalExperience_.end()&&(it->second.tainted_lap==car->lap_num-1||
+               it->second.last_pit_lap>=car->lap_num-2))return 0.0;
+            return car->last_lap_ms;
+        }
     }
     return 0.0;
 }
@@ -535,11 +660,25 @@ double StrategyProcessor::playerPaceMs() const{
     for(const auto&lap:lapTimes_)if(validRaceLapMs(lap.second))laps.push_back(lap);
     const double pace=robustWeightedPace(std::move(laps),lap_?lap_->lap_num:0);
     if(pace>0)return pace;
+    // A new stint without a clean lap yet: the outgoing tyres' pace plus the
+    // game's delta for the set that went on (the best set of the compound
+    // until the sets packet shows which one it was).
+    if(preStopPaceMs_>0&&status_){
+        std::optional<int> delta;
+        int fittedIdx=-1;
+        if(tyreSets_)for(const auto&s:tyreSets_->sets)
+            if(s.fitted&&s.actual_compound==status_->tyre_compound){fittedIdx=s.idx;break;}
+        for(const auto&d:preStopDeltas_)if(d.idx==fittedIdx&&d.actual_compound==status_->tyre_compound)delta=d.lap_delta_ms;
+        if(!delta)for(const auto&d:preStopDeltas_)
+            if(d.actual_compound==status_->tyre_compound&&(!delta||d.lap_delta_ms<*delta))delta=d.lap_delta_ms;
+        return std::max(1.0,preStopPaceMs_+delta.value_or(0));
+    }
     if(timing_){
         const auto*player=findCar(*timing_,timing_->player_idx);
-        if(player&&!player->lap_invalid&&player->pit_status==0&&validRaceLapMs(player->last_lap_ms))return player->last_lap_ms;
+        if(player&&!player->lap_invalid&&player->pit_status==0&&validRaceLapMs(player->last_lap_ms)&&
+           playerTaintedLap_!=player->lap_num-1)return player->last_lap_ms;
     }
-    return lap_&&validRaceLapMs(lap_->last_lap_ms)?lap_->last_lap_ms:0.0;
+    return lap_&&validRaceLapMs(lap_->last_lap_ms)&&playerTaintedLap_!=lap_->lap_num-1?lap_->last_lap_ms:0.0;
 }
 
 double StrategyProcessor::rivalThreatScore(int idx,bool ahead) const{
@@ -578,7 +717,7 @@ void StrategyProcessor::ingest(const TimingRow&r){
         completedStops_ = std::max(completedStops_, player->num_pit_stops);
     }
     timing_=r;
-    const bool neutralised=session_&&(session_->safety_car_status==1||session_->safety_car_status==2);
+    const bool neutralised=redFlag_||(session_&&(session_->safety_car_status==1||session_->safety_car_status==2));
     const TimingCar* player=findCar(r,r.player_idx);
     for(const auto& car:r.cars){
         auto& experience=rivalExperience_[car.idx];
@@ -586,15 +725,50 @@ void StrategyProcessor::ingest(const TimingRow&r){
         const bool enteredPits=experience.observed_lap>=0&&experience.pit_status==0&&car.pit_status!=0;
         // Unserved penalty counters are the only signal that a pit visit is a
         // drive-through/stop-go rather than a strategic tyre stop.
-        if(enteredPits)experience.penalty_visit=penaltyPending(car);
+        // A red-flag visit is not a strategic stop either.
+        if(enteredPits)experience.penalty_visit=penaltyPending(car)||redFlag_;
+        if(enteredPits){
+            // The car's clean pace going into the stop, to measure its loss.
+            experience.stop_ref_ms=0;
+            if(!experience.penalty_visit&&!neutralised&&experience.recent_laps.size()>=2){
+                std::vector<int> times;
+                for(const auto&sample:experience.recent_laps)times.push_back(sample.lap_ms);
+                experience.stop_ref_ms=medianLapMs(times);
+            }
+        }
         if(justStopped&&!experience.penalty_visit){experience.recent_laps.clear();}
         if((justStopped||enteredPits)&&!experience.penalty_visit)experience.last_pit_lap=car.lap_num;
+        if(enteredPits&&!experience.penalty_visit){
+            experience.pit_entry_gap_ms.reset();
+            const bool gapsValid=player&&(player->position==1||player->gap_ms>0)&&(car.position==1||car.gap_ms>0);
+            if(gapsValid)experience.pit_entry_gap_ms=(double)car.gap_ms-player->gap_ms;
+        }
         experience.num_pit_stops=car.num_pit_stops;
         experience.pit_status=car.pit_status;
         if(car.pit_status==0)experience.penalty_visit=false;
         if(car.lap_num>experience.observed_lap){
             // Lap 1 includes the standing start and is not representative race pace.
             const int completedLap=car.lap_num-1;
+            // Pit loss: the laps that touched the pit lane, less the same
+            // number of laps at the car's pace before the stop. Wherever the
+            // timing line sits in the pit lane, their sum holds the whole stop.
+            if(experience.pit_touched_lap==completedLap&&experience.observed_lap==completedLap){
+                if(experience.stop_laps==0)experience.stop_clean=experience.stop_ref_ms>0;
+                if(!validRaceLapMs(car.last_lap_ms)||experience.neutral_lap==completedLap||
+                   neutralised||car.result_status!=2)experience.stop_clean=false;
+                experience.stop_sum_ms+=car.last_lap_ms;++experience.stop_laps;
+            }else if(experience.stop_laps>0){
+                if(experience.stop_clean&&experience.stop_laps<=2&&session_){
+                    const double catalogue=pitLossForTrack(session_->track_id).total_ms;
+                    const double loss=experience.stop_sum_ms-experience.stop_laps*experience.stop_ref_ms;
+                    // Long repairs, queues and missed laps are not the track's pit loss.
+                    if(loss>=catalogue*.6&&loss<=catalogue*1.6){
+                        pitLossSamples_.push_back(loss);
+                        if(pitLossSamples_.size()>15)pitLossSamples_.erase(pitLossSamples_.begin());
+                    }
+                }
+                experience.stop_sum_ms=0;experience.stop_laps=0;experience.stop_clean=false;
+            }
             const bool settledTyres=experience.tyre_age_laps<0||experience.tyre_age_laps>1;
             // lap_invalid in this row already belongs to the new lap; use the
             // flags latched while the completed lap was being driven.
@@ -606,12 +780,17 @@ void StrategyProcessor::ingest(const TimingRow&r){
                 experience.recent_laps.push_back({completedLap,car.last_lap_ms,relative,
                     car.position,experience.tyre_age_laps});
                 if(experience.recent_laps.size()>5)experience.recent_laps.erase(experience.recent_laps.begin());
-                if(car.idx==r.player_idx&&car.driver_status!=2&&car.driver_status!=3)
+                // Not driver_status: the game reports "in lap" for every lap
+                // driven with a pit request armed, however long before the
+                // stop. The pit-lane flags above already drop real in-laps.
+                if(car.idx==r.player_idx&&car.driver_status!=3)
                     rememberPaceLap(completedLap,car.last_lap_ms);
             }
             experience.observed_lap=car.lap_num;
         }
         if(car.lap_num>0&&(car.lap_invalid||car.pit_status!=0||neutralised))experience.tainted_lap=car.lap_num;
+        if(car.lap_num>0&&car.pit_status!=0)experience.pit_touched_lap=car.lap_num;
+        if(car.lap_num>0&&neutralised)experience.neutral_lap=car.lap_num;
     }
     refreshRivals();
     const TimingCar* p=player;
@@ -631,17 +810,26 @@ void StrategyProcessor::ingest(const TimingRow&r){
 void StrategyProcessor::ingest(const LapRow&r){
     completeLap(r.lap_num,r.last_lap_ms);
     completedStops_=std::max(completedStops_,r.num_pit_stops);
-    const bool neutralised=session_&&(session_->safety_car_status==1||session_->safety_car_status==2);
+    // The red flag ends for Strategy once the player has been to the pit
+    // lane and is out again (or, never seen there, two laps on).
+    if(redFlag_){
+        if(r.pit_status!=0)redFlagSawPits_=true;
+        else if(redFlagSawPits_||r.lap_num>redFlagLap_+1)redFlag_=false;
+    }
+    const bool neutralised=redFlag_||(session_&&(session_->safety_car_status==1||session_->safety_car_status==2));
     const bool advanced=lap_&&r.lap_num>lap_->lap_num;
     // Judge the completed lap on the flags latched while it was driven; this
     // row's lap_invalid/pit flags already describe the new lap.
+    // "In lap" (driver_status 2) is not a reason to drop a lap: it is set
+    // while a pit request is armed, which can be many laps before the stop.
     const bool clean=advanced&&r.lap_num==lap_->lap_num+1&&playerTaintedLap_!=lap_->lap_num&&
-        r.pit_status==0&&r.driver_status!=2&&r.driver_status!=3;
+        r.pit_status==0&&r.driver_status!=3;
     const bool settled=!status_||status_->tyre_age_laps>1;
     // Lap 1 includes the standing start and is not representative race pace.
     if(r.lap_num>2&&validRaceLapMs(r.last_lap_ms)&&!neutralised&&clean&&settled)
         rememberPaceLap(r.lap_num-1,r.last_lap_ms);
-    if(r.lap_num>1&&r.lap_num-1>lastWearLap_&&damage_&&status_&&!neutralised){
+    // A lap neutralised for any part of it wears the tyres far less.
+    if(r.lap_num>1&&r.lap_num-1>lastWearLap_&&damage_&&status_&&!neutralised&&neutralisedLap_!=r.lap_num-1){
         wearHistory_.push_back({r.lap_num-1,status_->tyre_compound,damage_->tyre_wear_fl,
             damage_->tyre_wear_fr,damage_->tyre_wear_rl,damage_->tyre_wear_rr});
         if(wearHistory_.size()>6)wearHistory_.erase(wearHistory_.begin());
@@ -649,6 +837,7 @@ void StrategyProcessor::ingest(const LapRow&r){
     }
     lap_=r;observeStint();
     if(r.lap_num>0&&(r.lap_invalid||r.pit_status!=0||neutralised))playerTaintedLap_=r.lap_num;
+    if(r.lap_num>0&&neutralised)neutralisedLap_=r.lap_num;
     // Finalize the previous lap's decision with the position at the new lap.
     if(advanced)commitDecisions();
 }
@@ -687,6 +876,7 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
     std::string heldRecommendation=neutralisationRecommendation_;
     std::vector<StrategyDecisionRecord> decisions=decisionHistory_;
     std::array<int,2> currentExpected=stints_.empty()?std::array<int,2>{}:stints_.back().expected_laps;
+    std::array<int,2> heldStops=heldFirstStop_;
     out.session_time=std::max({lap_?lap_->session_time:0.0f,status_?status_->session_time:0.0f,
         damage_?damage_->session_time:0.0f,timing_?timing_->session_time:0.0f,
         tyreSets_?tyreSets_->session_time:0.0f,allStatus_?allStatus_->session_time:0.0f});
@@ -720,7 +910,9 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
         for(size_t i=wearHistory_.size();i>1;--i){
             const auto&now=wearHistory_[i-1];const auto&before=wearHistory_[i-2];
             if(now.actual_compound!=status_->tyre_compound||before.actual_compound!=status_->tyre_compound)continue;
-            const int laps=now.lap-before.lap;if(laps<=0)continue;
+            // Samples either side of skipped (neutralised) laps span their
+            // low wear too: only consecutive laps give a green-flag rate.
+            const int laps=now.lap-before.lap;if(laps!=1)continue;
             auto value=[&](const WearSample&s){switch(corner){case 0:return s.fl;case 1:return s.fr;case 2:return s.rl;default:return s.rr;}};
             const double rate=(value(now)-value(before))/laps;
             if(rate<0||rate>12)continue;
@@ -740,21 +932,32 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
     for(int i=0;i<4;++i){double left=(cliff-wears[i])/std::max(.01,wearRates[i]);if(left<best){best=left;limit=i;}}
     out.limiting_corner=names[limit];out.limiting_wear=wears[limit];out.limiting_wear_per_lap=std::max(.01,wearRates[limit]);
     out.laps_until_cliff=std::max(0,(int)std::floor((cliff-out.limiting_wear)/out.limiting_wear_per_lap));
+    // The lap the limiting tyre is worn out on its own wear rate, with a lap
+    // of grace: a stint may pass the game's life but not this.
+    const int wearLimitLap=out.lap_num+out.laps_until_cliff+1;
     // The wear cliff is where a tyre is finished, not where a stint should
     // end, and on new tyres it extrapolates a lap or two of wear to the whole
     // race. The game's own life for the fitted set is what every planned stint
     // is sized by, so the current stint is held to it too, counted from when
     // the set went on.
-    int fittedLife=0;
+    // life_span is the game's laps left on a set and follows its wear, so
+    // the fitted set's own figure also covers a set that went on used. A
+    // packet without it falls back to the compound's life less the tyre age.
+    int fittedLife=0,fittedLeft=-1;
     if(tyreSets_)for(const auto&s:tyreSets_->sets){
         if(!s.fitted||s.actual_compound!=status_->tyre_compound)continue;
         fittedLife=std::max(s.usable_life,s.life_span);
+        const bool packetHasLife=std::any_of(tyreSets_->sets.begin(),tyreSets_->sets.end(),
+            [](const TyreSet&set){return set.life_span>0;});
+        if(packetHasLife)fittedLeft=std::max(0,s.life_span);
+        else if(fittedLife>0)fittedLeft=std::max(0,fittedLife-std::max(0,status_->tyre_age_laps));
         break;
     }
-    if(fittedLife>0)out.laps_until_cliff=std::min(out.laps_until_cliff,
-        std::max(0,fittedLife-std::max(0,status_->tyre_age_laps)));
+    if(fittedLeft>=0)out.laps_until_cliff=std::min(out.laps_until_cliff,fittedLeft);
     out.cliff_lap=out.lap_num+out.laps_until_cliff;
-    const PitLoss pit=pitLossForTrack(session_->track_id);
+    const PitLoss pit=calibratedPitLoss();
+    out.pit_loss_ms=pit.total_ms;out.pit_loss_samples=(int)pitLossSamples_.size();
+    out.red_flag=redFlag_;
     if(pit.estimated)out.confidence=std::clamp(out.confidence-.08,.20,.98);
     const double effectivePitLoss=neutralised?std::max(0.0,pit.total_ms-10000.0):pit.total_ms;
 
@@ -807,29 +1010,19 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
     // tyre nor the current weather's (the current weather is judged by pace).
     // Offsets are minutes from the packet; m_weather sets the category, while
     // m_rainPercentage is only the chance of rain and scales confidence.
-    const WeatherSample* forecastSample=nullptr;int forecastCategory=-1,forecastLap=0;
-    for(const auto&sample:forecast){
-        if(sample.time_offset<=0||sample.time_offset>60)continue;
-        const int target=weatherCategory(sample.weather);
-        if(target==fittedCategory||target==nowCategory)continue;
-        forecastSample=&sample;forecastCategory=target;
-        forecastLap=std::min(out.total_laps,out.lap_num+(int)std::ceil(sample.time_offset*60000.0/lapDuration));
-        break;
+    const WeatherSample* forecastSample=forecastChange(forecast,false);
+    int forecastCategory=-1,forecastLap=0;
+    if(forecastSample){
+        forecastCategory=weatherCategory(forecastSample->weather);
+        forecastLap=std::min(out.total_laps,forecastLapFor(forecastCardAnchor_,*forecastSample,lapDuration,out.session_time));
     }
-    // Plans stop only for a change the forecast thinks likely: at least an
-    // even chance of rain to go wetter, at most an even chance to go drier.
-    // A long dry spell otherwise keeps a low-chance shower at the far end of
-    // the hour, and the plans would chase it lap after lap.
-    const WeatherSample* scheduleSample=nullptr;int scheduleLap=0;
-    for(const auto&sample:forecast){
-        if(sample.time_offset<=0||sample.time_offset>60)continue;
-        const int target=weatherCategory(sample.weather);
-        if(target==fittedCategory||target==nowCategory)continue;
-        if(target>fittedCategory?sample.rain_percentage<50:sample.rain_percentage>50)continue;
-        scheduleSample=&sample;
-        scheduleLap=std::min(out.total_laps,out.lap_num+(int)std::ceil(sample.time_offset*60000.0/lapDuration));
-        break;
-    }
+    // Plans stop only for a change the forecast thinks likely. A long dry
+    // spell otherwise keeps a low-chance shower at the far end of the hour,
+    // and the plans would chase it lap after lap.
+    const WeatherSample* scheduleSample=forecastChange(forecast,true);
+    int scheduleLap=0;
+    if(scheduleSample)
+        scheduleLap=std::min(out.total_laps,forecastLapFor(forecastPlanAnchor_,*scheduleSample,lapDuration,out.session_time));
     auto forecastReason=[&](int target){
         const bool wetter=target>fittedCategory;
         return fittedCategory==kSlick?"rain_crossover_forecast":
@@ -961,13 +1154,33 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
         if(!rival||!experience||experience->last_pit_lap<out.lap_num-1)return false;
         // Stop counts differ legitimately between strategies; what matters is
         // whether the player has stopped since this rival's strategic stop.
+        // A stop within a few laps of the rival's, before or after it, is
+        // the same pit cycle and already answers it. A stint that began after
+        // lap 1 implies a stop even when the app did not see it.
+        constexpr int kPitCycleLaps=5;
         const int playerLastStop=std::max(playerExperience?playerExperience->last_pit_lap:-1,
-            stints_.size()>1?currentStintStart_:-1);
-        return playerLastStop<experience->last_pit_lap;
+            stints_.size()>1||currentStintStart_>1?currentStintStart_:-1);
+        return playerLastStop<experience->last_pit_lap-kPitCycleLaps;
+    };
+    // A stop by the car behind threatens an undercut only from close range.
+    // Judged on the gap as it pitted: afterwards it includes the pit loss.
+    constexpr double kCoverGapMs=5000.0;
+    auto rivalStopNeedsCover=[&](int idx){
+        if(!rivalStartedUnmatchedStop(idx))return false;
+        const auto*experience=experienceFor(idx);
+        return !experience->pit_entry_gap_ms||
+            (*experience->pit_entry_gap_ms>0&&*experience->pit_entry_gap_ms<=kCoverGapMs);
     };
     const double aheadPace=rivalPaceMs(rivalAhead_);
     const double behindPace=rivalPaceMs(rivalBehind_);
     const double defensivePace=behindPace>0?behindPace:aheadPace;
+    // Gaps to the two rivals (negative = unknown), for the current stint's
+    // targets: a gap is time in hand, or time to find, over the laps left.
+    double gapBehindMs=-1.0,gapAheadMs=-1.0;
+    if(player&&timing_){
+        if(const auto*b=findCar(*timing_,rivalBehind_))gapBehindMs=(double)b->gap_ms-player->gap_ms;
+        if(const auto*a=findCar(*timing_,rivalAhead_))gapAheadMs=(double)player->gap_ms-a->gap_ms;
+    }
     double attackingPace=0.0;
     if(aheadPace>0&&behindPace>0)attackingPace=std::min(aheadPace,behindPace);
     else attackingPace=std::max(aheadPace,behindPace);
@@ -1039,7 +1252,7 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
         out.weather_strategy=weather;
     }
 
-    if(neutralised&&player&&timing_){
+    if(neutralised&&!redFlag_&&player&&timing_){
         std::vector<NeutralCarState> basis=frozenNeutralCars_;
         if(basis.empty())for(const auto&car:timing_->cars)basis.push_back({car.idx,car.position,car.lap_num,
             (double)car.gap_ms,car.pit_status,car.num_pit_stops,car.result_status});
@@ -1098,28 +1311,50 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
         const int laterPosition=projectedPosition(pit.total_ms);
         // Tyres at the cliff only force a stop if the race outlasts them.
         const bool stopDue=out.laps_until_cliff<=2&&remainingLaps>out.laps_until_cliff;
-        const bool replacementReachesFinish=!agg.empty()&&tyreLife(agg.front())>=remainingLaps;
-        const bool resolvesRequiredStop=remainingLaps>out.laps_until_cliff&&replacementReachesFinish;
         // Required stops = 0 disables the compound rule, as for the plans.
         const bool dryCompoundRequired=minimumStops_>0&&!wet&&usedDryVisualCompounds_.size()<2&&
             std::any_of(agg.begin(),agg.end(),[&](const auto&set){return set.visual_compound!=status_->visual_compound;});
-        const bool freeStop=boxPosition<=player->position&&remainingLaps>=3;
+        // A stop is still owed when the rules or the tyres demand one before
+        // the flag. Only then is "later" a real alternative to compare with;
+        // otherwise boxing is compared with not stopping at all.
+        const int lifeSlack=std::max(3,fittedLife*15/100);
+        const bool tyresReachFlag=out.laps_until_cliff+lifeSlack>=remainingLaps;
+        const bool stopOwed=minimumStops_-completedStops_>0||dryCompoundRequired||!tyresReachFlag;
+        // The position frozen at deployment: the live one moves with the stop.
+        const bool freeStop=boxPosition<=playerPosition&&remainingLaps>=3;
         const bool canBox=!agg.empty()&&remainingLaps>0;
-        bool proposedBox=canBox&&(stopDue||resolvesRequiredStop||dryCompoundRequired||freeStop||advantage>750.0);
+        const double netGain=recoverable-effectivePitLoss-queueLoss;
+        // The stop this period called for has been made once the stop count
+        // passes its value at deployment, or new tyres went on since.
+        const int stopsAtDeployment=playerBasis!=basis.end()&&!frozenNeutralCars_.empty()?
+            playerBasis->num_pit_stops:-1;
+        const bool stoppedThisPeriod=(stopsAtDeployment>=0&&player->num_pit_stops>stopsAtDeployment)||
+            (neutralisationStartLap_>0&&stints_.size()>1&&currentStintStart_>=neutralisationStartLap_);
+        // One stop is owed and no set would reach the flag from here, but the
+        // fitted tyres last until one can: boxing now buys a second stop.
+        int bestReach=0;
+        for(const auto&set:agg)bestReach=std::max(bestReach,tyreLife(set)+lifeTolerance(set));
+        const bool boxAddsStop=stopOwed&&!stopDue&&minimumStops_-completedStops_<=1&&
+            bestReach<remainingLaps&&out.laps_until_cliff+lifeSlack>=remainingLaps-bestReach;
+        bool proposedBox=false;
         std::string reason;
-        if(!canBox)reason="no_usable_set";
-        else if(stopDue)reason="tyres_at_cliff";
-        else if(resolvesRequiredStop)reason="tyres_cannot_finish";
-        else if(dryCompoundRequired)reason="mandatory_compound_change";
-        else if(freeStop)reason="free_stop";
-        else if(advantage>750.0)reason="box_now_beats_box_later";
+        if(stoppedThisPeriod)reason="stop_completed";
+        else if(!canBox)reason="no_usable_set";
+        else if(boxAddsStop&&!freeStop&&netGain<=750.0)reason="box_now_adds_a_stop";
+        else if(stopOwed){
+            proposedBox=true;
+            reason=stopDue?"tyres_at_cliff":!tyresReachFlag?"tyres_cannot_finish":
+                dryCompoundRequired?"mandatory_compound_change":
+                freeStop?"free_stop":"box_now_beats_box_later";
+        }else if(freeStop){proposedBox=true;reason="free_stop";}
+        else if(netGain>750.0){proposedBox=true;reason="fresh_tyres_repay_stop";}
         else reason="protect_track_position";
         const std::string proposed=proposedBox?"box":"stay_out";
         if(heldRecommendation.empty())heldRecommendation=proposed;
         else if(proposed!=heldRecommendation){
-            const bool strongSwitch=(proposed=="box"&&advantage>1500.0)||
-                (proposed=="box"&&(stopDue||resolvesRequiredStop||dryCompoundRequired||freeStop))||
-                (proposed=="stay_out"&&advantage<-1500.0)||!canBox;
+            const bool strongSwitch=stoppedThisPeriod||!canBox||boxAddsStop||
+                (proposed=="box"&&(stopOwed||freeStop||netGain>1500.0))||
+                (proposed=="stay_out"&&netGain<-1500.0);
             if(strongSwitch)heldRecommendation=proposed;
             else reason="decision_held_by_hysteresis";
         }
@@ -1152,41 +1387,81 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
     int first=(conservativeFresh>500&&conservativeFresh*out.laps_until_cliff>effectivePitLoss)
         ?std::max(out.lap_num+1,out.lap_num+(int)std::ceil(effectivePitLoss/conservativeFresh))
         :out.cliff_lap;
-    if(rivalStartedUnmatchedStop(rivalBehind_))
+    // The tyre estimates move a lap either way from one lap to the next;
+    // a stop already planned only moves for a change of two laps or more.
+    auto steady=[&](size_t plan,int value){
+        int&held=heldStops[plan];
+        if(held>out.lap_num&&value>out.lap_num&&std::abs(value-held)<=1)return held;
+        held=value;
+        return value;
+    };
+    first=steady(0,first);
+    // Under a red flag the tyre change is free: a stop still to come is taken now.
+    const auto freeChange=[&](int planned){
+        return redFlag_&&out.total_laps-planned>3?out.lap_num+1:planned;
+    };
+    first=freeChange(first);
+    if(rivalStopNeedsCover(rivalBehind_))
         first=out.lap_num+1;
     if(out.neutralisation&&out.neutralisation->recommendation=="box")first=out.lap_num+1;
     if(switchSet)first=out.lap_num+1;
     const int completedStops=completedStops_;
-    RawPlan cp=buildPlan(format_,out.lap_num,out.total_laps,first,status_->tyre_compound,status_->visual_compound,cons);
+    RawPlan cp=buildPlan(format_,out.lap_num,out.total_laps,first,status_->tyre_compound,status_->visual_compound,cons,wearLimitLap);
     auto futureCons=futureWith(cons,cp.stints.front().lapCount);
     enforceMinimumStops(format_,cp,futureCons,std::max(0,minimumStops_-completedStops));
     const int aggLeft=std::max(0,(int)std::floor((cliff-out.limiting_wear)/(out.limiting_wear_per_lap*1.2)));
     // Attack pushes, wearing the tyres about a fifth faster: its life too.
     int aggCliff=std::min(out.cliff_lap,out.lap_num+aggLeft);
-    if(fittedLife>0)aggCliff=std::min(aggCliff,out.lap_num+std::max(0,
-        (int)std::floor(fittedLife/1.2)-std::max(0,status_->tyre_age_laps)));
+    if(fittedLeft>=0)aggCliff=std::min(aggCliff,out.lap_num+(int)std::floor(fittedLeft/1.2));
     // The economic stop puts the fastest set on for the rest of the race, as
     // soon as it can last that long; only worth it if that set's gain over the
     // fitted one, held to the flag, repays the stop.
     int econ=!agg.empty()?std::max(out.lap_num+1,out.total_laps-tyreLife(agg.front())):aggCliff;
-    if(fresh*(out.total_laps-econ)<effectivePitLoss)econ=aggCliff;
-    int aggressiveFirst=std::min(aggCliff,econ);
+    // That gain is not held: a faster compound also wears out sooner, and
+    // gives its advantage back lap by lap. What a compound loses per lap of
+    // life is read off the game's own deltas where the player has two sets of
+    // it at different stages of life (the fitted set counts); otherwise a
+    // typical loss over the compound's life is assumed.
+    auto lossPerLap=[&](int compound,int usableLife){
+        const TyreSet* newest=nullptr;const TyreSet* oldest=nullptr;
+        if(setDeltasCurrent)for(const auto&s:tyreSets_->sets){
+            if(s.actual_compound!=compound||s.life_span<=0)continue;
+            if(!newest||s.life_span>newest->life_span)newest=&s;
+            if(!oldest||s.life_span<oldest->life_span)oldest=&s;
+        }
+        if(newest&&oldest&&newest->life_span-oldest->life_span>=3){
+            const double rate=double(oldest->lap_delta_ms-newest->lap_delta_ms)/(newest->life_span-oldest->life_span);
+            if(rate>0)return std::clamp(rate,5.0,400.0);
+        }
+        return 2500.0/std::max(1,usableLife);
+    };
+    const double fittedLossPerLap=lossPerLap(status_->tyre_compound,fittedLife);
+    auto gainToFlag=[&](const TyreSet&set,int laps){
+        const double fade=lossPerLap(set.actual_compound,std::max(set.usable_life,set.life_span))-fittedLossPerLap;
+        return (fittedDelta-set.lap_delta_ms)*laps-fade*laps*(laps-1)/2.0;
+    };
+    if(agg.empty()||gainToFlag(agg.front(),out.total_laps-econ)<effectivePitLoss)econ=aggCliff;
+    int aggressiveFirst=freeChange(steady(1,std::min(aggCliff,econ)));
     if(rivalStartedUnmatchedStop(rivalAhead_)&&out.laps_until_cliff>2)
         aggressiveFirst=std::max(aggressiveFirst,out.lap_num+2);
     if(out.neutralisation&&out.neutralisation->recommendation=="box")aggressiveFirst=out.lap_num+1;
     if(switchSet)aggressiveFirst=out.lap_num+1;
-    RawPlan ap=buildPlan(format_,out.lap_num,out.total_laps,aggressiveFirst,status_->tyre_compound,status_->visual_compound,agg);
+    RawPlan ap=buildPlan(format_,out.lap_num,out.total_laps,aggressiveFirst,status_->tyre_compound,status_->visual_compound,agg,
+                         out.lap_num+aggLeft+1);
     auto futureAgg=futureWith(agg,ap.stints.front().lapCount);
     if(ap.stops<=cp.stops&&!ap.stints.empty()){
         // An extra stop attacks only if fresh tyres win it back. Their gain
-        // grows with the age of the tyres they replace, at about the rate the
-        // fitted set has lost to a fresh one so far; splitting a stint of L
-        // laps in half then recovers about rate*(L/2)^2. Short stints, and
-        // tyres too new to show a rate, are not worth a stop.
-        const double rate=status_->tyre_age_laps>=3?fresh/status_->tyre_age_laps:0.0;
+        // grows with the age of the tyres they replace, at what the stint's
+        // own compound loses per lap (not the gap to a faster compound, which
+        // is no sign of wear); splitting a stint of L laps in half then
+        // recovers about rate*(L/2)^2. Short stints are not worth a stop.
         size_t longest=ap.stints.size()>1?1:0;
         for(size_t i=longest+1;i<ap.stints.size();++i)
             if(ap.stints[i].lapCount>ap.stints[longest].lapCount)longest=i;
+        int stintLife=fittedLife;
+        for(const auto&set:futureAgg)if(set.idx==ap.stints[longest].setIdx)
+            stintLife=std::max(set.usable_life,set.life_span);
+        const double rate=lossPerLap(ap.stints[longest].actual,stintLife);
         const double half=ap.stints[longest].lapCount/2.0;
         if(rate*half*half>=effectivePitLoss)ap=forceExtra(format_,ap,futureAgg,std::nullopt,false,4);
     }
@@ -1209,7 +1484,7 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
             const int tolerance=std::max(3,fittedLife*15/100);
             const int firstPit=cliffLap<switchLap-tolerance?std::max(out.lap_num+1,cliffLap):switchLap;
             RawPlan plan=buildPlan(format_,out.lap_num,switchLap,firstPit,
-                                   status_->tyre_compound,status_->visual_compound,now);
+                                   status_->tyre_compound,status_->visual_compound,now,wearLimitLap);
             auto&bridge=plan.stints.back();
             bridge.last=false;bridge.pitLap=switchLap;
             appendStints(format_,plan,switchLap,out.total_laps,later);
@@ -1252,7 +1527,23 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
         const auto& availableSets=aggressive?futureAgg:futureCons;
         auto targetFor=[&](const RawStint&s,size_t i){
             if(!validRaceLapMs((int)playerLap))return 0.0;
-            if(i==0)return std::max(60000.0,(rivalTarget>0?rivalTarget:playerLap)-offset);
+            if(i==0){
+                // Staying ahead of the car behind allows its pace plus the
+                // gap spread over the laps left in the stint; catching the car
+                // ahead needs its pace less that share. At most a second a
+                // lap either way, and never slower than the player's own pace.
+                const int end=s.last?out.total_laps:s.pitLap;
+                const int lapsLeft=std::max(1,end-out.lap_num+1);
+                const auto share=[&](double gap){return gap>0?std::min(1000.0,gap/lapsLeft):0.0;};
+                const double defend=behindPace>0?behindPace+share(gapBehindMs):aheadPace;
+                double target=defend;
+                if(aggressive&&aheadPace>0){
+                    target=aheadPace-share(gapAheadMs);
+                    if(behindPace>0)target=std::min(target,defend);
+                }
+                target=target>0?std::min(target,playerLap):playerLap;
+                return std::max(60000.0,target-offset);
+            }
             for(const auto&set:availableSets)if((s.setIdx>=0&&set.idx==s.setIdx)||
                                       (s.setIdx<0&&set.actual_compound==s.actual)){
                 const double reference=scheduledCategory>=0&&
@@ -1376,15 +1667,15 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
                     const auto&previous=experience.recent_laps[experience.recent_laps.size()-2];
                     rival.closing_ms_per_lap=closingMs(previous.relative_gap_ms,last.relative_gap_ms);
                 }
-                if(rivalStartedUnmatchedStop(idx))
+                if(isAhead?rivalStartedUnmatchedStop(idx):rivalStopNeedsCover(idx))
                     rival.pit_reaction=isAhead?"extend_for_overcut":"cover_stop";
             }
             out.rivals.push_back(std::move(rival));
         };addRival(rivalAhead_,"ahead");addRival(rivalBehind_,"behind");
         auto age=[&](int idx){auto it=rivalExperience_.find(idx);return it==rivalExperience_.end()?0:std::max(0,it->second.tyre_age_laps);};
-        if(!neutralised){
+        if(!neutralised&&!redFlag_){
             if(const auto*b=findCar(*timing_,rivalBehind_);b&&
-               rivalStartedUnmatchedStop(b->idx)&&out.laps_until_cliff>1){
+               rivalStopNeedsCover(b->idx)&&out.laps_until_cliff>1){
                 const double gap=b->gap_ms-player->gap_ms;
                 out.call=StrategyCall{"cover",b->idx,driverName(participants_,b->idx),gap,
                     1,"rival_behind_has_pitted",out.lap_num};
@@ -1397,8 +1688,14 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
             }
             if(!out.call&&pitCallActionable)if(const auto*a=findCar(*timing_,rivalAhead_)){
                 double gap=player->gap_ms-a->gap_ms;
-                int cross=fresh>0?(int)std::ceil(std::max(0.0,pit.total_ms-gap)/fresh):999;
-                if(gap>0&&gap<5000&&fresh>200&&age(a->idx)>=status_->tyre_age_laps+3&&cross<=10)
+                // Both cars pay the pit loss, so the undercut has only the gap
+                // to make up, at the fresh tyres' gain per lap, before the
+                // rival answers. It needs a stop still in the plan, and a
+                // rival on used tyres who has not just stopped.
+                int cross=fresh>0?(int)std::ceil(gap/fresh):999;
+                const int rivalAge=age(a->idx);
+                if(gap>0&&gap<5000&&fresh>200&&cross<=3&&(cp.stops>0||ap.stops>0)&&
+                   rivalAge>=5&&rivalAge>=status_->tyre_age_laps-2)
                     out.call=StrategyCall{"undercut",a->idx,driverName(participants_,a->idx),gap,cross,
                         "fresh_tyre_crossover_before_rival",out.lap_num};
             }
@@ -1460,6 +1757,7 @@ StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory,bool com
     if(commit){
         neutralisationRecommendation_=heldRecommendation;
         decisionHistory_=decisions;
+        if(!capturingLap_)heldFirstStop_=heldStops;
         if(!stints_.empty())stints_.back().expected_laps=currentExpected;
     }
     out.decision_history=std::move(decisions);
@@ -1534,6 +1832,8 @@ StrategyProcessor::MemoryStats StrategyProcessor::memoryStats() const {
         setCapacity(usedDryVisualCompounds_) +
         wearHistory_.capacity() * sizeof(WearSample) +
         conditionHistory_.capacity() * sizeof(ConditionSample) +
+        preStopDeltas_.capacity() * sizeof(PreStopDelta) +
+        pitLossSamples_.capacity() * sizeof(double) +
         frozenNeutralCars_.capacity() * sizeof(NeutralCarState) +
         decisionHistory_.capacity() * sizeof(StrategyDecisionRecord) +
         stints_.capacity() * sizeof(StintProgress);

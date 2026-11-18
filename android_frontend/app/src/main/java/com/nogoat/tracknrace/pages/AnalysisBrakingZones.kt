@@ -459,7 +459,7 @@ private fun exitRows(
         "Wheelspin", current?.let(::spinText), comparison?.let(::spinText),
         if (both && (current!!.wheelspin || comparison!!.wheelspin)) {
             when {
-                current.wheelspin && comparison.wheelspin -> pick(current.wheelspinPct, comparison.wheelspinPct, false, 0.5)
+                current.wheelspin && comparison!!.wheelspin -> pick(current.wheelspinPct, comparison.wheelspinPct, false, 0.5)
                 current.wheelspin -> 1
                 else -> 0
             }

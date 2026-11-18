@@ -30,6 +30,30 @@ def hasReleaseSigning = releaseSigning.values().every { it }
 def tnrVersionName = project.findProperty("tnrVersionName") ?: "0.1.0"
 def tnrVersionCode = (project.findProperty("tnrVersionCode") ?: "1") as int
 
+// Self-update. The certificate an update APK must carry for "Update now":
+// the release key's (build-signed-apk prints it). Other builds can't install
+// a release APK, so they only offer the download page.
+def releaseCertSha256 = "719df24ee6898efb22600e80a5efd269ef032795bbe6253e4ee43ec1cca8396a"
+// Update end-to-end test builds only: -PtnrUpdateTestEndpoint=http://127.0.0.1:8790
+// points the update check at a local Worker, skips the daily limit, and trusts
+// the debug key, which signs both test APKs. It requires -PtnrLocalReleaseSigning
+// so a test build can never carry the release signature and install over a
+// real user's copy. build-signed-apk never passes it; the field stays empty and
+// R8 drops the test path from release APKs.
+def updateTestEndpoint = (project.findProperty("tnrUpdateTestEndpoint") ?: "").toString().replaceAll('/+$', "")
+def updateCertSha256 = releaseCertSha256
+if (!updateTestEndpoint.isEmpty()) {
+    if (!project.hasProperty("tnrLocalReleaseSigning")) {
+        throw new GradleException("tnrUpdateTestEndpoint needs -PtnrLocalReleaseSigning: update test builds must be debug-signed.")
+    }
+    def debugKeystore = new File(System.getProperty("user.home"), ".android/debug.keystore")
+    def keystore = java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType())
+    debugKeystore.withInputStream { keystore.load(it, "android".toCharArray()) }
+    def digest = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(keystore.getCertificate("androiddebugkey").encoded)
+    updateCertSha256 = digest.collect { String.format("%02x", it & 0xff) }.join()
+}
+
 // AGP 9's DSL: properties are assigned, and collection options are added to
 // rather than called as methods.
 android {
@@ -45,6 +69,8 @@ android {
         targetSdk = 37
         versionCode = tnrVersionCode
         versionName = tnrVersionName
+        buildConfigField("String", "UPDATE_CERT_SHA256", "\"$updateCertSha256\"")
+        buildConfigField("String", "UPDATE_TEST_ENDPOINT", "\"$updateTestEndpoint\"")
 
         externalNativeBuild {
             cmake {
@@ -110,6 +136,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

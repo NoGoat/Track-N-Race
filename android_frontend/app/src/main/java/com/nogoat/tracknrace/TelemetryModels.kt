@@ -409,6 +409,8 @@ internal data class AndroidSettings(
     val udpForwardTargets: List<UdpForwardTarget> = emptyList(),
     /** First-time setup has been finished (or the install predates it). */
     val setupComplete: Boolean = true,
+    /** Check for a newer release once a day when the app starts. */
+    val updatesEnabled: Boolean = true,
 )
 
 internal const val DEFAULT_UDP_PORT = 20777

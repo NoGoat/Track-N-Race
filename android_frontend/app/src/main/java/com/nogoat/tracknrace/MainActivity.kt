@@ -32,6 +32,7 @@ class MainActivity : ComponentActivity() {
         // this activity and is carried by ListenerService while it is hidden.
         telemetry = TelemetryHost.controller(this)
         askForNotifications()
+        AppUpdater.checkOnStartup(this)
         updateSystemBars()
         setContent {
             val dark = telemetry.store.settings.themeMode.isDark()

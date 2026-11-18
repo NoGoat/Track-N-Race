@@ -597,6 +597,11 @@ internal class TelemetryController(
         publishSettings()
     }
 
+    fun setUpdatesEnabled(enabled: Boolean) {
+        preferences().edit().putBoolean(AppUpdater.PREF_ENABLED, enabled).apply()
+        publishSettings()
+    }
+
     fun setWheelDisplay(enabled: Boolean) {
         preferences().edit().putBoolean(PREF_WHEEL_DISPLAY, enabled).apply()
         publishSettings()
@@ -894,6 +899,7 @@ internal class TelemetryController(
         udpForwardingEnabled = preferences().getBoolean(PREF_UDP_FORWARDING, false),
         udpForwardTargets = storedForwardTargets(),
         setupComplete = preferences().getBoolean(PREF_SETUP_COMPLETE, true),
+        updatesEnabled = preferences().getBoolean(AppUpdater.PREF_ENABLED, true),
     )
 
     private fun publishSettings() = store.updateSettings(currentSettings())

@@ -735,7 +735,7 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeAnalysisMapPaletteJson(JNIEnv* 
     return javaString(env, tnrp::analysisMapPaletteJson());
 }
 
-// Self-update (tnrp/Updates.h). Plumbed only: Android has no update UI yet.
+// Self-update (tnrp/Updates.h), used by AppUpdater.kt.
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_nogoat_tracknrace_NativeTelemetry_nativeUpdateServiceUrl(JNIEnv* env, jclass) {
     return javaString(env, tnrp::updateServiceUrl());

@@ -8,13 +8,25 @@
 //   node publish-release.mjs manifest <version> [--dir <dir>] [--base-url <url>]
 //       Writes manifest.json and manifest.json.sig into the release folder
 //       (default release/<version>), describing every file in it.
-//       --base-url replaces the GitHub download URL (local testing).
+//       --base-url replaces the download URL base (default
+//       https://downloads.track-n-race.com/<version>).
 //
-//   node publish-release.mjs publish <version>
-//       Creates the GitHub release <version> as a draft if it does not exist,
-//       merges in the manifest entries other machines already uploaded,
-//       re-signs, and uploads this machine's files. Publish the draft on GitHub
-//       once every platform's files are in.
+//   node publish-release.mjs publish <version> [--dir <dir>] [--no-github] [--local]
+//       Uploads this machine's files to the R2 bucket under <version>/, merges
+//       in the manifest entries other machines already uploaded, re-signs, and
+//       uploads the manifest last, so it never names a file that isn't there.
+//       Then mirrors the files to the GitHub release <version> (a draft until
+//       you publish it), unless --no-github. Nothing is offered to installed
+//       apps until the version is promoted.
+//
+//   node publish-release.mjs promote <version> <staging|stable> [--local]
+//       Points channels/<channel>.json at <version>. The staging Worker offers
+//       the staging channel, production offers stable. Promoting an older
+//       version to stable is how a bad release is rolled back.
+//
+// R2 access goes through wrangler (update_worker/), so `npx wrangler login`
+// once on each machine is the only setup. --local uses wrangler's local bucket,
+// the one `wrangler dev` serves, for testing.
 //
 // The private key is read from TNR_UPDATE_SIGNING_KEY (a PEM file path) or
 // ~/.track-n-race/update-signing-key.pem. Keep a backup: without it, installed
@@ -32,6 +44,21 @@ const ROOT = dirname(fileURLToPath(import.meta.url))
 const KEY_PATH = process.env.TNR_UPDATE_SIGNING_KEY || join(homedir(), '.track-n-race', 'update-signing-key.pem')
 const MANIFEST = 'manifest.json'
 const SIGNATURE = 'manifest.json.sig'
+const WORKER_DIR = join(ROOT, 'update_worker')
+const BUCKET = process.env.TNR_R2_BUCKET || 'track-n-race-releases'
+const DOWNLOAD_BASE = 'https://downloads.track-n-race.com'
+// wrangler dev serves the local bucket's files here (LOCAL_DOWNLOADS in update_worker/src/index.js).
+const LOCAL_DOWNLOAD_BASE = 'http://127.0.0.1:8790/files'
+const CHANNELS = ['staging', 'stable']
+const CONTENT_TYPES = {
+  '.apk': 'application/vnd.android.package-archive',
+  '.exe': 'application/vnd.microsoft.portable-executable',
+  '.zip': 'application/zip',
+  '.dmg': 'application/x-apple-diskimage',
+  '.AppImage': 'application/octet-stream',
+  '.json': 'application/json',
+  '.sig': 'text/plain',
+}
 
 function fail(message) {
   console.error(`Error: ${message}`)
@@ -63,6 +90,8 @@ function keygen() {
 
 // Track-N-Race-<Product>-<OS>[-<arch>].<ext>
 function describe(name) {
+  // build-signed-apk names the single universal APK without an OS segment.
+  if (name === 'Track-N-Race-Android.apk') return { product: 'android', os: 'android', arch: 'universal', format: 'apk' }
   const match = name.match(/^Track-N-Race-([A-Za-z]+)-([A-Za-z]+)(?:-([A-Za-z0-9_]+))?\.(exe|zip|AppImage|dmg|apk)$/)
   if (!match) return null
   const [, product, os, arch, extension] = match
@@ -91,7 +120,7 @@ function writeManifest(version, dir, baseUrl, previous) {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) fail(`"${version}" is not a version (x.y.z).`)
   if (!existsSync(dir)) fail(`release folder ${dir} does not exist.`)
   const key = loadKey()
-  const urlBase = (baseUrl || `https://github.com/${REPO}/releases/download/${version}`).replace(/\/+$/, '')
+  const urlBase = (baseUrl || `${DOWNLOAD_BASE}/${version}`).replace(/\/+$/, '')
 
   const local = []
   for (const name of readdirSync(dir).sort()) {
@@ -127,38 +156,92 @@ function gh(args, options = {}) {
   return execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options })
 }
 
-function publish(version, dir) {
+// wrangler, run from update_worker/ so it uses that folder's install and login.
+function wrangler(args, options = {}) {
+  return execFileSync('npx', ['wrangler', ...args], {
+    cwd: WORKER_DIR, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options,
+  })
+}
+
+function r2Put(key, path, local) {
+  const extension = Object.keys(CONTENT_TYPES).find(ext => path.endsWith(ext))
+  const args = ['r2', 'object', 'put', `${BUCKET}/${key}`, '--file', path, local ? '--local' : '--remote']
+  if (extension) args.push('--content-type', CONTENT_TYPES[extension])
+  // Files are per version; a re-upload while preparing a release must not stay cached for long.
+  if (!key.startsWith('channels/')) args.push('--cache-control', 'public, max-age=3600')
+  wrangler(args, { stdio: ['ignore', 'ignore', 'inherit'] })
+}
+
+// The object's text, or null when it doesn't exist.
+function r2Get(key, local) {
+  const scratch = mkdtempSync(join(tmpdir(), 'tnr-r2-'))
+  const file = join(scratch, 'object')
+  try {
+    wrangler(['r2', 'object', 'get', `${BUCKET}/${key}`, '--file', file, local ? '--local' : '--remote'])
+    return existsSync(file) ? readFileSync(file, 'utf8') : null
+  } catch {
+    return null
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+}
+
+function publishGitHub(version, uploads) {
   let exists = true
   try {
     gh(['release', 'view', version, '--repo', REPO, '--json', 'tagName'])
   } catch {
     exists = false
   }
-
-  let previous = null
-  if (exists) {
-    const scratch = mkdtempSync(join(tmpdir(), 'tnr-manifest-'))
-    try {
-      gh(['release', 'download', version, '--repo', REPO, '--pattern', MANIFEST, '--dir', scratch])
-      previous = JSON.parse(readFileSync(join(scratch, MANIFEST), 'utf8'))
-    } catch {
-      previous = null  // the release has no manifest yet
-    } finally {
-      rmSync(scratch, { recursive: true, force: true })
-    }
-  } else {
+  if (!exists) {
     const latest = (() => {
       try { return JSON.parse(gh(['release', 'view', '--repo', REPO, '--json', 'tagName'])).tagName } catch { return null }
     })()
     if (latest && compareVersions(version, latest) <= 0) fail(`${version} is not newer than the latest release ${latest}.`)
     gh(['release', 'create', version, '--repo', REPO, '--draft', '--title', version, '--notes', ''])
-    console.log(`Created draft release ${version}.`)
+    console.log(`Created draft GitHub release ${version}.`)
   }
-
-  const uploads = writeManifest(version, dir, null, previous)
   gh(['release', 'upload', version, '--repo', REPO, '--clobber', ...uploads], { stdio: 'inherit' })
-  console.log(`Uploaded ${uploads.map(path => basename(path)).join(', ')}.`)
-  console.log(`When every platform is uploaded: gh release edit ${version} --repo ${REPO} --draft=false`)
+  console.log(`Mirrored ${uploads.map(path => basename(path)).join(', ')} to GitHub.`)
+}
+
+function publish(version, dir, { github, local }) {
+  const previousText = r2Get(`${version}/${MANIFEST}`, local)
+  const previous = previousText ? JSON.parse(previousText) : null
+  const uploads = writeManifest(version, dir, local ? `${LOCAL_DOWNLOAD_BASE}/${version}` : null, previous)
+
+  // Files first, the signed manifest last.
+  for (const path of uploads) {
+    console.log(`Uploading ${basename(path)} to ${BUCKET}/${version}/...`)
+    r2Put(`${version}/${basename(path)}`, path, local)
+  }
+  console.log(`Uploaded ${uploads.length} files to ${local ? 'the local' : 'the R2'} bucket.`)
+  if (github && !local) publishGitHub(version, uploads)
+  console.log(`When every platform is uploaded: node publish-release.mjs promote ${version} staging${local ? ' --local' : ''}`)
+}
+
+function promote(version, channel, { local }) {
+  if (!CHANNELS.includes(channel)) fail(`channel must be one of ${CHANNELS.join(', ')}.`)
+  const manifestText = r2Get(`${version}/${MANIFEST}`, local)
+  if (!manifestText) fail(`${version}/${MANIFEST} is not in the bucket. Publish it first.`)
+  const manifest = JSON.parse(manifestText)
+  if (manifest.version !== version) fail(`${version}/${MANIFEST} is for ${manifest.version}.`)
+
+  const current = r2Get(`channels/${channel}.json`, local)
+  const scratch = mkdtempSync(join(tmpdir(), 'tnr-channel-'))
+  try {
+    const file = join(scratch, `${channel}.json`)
+    writeFileSync(file, `${JSON.stringify({ version, promotedAt: new Date().toISOString() })}\n`)
+    r2Put(`channels/${channel}.json`, file, local)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+  const was = current ? JSON.parse(current).version : 'nothing'
+  console.log(`The ${channel} channel now offers ${version} (was ${was}). Installed apps see it within 10 minutes.`)
+  console.log(`Files in ${version}: ${manifest.files.map(file => file.name).join(', ')}`)
+  if (channel === 'stable' && !local) {
+    console.log(`Also: gh release edit ${version} --repo ${REPO} --draft=false --prerelease=false, and bump VERSION on the website.`)
+  }
 }
 
 function option(args, name) {
@@ -167,6 +250,7 @@ function option(args, name) {
 }
 
 const [command, version, ...rest] = process.argv.slice(2)
+const local = rest.includes('--local')
 const dir = resolve(option(rest, '--dir') || join(ROOT, 'release', version || ''))
 switch (command) {
   case 'keygen':
@@ -177,9 +261,13 @@ switch (command) {
     writeManifest(version, dir, option(rest, '--base-url'), null)
     break
   case 'publish':
-    if (!version) fail('usage: node publish-release.mjs publish <version>')
-    publish(version, dir)
+    if (!version) fail('usage: node publish-release.mjs publish <version> [--dir <dir>] [--no-github] [--local]')
+    publish(version, dir, { github: !rest.includes('--no-github'), local })
+    break
+  case 'promote':
+    if (!version || !rest[0]) fail('usage: node publish-release.mjs promote <version> <staging|stable> [--local]')
+    promote(version, rest[0], { local })
     break
   default:
-    fail('usage: node publish-release.mjs keygen | manifest <version> | publish <version>')
+    fail('usage: node publish-release.mjs keygen | manifest <version> | publish <version> | promote <version> <channel>')
 }

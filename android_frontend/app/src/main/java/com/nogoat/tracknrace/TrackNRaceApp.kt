@@ -74,6 +74,7 @@ import com.nogoat.tracknrace.pages.PlayerStripHeight
 import com.nogoat.tracknrace.pages.PlayerSheetWidthLandscape
 import com.nogoat.tracknrace.pages.AnalysisScreen
 import com.nogoat.tracknrace.pages.AppMenuSheet
+import com.nogoat.tracknrace.pages.UpdateDialog
 import com.nogoat.tracknrace.pages.MenuDriver
 import com.nogoat.tracknrace.pages.MenuSource
 import com.nogoat.tracknrace.pages.DashboardScreen
@@ -411,6 +412,7 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                             onDefaultDirectory = telemetry::useDefaultRecordingDirectory,
                             onForgetDesktop = telemetry::forgetDesktop,
                             onLicenses = { screen = AppScreen.LICENSES },
+                            onUpdatesEnabled = telemetry::setUpdatesEnabled,
                             dataTables = dataTablesSummary(telemetry.graphs),
                             onDataTables = { screen = AppScreen.DATA_TABLES },
                         )
@@ -584,6 +586,8 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
             onReferenceLap = telemetry.graphs::selectGlobalReferenceLap,
         )
     }
+    // Shown whatever the source is doing; the user decides (Remind me later keeps the session).
+    AppUpdater.available?.let { update -> UpdateDialog(update, AppUpdater.progress) }
     if (driverPickerOpen && localRecording != null) {
         DriverPicker(
             store = store,

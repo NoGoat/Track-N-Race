@@ -54,6 +54,7 @@ internal fun SettingsScreen(
     onDefaultDirectory: () -> Unit,
     onForgetDesktop: () -> Unit,
     onLicenses: () -> Unit,
+    onUpdatesEnabled: (Boolean) -> Unit,
     /** Which Charts tabs show as tables, in a few words. */
     dataTables: String,
     onDataTables: () -> Unit,
@@ -172,6 +173,13 @@ internal fun SettingsScreen(
         }
         item {
             SettingsGroup("About") {
+                SettingsSwitchRow(
+                    title = "Check for updates",
+                    supporting = "Once a day, when the app opens",
+                    checked = settings.updatesEnabled,
+                    onCheckedChange = onUpdatesEnabled,
+                )
+                GroupDivider()
                 LinkRow(
                     title = "Licenses",
                     supporting = "Track N Race and the open-source software it uses",
