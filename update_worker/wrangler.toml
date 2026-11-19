@@ -14,6 +14,12 @@ routes = [{ pattern = "api.track-n-race.com", custom_domain = true }]
 binding = "RELEASES"
 bucket_name = "track-n-race-releases"
 
+# Update check counts (record() in src/index.js), like the website's download counts.
+# The dataset is created on the first write.
+[[analytics_engine_datasets]]
+binding = "CHECKS"
+dataset = "track_n_race_update_checks"
+
 [vars]
 # Which channels/<CHANNEL>.json pointer this Worker offers.
 CHANNEL = "stable"
@@ -31,6 +37,11 @@ workers_dev = true
 [[env.staging.r2_buckets]]
 binding = "RELEASES"
 bucket_name = "track-n-race-releases"
+
+# Its own dataset, so test checks don't land in the production counts.
+[[env.staging.analytics_engine_datasets]]
+binding = "CHECKS"
+dataset = "track_n_race_update_checks_staging"
 
 [env.staging.vars]
 CHANNEL = "staging"

@@ -409,7 +409,7 @@ internal data class AndroidSettings(
     val udpForwardTargets: List<UdpForwardTarget> = emptyList(),
     /** First-time setup has been finished (or the install predates it). */
     val setupComplete: Boolean = true,
-    /** Check for a newer release once a day when the app starts. */
+    /** Check for a newer release when the app starts. */
     val updatesEnabled: Boolean = true,
 )
 

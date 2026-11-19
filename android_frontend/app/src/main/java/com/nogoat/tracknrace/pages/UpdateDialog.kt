@@ -36,6 +36,7 @@ internal fun UpdateDialog(update: AvailableUpdate, progress: UpdateProgress) {
         progress is UpdateProgress.Verifying ||
         progress is UpdateProgress.Installing
     val failed = progress as? UpdateProgress.Failed
+    val ready = progress is UpdateProgress.Ready
     // Back from "Install unknown apps": go on only if it was allowed.
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (AppUpdater.canInstall(context)) {
@@ -47,7 +48,8 @@ internal fun UpdateDialog(update: AvailableUpdate, progress: UpdateProgress) {
     val installable = update.file != null && failed == null
 
     AlertDialog(
-        onDismissRequest = AppUpdater::dismiss,
+        // Once the update is ready, dismissing is "Later": the next launch offers it again.
+        onDismissRequest = { if (ready) AppUpdater.dismiss() else AppUpdater.remindLater(context) },
         properties = DialogProperties(dismissOnBackPress = !working, dismissOnClickOutside = false),
         icon = { Icon(painterResource(R.drawable.ic_download), null) },
         title = { Text("Update available") },
@@ -73,6 +75,13 @@ internal fun UpdateDialog(update: AvailableUpdate, progress: UpdateProgress) {
                         VersionCell("Installed", update.installedVersion, Modifier.weight(1f))
                         VersionCell("Latest", update.latestVersion, Modifier.weight(1f))
                     }
+                }
+                if (ready) {
+                    Text(
+                        "The update is ready. Track N Race will close and install it.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 if (working) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -101,7 +110,9 @@ internal fun UpdateDialog(update: AvailableUpdate, progress: UpdateProgress) {
             }
         },
         confirmButton = {
-            if (installable) {
+            if (ready) {
+                TextButton(onClick = { AppUpdater.restart(context) }) { Text("Restart to update") }
+            } else if (installable) {
                 TextButton(
                     enabled = !working,
                     onClick = {
@@ -117,9 +128,13 @@ internal fun UpdateDialog(update: AvailableUpdate, progress: UpdateProgress) {
             }
         },
         dismissButton = {
-            Row {
-                TextButton(enabled = !working, onClick = { AppUpdater.skip(context) }) { Text("Skip this version") }
-                TextButton(enabled = !working, onClick = AppUpdater::dismiss) { Text("Remind me later") }
+            if (ready) {
+                TextButton(onClick = { AppUpdater.dismiss() }) { Text("Later") }
+            } else {
+                Row {
+                    TextButton(enabled = !working, onClick = { AppUpdater.skip(context) }) { Text("Skip this version") }
+                    TextButton(enabled = !working, onClick = { AppUpdater.remindLater(context) }) { Text("Remind me later") }
+                }
             }
         },
     )
@@ -141,7 +156,7 @@ private fun progressLabel(progress: UpdateProgress): String = when (progress) {
     is UpdateProgress.Downloading ->
         "Downloading ${megabytes(progress.received)} / ${megabytes(progress.total)} MB"
     UpdateProgress.Verifying -> "Verifying…"
-    UpdateProgress.Installing -> "Installing…"
+    UpdateProgress.Installing -> "Restarting…"
     else -> ""
 }
 

@@ -1039,7 +1039,7 @@ const Settings = memo(function Settings({
       </Row>
       <Row
         label="Check for Updates"
-        description="Check GitHub for a newer Track N Race release when the app starts, at most once per day."
+        description="Check for a newer release when the app starts."
       >
         <Toggle value={updateChecksEnabled} onChange={handleUpdateChecksToggle} />
       </Row>

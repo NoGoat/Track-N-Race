@@ -95,6 +95,8 @@ void checkPath() {
           "/v1/check?product=qt&os=windows&arch=x64&format=installer&v=1.6.2");
     CHECK(tnrp::updateCheckPath("q t", "w&x", "x64", "installer", "1.0.0+a/b") ==
           "/v1/check?product=q%20t&os=w%26x&arch=x64&format=installer&v=1.0.0%2Ba%2Fb");
+    CHECK(tnrp::updateInstallPath("android", "android", "universal", "apk", "v1.6.2", " v1.7.0") ==
+          "/v1/install?product=android&os=android&arch=universal&format=apk&v=1.6.2&to=1.7.0");
 }
 
 void offers(const Keys& keys, const Keys& otherKeys) {
@@ -196,6 +198,16 @@ void files() {
     std::filesystem::remove(path);
 }
 
+void quietPeriod() {
+    constexpr int64_t day = 24LL * 60 * 60 * 1000;
+    constexpr int64_t now = 1'800'000'000'000;
+    CHECK(tnrp::updateQuietPeriodOver(now, 0));
+    CHECK(!tnrp::updateQuietPeriodOver(now, now));
+    CHECK(!tnrp::updateQuietPeriodOver(now, now - day + 1));
+    CHECK(tnrp::updateQuietPeriodOver(now, now - day));
+    CHECK(tnrp::updateQuietPeriodOver(now, now + 1000));  // clock moved back
+}
+
 }  // namespace
 
 int main() {
@@ -208,6 +220,7 @@ int main() {
     checkPath();
     offers(keys, otherKeys);
     files();
+    quietPeriod();
 
     if (failures) std::fprintf(stderr, "%d check(s) failed\n", failures);
     else std::puts("updates: all checks passed");

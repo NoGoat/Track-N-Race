@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -36,12 +37,15 @@ internal data class AvailableUpdate(
     val file: UpdateFile?,
 )
 
-internal data class UpdateFile(val name: String, val url: String, val sha512: String, val size: Long)
+/** [countUrl]: where Restart to update reports the update to the update service (tnrp::updateInstallPath). */
+internal data class UpdateFile(val name: String, val url: String, val sha512: String, val size: Long, val countUrl: String)
 
 internal sealed interface UpdateProgress {
     data object Idle : UpdateProgress
     data class Downloading(val received: Long, val total: Long) : UpdateProgress
     data object Verifying : UpdateProgress
+    /** Downloaded and verified; waiting for Restart to update. */
+    data class Ready(val apk: File) : UpdateProgress
     /** Handed to PackageInstaller; Android may ask the user to confirm. */
     data object Installing : UpdateProgress
     data class Failed(val message: String) : UpdateProgress
@@ -49,10 +53,11 @@ internal sealed interface UpdateProgress {
 
 /**
  * Self-update, as the desktop apps do it (electron-frontend/src/main/updateChecker.ts).
- * Once a day at start-up it asks the update service for the newest signed
+ * On every start it asks the update service for the newest signed
  * manifest; libtnrp checks the signature and picks the APK (tnrp/Updates.h).
- * "Update now" downloads that APK, checks its size and SHA-512 against the
- * signed manifest, and installs it with PackageInstaller. A build that isn't
+ * "Update now" downloads that APK and checks its size and SHA-512 against the
+ * signed manifest; "Restart to update" reports the update to the service and
+ * installs it with PackageInstaller. A build that isn't
  * signed with the release key can't install a release APK over itself, so it
  * only offers the download page.
  */
@@ -64,9 +69,9 @@ internal object AppUpdater {
 
     private const val TAG = "AppUpdater"
     const val PREF_ENABLED = "updates.enabled"
-    private const val PREF_LAST_CHECK = "updates.lastCheckAt"
+    private const val PREF_REMIND_LATER = "updates.remindLaterAt"
+    private const val PREF_LAST_GITHUB_CHECK = "updates.lastGitHubCheckAt"
     private const val PREF_SKIPPED = "updates.skippedVersion"
-    private const val CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
     private const val RELEASE_API_URL = "https://api.github.com/repos/NoGoat/Track-N-Race/releases/latest"
     private const val RELEASE_PAGE_URL = "https://github.com/NoGoat/Track-N-Race/releases/latest"
     private const val PRODUCT = "android"
@@ -84,7 +89,7 @@ internal object AppUpdater {
     }
     private var started = false
 
-    /** Once per process: clears old downloads, then checks if the setting and the daily limit allow. */
+    /** Once per process: clears old downloads, then checks if the setting and Remind me later allow. */
     fun checkOnStartup(context: Context) {
         if (started) return
         started = true
@@ -102,7 +107,13 @@ internal object AppUpdater {
         }
     }
 
-    /** Remind me later: gone until the next check. */
+    /** Remind me later (or the dialog was dismissed): no offers for a day. */
+    fun remindLater(context: Context) {
+        if (progress.busy) return
+        preferences(context).edit().putLong(PREF_REMIND_LATER, System.currentTimeMillis()).apply()
+        dismiss()
+    }
+
     fun dismiss() {
         if (progress.busy) return
         available = null
@@ -136,10 +147,10 @@ internal object AppUpdater {
         progress = UpdateProgress.Failed(message)
     }
 
-    /** Update now: download, verify, install. The caller has made sure [canInstall]. */
+    /** Update now: download and verify, then wait for [restart]. The caller has made sure [canInstall]. */
     fun install(context: Context) {
         val file = available?.file ?: return
-        if (progress.busy) return
+        if (progress.busy || progress is UpdateProgress.Ready) return
         val app = context.applicationContext
         progress = UpdateProgress.Downloading(0, file.size)
         scope.launch {
@@ -158,9 +169,25 @@ internal object AppUpdater {
                 fail(mismatch)
                 return@launch
             }
-            progress = UpdateProgress.Installing
+            progress = UpdateProgress.Ready(apk)
+        }
+    }
+
+    /**
+     * Restart to update: reports the update to the service so it's counted, then
+     * hands the verified APK to PackageInstaller, which replaces the app.
+     */
+    fun restart(context: Context) {
+        val file = available?.file ?: return
+        val apk = (progress as? UpdateProgress.Ready)?.apk ?: return
+        val app = context.applicationContext
+        progress = UpdateProgress.Installing
+        scope.launch {
             try {
-                withContext(Dispatchers.IO) { commit(app, apk) }
+                withContext(Dispatchers.IO) {
+                    countUpdate(file.countUrl)
+                    commit(app, apk)
+                }
             } catch (error: Exception) {
                 Log.w(TAG, "install session failed", error)
                 fail(error.message ?: "Android could not start the install")
@@ -177,11 +204,10 @@ internal object AppUpdater {
         val preferences = preferences(context)
         if (!preferences.getBoolean(PREF_ENABLED, true)) return null
         val testEndpoint = BuildConfig.UPDATE_TEST_ENDPOINT
-        val now = System.currentTimeMillis()
-        val lastCheckAt = preferences.getLong(PREF_LAST_CHECK, 0)
-        if (testEndpoint.isEmpty() && now - lastCheckAt in 0 until CHECK_INTERVAL_MS) return null
-        // Recorded before the request so an outage can't cause a request on every launch.
-        preferences.edit().putLong(PREF_LAST_CHECK, now).apply()
+        // The update service is asked on every start, unless Remind me later is still hiding offers.
+        if (testEndpoint.isEmpty() &&
+            !NativeTelemetry.nativeUpdateQuietPeriodOver(System.currentTimeMillis(), preferences.getLong(PREF_REMIND_LATER, 0))
+        ) return null
 
         val current = BuildConfig.VERSION_NAME.trim().removePrefix("v")
         val serviceUrl = testEndpoint.ifEmpty { NativeTelemetry.nativeUpdateServiceUrl() }
@@ -194,6 +220,11 @@ internal object AppUpdater {
         }
         // A test build never asks the real GitHub.
         if (testEndpoint.isNotEmpty()) return null
+        // Once a day at most: GitHub allows 60 unauthenticated requests an hour per IP.
+        // Recorded before the request so an outage can't cause a request on every launch.
+        val now = System.currentTimeMillis()
+        if (!NativeTelemetry.nativeUpdateQuietPeriodOver(now, preferences.getLong(PREF_LAST_GITHUB_CHECK, 0))) return null
+        preferences.edit().putLong(PREF_LAST_GITHUB_CHECK, now).apply()
         return checkGitHub(context, current)
     }
 
@@ -215,6 +246,7 @@ internal object AppUpdater {
                 url = offer.getString("url"),
                 sha512 = offer.getString("sha512"),
                 size = offer.getLong("size"),
+                countUrl = serviceUrl + NativeTelemetry.nativeUpdateInstallPath(PRODUCT, OS, ARCH, FORMAT, current, version),
             )
         } else {
             null
@@ -252,6 +284,24 @@ internal object AppUpdater {
     }
 
     private fun request(url: String) = Request.Builder().url(url).header("User-Agent", "Track-N-Race").build()
+
+    /**
+     * Tells the update service the user is restarting into the update, so it can count it.
+     * The install replaces the app right after, so this blocks (call it off the main thread),
+     * but never more than a few seconds, and a failure never stops the update.
+     */
+    private fun countUpdate(url: String) {
+        try {
+            val call = client.newCall(
+                Request.Builder().url(url).header("User-Agent", "Track-N-Race")
+                    .post(ByteArray(0).toRequestBody(null)).build(),
+            )
+            call.timeout().timeout(3, TimeUnit.SECONDS)
+            call.execute().close()
+        } catch (error: Exception) {
+            Log.w(TAG, "could not count the update", error)
+        }
+    }
 
     private fun newer(version: String, current: String) =
         NativeTelemetry.nativeUpdateCompareVersions(version, current) == 1

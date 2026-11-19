@@ -27,13 +27,27 @@ std::string normalizedVersion(std::string_view value);
 
 // The update service base URL. TNR_UPDATE_ENDPOINT overrides it (testing).
 std::string updateServiceUrl();
-// True when TNR_UPDATE_ENDPOINT is set; frontends then skip the daily limit.
+// True when TNR_UPDATE_ENDPOINT is set; frontends then skip the waits below.
 bool updateServiceOverridden();
+
+// Frontends ask the update service on every start. Two things wait a day:
+// "Remind me later" hides offers for a day, and the GitHub fallback (60
+// unauthenticated requests an hour per IP) runs at most once a day.
+// True when a day has passed since `sinceMs` (epoch ms the frontend stored;
+// 0 = never). A time in the future (the clock moved back) counts as passed.
+bool updateQuietPeriodOver(int64_t nowMs, int64_t sinceMs);
 
 // The query path for one install, appended to updateServiceUrl():
 // "/v1/check?product=…&os=…&arch=…&format=…&v=…".
 std::string updateCheckPath(std::string_view product, std::string_view os, std::string_view arch,
                             std::string_view format, std::string_view currentVersion);
+
+// The path frontends POST to, appended to updateServiceUrl(), when the user
+// clicks "Restart to update" for the downloaded, verified `version`:
+// "/v1/install?product=…&os=…&arch=…&format=…&v=…&to=…". The service only
+// counts it. Wait a few seconds at most: a failed count must never fail the update.
+std::string updateInstallPath(std::string_view product, std::string_view os, std::string_view arch,
+                              std::string_view format, std::string_view currentVersion, std::string_view version);
 
 struct UpdateOffer {
     // "available": a newer signed release has a file for this install.

@@ -2425,10 +2425,24 @@ Napi::Value UpdateServiceOverridden(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), tnrp::updateServiceOverridden());
 }
 
+// updateQuietPeriodOver(nowMs, sinceMs) -> boolean
+Napi::Value UpdateQuietPeriodOver(const Napi::CallbackInfo& info) {
+    const auto millis = [&](size_t index) -> int64_t {
+        return info.Length() > index && info[index].IsNumber() ? info[index].As<Napi::Number>().Int64Value() : 0;
+    };
+    return Napi::Boolean::New(info.Env(), tnrp::updateQuietPeriodOver(millis(0), millis(1)));
+}
+
 // updateCheckPath(product, os, arch, format, currentVersion) -> string
 Napi::Value UpdateCheckPath(const Napi::CallbackInfo& info) {
     return Napi::String::New(info.Env(), tnrp::updateCheckPath(StringArg(info, 0), StringArg(info, 1),
         StringArg(info, 2), StringArg(info, 3), StringArg(info, 4)));
+}
+
+// updateInstallPath(product, os, arch, format, currentVersion, version) -> string
+Napi::Value UpdateInstallPath(const Napi::CallbackInfo& info) {
+    return Napi::String::New(info.Env(), tnrp::updateInstallPath(StringArg(info, 0), StringArg(info, 1),
+        StringArg(info, 2), StringArg(info, 3), StringArg(info, 4), StringArg(info, 5)));
 }
 
 // updateEvaluateJson(response, product, os, arch, format, currentVersion) -> string JSON
@@ -2469,7 +2483,9 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     exports.Set("firewallAllowProgram", Napi::Function::New(env, FirewallAllowProgram));
     exports.Set("updateServiceUrl", Napi::Function::New(env, UpdateServiceUrl));
     exports.Set("updateServiceOverridden", Napi::Function::New(env, UpdateServiceOverridden));
+    exports.Set("updateQuietPeriodOver", Napi::Function::New(env, UpdateQuietPeriodOver));
     exports.Set("updateCheckPath", Napi::Function::New(env, UpdateCheckPath));
+    exports.Set("updateInstallPath", Napi::Function::New(env, UpdateInstallPath));
     exports.Set("updateEvaluateJson", Napi::Function::New(env, UpdateEvaluateJson));
     exports.Set("updateCompareVersions", Napi::Function::New(env, UpdateCompareVersions));
     exports.Set("updateVerifyFile", Napi::Function::New(env, UpdateVerifyFile));

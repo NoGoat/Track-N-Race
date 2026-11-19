@@ -251,6 +251,11 @@ bool updateServiceOverridden() {
     return overridden && *overridden;
 }
 
+bool updateQuietPeriodOver(int64_t nowMs, int64_t sinceMs) {
+    constexpr int64_t kDayMs = 24LL * 60 * 60 * 1000;
+    return sinceMs <= 0 || nowMs < sinceMs || nowMs - sinceMs >= kDayMs;
+}
+
 std::string updateCheckPath(std::string_view product, std::string_view os, std::string_view arch,
                             std::string_view format, std::string_view currentVersion) {
     std::string path = "/v1/check";
@@ -259,6 +264,14 @@ std::string updateCheckPath(std::string_view product, std::string_view os, std::
     appendQuery(path, "arch", arch, false);
     appendQuery(path, "format", format, false);
     appendQuery(path, "v", normalizedVersion(currentVersion), false);
+    return path;
+}
+
+std::string updateInstallPath(std::string_view product, std::string_view os, std::string_view arch,
+                              std::string_view format, std::string_view currentVersion, std::string_view version) {
+    std::string path = updateCheckPath(product, os, arch, format, currentVersion);
+    path.replace(0, std::string_view("/v1/check").size(), "/v1/install");
+    appendQuery(path, "to", normalizedVersion(version), false);
     return path;
 }
 

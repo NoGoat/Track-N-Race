@@ -15,7 +15,7 @@ export interface AvailableUpdate {
 }
 
 export interface UpdateProgress {
-  phase: 'downloading' | 'verifying' | 'installing'
+  phase: 'downloading' | 'verifying'
   received: number
   total: number
 }
@@ -35,9 +35,9 @@ interface UpdateOffer {
 
 const RELEASE_API_URL = 'https://api.github.com/repos/NoGoat/Track-N-Race/releases/latest'
 export const RELEASE_PAGE_URL = 'https://github.com/NoGoat/Track-N-Race/releases/latest'
-const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 const ENABLED_KEY = 'updates.enabled'
-const LAST_CHECK_KEY = 'updates.lastCheckAt'
+const REMIND_LATER_KEY = 'updates.remindLaterAt'
+const LAST_GITHUB_CHECK_KEY = 'updates.lastGitHubCheckAt'
 const SKIPPED_VERSION_KEY = 'updates.skippedVersion'
 // electron-builder's NSIS flags: silent, update mode, relaunch when done.
 const INSTALLER_ARGS = ['/S', '--updated', '--force-run']
@@ -45,7 +45,12 @@ const INSTALLER_ARGS = ['/S', '--updated', '--force-run']
 // The verified offer behind the dialog. The renderer only says "install"; the
 // URL and hash never come from it.
 let pendingOffer: UpdateOffer | null = null
+// Where "Restart to update" reports the update (tnrp::updateInstallPath), on
+// the same service that made the offer.
+let pendingCountUrl = ''
 let installing = false
+// The downloaded, verified installer "Restart to update" runs.
+let readyInstaller: string | null = null
 
 function platformTarget(): { os: string; arch: string; format: string } {
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
@@ -136,13 +141,10 @@ export async function checkForUpdateOnStartup(currentVersion: string): Promise<A
   const native = nativeUpdates()
   if (!native) return null
 
+  // The update service is asked on every start, unless "Remind me later" is
+  // still hiding offers (tnrp::updateQuietPeriodOver).
   const overridden = native.updateServiceOverridden()
-  const now = Date.now()
-  const lastCheckAt = store.get(LAST_CHECK_KEY, 0)
-  if (!overridden && typeof lastCheckAt === 'number' && now - lastCheckAt < CHECK_INTERVAL_MS) return null
-  // Record the attempt before making the request so an outage cannot cause a
-  // network request on every app launch during the next 24 hours.
-  store.set(LAST_CHECK_KEY, now)
+  if (!overridden && !native.updateQuietPeriodOver(Date.now(), storedTime(REMIND_LATER_KEY))) return null
 
   const current = currentVersion.trim().replace(/^v(?=\d)/i, '')
   const serviceUrl = native.updateServiceUrl()
@@ -152,6 +154,10 @@ export async function checkForUpdateOnStartup(currentVersion: string): Promise<A
       if (offer.status !== 'available' && !offer.version) return null
       if (native.updateCompareVersions(offer.version, current) !== 1 || isSkipped(native, offer.version)) return null
       pendingOffer = offer.status === 'available' ? offer : null
+      if (pendingOffer) {
+        const { os, arch, format } = platformTarget()
+        pendingCountUrl = serviceUrl + native.updateInstallPath('electron', os, arch, format, current, offer.version)
+      }
       return {
         currentVersion: current,
         latestVersion: offer.version,
@@ -164,6 +170,11 @@ export async function checkForUpdateOnStartup(currentVersion: string): Promise<A
     }
   }
 
+  // Once a day at most: GitHub allows 60 unauthenticated requests an hour per
+  // IP. Recorded before the request so an outage can't retry every launch.
+  const now = Date.now()
+  if (!overridden && !native.updateQuietPeriodOver(now, storedTime(LAST_GITHUB_CHECK_KEY))) return null
+  store.set(LAST_GITHUB_CHECK_KEY, now)
   try {
     const latest = await checkGitHub(native, current)
     if (!latest || isSkipped(native, latest.version)) return null
@@ -180,10 +191,32 @@ export async function checkForUpdateOnStartup(currentVersion: string): Promise<A
   }
 }
 
+function storedTime(key: string): number {
+  const value = store.get(key, 0)
+  return typeof value === 'number' ? value : 0
+}
+
+/** Remind me later: no offers for a day. */
+export function remindUpdateLater(): void {
+  store.set(REMIND_LATER_KEY, Date.now())
+}
+
 export function skipUpdateVersion(version: string): void {
   const native = nativeUpdates()
   if (native && native.updateCompareVersions(version, version) === 0) {
     store.set(SKIPPED_VERSION_KEY, version.trim().replace(/^v(?=\d)/i, ''))
+  }
+}
+
+// Tells the update service the user is restarting into the update, so it can
+// count it. The app quits right after, so this waits for the reply, but never
+// more than a few seconds, and a failure never stops the update.
+async function countUpdate(url: string): Promise<void> {
+  if (!url) return
+  try {
+    await net.fetch(url, { method: 'POST', headers: { 'User-Agent': 'Track-N-Race' }, cache: 'no-store', signal: AbortSignal.timeout(3_000) })
+  } catch (error) {
+    console.warn('[updates] could not count the update:', error)
   }
 }
 
@@ -246,16 +279,18 @@ function launchInstaller(installer: string): Promise<void> {
 }
 
 /**
- * Downloads the pending update, verifies it against the signed manifest and
- * starts the installer, then quits so the installer can replace the app.
- * Resolves with "" on success, otherwise with what went wrong.
+ * Update now: downloads the pending update and verifies it against the signed
+ * manifest. The installer then waits for "Restart to update"
+ * ({@link restartToUpdate}). Resolves with "" when it's ready, otherwise with
+ * what went wrong.
  */
-export async function installPendingUpdate(onProgress: (progress: UpdateProgress) => void): Promise<string> {
+export async function downloadPendingUpdate(onProgress: (progress: UpdateProgress) => void): Promise<string> {
   const offer = pendingOffer
   if (!offer || !isInstalledWindowsBuild()) return 'This update has to be installed from the download page.'
+  if (readyInstaller) return ''
   const native = nativeUpdates()
   if (!native) return 'The update could not be verified: the native library is unavailable.'
-  if (installing) return 'The update is already being installed.'
+  if (installing) return 'The update is already being downloaded.'
   installing = true
 
   const directory = downloadDirectory()
@@ -270,15 +305,32 @@ export async function installPendingUpdate(onProgress: (progress: UpdateProgress
       fs.rmSync(installer, { force: true })
       throw new Error(mismatch)
     }
+    readyInstaller = installer
+    return ''
+  } catch (error) {
+    console.error('[updates] update failed:', error)
+    return error instanceof Error ? error.message : String(error)
+  } finally {
+    installing = false
+  }
+}
 
-    onProgress({ phase: 'installing', received: offer.size, total: offer.size })
+/**
+ * Restart to update: counts the update, starts the verified installer and
+ * quits so it can replace the app; the installer relaunches it. Resolves with
+ * "" on success, otherwise with what went wrong.
+ */
+export async function restartToUpdate(): Promise<string> {
+  const installer = readyInstaller
+  if (!installer) return 'The update has not been downloaded yet.'
+  try {
+    await countUpdate(pendingCountUrl)
     await launchInstaller(installer)
-    console.log(`[updates] started the ${offer.version} installer; quitting`)
+    console.log(`[updates] started the ${pendingOffer?.version ?? ''} installer; quitting`)
     setTimeout(() => app.quit(), 250)
     return ''
   } catch (error) {
-    installing = false
-    console.error('[updates] update failed:', error)
+    console.error('[updates] could not start the installer:', error)
     return error instanceof Error ? error.message : String(error)
   }
 }

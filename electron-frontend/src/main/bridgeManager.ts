@@ -337,7 +337,9 @@ interface NativeAddon {
   firewallAllowProgram?(programPath: string): Promise<string>
   updateServiceUrl?(): string
   updateServiceOverridden?(): boolean
+  updateQuietPeriodOver?(nowMs: number, sinceMs: number): boolean
   updateCheckPath?(product: string, os: string, arch: string, format: string, currentVersion: string): string
+  updateInstallPath?(product: string, os: string, arch: string, format: string, currentVersion: string, version: string): string
   updateEvaluateJson?(response: string, product: string, os: string, arch: string, format: string, currentVersion: string): string
   updateCompareVersions?(left: string, right: string): number | null
   updateVerifyFile?(path: string, sha512: string, size: number): Promise<string>
@@ -345,8 +347,8 @@ interface NativeAddon {
 
 /** The self-update entry points of the addon (tnrp/Updates.h). */
 export type NativeUpdates = Required<Pick<NativeAddon,
-  'updateServiceUrl' | 'updateServiceOverridden' | 'updateCheckPath' | 'updateEvaluateJson' |
-  'updateCompareVersions' | 'updateVerifyFile'>>
+  'updateServiceUrl' | 'updateServiceOverridden' | 'updateQuietPeriodOver' | 'updateCheckPath' | 'updateInstallPath' |
+  'updateEvaluateJson' | 'updateCompareVersions' | 'updateVerifyFile'>>
 
 let engine: NativeEngine | null = null
 let nextDataRequirementsRequestId = 0
@@ -1384,8 +1386,8 @@ export async function allowThroughFirewall(): Promise<string> {
 export function nativeUpdates(): NativeUpdates | null {
   try {
     const addon = loadAddon()
-    if (!addon.updateServiceUrl || !addon.updateServiceOverridden || !addon.updateCheckPath ||
-        !addon.updateEvaluateJson || !addon.updateCompareVersions || !addon.updateVerifyFile) return null
+    if (!addon.updateServiceUrl || !addon.updateServiceOverridden || !addon.updateQuietPeriodOver || !addon.updateCheckPath ||
+        !addon.updateInstallPath || !addon.updateEvaluateJson || !addon.updateCompareVersions || !addon.updateVerifyFile) return null
     return addon as NativeUpdates
   } catch (error) {
     console.error('[updates] native addon unavailable:', error)

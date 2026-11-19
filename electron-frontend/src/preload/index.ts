@@ -283,8 +283,10 @@ const recordingBridge = {
 const updateBridge = {
   checkOnStartup: (): Promise<unknown> => ipcRenderer.invoke('updates:check-on-startup'),
   skipVersion: (version: string): void => ipcRenderer.send('updates:skip-version', version),
+  remindLater: (): void => ipcRenderer.send('updates:remind-later'),
   openDownloadPage: (): Promise<void> => ipcRenderer.invoke('updates:open-download-page'),
-  install: (): Promise<string> => ipcRenderer.invoke('updates:install'),
+  download: (): Promise<string> => ipcRenderer.invoke('updates:download'),
+  restart: (): Promise<string> => ipcRenderer.invoke('updates:restart'),
   onProgress: (callback: (progress: unknown) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: unknown) => callback(progress)
     ipcRenderer.on('updates:progress', listener)

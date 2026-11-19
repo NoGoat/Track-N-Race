@@ -31,11 +31,44 @@ buttons and GitHub's download counts use.
 production URL. Apps use staging only when started with `TNR_UPDATE_ENDPOINT`.
 Both Workers read the same bucket.
 
+## Check counts
+
+Every valid check is counted in Workers Analytics Engine, the same way the
+website counts download clicks. Production writes to
+`track_n_race_update_checks`, staging to `track_n_race_update_checks_staging`.
+Each dataset is created on its first write. A data point holds the product, OS,
+architecture, format, installed version, the result (`offered`, `current`,
+`ahead`, `blocked`, `no_file`, `none` or `error`), the version on offer, the
+channel, the country and a client label (`other` when the User-Agent isn't the
+apps' `Track-N-Race`). No IP address or user agent is stored. `record()` in
+`src/index.js` lists the blob order.
+
+Downloads go straight to `downloads.track-n-race.com`, not through this Worker,
+so the bandwidth never touches it. Instead, "Update now" only downloads and
+verifies; the app then shows "Restart to update", and clicking it sends
+`POST /v1/install?…&v=<installed>&to=<version>` (`tnrp::updateInstallPath`)
+before the installer starts. The Worker records it with result `install` and
+the version in `blob7`, so it counts verified updates the user chose to
+install. The apps wait at most 3 seconds for it and install either way.
+Cancelled or failed downloads, "Later", and builds that only open the release
+page send nothing.
+
+Example query (Cloudflare API → Analytics Engine SQL):
+
+```sql
+SELECT blob1 AS product, blob5 AS installed, SUM(_sample_interval) AS checks
+FROM track_n_race_update_checks
+WHERE timestamp > NOW() - INTERVAL '7' DAY AND blob10 = ''
+GROUP BY product, installed
+ORDER BY checks DESC
+```
+
 ## Free tier
 
 The Workers and R2 free tiers cover this: 10 GB of storage, 10 million reads
 and 1 million writes a month, no charge for downloads, and 100,000 Worker
-requests a day (one update check per install per day). A release is about
+requests a day (one update check per app start; "Remind me later" pauses
+checks for a day). A release is about
 600 MB across all platforms, so delete old version folders from the bucket
 (Cloudflare dashboard → R2 → `track-n-race-releases`) to stay under 10 GB.
 Keep at least the stable and staging versions.
@@ -96,8 +129,8 @@ don't publish it: `./build-release-windows.ps1 1.6.9`. Only Windows installer
 builds and release-signed Android APKs install an update themselves; other
 builds open the download page.
 
-Install it, then start it against staging. The override also skips the
-once-a-day check limit:
+Install it, then start it against staging. The override also ignores
+"Remind me later":
 
 ```powershell
 $env:TNR_UPDATE_ENDPOINT = "https://track-n-race-updates-staging.<account>.workers.dev"
@@ -131,7 +164,7 @@ node publish-release.mjs promote 0.9.2 stable --local
 `LOCAL_DOWNLOADS` makes the Worker serve the files at
 `http://127.0.0.1:8790/files/<version>/<file>`, which is where `--local`
 manifests point. Start the app with `TNR_UPDATE_ENDPOINT=http://127.0.0.1:8790`
-to use the local Worker. That also skips the once-a-day check limit. Plain-http
+to use the local Worker. That also ignores "Remind me later". Plain-http
 download URLs are accepted only for `127.0.0.1` and `localhost`.
 
 The Worker caches the channel pointer and manifests for 10 minutes, including

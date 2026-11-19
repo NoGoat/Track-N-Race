@@ -1261,12 +1261,11 @@ QWidget* SettingsDialog::buildNotificationsPage() {
     });
 
     addSection(form, "Updates");
-    auto* updates = new QCheckBox("Check GitHub for a new version at startup");
+    auto* updates = new QCheckBox("Check for a new version at startup");
     updates->setChecked(mainWindow_->updateChecksEnabled());
     connect(updates, &QCheckBox::toggled,
             mainWindow_, &MainWindow::setUpdateChecksEnabled);
     form->addRow("Updates:", updates);
-    form->addRow(QString(), hint("Checks at most once every 24 hours."));
     return page;
 }
 

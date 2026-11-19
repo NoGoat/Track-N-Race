@@ -25,7 +25,8 @@
 #include <thread>
 
 namespace {
-constexpr qint64 kCheckIntervalMs = 24LL * 60 * 60 * 1000;
+constexpr const char* kRemindLaterKey = "updates/remindLaterAt";
+constexpr const char* kLastGitHubCheckKey = "updates/lastGitHubCheckAt";
 const QUrl kReleaseApi("https://api.github.com/repos/NoGoat/Track-N-Race/releases/latest");
 const QUrl kReleasePage("https://github.com/NoGoat/Track-N-Race/releases/latest");
 constexpr const char* kProduct = "qt";
@@ -98,12 +99,12 @@ void UpdateChecker::checkOnStartup() {
     removeOldDownloads();
     QSettings settings("TrackNRace", "NativeRecorder");
     if (!settings.value("updates/enabled", true).toBool()) return;
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // The update service is asked on every start, unless "Remind me later" is
+    // still hiding offers (tnrp::updateQuietPeriodOver).
     if (!tnrp::updateServiceOverridden() &&
-        now - settings.value("updates/lastCheckAt", 0).toLongLong() < kCheckIntervalMs)
+        !tnrp::updateQuietPeriodOver(QDateTime::currentMSecsSinceEpoch(),
+                                     settings.value(kRemindLaterKey, 0).toLongLong()))
         return;
-    // Store the attempt first so an outage does not retry on every launch.
-    settings.setValue("updates/lastCheckAt", now);
 
     const QString current = qstr(tnrp::normalizedVersion(utf8(QApplication::applicationVersion())));
     const QString serviceUrl = qstr(tnrp::updateServiceUrl());
@@ -118,7 +119,7 @@ void UpdateChecker::checkService(const QString& serviceUrl, const QString& curre
     QNetworkRequest request(url);
     request.setRawHeader("User-Agent", "Track-N-Race");
     QNetworkReply* reply = network_->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, current, target] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, serviceUrl, current, target] {
         reply->deleteLater();
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() == QNetworkReply::NoError && status == 204) return;  // up to date
@@ -140,12 +141,25 @@ void UpdateChecker::checkService(const QString& serviceUrl, const QString& curre
         if (latest.isEmpty() || tnrp::compareVersions(offer.version, utf8(current)) != 1 || isSkipped(latest))
             return;
         hasPending_ = offer.status == "available";
+        pendingCountUrl_ = hasPending_
+            ? serviceUrl + qstr(tnrp::updateInstallPath(kProduct, target.os, target.arch, target.format,
+                                                         utf8(current), offer.version))
+            : QString();
         pending_ = std::move(offer);
         showOffer(current, latest, hasPending_ && isInstalledWindowsBuild());
     });
 }
 
 void UpdateChecker::checkGitHub(const QString& current) {
+    // Once a day at most: GitHub allows 60 unauthenticated requests an hour per
+    // IP. Stored before the request so an outage does not retry every launch.
+    QSettings settings("TrackNRace", "NativeRecorder");
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!tnrp::updateServiceOverridden() &&
+        !tnrp::updateQuietPeriodOver(now, settings.value(kLastGitHubCheckKey, 0).toLongLong()))
+        return;
+    settings.setValue(kLastGitHubCheckKey, now);
+
     QNetworkRequest request(kReleaseApi);
     request.setRawHeader("Accept", "application/vnd.github+json");
     request.setRawHeader("User-Agent", "Track-N-Race");
@@ -191,6 +205,9 @@ void UpdateChecker::showOffer(const QString& current, const QString& latest, boo
     } else if (dialog.clickedButton() == accept) {
         if (installable) startInstall();
         else QDesktopServices::openUrl(kReleasePage);
+    } else {
+        // Remind me later (or the dialog was closed): no offers for a day.
+        QSettings("TrackNRace", "NativeRecorder").setValue(kRemindLaterKey, QDateTime::currentMSecsSinceEpoch());
     }
 }
 
@@ -263,11 +280,11 @@ void UpdateChecker::startInstall() {
             failInstall("Could not save the download.");
             return;
         }
-        verifyAndLaunch(installer);
+        verifyDownload(installer);
     });
 }
 
-void UpdateChecker::verifyAndLaunch(const QString& installer) {
+void UpdateChecker::verifyDownload(const QString& installer) {
     if (progress_) {
         progress_->setLabelText("Verifying…");
         progress_->setCancelButton(nullptr);
@@ -287,17 +304,56 @@ void UpdateChecker::verifyAndLaunch(const QString& installer) {
                 self->failInstall(mismatch);
                 return;
             }
-            if (self->progress_) self->progress_->setLabelText("Starting installer…");
-            // installer.nsi: /S installs silently, /UPDATE waits for this app to
-            // exit and relaunches it afterwards.
-            if (!QProcess::startDetached(installer, {"/S", "/UPDATE"})) {
-                self->failInstall("Could not start the installer.");
-                return;
-            }
-            qInfo().noquote() << "[updates] started the" << qstr(self->pending_.version) << "installer; quitting";
-            QTimer::singleShot(250, qApp, &QCoreApplication::quit);
+            self->offerRestart(installer);
         }, Qt::QueuedConnection);
     }).detach();
+}
+
+// Downloaded and verified: the user decides when the app closes.
+void UpdateChecker::offerRestart(const QString& installer) {
+    if (progress_) progress_->deleteLater();
+    progress_ = nullptr;
+    QMessageBox dialog(QMessageBox::Information, "Update Ready",
+        QString("Track N Race %1 is ready to install.").arg(qstr(pending_.version)), QMessageBox::NoButton,
+        dialogParent_);
+    dialog.setInformativeText("Track N Race will close, install the update and open again.");
+    // Later: the installer is cleared on the next launch, which offers the update again.
+    dialog.addButton("Later", QMessageBox::RejectRole);
+    QPushButton* restart = dialog.addButton("Restart to update", QMessageBox::AcceptRole);
+    dialog.setDefaultButton(restart);
+    dialog.exec();
+    if (dialog.clickedButton() == restart) restartToUpdate(installer);
+}
+
+// Reports the update to the service so it's counted, then starts the installer.
+// The app quits right after, so this waits for the reply, but never more than a
+// few seconds, and a failed report never stops the update.
+void UpdateChecker::restartToUpdate(const QString& installer) {
+    if (pendingCountUrl_.isEmpty()) {
+        launchInstaller(installer);
+        return;
+    }
+    QNetworkRequest request{QUrl(pendingCountUrl_)};
+    request.setRawHeader("User-Agent", "Track-N-Race");
+    request.setTransferTimeout(3000);
+    QNetworkReply* reply = network_->post(request, QByteArray());
+    connect(reply, &QNetworkReply::finished, this, [this, reply, installer] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            qWarning().noquote() << "[updates] could not count the update:" << reply->errorString();
+        launchInstaller(installer);
+    });
+}
+
+void UpdateChecker::launchInstaller(const QString& installer) {
+    // installer.nsi: /S installs silently, /UPDATE waits for this app to
+    // exit and relaunches it afterwards.
+    if (!QProcess::startDetached(installer, {"/S", "/UPDATE"})) {
+        failInstall("Could not start the installer.");
+        return;
+    }
+    qInfo().noquote() << "[updates] started the" << qstr(pending_.version) << "installer; quitting";
+    QTimer::singleShot(250, qApp, &QCoreApplication::quit);
 }
 
 void UpdateChecker::failInstall(const QString& error) {

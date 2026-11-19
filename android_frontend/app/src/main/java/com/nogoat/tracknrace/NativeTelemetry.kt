@@ -31,10 +31,19 @@ internal class NativeTelemetry(
         @JvmStatic
         external fun nativeUpdateServiceUrl(): String
 
+        /** True when a day has passed since [sinceMs] (0 = never): Remind me later and the GitHub fallback wait this long. */
+        @JvmStatic
+        external fun nativeUpdateQuietPeriodOver(nowMs: Long, sinceMs: Long): Boolean
+
         /** "/v1/check?…" for one install, appended to [nativeUpdateServiceUrl]. */
         @JvmStatic
         external fun nativeUpdateCheckPath(product: String, os: String, arch: String, format: String,
                                            currentVersion: String): String
+
+        /** "/v1/install?…&to=…": POSTed to [nativeUpdateServiceUrl] on Restart to update, so the update is counted. */
+        @JvmStatic
+        external fun nativeUpdateInstallPath(product: String, os: String, arch: String, format: String,
+                                             currentVersion: String, version: String): String
 
         /** Verifies the service's signed manifest and picks this install's file: {"status","version","url",…}. */
         @JvmStatic

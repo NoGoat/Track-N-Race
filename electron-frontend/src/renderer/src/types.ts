@@ -759,7 +759,7 @@ export interface AvailableUpdate {
 }
 
 export interface UpdateProgress {
-  phase: 'downloading' | 'verifying' | 'installing'
+  phase: 'downloading' | 'verifying'
   received: number
   total: number
 }
@@ -898,9 +898,13 @@ declare global {
     updateBridge: {
       checkOnStartup: () => Promise<AvailableUpdate | null>
       skipVersion: (version: string) => void
+      /** No offers for a day. */
+      remindLater: () => void
       openDownloadPage: () => Promise<void>
-      /** Resolves with "" once the installer has started, else the error. */
-      install: () => Promise<string>
+      /** Update now: resolves with "" once the update is downloaded and verified, else the error. */
+      download: () => Promise<string>
+      /** Restart to update: resolves with "" once the installer has started (the app then quits), else the error. */
+      restart: () => Promise<string>
       onProgress: (callback: (progress: UpdateProgress) => void) => () => void
     }
     pairingBridge: {

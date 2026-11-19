@@ -175,7 +175,7 @@ internal fun SettingsScreen(
             SettingsGroup("About") {
                 SettingsSwitchRow(
                     title = "Check for updates",
-                    supporting = "Once a day, when the app opens",
+                    supporting = "When the app opens",
                     checked = settings.updatesEnabled,
                     onCheckedChange = onUpdatesEnabled,
                 )

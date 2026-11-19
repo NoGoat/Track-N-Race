@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Download } from 'lucide-react'
+import { Download, RotateCw } from 'lucide-react'
 import type { AvailableUpdate, UpdateProgress } from '../../types'
 import { BUTTON_CLASS, PRIMARY_BUTTON_CLASS } from '../../lib/buttonStyles'
 import { useModalPresenceValue } from '../../lib/useModalPresence'
@@ -12,6 +12,9 @@ interface UpdateAvailableDialogProps {
 type InstallState =
   | { kind: 'idle' }
   | { kind: 'working'; progress: UpdateProgress | null }
+  /** Downloaded and verified; waiting for Restart to update. */
+  | { kind: 'ready' }
+  | { kind: 'restarting' }
   | { kind: 'failed'; error: string }
 
 function megabytes(bytes: number): string {
@@ -21,7 +24,6 @@ function megabytes(bytes: number): string {
 function progressLabel(progress: UpdateProgress | null): string {
   if (!progress) return 'Starting download…'
   if (progress.phase === 'verifying') return 'Verifying…'
-  if (progress.phase === 'installing') return 'Starting installer…'
   return `Downloading ${megabytes(progress.received)} / ${megabytes(progress.total)} MB`
 }
 
@@ -35,13 +37,18 @@ export default function UpdateAvailableDialog({ update, onClose }: UpdateAvailab
 
   if (!mounted || !displayedUpdate) return null
 
-  const working = install.kind === 'working'
-  const fraction = working && install.progress && install.progress.total > 0
+  const working = install.kind === 'working' || install.kind === 'restarting'
+  const fraction = install.kind === 'working' && install.progress && install.progress.total > 0
     ? Math.min(1, install.progress.received / install.progress.total)
     : 0
 
   const skipVersion = () => {
     window.updateBridge.skipVersion(displayedUpdate.latestVersion)
+    onClose()
+  }
+
+  const remindLater = () => {
+    window.updateBridge.remindLater()
     onClose()
   }
 
@@ -52,8 +59,14 @@ export default function UpdateAvailableDialog({ update, onClose }: UpdateAvailab
 
   const installNow = async () => {
     setInstall({ kind: 'working', progress: null })
-    const error = await window.updateBridge.install()
-    // On success the app quits; leave the progress showing until it does.
+    const error = await window.updateBridge.download()
+    setInstall(error ? { kind: 'failed', error } : { kind: 'ready' })
+  }
+
+  const restart = async () => {
+    setInstall({ kind: 'restarting' })
+    const error = await window.updateBridge.restart()
+    // On success the app quits; leave "Restarting…" showing until it does.
     if (error) setInstall({ kind: 'failed', error })
   }
 
@@ -96,7 +109,15 @@ export default function UpdateAvailableDialog({ update, onClose }: UpdateAvailab
               <div className="mt-1 font-semibold text-[var(--text-primary)]">{displayedUpdate.latestVersion}</div>
             </div>
           </div>
-          {working && (
+          {install.kind === 'ready' && (
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed" data-testid="update-ready">
+              The update is ready. Track N Race will close, install it and open again.
+            </p>
+          )}
+          {install.kind === 'restarting' && (
+            <span className="text-[11px] font-mono text-[var(--text-muted)]">Restarting…</span>
+          )}
+          {install.kind === 'working' && (
             <div className="flex flex-col gap-2" data-testid="update-progress">
               <div className="h-1 w-full overflow-hidden rounded-full bg-[var(--border-subtle)]">
                 <div
@@ -115,10 +136,23 @@ export default function UpdateAvailableDialog({ update, onClose }: UpdateAvailab
         </div>
 
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
+          {install.kind === 'ready' || install.kind === 'restarting' ? (
+            <>
+              {/* Later: the next launch offers the update again. */}
+              <button onClick={onClose} className={BUTTON_CLASS} disabled={working}>
+                Later
+              </button>
+              <button onClick={() => void restart()} className={PRIMARY_BUTTON_CLASS} disabled={working} data-testid="update-restart">
+                <RotateCw size={12} />
+                Restart to update
+              </button>
+            </>
+          ) : (
+          <>
           <button onClick={skipVersion} className={BUTTON_CLASS} disabled={working}>
             Skip this version
           </button>
-          <button onClick={onClose} className={BUTTON_CLASS} disabled={working}>
+          <button onClick={remindLater} className={BUTTON_CLASS} disabled={working}>
             Remind me Later
           </button>
           {displayedUpdate.installable && install.kind !== 'failed' ? (
@@ -131,6 +165,8 @@ export default function UpdateAvailableDialog({ update, onClose }: UpdateAvailab
               <Download size={12} />
               Download
             </button>
+          )}
+          </>
           )}
         </div>
       </div>

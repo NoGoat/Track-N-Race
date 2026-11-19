@@ -11,8 +11,19 @@
 //   <version>/<file>                 the release files, served from downloads.track-n-race.com
 //   <version>/manifest.json(.sig)    the signed manifest
 //   channels/<channel>.json          {"version": "1.7.0"}: what that channel offers
+//
+// POST /v1/install?product=qt&os=windows&arch=x64&format=installer&v=1.6.2&to=1.7.0
+//   204. The apps report "Restart to update" here, once the update is
+//   downloaded and verified, just before they install it.
+//
 // Downloads are never proxied in production: the manifest points at the bucket's
-// own domain. Nothing about the caller is logged or stored.
+// own domain, so this Worker never carries the files. Installs are counted
+// through /v1/install instead.
+//
+// Each valid check and install report is counted in Workers Analytics Engine (the CHECKS binding),
+// like the website counts its downloads: what was asked, what was answered, the
+// country Cloudflare reports and a client label. No IP, user agent or other
+// identifier is stored. See record() for the fields.
 //
 // Settings (wrangler.toml [vars] or the dashboard):
 //   CHANNEL           "stable" (production) or "staging"
@@ -27,11 +38,15 @@ const CHANNEL = /^[a-z]{1,16}$/
 
 export default {
   async fetch(request, env, ctx) {
-    if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405 })
     const url = new URL(request.url)
+    if (url.pathname === '/v1/install') {
+      if (request.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'POST' } })
+      return countInstall(request, url, env)
+    }
+    if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405 })
     if (url.pathname === '/v1/check') {
       try {
-        return await check(url, env, ctx)
+        return await check(request, url, env, ctx)
       } catch (error) {
         return json({ error: String(error?.message || error) }, 502)
       }
@@ -42,33 +57,111 @@ export default {
   },
 }
 
-async function check(url, env, ctx) {
+// The install's product/os/arch/format and installed version from the query, or a 400 response.
+function readInstall(url) {
   const want = {}
   for (const name of ['product', 'os', 'arch', 'format']) {
     const value = (url.searchParams.get(name) || '').toLowerCase()
-    if (!TOKEN.test(value)) return json({ error: `missing or invalid ${name}` }, 400)
+    if (!TOKEN.test(value)) return { error: json({ error: `missing or invalid ${name}` }, 400) }
     want[name] = value
   }
   const current = url.searchParams.get('v') || ''
-  if (!parseVersion(current)) return json({ error: 'missing or invalid v' }, 400)
+  if (!parseVersion(current)) return { error: json({ error: 'missing or invalid v' }, 400) }
+  return { want, current }
+}
+
+// POST /v1/install?product=…&os=…&arch=…&format=…&v=…&to=…
+// The apps send this when the user clicks "Restart to update" for the verified
+// update `to` (tnrp::updateInstallPath), then start the installer. They wait a
+// few seconds at most for the reply, so this is always a quick 204 unless the
+// query is malformed.
+function countInstall(request, url, env) {
+  const { want, current, error } = readInstall(url)
+  if (error) return error
+  const version = url.searchParams.get('to') || ''
+  if (!parseVersion(version)) return json({ error: 'missing or invalid to' }, 400)
+  record(env, request, want, current, env.CHANNEL || 'stable', 'install', version.replace(/^v/, ''))
+  return nothing()
+}
+
+async function check(request, url, env, ctx) {
+  const { want, current, error } = readInstall(url)
+  if (error) return error
 
   const channel = env.CHANNEL || 'stable'
   if (!CHANNEL.test(channel)) throw new Error('CHANNEL is not a channel name')
-  const pointer = await cachedObject(url, `channels/${channel}.json`, POINTER_TTL, env, ctx)
-  if (pointer === null) return nothing()
-  const version = String(JSON.parse(pointer).version || '').replace(/^v/, '')
-  if (!parseVersion(version)) throw new Error(`channels/${channel}.json has no valid version`)
+  // Counted once the answer is known, including when finding it fails.
+  const count = (result, offered = '') => record(env, request, want, current, channel, result, offered)
+  try {
+    const pointer = await cachedObject(url, `channels/${channel}.json`, POINTER_TTL, env, ctx)
+    if (pointer === null) {
+      count('none')
+      return nothing()
+    }
+    const version = String(JSON.parse(pointer).version || '').replace(/^v/, '')
+    if (!parseVersion(version)) throw new Error(`channels/${channel}.json has no valid version`)
 
-  const blocked = new Set((env.BLOCKED_VERSIONS || '').split(',').map(value => value.trim().replace(/^v/, '')).filter(Boolean))
-  if (blocked.has(version) || compareVersions(version, current) <= 0) return nothing()
+    const blocked = new Set((env.BLOCKED_VERSIONS || '').split(',').map(value => value.trim().replace(/^v/, '')).filter(Boolean))
+    if (blocked.has(version)) {
+      count('blocked', version)
+      return nothing()
+    }
+    const order = compareVersions(version, current)
+    if (order <= 0) {
+      count(order < 0 ? 'ahead' : 'current', version)
+      return nothing()
+    }
 
-  const manifest = await cachedObject(url, `${version}/manifest.json`, MANIFEST_TTL, env, ctx)
-  const signature = await cachedObject(url, `${version}/manifest.json.sig`, MANIFEST_TTL, env, ctx)
-  if (manifest === null || signature === null) throw new Error(`release ${version} has no signed manifest`)
-  const parsed = JSON.parse(manifest)
-  const hasFile = Array.isArray(parsed.files) && parsed.files.some(file =>
-    file.product === want.product && file.os === want.os && file.arch === want.arch && file.format === want.format)
-  return hasFile ? json({ manifest, signature: signature.trim() }, 200) : nothing()
+    const manifest = await cachedObject(url, `${version}/manifest.json`, MANIFEST_TTL, env, ctx)
+    const signature = await cachedObject(url, `${version}/manifest.json.sig`, MANIFEST_TTL, env, ctx)
+    if (manifest === null || signature === null) throw new Error(`release ${version} has no signed manifest`)
+    const parsed = JSON.parse(manifest)
+    const hasFile = Array.isArray(parsed.files) && parsed.files.some(file =>
+      file.product === want.product && file.os === want.os && file.arch === want.arch && file.format === want.format)
+    if (!hasFile) {
+      count('no_file', version)
+      return nothing()
+    }
+    count('offered', version)
+    return json({ manifest, signature: signature.trim() }, 200)
+  } catch (error) {
+    count('error')
+    throw error
+  }
+}
+
+// Analytics Engine data point, one per valid check or install report (malformed
+// requests get a 400 and aren't counted). Install reports have result "install"
+// and the version being installed in blob7.
+//   index1  product (the sampling key)
+//   blob1   product      "electron", "qt", "android"
+//   blob2   os           "windows", "macos", "linux", "android"
+//   blob3   arch         "x64", "arm64", ...
+//   blob4   format       "installer", "appimage", "dmg", "apk", ...
+//   blob5   installed    the version the app is running
+//   blob6   result       offered | current | ahead | blocked | no_file | none | error | install
+//   blob7   offered      the channel's version, when there is one
+//   blob8   channel      "stable" or "staging"
+//   blob9   country      as Cloudflare reports it
+//   blob10  client       "" for the apps, "other" when the User-Agent isn't theirs (curl, scripts, scanners)
+//   double1 1
+// Writes never block or break the response.
+function record(env, request, want, installed, channel, result, offered) {
+  try {
+    env.CHECKS?.writeDataPoint({
+      indexes: [want.product],
+      blobs: [
+        want.product, want.os, want.arch, want.format, installed, result, offered, channel,
+        request.cf?.country ?? '', clientLabel(request),
+      ],
+      doubles: [1],
+    })
+  } catch { /* counting is best effort */ }
+}
+
+// The apps all send exactly "Track-N-Race". Only the label is stored, never the header.
+function clientLabel(request) {
+  return request.headers.get('User-Agent') === 'Track-N-Race' ? '' : 'other'
 }
 
 // Local testing only: the release files, as downloads.track-n-race.com serves them in production.

@@ -741,11 +741,24 @@ Java_com_nogoat_tracknrace_NativeTelemetry_nativeUpdateServiceUrl(JNIEnv* env, j
     return javaString(env, tnrp::updateServiceUrl());
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeUpdateQuietPeriodOver(JNIEnv*, jclass, jlong nowMs, jlong sinceMs) {
+    return tnrp::updateQuietPeriodOver(nowMs, sinceMs) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_nogoat_tracknrace_NativeTelemetry_nativeUpdateCheckPath(
     JNIEnv* env, jclass, jstring product, jstring os, jstring arch, jstring format, jstring currentVersion) {
     return javaString(env, tnrp::updateCheckPath(utf8(env, product), utf8(env, os), utf8(env, arch),
                                                  utf8(env, format), utf8(env, currentVersion)));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nogoat_tracknrace_NativeTelemetry_nativeUpdateInstallPath(
+    JNIEnv* env, jclass, jstring product, jstring os, jstring arch, jstring format, jstring currentVersion,
+    jstring version) {
+    return javaString(env, tnrp::updateInstallPath(utf8(env, product), utf8(env, os), utf8(env, arch),
+                                                   utf8(env, format), utf8(env, currentVersion), utf8(env, version)));
 }
 
 extern "C" JNIEXPORT jstring JNICALL
