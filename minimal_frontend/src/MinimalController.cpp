@@ -167,9 +167,16 @@ bool MinimalController::applyNetwork(const std::string& bindAddress, uint16_t po
 
     const std::string previousAddress = settings_.bindAddress;
     const uint16_t previousPort = settings_.port;
-    if (!engine_->restartUdp(port, bindAddress)) {
+    if (!engine_->restartUdp(port, bindAddress, targets)) {
         error = engine_->udpLastError();
-        if (!engine_->restartUdp(previousPort, previousAddress)) {
+        // Forward targets are unchanged on this path, but re-parse them against
+        // the previous endpoint so the restored listener forwards as before.
+        std::vector<tnrp::UdpForwardTarget> previousParsed;
+        std::string parseError;
+        parseForwardTargets(previousTargets, previousAddress, previousPort,
+                            previousParsed, parseError);
+        if (!engine_->restartUdp(previousPort, previousAddress,
+                                 std::move(previousParsed))) {
             error += " The previous UDP endpoint could not be restored: "
                   + engine_->udpLastError();
         }

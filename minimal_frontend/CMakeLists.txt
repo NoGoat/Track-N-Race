@@ -53,7 +53,7 @@ file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/Zlib.txt ZLIB_LICE
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/BSD-3-Clause-Zstandard.txt ZSTD_BSD3_TEXT)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/ISC-libsodium.txt LIBSODIUM_ISC_TEXT)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/BSD-2-Clause-cpace.txt CPACE_BSD2_TEXT)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/LGPL-3.0.txt LGPL3_TEXT)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/LGPL-3.0-Qt.txt LGPL3_TEXT)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated)
 configure_file(src/Attributions.cpp.in
                ${CMAKE_CURRENT_BINARY_DIR}/generated/Attributions.cpp @ONLY)
