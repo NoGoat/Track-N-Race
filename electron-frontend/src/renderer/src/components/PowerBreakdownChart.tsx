@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 import type { AlignedTable, StatusRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type YRangeSpec } from './charts/TimeChartView'
@@ -7,7 +7,9 @@ import type { YAxisBehavior } from '../lib/graphSections'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import { useSideRows } from '../lib/lapDataSide'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { ChartHeader, useChartSplit, useSplitLegendState } from '../lib/chartSplit'
 import type { GraphSection } from '../lib/graphSections'
 import { themeSeriesColor } from '../lib/themeColors'
 import { HISTORY_ROW } from '../lib/historyDependencies'
@@ -77,7 +79,7 @@ function PowerLineChartContent(props: PowerLineProps) {
   } = props
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
-  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const [hiddenSeries, setHiddenSeries] = useSplitLegendState<Record<string, boolean>>({})
   const toggleSeries = useCallback((label: string) => {
     setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
   }, [])
@@ -89,7 +91,7 @@ function PowerLineChartContent(props: PowerLineProps) {
   const themedColumns = useMemo(() => columns.map(item => item.color
     ? { ...item, color: themeSeriesColor(item.color, isDark) }
     : item), [columns, isDark])
-  const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory)
+  const data = useSideRows('statusHistory', useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory))
   const visibleEntries = useMemo(() => themedSeries.flatMap((series, sourceIndex) => {
     const column = themedColumns[sourceIndex]
     return series.visible !== false && column ? [{ series, column, sourceIndex }] : []
@@ -112,7 +114,7 @@ function PowerLineChartContent(props: PowerLineProps) {
     return [
       `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(values),
-      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
+      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues, coordinates.comparisonLabel),
     ].join('')
   }, [axisColor, coordinates, formatValues])
   const cursorSync = useMemo(() => ({
@@ -126,7 +128,7 @@ function PowerLineChartContent(props: PowerLineProps) {
 
   return (
     <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
-      <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
+      <ChartHeader className="flex h-[22px] items-center justify-between mb-3 shrink-0">
         <div className="flex items-center gap-0">
           <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
           <ChartWindowOverrideSelect />
@@ -147,7 +149,7 @@ function PowerLineChartContent(props: PowerLineProps) {
             ))}
             {note && <span className="text-[var(--text-secondary)]">{note}</span>}
         </div>}
-      </div>
+      </ChartHeader>
       <div className="flex-1 min-h-0 relative">
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
@@ -238,7 +240,9 @@ export default function PowerBreakdownChart({ data, isDark, visibleCharts, views
     { key: 'fuelHistory', el: <FuelHistoryChart data={data} isDark={isDark} view={views?.fuelHistory} windowSeconds={windowSeconds} fuelUpperLimit={fuelUpperLimit} /> },
   ].filter(({ key }) => visibleCharts[key as keyof VisibleCharts])
   const odd = items.length % 2 !== 0
-  const vertical = layout === 'vertical'
+  // Two files open: one chart per row, so each chart's header spans A | B.
+  const split = useChartSplit()
+  const vertical = layout === 'vertical' || split !== null
 
   return (
     <div

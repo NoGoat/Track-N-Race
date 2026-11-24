@@ -1,5 +1,41 @@
-import type { AnalyzeLapData } from '../types'
+import type { AnalyzeLapData, DamageRow, LapRow, MotionExRow, MotionRow, PlayerPositionPoint, StatusRow, TelemetryRow } from '../types'
 import { DATA_ROW } from './historyDependencies'
+import { viewOfRows } from './columnStore'
+
+// Engine JSON from analysis:get-lap-data / playback_lap_data; checked before use.
+interface LapDataPayload {
+  type?: string
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  telemetry?: TelemetryRow[]
+  motionHistory?: MotionRow[]
+  motionExHistory?: MotionExRow[]
+  statusHistory?: StatusRow[]
+  damageHistory?: DamageRow[]
+  lapProgress?: LapRow[]
+  playerPositions?: PlayerPositionPoint[]
+  rowTypeMask: number
+}
+
+export function parseAnalyzeLapData(raw: unknown): AnalyzeLapData | null {
+  const payload = raw as LapDataPayload | null | undefined
+  if (!payload || payload.type !== 'playback_lap_data' || !Number.isFinite(payload.lapNum)) return null
+  return {
+    lapNum: payload.lapNum,
+    startSessionTime: payload.startSessionTime,
+    endSessionTime: payload.endSessionTime,
+    telemetry: viewOfRows('telemetry', payload.telemetry ?? []),
+    motion: viewOfRows('motion', payload.motionHistory ?? []),
+    motionEx: viewOfRows('motion_ex', payload.motionExHistory ?? []),
+    statusHistory: viewOfRows('status', payload.statusHistory ?? []),
+    damageHistory: viewOfRows('damage', payload.damageHistory ?? []),
+    lapProgress: viewOfRows('lap', payload.lapProgress ?? [], false),
+    playerPositions: payload.playerPositions ?? [],
+    rowTypeMask: Number.isFinite(payload.rowTypeMask) ? payload.rowTypeMask >>> 0 : 0xFFFFFFFF,
+  }
+}
+
 
 export function mergeAnalyzeLapData(
   prior: AnalyzeLapData,

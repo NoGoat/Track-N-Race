@@ -17,6 +17,7 @@
 
 #include "tnrp/Config.h"
 #include "tnrp/LapMeasures.h"
+#include "tnrp/MergedLapTimeline.h"
 #include "tnrp/Parser.h"
 #include "tnrp/PairServer.h"
 #include "tnrp/Sink.h"
@@ -239,8 +240,24 @@ public:
     // Register on the caller thread before an async seek worker is queued.
     // Playback remains gated until that exact generation is applied.
     void playerRequestSeek(uint64_t requestId);
+    // `mergedTime` (lap-synced playback, below): the seek is to that time on
+    // the merged timeline, and file A goes wherever it is then, `pct` unused.
     void playerSeek(float pct, bool allHistory = false, uint64_t requestId = 0,
-                    uint32_t rowTypeMask = 0xFFFFFFFFu, float windowSeconds = 0.0f);
+                    uint32_t rowTypeMask = 0xFFFFFFFFu, float windowSeconds = 0.0f,
+                    double mergedTime = std::numeric_limits<double>::quiet_NaN());
+    // Lap-synced playback of the open file with a second one
+    // (tnrp/MergedLapTimeline.h). With a timeline set, the playback clock is
+    // the merged one: each merged lap lasts as long as the slower file's lap,
+    // and while the merged lap runs past the end of file A's lap, file A holds
+    // just before its line (rows up to there, so its lap stays the one being
+    // finished) and resumes at its next lap. Playback ends at the end of the
+    // merged timeline. playback_state then also carries merged_time, and the
+    // merged-playhead callback gets the second file's session time at the
+    // playhead on every state.
+    // nullopt returns to plain playback. A load or close clears it.
+    void playerSetMergedTimeline(std::optional<MergedLapTimelineRow> timeline);
+    using MergedPlayheadCallback = std::function<void(float secondTime)>;
+    void setMergedPlayheadCallback(MergedPlayheadCallback callback);
     void playerSetSpeed(float mult);
     void playerSetDriver(int driverIndex, bool useRecordedRows = false);
     // V6 playback: the car selected in Standings, whose private status (ERS,
@@ -367,6 +384,15 @@ private:
     bool              playing_   = false;
     float             currentTime_ = 0.0f;  // absolute session_time cursor
     float             speed_     = 1.0f;
+    // Lap-synced playback (playerSetMergedTimeline): the timeline and the
+    // merged clock, which drives currentTime_ while it is set.
+    std::optional<MergedLapTimelineRow> merged_;
+    double            mergedTime_ = 0.0;
+    std::mutex        mergedCallbackMutex_;
+    MergedPlayheadCallback mergedPlayhead_;
+    // File A's session time at merged position `pos`: where it plays, or just
+    // before its line while it holds. Absent before A's first frame.
+    std::optional<float> mergedATimeLocked(const MergedPosition& pos) const;
     std::atomic<uint64_t> latestSeekRequestId_{0};
     std::atomic<uint64_t> latestRequirementsRequestId_{0};
     uint64_t          appliedSeekRequestId_ = 0; // guarded by mutex_

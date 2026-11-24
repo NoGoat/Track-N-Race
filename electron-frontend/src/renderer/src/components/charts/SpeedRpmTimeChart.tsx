@@ -10,7 +10,7 @@ import { seriesPointToPixels } from '../../lib/timechart/engine/core/nearestPoin
 import type { StatusRow, TelemetryRow } from '../../types'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 import { getChartComparisonLabel } from '../../lib/chartComparisonTooltip'
-import { useChartCursorSync } from '../../lib/chartCursorSync'
+import { cursorSyncIdFor, useChartCursorSync, useChartCursorSyncFile } from '../../lib/chartCursorSync'
 import { playbackDebug } from '../../lib/playbackDebug'
 import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
@@ -35,7 +35,19 @@ interface Props {
   windowSeconds: number
   xTickFormat: (x: number) => string
   tooltipFormat: (x: number, values: number[], comparisonValues?: number[]) => string
+  /**
+   * Which scales carry labels. Two files side by side share their scales, so
+   * A's half keeps the speed scale at the left and B's half the RPM and ERS
+   * scales at the right, as Trends does. Fixed for the chart's life: the
+   * caller remounts it when this changes.
+   */
+  axisLabels?: 'both' | 'left' | 'right'
 }
+
+// Plot padding (px) beside a side that carries no labels.
+const UNLABELLED_PADDING = 8
+const LEFT_LABELS_PADDING = 44
+const RIGHT_LABELS_PADDING = 100
 
 const EMPTY_STATUSES = emptyView<StatusRow>('status')
 const SPEED_MAX = 380
@@ -207,7 +219,11 @@ function syncTelemetry(
   return rebuild || needsRebuild || appendStart < telemetry.length || trim > 0
 }
 
-export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, comparisonTelemetry, comparisonStatuses, colors, visibleSeries, windowSeconds, xTickFormat, tooltipFormat }: Props) {
+export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, comparisonTelemetry, comparisonStatuses, colors, visibleSeries, windowSeconds, xTickFormat, tooltipFormat, axisLabels = 'both' }: Props) {
+  const leftLabels = axisLabels !== 'right'
+  const rightLabels = axisLabels !== 'left'
+  const paddingLeft = leftLabels ? LEFT_LABELS_PADDING : UNLABELLED_PADDING
+  const paddingRight = rightLabels ? RIGHT_LABELS_PADDING : UNLABELLED_PADDING
   const coordinates = useChartCoordinates()
   const { ref: sizeRef, width, height } = useSize(120)
   const hostRef = useRef<HTMLDivElement>(null)
@@ -225,17 +241,25 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   const visibleSeriesRef = useRef(visibleSeries)
   const getXRef = useRef(coordinates.getX)
   const getComparisonXRef = useRef(coordinates.getComparisonX)
+  // Which recording this chart draws, and its clock relative to file A's.
+  const cursorSyncFile = useChartCursorSyncFile()
+  const cursorSyncFileRef = useRef(cursorSyncFile)
   const axisKindRef = useRef<'time' | 'distance'>(coordinates.distanceMode ? 'distance' : 'time')
-  const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode))
+  const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode, coordinates.comparisonLabel))
   const comparisonKeyRef = useRef('')
   const comparisonLapNum = coordinates.lapData?.lapNum
-  const baseComparisonLabel = getChartComparisonLabel(coordinates.mode)
-  const comparisonLabel = coordinates.mode === 'RL' && comparisonLapNum != null
-    ? `${baseComparisonLabel} ${comparisonLapNum}`
-    : baseComparisonLabel
-  const comparisonKey = coordinates.mode === 'RL'
-    ? `RL:${comparisonLapNum ?? ''}`
-    : coordinates.mode ?? ''
+  const baseComparisonLabel = getChartComparisonLabel(coordinates.mode, coordinates.comparisonLabel)
+  // File B's background trace is named by its date and lap ("13 Sep · Lap 18").
+  const comparisonLabel = coordinates.comparisonLabel && comparisonLapNum != null
+    ? `${baseComparisonLabel} · Lap ${comparisonLapNum}`
+    : coordinates.mode === 'RL' && comparisonLapNum != null
+      ? `${baseComparisonLabel} ${comparisonLapNum}`
+      : baseComparisonLabel
+  const comparisonKey = coordinates.comparisonLabel
+    ? `BG:${comparisonLapNum ?? ''}`
+    : coordinates.mode === 'RL'
+      ? `RL:${comparisonLapNum ?? ''}`
+      : coordinates.mode ?? ''
   const chartRef = useRef<TChart | null>(null)
   const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
   const bufferRef = useRef<AlignedDataBuffer | null>(null)
@@ -271,6 +295,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     visibleSeriesRef.current = visibleSeries
     getXRef.current = coordinates.getX
     getComparisonXRef.current = coordinates.getComparisonX
+    cursorSyncFileRef.current = cursorSyncFile
     axisKindRef.current = coordinates.distanceMode ? 'distance' : 'time'
     comparisonLabelRef.current = comparisonLabel
     comparisonKeyRef.current = comparisonKey
@@ -306,17 +331,17 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
       xLabelOffset: coordinates.allLapsMode ? 4 : 0,
       yTickValues: () => Y_TICKS,
-      yTickFormat: v => String(Math.round(v * SPEED_MAX)),
+      yTickFormat: v => leftLabels ? String(Math.round(v * SPEED_MAX)) : '',
       xGap: 2, yGap: 4, showYGrid: true,
-      extraYAxes: [
+      extraYAxes: rightLabels ? [
         { side: 'right', offset: 4, color: colors.rpm, values: Y_TICKS, format: v => v === 0 ? '0' : `${Math.round(v * RPM_MAX / 1000)}k` },
         { side: 'right', offset: 54, color: colors.ers, values: Y_TICKS, format: v => `${Math.round(v * ERS_MAX)}%` },
-      ],
+      ] : [],
     } }
     axisCfgRef.current = axisCfg
     const chart = new TimeChart.core(host, {
-      paddingTop: AXIS_LABEL_TOP_PADDING, paddingRight: 100, paddingBottom: 22, paddingLeft: 44,
-      renderPaddingTop: AXIS_LABEL_TOP_PADDING, renderPaddingRight: 100, renderPaddingBottom: 22, renderPaddingLeft: 44,
+      paddingTop: AXIS_LABEL_TOP_PADDING, paddingRight, paddingBottom: 22, paddingLeft,
+      renderPaddingTop: AXIS_LABEL_TOP_PADDING, renderPaddingRight: paddingRight, renderPaddingBottom: 22, renderPaddingLeft: paddingLeft,
       yRange: { min: 0, max: 1 }, lineWidth: 1.5,
       series: [
         { name: 'Previous Speed', color: blendComparisonColor(colors.speed, isDark), lineWidth: 1, visible: false, data: comparisonBuffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
@@ -353,8 +378,9 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     }
     const syncManager = cursorSyncContextRef.current
     const unregisterSync = syncManager?.register({
-      id: 'overviewTelemetry',
+      id: cursorSyncIdFor('overviewTelemetry', cursorSyncFileRef.current.file),
       order: 10,
+      get file() { return cursorSyncFileRef.current.file },
       get axisKind() { return axisKindRef.current },
       resolveAxisX: axisX => {
         const rows = telemetryRef.current
@@ -362,18 +388,31 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         if (index < 0) return null
         const sampledAxisX = getXRef.current(rows.time(index))
         if (!Number.isFinite(sampledAxisX)) return null
-        return { sessionTime: rows.time(index), sampledAxisX }
+        return { sessionTime: cursorSyncFileRef.current.toShared(rows.time(index)), sampledAxisX }
       },
       formatAxisX: axisX => axisCfgRef.current?.current.xTickFormat(axisX) ?? String(axisX),
-      syncToSessionTime: (sessionTime, sourceAxisX, plotYRatio, sourceAxisKind, source, secondaryVerticalCrosshair) => {
+      syncToSessionTime: (sharedSessionTime, sourceAxisX, plotYRatio, sourceAxisKind, source, secondaryVerticalCrosshair, sourceFile) => {
         const syncAxisKind = axisKindRef.current
         const rows = telemetryRef.current
-        const index = nearestTelemetryIndexBySessionTime(rows, sessionTime)
+        // The other recording's chart: lap distance lines up directly (the
+        // same point on track); session times go through file A's clock.
+        const fileMap = cursorSyncFileRef.current
+        const crossFile = sourceFile !== fileMap.file
+        const distanceMatch = crossFile && sourceAxisKind === 'distance' && syncAxisKind === 'distance'
+        const localSessionTime = fileMap.fromShared(sharedSessionTime)
+        if (!distanceMatch && !Number.isFinite(localSessionTime)) {
+          clearSyncedCursor()
+          return { current: '' }
+        }
+        const index = distanceMatch
+          ? nearestTelemetryIndexByX(rows, getXRef.current, sourceAxisX)
+          : nearestTelemetryIndexBySessionTime(rows, localSessionTime)
         if (index < 0) {
           clearSyncedCursor()
           return { current: '' }
         }
-        const cursorAxisX = sourceAxisKind === syncAxisKind
+        const sessionTime = distanceMatch ? rows.time(index) : localSessionTime
+        const cursorAxisX = sourceAxisKind === syncAxisKind && !(crossFile && syncAxisKind === 'time')
           ? sourceAxisX
           : syncAxisKind === 'time'
             ? sessionTime
@@ -575,10 +614,10 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       yAxisColor: colors.speed,
       gridColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
       borderColor: isDark ? '#1e2136' : '#afb1ae',
-      extraYAxes: [
+      extraYAxes: rightLabels ? [
         { side: 'right', offset: 4, color: colors.rpm, values: Y_TICKS, format: v => v === 0 ? '0' : `${Math.round(v * RPM_MAX / 1000)}k` },
         { side: 'right', offset: 54, color: colors.ers, values: Y_TICKS, format: v => `${Math.round(v * ERS_MAX)}%` },
-      ],
+      ] : [],
     }
     host.style.color = axis
     host.style.setProperty('--background-overlay', isDark ? '#12141f' : '#f1f0ec')

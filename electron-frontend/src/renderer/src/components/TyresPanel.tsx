@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useRef, memo } from 'react'
+import FileSplit from '../app/components/FileSplit'
 import { flushSync } from 'react-dom'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import type { AlignedTable, TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow } from '../types'
@@ -11,7 +12,10 @@ import { useColorFn } from '../lib/cards'
 import { useSize } from '../hooks/useSize'
 import type { TyreYAxisGroupState } from '../lib/graphSections'
 import { useChartCoordinates } from '../lib/chartCoordinates'
-import type { TyresPageLayout } from '../app/appConfig'
+import FileTableCards, { type FileTableCard } from './FileTableCards'
+import { usePrimaryHeader, useSecondaryLive, type FileHeaderCell } from '../lib/secondaryLive'
+import { useSecondaryTyreSets } from '../app/hooks/useSecondaryTyreSets'
+import type { TyresAllocationView, TyresPageLayout } from '../app/appConfig'
 
 interface Props {
   tyreSets:      TyreSetsMsg | null
@@ -28,6 +32,8 @@ interface Props {
   windowSeconds?: number
   yAxis:          TyreYAxisGroupState
   chartLayout?:   TyresPageLayout
+  /** One file or live: show the allocation as the list or the rack. Two files always show the rack. */
+  allocationView?: TyresAllocationView
 }
 
 const EMPTY_HISTORY: AlignedTable = [new Float64Array(0)]
@@ -244,10 +250,18 @@ const EmptySection = memo(function EmptySection({ title, count }: { title: strin
   )
 })
 
-export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30, yAxis, chartLayout = 'grid' }: Props) {
+export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30, yAxis, chartLayout = 'grid', allocationView = 'list' }: Props) {
   const fullLapMode = useChartCoordinates().allLapsMode
   const { tn } = useLabels()
   const colorFn = useColorFn(null, null, isDark)
+  // A second file open: the rack shows both files. The graphs view's header
+  // table (Tyre graphs 6) follows the other cards: side-by-side only.
+  const secondary = useSecondaryLive()
+  const secondaryCards = secondary?.split ? secondary : null
+  const primaryHeader = usePrimaryHeader()
+  // B's allocation at its moment on the playhead, for the two-file rack.
+  const streamedTyreSets = useSecondaryTyreSets()
+  const secondaryTyreSets = secondary ? streamedTyreSets : null
   const [expanded, setExpanded] = useState(false)
   const activeViewTransitionRef = useRef<TyresViewTransition | null>(null)
   const { ref: cardsRef, height: cardsHeight } = useSize()
@@ -327,7 +341,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
         <div className="shrink-0 px-3 py-2 border-b border-[var(--border)] flex items-center">
           <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest w-32 shrink-0">Tyre Conditions</span>
           <div className="flex-1 flex justify-center items-center gap-2">
-            {(() => {
+            {!secondaryCards && (() => {
               const fitted = tyreSets?.sets.find(s => s.fitted)
               if (!fitted) return null
               const name  = tn('tyre.actual', fitted.actual_compound)
@@ -349,7 +363,9 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             <span>Allocation</span>
           </button>
         </div>
+        {secondaryCards && <FileTableCards dateA={secondaryCards.dateA} dateB={secondaryCards.dateB} cards={tyreHeaderCards(tyreSets, latest, secondaryCards.latest, secondaryCards.status, secondaryCards.damage, tn, colorFn)} />}
         <div className="flex-1 min-h-0">
+          <FileSplit>
           <TyreTrendCharts
             telemetry={telemetry}
             damageHistory={damageHistory}
@@ -362,25 +378,46 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             yAxis={yAxis}
             sectionGroup="tyres"
           />
+          </FileSplit>
         </div>
       </div>
     )
   }
 
-  return (
-    <div className="tyres-view-transition h-full flex bg-[var(--bg-panel)] divide-x divide-[var(--border)] overflow-hidden">
-      {/* Left: allocation table */}
-      <div className="flex-1 min-w-0 h-full overflow-y-auto divide-y divide-[var(--border)]">
-        {drySets
-          ? <SetSection title="Dry Sets (Slicks)" sets={drySets} isDark={isDark} sessionType={sessionType} />
-          : <EmptySection title="Dry Sets (Slicks)" count={13} />
-        }
-        {wetSets
-          ? <SetSection title="Wet / Inter Sets" sets={wetSets} isDark={isDark} sessionType={sessionType} />
-          : <EmptySection title="Wet / Inter Sets" count={7} />
-        }
+  if (secondary) {
+    // Two files: the tyre rack, file A's shelf over file B's (Tyre rings 6 · Accent 5).
+    return (
+      <div className="tyres-view-transition h-full flex bg-[var(--bg-panel)] divide-x divide-[var(--border)] overflow-hidden">
+        <TyreRack
+          rows={[
+            { date: secondary.dateA, colorVar: '--file-a', header: secondary.headerA, sets: tyreSets?.sets ?? null },
+            { date: secondary.dateB, colorVar: '--file-b', header: secondary.headerB, sets: secondaryTyreSets?.sets ?? null },
+          ]}
+          sessionType={sessionType} isDark={isDark}
+        />
+        <div className="w-72 shrink-0 h-full flex flex-col overflow-y-auto">
+          <div className="shrink-0 h-8 px-4 flex items-center justify-between">
+            <span className="text-[10.5px] text-[var(--text-secondary)] uppercase tracking-[.08em]">Conditions</span>
+            <button
+              onClick={() => setExpandedAnimated(true)}
+              className="flex select-none items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            >
+              <Maximize2 size={11} />
+              <span>Graphs</span>
+            </button>
+          </div>
+          {CORNERS.map(corner => (
+            <TwoFileConditions key={corner} corner={corner} latestA={latest} damageA={damage}
+              latestB={secondary.latest} damageB={secondary.damage} isDark={isDark} />
+          ))}
+        </div>
       </div>
+    )
+  }
 
+  // One file or live: today's wheel condition cards beside the list or the rack.
+  const singleFileConditions = (
+    <>
       {/* Right: wheel condition cards */}
       <div className="w-64 shrink-0 h-full flex flex-col overflow-hidden divide-y divide-[var(--border)]">
         <div className="shrink-0 px-3 py-2 flex items-center justify-between">
@@ -408,6 +445,362 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             view={cardViews?.rr} history={cornerHistory.rr} telemetry={telemetry} />
         </div>
       </div>
+    </>
+  )
+
+  if (allocationView === 'rack') {
+    return (
+      <div className="tyres-view-transition h-full flex bg-[var(--bg-panel)] divide-x divide-[var(--border)] overflow-hidden">
+        <TyreRack
+          rows={[{ date: primaryHeader?.date ?? 'File', colorVar: '--file-a', header: primaryHeader?.header ?? { driver: null, detail: '' }, sets: tyreSets?.sets ?? null }]}
+          sessionType={sessionType} isDark={isDark}
+        />
+        {singleFileConditions}
+      </div>
+    )
+  }
+
+  return (
+    <div className="tyres-view-transition h-full flex bg-[var(--bg-panel)] divide-x divide-[var(--border)] overflow-hidden">
+      {/* Left: allocation table */}
+      <div className="flex-1 min-w-0 h-full overflow-y-auto divide-y divide-[var(--border)]">
+        {drySets
+          ? <SetSection title="Dry Sets (Slicks)" sets={drySets} isDark={isDark} sessionType={sessionType} />
+          : <EmptySection title="Dry Sets (Slicks)" count={13} />
+        }
+        {wetSets
+          ? <SetSection title="Wet / Inter Sets" sets={wetSets} isDark={isDark} sessionType={sessionType} />
+          : <EmptySection title="Wet / Inter Sets" count={7} />
+        }
+      </div>
+
+      {singleFileConditions}
     </div>
   )
 }
+
+const MISSING = '—'
+
+function mean(values: (number | null | undefined)[]): number | null {
+  const measured = values.filter((value): value is number => value != null && Number.isFinite(value))
+  return measured.length > 0 ? measured.reduce((sum, value) => sum + value, 0) / measured.length : null
+}
+
+function peak(values: (number | null | undefined)[]): number | null {
+  const measured = values.filter((value): value is number => value != null && Number.isFinite(value))
+  return measured.length > 0 ? Math.max(...measured) : null
+}
+
+/**
+ * The header's values for both files: compound, wear, laps left, average
+ * surface and inner temperature, peak brake. B has no tyre-set list, so its
+ * wear is the four tyres' mean and its laps left are not known.
+ */
+function tyreHeaderCards(
+  tyreSets: TyreSetsMsg | null, latestA: TelemetryRow | null,
+  latestB: TelemetryRow | null, statusB: { tyre_compound?: number; visual_compound?: number } | null, damageB: DamageRow | null,
+  tn: (key: string, value: number) => string, colorFn: (kind: string, value: number) => string | undefined,
+): FileTableCard[] {
+  const fitted = tyreSets?.sets.find(set => set.fitted)
+  const temps = (row: TelemetryRow | null, prefix: string) =>
+    row ? CORNERS.map(corner => (row as unknown as Record<string, number | undefined>)[`${prefix}${corner}`]) : []
+  const degrees = (value: number | null) => value !== null ? { value: Math.round(value).toLocaleString(), unit: '°C' } : { value: MISSING }
+  const compoundB = statusB?.tyre_compound ?? 0
+  const wearB = mean(CORNERS.map(corner => damageB?.[`tyre_wear_${corner}`]))
+  return [
+    { key: 'compound', label: 'Compound',
+      a: fitted ? { value: tn('tyre.actual', fitted.actual_compound), color: tyreCompoundColor(fitted.actual_compound, fitted.visual_compound) ?? undefined } : { value: MISSING },
+      b: compoundB > 0 ? { value: tn('tyre.actual', compoundB), color: tyreCompoundColor(compoundB, statusB?.visual_compound ?? 0) ?? undefined } : { value: MISSING } },
+    { key: 'wear', label: 'Wear',
+      a: fitted ? { value: String(fitted.wear), unit: '%', color: colorFn('wear', fitted.wear) } : { value: MISSING },
+      b: wearB !== null ? { value: wearB.toFixed(1), unit: '%', color: colorFn('wear', wearB) } : { value: MISSING } },
+    { key: 'lapsLeft', label: 'Laps Left',
+      a: fitted ? { value: String(fitted.life_span), unit: 'L' } : { value: MISSING },
+      b: { value: MISSING, title: 'Not recorded for the second file' } },
+    { key: 'avgSurface', label: 'Avg Surface', a: degrees(mean(temps(latestA, 'tyre_temp_surface_'))), b: degrees(mean(temps(latestB, 'tyre_temp_surface_'))) },
+    { key: 'avgInner', label: 'Avg Inner', a: degrees(mean(temps(latestA, 'tyre_temp_inner_'))), b: degrees(mean(temps(latestB, 'tyre_temp_inner_'))) },
+    { key: 'peakBrake', label: 'Peak Brake', a: degrees(peak(temps(latestA, 'brake_temp_'))), b: degrees(peak(temps(latestB, 'brake_temp_'))) },
+  ]
+}
+
+// ── Two files: the tyre rack (Tyre rings 6 · Labels 4 · Accent 5) ──
+
+const RACK_STATUS_LABEL = { FITTED: 'FITTED', NEW: 'NEW', USED: 'USED', RESERVED: 'RES', RETURNED: 'RET' } as const
+
+function rackStatusColor(status: keyof typeof RACK_STATUS_LABEL, isDark: boolean): string {
+  switch (status) {
+    case 'FITTED': return isDark ? '#8db6f7' : '#0B57D0'
+    case 'NEW': return isDark ? '#4fbf5f' : '#137333'
+    case 'USED': return isDark ? '#e8c33a' : '#8B5200'
+    case 'RESERVED': return isDark ? '#a78bfa' : '#6d28d9'
+    default: return isDark ? '#4a4e62' : '#565B70'
+  }
+}
+
+const RING_RADIUS = 18.4
+const RING_LENGTH = 2 * Math.PI * RING_RADIUS
+
+/** One set as a tyre: the stripe is its compound and its length the tread left (100 − wear); inside, the laps of life left. */
+const TyreRing = memo(function TyreRing({ set, sessionType, isDark, size = 60 }: { set: TyreSetEntry; sessionType: number | null; isDark: boolean; size?: number }) {
+  const status = getStatus(set, sessionType)
+  const returned = status === 'RETURNED'
+  const color = tyreCompoundColor(set.actual_compound, set.visual_compound) ?? '#888'
+  // The arc follows the wear figure, so the ring and the number under it always agree.
+  const tread = Math.max(0, Math.min(1, (100 - set.wear) / 100))
+  const arc = tread * RING_LENGTH
+  return (
+    <div className="flex flex-col items-center min-w-0">
+      <svg width={size} height={size} viewBox="-30 -30 60 60" role="img" aria-label={`Set ${set.idx + 1}: ${status.toLowerCase()}, ${set.wear}% wear, ${set.life_span} laps of life left`}>
+        {set.fitted && <circle r={28} fill="none" stroke="var(--color-info)" strokeWidth={2} strokeOpacity={0.8} />}
+        <g opacity={returned ? 0.35 : 1}>
+          <circle r={23} fill="color-mix(in srgb, var(--bg-panel) 92%, white)" stroke="var(--border)" strokeWidth={1} />
+          <circle r={RING_RADIUS} fill="none" stroke="color-mix(in srgb, var(--text-secondary) 22%, var(--bg-panel))" strokeWidth={2.5} />
+          {arc > 0 && <circle r={RING_RADIUS} fill="none" stroke={color} strokeWidth={2.5} strokeLinecap="round"
+            strokeDasharray={`${arc} ${RING_LENGTH}`} transform="rotate(-90)" />}
+          <circle r={13.3} fill="color-mix(in srgb, var(--bg-panel) 80%, black)" stroke="color-mix(in srgb, var(--text-secondary) 30%, var(--bg-panel))" strokeWidth={1.2} />
+        </g>
+        <text y={3.5} textAnchor="middle" fontSize={9.5} fontWeight={700} fontFamily="inherit"
+          fill={returned ? 'var(--text-secondary)' : 'var(--text-primary)'}>
+          {set.life_span}
+        </text>
+      </svg>
+      <span style={{ color: rackStatusColor(status, isDark), fontSize: Math.max(8.5, size * 0.14), lineHeight: 1.5 }}>{RACK_STATUS_LABEL[status]}</span>
+      <span className="tabular-nums text-[var(--text-secondary)]" style={{ fontSize: Math.max(9, size * 0.15), lineHeight: 1.45 }}>{set.wear}%</span>
+    </div>
+  )
+})
+
+interface RackRow {
+  date: string
+  colorVar: '--file-a' | '--file-b'
+  header: FileHeaderCell
+  sets: TyreSetEntry[] | null
+}
+
+/** Runs of neighbouring sets with one compound, as columns: the stripes over the rack. */
+function compoundRuns(sets: TyreSetEntry[]): { start: number; length: number; compound: number; visual: number }[] {
+  const runs: { start: number; length: number; compound: number; visual: number }[] = []
+  sets.forEach((set, i) => {
+    const last = runs.at(-1)
+    if (last && last.compound === set.actual_compound) last.length++
+    else runs.push({ start: i, length: 1, compound: set.actual_compound, visual: set.visual_compound })
+  })
+  return runs
+}
+
+const TyreRack = memo(function TyreRack({ rows, sessionType, isDark }: { rows: RackRow[]; sessionType: number | null; isDark: boolean }) {
+  // One file: no header cells or section labels; the rings grow to fill the page.
+  const single = rows.length === 1
+  const { ref: bodyRef, width: bodyWidth, height: bodyHeight } = useSize()
+  // Each file's sets in allocation order; slicks then wets, numbered on from the slicks.
+  const split = (sets: TyreSetEntry[] | null) => {
+    const ordered = [...(sets ?? [])].filter(set => set.actual_compound !== 0).sort((a, b) => a.idx - b.idx)
+    return { dry: ordered.filter(set => !WET_COMPOUNDS.has(set.actual_compound)), wet: ordered.filter(set => WET_COMPOUNDS.has(set.actual_compound)) }
+  }
+  const files = rows.map(row => ({ row, ...split(row.sets) }))
+  const dryColumns = Math.max(0, ...files.map(file => file.dry.length))
+  const wetColumns = Math.max(0, ...files.map(file => file.wet.length))
+  // One file: each section wraps its sets onto as many rows as gives the
+  // largest ring that still fits the page, the same ring size in both sections.
+  const solo = single && bodyWidth > 0 && bodyHeight > 0
+    ? soloRackLayout(dryColumns, wetColumns, bodyWidth, bodyHeight)
+    : { dryRows: 1, wetRows: 1, ringSize: 60 }
+  return (
+    <div className={`flex-1 min-w-0 h-full flex flex-col ${single ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+      {/* The heading alone, with one file or two. */}
+      <div className="shrink-0 h-10 px-4 flex items-center border-b border-[var(--border)]">
+        <span className="text-[10.5px] uppercase tracking-[.08em] text-[var(--text-secondary)]">Allocation</span>
+      </div>
+      <div ref={bodyRef} className={single ? 'flex-1 min-h-0 flex flex-col' : ''}>
+        {single ? <>
+          {dryColumns > 0 && <SoloRackSection title="Slicks" sets={files[0].dry} rows={solo.dryRows} ringSize={solo.ringSize} numberFrom={1} sessionType={sessionType} isDark={isDark} />}
+          {wetColumns > 0 && <SoloRackSection title="Wet / Inter" sets={files[0].wet} rows={solo.wetRows} ringSize={solo.ringSize} numberFrom={dryColumns + 1} sessionType={sessionType} isDark={isDark} />}
+        </> : <>
+          {dryColumns > 0 && <RackSection title="Slicks" files={files.map(file => ({ row: file.row, sets: file.dry }))} columns={dryColumns} numberFrom={1} sessionType={sessionType} isDark={isDark} />}
+          {wetColumns > 0 && <RackSection title="Wet / Inter" files={files.map(file => ({ row: file.row, sets: file.wet }))} columns={wetColumns} numberFrom={dryColumns + 1} sessionType={sessionType} isDark={isDark} />}
+        </>}
+        {dryColumns === 0 && wetColumns === 0 && (
+          <div className="px-4 py-6 text-[11px] text-[var(--text-secondary)]">No tyre allocation recorded yet.</div>
+        )}
+      </div>
+    </div>
+  )
+})
+
+const RackSection = memo(function RackSection({ title, files, columns, numberFrom, sessionType, isDark }: {
+  title: string; files: { row: RackRow; sets: TyreSetEntry[] }[]; columns: number; numberFrom: number; sessionType: number | null; isDark: boolean
+}) {
+  const single = false
+  const ringSize = 60
+  const { tn } = useLabels()
+  // The stripes follow the first file that has sets here.
+  const reference = files.find(file => file.sets.length > 0)?.sets ?? []
+  const grid = { gridTemplateColumns: single ? `repeat(${columns}, minmax(0, 1fr))` : `100px repeat(${columns}, minmax(0, 1fr))` }
+  // With no header column, grid columns start at 1.
+  const firstColumn = single ? 1 : 2
+  return (
+    <div className={single ? 'flex-1 min-h-0 px-4 pt-4 pb-2 flex flex-col' : 'px-4 pt-4 pb-2'}>
+      <div className="text-[10.5px] text-[var(--text-secondary)] uppercase tracking-[.1em] mb-1">{title}</div>
+      <div className="grid items-end" style={grid}>
+        {!single && <span />}
+        {compoundRuns(reference).map(run => {
+          const color = tyreCompoundColor(run.compound, run.visual) ?? 'var(--text-secondary)'
+          return (
+            <div key={run.start} className="flex flex-col items-center px-1" style={{ gridColumn: `${run.start + firstColumn} / span ${run.length}` }}>
+              <span className="text-[12px] font-bold leading-4" style={{ color }}>{tn('tyre.actual', run.compound)}</span>
+              <span className="block w-full h-0.5 mt-0.5" style={{ background: color }} />
+            </div>
+          )
+        })}
+      </div>
+      <div className="grid mt-1" style={grid}>
+        {!single && <span />}
+        {Array.from({ length: columns }, (_, i) => (
+          <span key={i} className="text-center text-[10px] text-[var(--text-secondary)] tabular-nums">#{numberFrom + i}</span>
+        ))}
+      </div>
+      {files.map(({ row, sets }) => (
+        <div key={row.colorVar} className={`grid items-center mt-2 ${single ? 'flex-1 min-h-0' : ''}`} style={grid}>
+          {!single && <div className="flex flex-col gap-[3px] min-w-0 pr-2">
+            <span className="text-[14px] font-bold leading-4 truncate" style={{ color: `var(${row.colorVar})` }}>{row.date}</span>
+            {row.header.driver && <span className="text-[10.5px] font-bold uppercase truncate text-[var(--text-primary)]">{row.header.driver}</span>}
+            <span className="text-[9.5px] truncate text-[var(--text-secondary)]">{row.header.detail}</span>
+          </div>}
+          {Array.from({ length: columns }, (_, i) => sets[i]
+            ? <TyreRing key={sets[i].idx} set={sets[i]} sessionType={sessionType} isDark={isDark} size={single ? ringSize : 60} />
+            : <span key={`empty-${i}`} />)}
+        </div>
+      ))}
+    </div>
+  )
+})
+
+const CORNER_NAMES = { fl: 'Front Left', fr: 'Front Right', rl: 'Rear Left', rr: 'Rear Right' } as const
+
+/**
+ * One corner in the Conditions column with two files (Conditions 3): file A's
+ * value bold at full size, file B's directly under it a size smaller, both in
+ * the app's temperature or wear colours. Wear is a thick bar for A over a thin
+ * one for B, each in the wear colour, with both figures beside them.
+ */
+const TwoFileConditions = memo(function TwoFileConditions({ corner, latestA, damageA, latestB, damageB, isDark }: {
+  corner: Corner; latestA: TelemetryRow | null; damageA: DamageRow | null; latestB: TelemetryRow | null; damageB: DamageRow | null; isDark: boolean
+}) {
+  const ramp = useColorFn(null, null, isDark)
+  const read = (row: TelemetryRow | DamageRow | null, field: string) => {
+    const value = row ? (row as unknown as Record<string, number | undefined>)[field] : undefined
+    return value != null && Number.isFinite(value) ? value : null
+  }
+  const colour = (scale: string, value: number | null) =>
+    value !== null ? ramp(scale, value) ?? 'var(--text-primary)' : 'var(--text-secondary)'
+  const lines = [
+    { label: 'Surface', field: `tyre_temp_surface_${corner}`, scale: 'temp.tyre' },
+    { label: 'Inner', field: `tyre_temp_inner_${corner}`, scale: 'temp.tyre' },
+    { label: 'Brake', field: `brake_temp_${corner}`, scale: 'temp.brake' },
+  ]
+  const wearA = read(damageA, `tyre_wear_${corner}`)
+  const wearB = read(damageB, `tyre_wear_${corner}`)
+  // Filled to the wear figure, as the one-file cards' WearBar is.
+  const wearBar = (wear: number | null, height: number) => (
+    <span className="block w-full rounded-full overflow-hidden bg-[var(--border)]" style={{ height }}>
+      {wear !== null && <span className="block h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, wear))}%`, background: colour('wear', wear) }} />}
+    </span>
+  )
+  return (
+    <div className="px-4 py-[9px] border-t border-[var(--border)]">
+      <div className="text-[10.5px] uppercase tracking-[.08em] text-[var(--text-secondary)] mb-1.5">{CORNER_NAMES[corner]}</div>
+      {lines.map(line => {
+        const a = read(latestA, line.field), b = read(latestB, line.field)
+        return (
+          <div key={line.label} className="flex items-center justify-between py-0.5">
+            <span className="text-[13px] text-[var(--text-secondary)]">{line.label}</span>
+            <span className="flex flex-col items-end leading-[1.1] tabular-nums">
+              <span className="text-[13px] font-bold" style={{ color: colour(line.scale, a) }}>{a !== null ? `${Math.round(a)}°C` : '—'}</span>
+              <span className="text-[10.5px]" style={{ color: colour(line.scale, b) }}>{b !== null ? `${Math.round(b)}°C` : '—'}</span>
+            </span>
+          </div>
+        )
+      })}
+      <div className="flex items-center gap-2.5 mt-[5px]">
+        <span className="flex-1 flex flex-col gap-[3px]">
+          {wearBar(wearA, 5)}
+          {wearBar(wearB, 2)}
+        </span>
+        <span className="flex flex-col items-end leading-[1.1] tabular-nums">
+          <span className="text-[11.5px] font-bold" style={{ color: colour('wear', wearA) }}>{wearA !== null ? `${wearA.toFixed(1)}%` : '—'}</span>
+          <span className="text-[9.5px]" style={{ color: colour('wear', wearB) }}>{wearB !== null ? `${wearB.toFixed(1)}%` : '—'}</span>
+        </span>
+      </div>
+    </div>
+  )
+})
+
+// The solo rack's fixed heights around the rings (px): a section's title, and
+// per row of rings its stripe, its set numbers and the gap below.
+const SOLO_SECTION_CHROME = 12
+const SOLO_ROW_CHROME = 50
+// Ring height plus the status and wear labels under it, which grow with it.
+const SOLO_RING_STACK = 1.45
+
+/**
+ * One file's rack layout: how many rows each section wraps onto and the ring
+ * size, chosen together to make the rings as large as the page allows.
+ */
+function soloRackLayout(dryCount: number, wetCount: number, width: number, height: number) {
+  let best = { dryRows: 1, wetRows: 1, ringSize: 60 }
+  const usableWidth = width - 32
+  for (let dryRows = 1; dryRows <= (dryCount > 0 ? 3 : 1); dryRows++) {
+    for (let wetRows = 1; wetRows <= (wetCount > 0 ? 2 : 1); wetRows++) {
+      const sections = [dryCount > 0 ? { count: dryCount, rows: dryRows } : null, wetCount > 0 ? { count: wetCount, rows: wetRows } : null]
+        .filter((section): section is { count: number; rows: number } => section !== null)
+      if (sections.length === 0) continue
+      const widthLimit = Math.min(...sections.map(section => usableWidth / Math.ceil(section.count / section.rows) * 0.8))
+      const totalRows = sections.reduce((sum, section) => sum + section.rows, 0)
+      const chrome = sections.reduce((sum, section) => sum + SOLO_SECTION_CHROME + section.rows * SOLO_ROW_CHROME, 0)
+      const heightLimit = (height - chrome) / (totalRows * SOLO_RING_STACK)
+      const ringSize = Math.floor(Math.min(widthLimit, heightLimit, 220))
+      if (ringSize > best.ringSize) best = { dryRows, wetRows, ringSize }
+    }
+  }
+  return best
+}
+
+/** One file's section: its sets wrapped onto `rows` rows, each with its own compound stripes and set numbers. */
+const SoloRackSection = memo(function SoloRackSection({ title, sets, rows, ringSize, numberFrom, sessionType, isDark }: {
+  title: string; sets: TyreSetEntry[]; rows: number; ringSize: number; numberFrom: number; sessionType: number | null; isDark: boolean
+}) {
+  const { tn } = useLabels()
+  const perRow = Math.max(1, Math.ceil(sets.length / rows))
+  const chunks = Array.from({ length: Math.ceil(sets.length / perRow) }, (_, i) => sets.slice(i * perRow, (i + 1) * perRow))
+  const grid = { gridTemplateColumns: `repeat(${perRow}, minmax(0, 1fr))` }
+  return (
+    // A section's share of the height follows how many rows of rings it has.
+    <section aria-label={title} className="min-h-0 px-4 pt-3 flex flex-col" style={{ flex: `${chunks.length} 1 0` }}>
+      <div className="flex-1 min-h-0 flex flex-col justify-evenly">
+        {chunks.map((chunk, rowIndex) => (
+          <div key={rowIndex}>
+            <div className="grid items-end" style={grid}>
+              {compoundRuns(chunk).map(run => {
+                const color = tyreCompoundColor(run.compound, run.visual) ?? 'var(--text-secondary)'
+                return (
+                  <div key={run.start} className="flex flex-col items-center px-1" style={{ gridColumn: `${run.start + 1} / span ${run.length}` }}>
+                    <span className="text-[12px] font-bold leading-4" style={{ color }}>{tn('tyre.actual', run.compound)}</span>
+                    <span className="block w-full h-0.5 mt-0.5" style={{ background: color }} />
+                  </div>
+                )
+              })}
+            </div>
+            <div className="grid mt-1" style={grid}>
+              {chunk.map((set, i) => (
+                <span key={set.idx} className="text-center text-[10px] text-[var(--text-secondary)] tabular-nums">#{numberFrom + rowIndex * perRow + i}</span>
+              ))}
+            </div>
+            <div className="grid items-center mt-1" style={grid}>
+              {chunk.map(set => <TyreRing key={set.idx} set={set} sessionType={sessionType} isDark={isDark} size={ringSize} />)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+})

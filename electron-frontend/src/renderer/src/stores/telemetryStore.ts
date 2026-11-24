@@ -13,6 +13,7 @@ import { scheduleCooperativeTask, yieldToMainThread } from '../lib/cooperativeTa
 import { playbackDebug } from '../lib/playbackDebug'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
+import { FastestLapHolder } from '../lib/fastestLapHolder'
 import { findSectorSplits, type SectorSplit } from '../lib/lapDelta'
 import { getTelemetryChartRetentionDiagnostics } from '../diagnostics/telemetryRetention'
 import { getDebugSettings, subscribeDebugSettings } from '../lib/debugSettings'
@@ -59,26 +60,39 @@ function reconcileReversal(table: ColumnTable, sessionTime: number): void {
   else table.retainRange(sessionTime - RETENTION_S, sessionTime)
 }
 
-function mergePlaybackPatch<T extends object>(previous: T | undefined, patch: T): T {
+/**
+ * A V6 playback patch over the previous row: it carries the previous row's
+ * other fields, and `available: false` drops its family's fields. A row that
+ * is not a V6 patch stands as it is. `onWipe` sees each such drop.
+ */
+export function mergeV6Patch<T extends object>(
+  previous: T | undefined, patch: T,
+  onWipe?: (v6Type: number, fields: Record<string, unknown>, merged: Record<string, unknown>, dropped: readonly string[]) => void,
+): T {
   const fields = patch as Record<string, unknown>
   const v6Type = Number(fields._v6_type)
-  if (!isPlaybackFlag || !Number.isInteger(v6Type)) return patch
+  if (!Number.isInteger(v6Type)) return patch
   const merged: Record<string, unknown> = { ...(previous as Record<string, unknown> | undefined), ...fields }
   if (fields.available === false) {
     const dropped = V6_PATCH_FIELDS[v6Type] ?? []
-    playbackDebug('patch-availability-wipe', {
-      v6Type,
-      rowType: fields.type ?? null,
-      sessionTime: fields.session_time ?? null,
-      droppedFields: dropped,
-      hadSlmBefore: merged.slm !== undefined,
-    })
+    onWipe?.(v6Type, fields, merged, dropped)
     for (const field of dropped) {
       delete merged[field]
     }
   }
   delete merged.available
   return merged as T
+}
+
+function mergePlaybackPatch<T extends object>(previous: T | undefined, patch: T): T {
+  if (!isPlaybackFlag) return patch
+  return mergeV6Patch(previous, patch, (v6Type, fields, merged, dropped) => playbackDebug('patch-availability-wipe', {
+    v6Type,
+    rowType: fields.type ?? null,
+    sessionTime: fields.session_time ?? null,
+    droppedFields: dropped,
+    hadSlmBefore: merged.slm !== undefined,
+  }))
 }
 
 // Playback V6 patches carry forward the previous row's other fields; every
@@ -96,7 +110,7 @@ function appendPlaybackPatch<T extends { session_time: number }>(
 }
 
 type CarFields = Record<string, unknown>
-function mergeCarPatches<T extends { cars: object[] }>(previous: T | null, patch: T): T {
+export function mergeCarPatches<T extends { cars: object[] }>(previous: T | null, patch: T): T {
   const v6Type = Number((patch as Record<string, unknown>)._v6_type)
   if (!previous || !Number.isInteger(v6Type)) return patch
   const cars = new Map((previous.cars as CarFields[]).map(car => [Number(car.idx), car]))
@@ -311,8 +325,7 @@ function scheduleFastestRecovery(): void {
     }
   }, Math.max(0, deadline - Date.now()))
 }
-let fastestLapSet = false
-const sessionHistoryBest = new Map<number, number>()
+const fastestLapHolder = new FastestLapHolder()
 // Live Tyre Sets packets cycle through every car (one car per packet), so
 // only the player's latest set is published to the Tyres page.
 const liveTyreSetsByCar = new Map<number, TyreSetsMsg>()
@@ -911,11 +924,10 @@ function resetSession(): void {
   // until React publishes the empty views below keep only their own snapshot.
   for (const table of Object.values(TABLE_OF_FAMILY)) table.clear()
   lapState = null; lapNum = null; lapStartTime = 0; lapTrackingActive = false
-  fastestLapTime = Infinity; fastestLapSet = false
+  fastestLapTime = Infinity; fastestLapHolder.clear()
   cancelFastestRecovery()
   forgetStoredLaps()
   invalidateWholeLiveLap()
-  sessionHistoryBest.clear()
   liveTyreSetsByCar.clear()
   raceEventsArr = []
   speedRpmBlocksVal = null; playbackFastestLapNum = 0
@@ -1674,19 +1686,11 @@ function handleMsg(msg: GatewayMsg): void {
     case 'driver_lap_history': set({ driverLapHistory: msg as DriverLapHistory }); break
     case 'lap_measures': set({ lapMeasures: msg as LapMeasuresMsg }); break
     case 'fastest_lap':
-      set({ fastestLapCarIdx: (msg as FastestLapMsg).car_idx })
-      fastestLapSet = true
+      set({ fastestLapCarIdx: fastestLapHolder.fastestLap(msg as FastestLapMsg) })
       break
     case 'session_history_fastest': {
-      if (fastestLapSet) break
-      const shMsg = msg as SessionHistoryFastestMsg
-      sessionHistoryBest.set(shMsg.car_idx, shMsg.best_lap_time_ms)
-      let minMs = Infinity
-      let minIdx: number | null = null
-      for (const [idx, ms] of sessionHistoryBest) {
-        if (ms < minMs) { minMs = ms; minIdx = idx }
-      }
-      if (useTelemetryStore.getState().fastestLapCarIdx !== minIdx) set({ fastestLapCarIdx: minIdx })
+      const holder = fastestLapHolder.sessionHistory(msg as SessionHistoryFastestMsg)
+      if (holder !== undefined && useTelemetryStore.getState().fastestLapCarIdx !== holder) set({ fastestLapCarIdx: holder })
       break
     }
     case 'tyre_sets': {

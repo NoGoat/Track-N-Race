@@ -2,6 +2,7 @@
 #include "tnrp/AnalysisMap.h"
 #include "tnrp/AnalysisMapPaint.h"
 #include "tnrp/BinaryRows.h"
+#include "tnrp/DriverLapHistory.h"
 #include "tnrp/LapDelta.h"
 #include "tnrp/TimeUtils.h"
 #include "tnrp/TyreStints.h"
@@ -81,6 +82,11 @@ static void updateAtomicMaximum(std::atomic<T>& target, T value) {
     while (current < value && !target.compare_exchange_weak(
         current, value, std::memory_order_relaxed, std::memory_order_relaxed)) {}
 }
+
+// Lap-synced playback: a time on a lap line reads as the start of the next
+// lap (lap number, charts and cards would move on), so a file holding at the
+// end of its lap stops just short of the line.
+static constexpr float kMergedHoldBeforeLineS = 0.05f;
 
 static uint8_t rowTypeOf(std::string_view json) {
     static constexpr std::pair<std::string_view, uint8_t> TYPES[] = {
@@ -1739,6 +1745,8 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             inPlayback_.store(true);
             playing_     = false;
             currentTime_ = reader_.startTime();
+            merged_.reset();
+            mergedTime_  = 0.0;
             speed_       = 1.0f;
             appliedSeekRequestId_ = latestSeekRequestId_.load(std::memory_order_acquire);
             playbackPath_ = path;
@@ -1846,10 +1854,18 @@ void Engine::playerPlay() {
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
-        if (currentTime_ >= reader_.totalTime()) {
+        // Lap-synced, playback ends with the merged timeline, not file A.
+        const bool ended = merged_ ? mergedTime_ >= merged_->total
+                                   : currentTime_ >= reader_.totalTime();
+        if (ended) {
             // Replay from the top: the cursor has to rewind with the clock, or
             // the drained index never yields another row.
             currentTime_ = reader_.startTime();
+            if (merged_) {
+                mergedTime_ = 0.0;
+                if (auto a = mergedATimeLocked(mergedPositionAt(*merged_, 0.0)))
+                    currentTime_ = std::clamp(*a, reader_.startTime(), reader_.totalTime());
+            }
             reader_.beginCursorPrime(currentTime_);
             reader_.primeCursor();
             requestPlaybackStrategyRebuildLocked(currentTime_);
@@ -1906,7 +1922,7 @@ std::shared_ptr<std::vector<uint8_t>> Engine::runHistoryRead(
 }
 
 void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
-                        uint32_t rowTypeMask, float windowSeconds) {
+                        uint32_t rowTypeMask, float windowSeconds, double mergedTime) {
     std::vector<std::string> state;
     float lapStart = 0.0f;
     int   lapNum   = 0;
@@ -1920,6 +1936,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
     HistoryRead historyRead;
     bool columnarHistory = false;
     std::vector<std::pair<uint8_t, std::string>> pairRows;
+    std::optional<double> mergedTarget;
     const auto cancelled = [this, requestId] {
         return requestId != 0 && requestId !=
             latestSeekRequestId_.load(std::memory_order_acquire);
@@ -1931,6 +1948,21 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         float start  = reader_.startTime();
         float dur    = std::max(0.0f, reader_.totalTime() - start);
         target = start + std::clamp(pct, 0.0f, 1.0f) * dur;
+        if (merged_) {
+            if (std::isfinite(mergedTime)) {
+                // A seek on the merged timeline: file A goes where it is then,
+                // just before its line when it holds there.
+                const MergedPosition pos = mergedPositionAt(*merged_, mergedTime);
+                if (auto a = mergedATimeLocked(pos)) target = std::clamp(*a, start, start + dur);
+                mergedTarget = pos.time;
+            } else if (std::fabs(target - currentTime_) < 0.01f) {
+                // A re-seek in place (a driver or window change) keeps the
+                // merged clock, which may be running a hold.
+                mergedTarget = mergedTime_;
+            } else {
+                mergedTarget = mergedTimeForA(*merged_, target);
+            }
+        }
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
         historyStart = allHistory ? start
@@ -1955,10 +1987,18 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
                                              windowSeconds, false, cancelled);
             }
             if (cancelled()) return;
-            const uint32_t restoreMask = consumerRowMask_ & kRestoreRowMask &
-                (~rowTypeMask | kSeekPanelRestoreMask);
+            // The sampled families (telemetry, status, damage, lap, motion) are
+            // restored too, not only charted from the history: the history
+            // carries the charts' fields, and the cards read others (a paused
+            // seek otherwise left them blank until playback streamed them).
+            // Stamped at the target, as the dup re-emits are, so they land
+            // after the history instead of rewinding it.
+            const uint32_t restoreMask = consumerRowMask_ &
+                ((kRestoreRowMask & (~rowTypeMask | kSeekPanelRestoreMask)) | kHistoricalRowMask);
             panels = reader_.latestOfTypesTagged(target, typesInMask(restoreMask), cancelled);
             if (cancelled()) return;
+            for (auto& [tid, line] : panels)
+                if (kHistoricalRowMask & (1u << tid)) setSessionTime(line, target);
         } else {
             state = reader_.stateSnapshot(target, cancelled);
             if (cancelled()) return;
@@ -1969,6 +2009,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         // the cursor or seed playback rows from its obsolete target.
         if (requestId != 0 && requestId != latestSeekRequestId_.load(std::memory_order_acquire)) return;
         currentTime_ = target;
+        if (merged_ && mergedTarget) mergedTime_ = *mergedTarget;
         noteHostTimelineMovedLocked(target);
         if (config_.binaryPlayback) {
             // beginCursorPrime() already positioned the lanes. This wait is
@@ -2156,11 +2197,9 @@ std::string Engine::playerGetAnalysisLapData(int lapNum, uint32_t rowTypeMask,
 }
 
 DriverLapHistoryRow Engine::driverLapHistoryLocked(int carIdx) const {
-    DriverLapHistoryRow out;
-    out.car_idx = carIdx;
-    {
-        const bool playback = inPlayback_.load();
-        const auto lapsFor = [&](int car, int* stintStartLap) {
+    const bool playback = inPlayback_.load();
+    return buildDriverLapHistory(carIdx, static_cast<int>(liveLapHistoryRows_.size()),
+        [&](int car, int* stintStartLap) {
             if (playback) {
                 auto row = reader_.driverLapHistory(car, currentTime_);
                 if (stintStartLap) *stintStartLap = row.stint_start_lap;
@@ -2178,31 +2217,7 @@ DriverLapHistoryRow Engine::driverLapHistoryLocked(int carIdx) const {
                     tyreStintRanges(history.tyre_stints), std::numeric_limits<int>::max());
             }
             return laps;
-        };
-        // Every car's laps, for the session's fastest valid sectors.
-        for (int car = 0; car < static_cast<int>(liveLapHistoryRows_.size()); ++car) {
-            auto laps = lapsFor(car, car == carIdx ? &out.stint_start_lap : nullptr);
-            for (const auto& lap : laps) {
-                const int ms[3] = {lap.s1_ms, lap.s2_ms, lap.s3_ms};
-                const bool valid[3] = {lap.s1_valid, lap.s2_valid, lap.s3_valid};
-                int* best[3] = {&out.overall_best_s1_ms, &out.overall_best_s2_ms,
-                                &out.overall_best_s3_ms};
-                for (int s = 0; s < 3; ++s)
-                    if (ms[s] > 0 && valid[s] && (!*best[s] || ms[s] < *best[s]))
-                        *best[s] = ms[s];
-            }
-            if (car == carIdx) out.laps = std::move(laps);
-        }
-    }
-    int bestMs = 0;
-    for (const auto& lap : out.laps) {
-        if (!lap.lap_valid || lap.lap_time_ms <= 0) continue;
-        if (!bestMs || lap.lap_time_ms < bestMs) {
-            bestMs = lap.lap_time_ms;
-            out.best_lap_num = lap.lap_num;
-        }
-    }
-    return out;
+        });
 }
 
 std::string Engine::lapHistoryRowLocked(bool force) {
@@ -2413,6 +2428,8 @@ void Engine::playerClose() {
         inPlayback_.store(false);
         emittedFormat_.store(parser_.activeFormat(), std::memory_order_release);
         playing_ = false;
+        merged_.reset();
+        mergedTime_ = 0.0;
         appliedSeekRequestId_ = latestSeekRequestId_.load(std::memory_order_acquire);
         playbackStrategyPending_ = false;
         playbackStrategyPendingRows_.clear();
@@ -2698,6 +2715,7 @@ void Engine::stopPlaybackThread() {
 
 void Engine::emitPlaybackState() {
     std::string st;
+    std::optional<float> secondTime;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         float start = reader_.startTime();
@@ -2707,9 +2725,40 @@ void Engine::emitPlaybackState() {
         s.total_time   = std::max(0.0f, reader_.totalTime() - start);
         s.speed        = speed_;
         s.start_time   = start;
+        if (merged_) {
+            const MergedPosition pos = mergedPositionAt(*merged_, mergedTime_);
+            s.merged_time = pos.time;
+            // The second file holds just short of its line too (mergedATimeLocked).
+            if (pos.b.time) secondTime = pos.b.holding ? *pos.b.time - kMergedHoldBeforeLineS : *pos.b.time;
+        }
         st = writeJson(s);
     }
     emitRow(st);
+    if (secondTime) {
+        std::lock_guard<std::mutex> lk(mergedCallbackMutex_);
+        if (mergedPlayhead_) mergedPlayhead_(*secondTime);
+    }
+}
+
+void Engine::playerSetMergedTimeline(std::optional<MergedLapTimelineRow> timeline) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (timeline && timeline->segments.empty()) timeline.reset();
+        merged_ = std::move(timeline);
+        // Pick up from where file A is; a hold starts over from A's line.
+        mergedTime_ = merged_ ? mergedTimeForA(*merged_, currentTime_).value_or(0.0) : 0.0;
+    }
+    emitPlaybackState();
+}
+
+void Engine::setMergedPlayheadCallback(MergedPlayheadCallback callback) {
+    std::lock_guard<std::mutex> lk(mergedCallbackMutex_);
+    mergedPlayhead_ = std::move(callback);
+}
+
+std::optional<float> Engine::mergedATimeLocked(const MergedPosition& pos) const {
+    if (!pos.a.time) return std::nullopt;
+    return pos.a.holding ? *pos.a.time - kMergedHoldBeforeLineS : *pos.a.time;
 }
 
 void Engine::playbackLoop() {
@@ -2744,9 +2793,30 @@ void Engine::playbackLoop() {
             tickSeekRequestId = appliedSeekRequestId_;
             double step = dt * speed_;
             if (step > 0.10) step = 0.10;
-            currentTime_ += (float)step;
-
             float total = reader_.totalTime();
+            bool  mergedEnded = false;
+            if (merged_) {
+                // Lap-synced: the merged clock runs and file A follows it,
+                // holding just before its line while the slower file finishes.
+                mergedTime_ = std::min(merged_->total, mergedTime_ + step);
+                mergedEnded = mergedTime_ >= merged_->total;
+                if (auto a = mergedATimeLocked(mergedPositionAt(*merged_, mergedTime_))) {
+                    const float next = std::min(*a, total);
+                    // Its next lap starting well past where it held (a stoppage
+                    // between them): move the cursor there rather than playing
+                    // the gap's rows in one tick.
+                    if (next > currentTime_ + 1.0f) {
+                        currentTime_ = next;
+                        reader_.beginCursorPrime(currentTime_);
+                        reader_.primeCursor();
+                    } else if (next > currentTime_) {
+                        currentTime_ = next;
+                    }
+                }
+            } else {
+                currentTime_ += (float)step;
+            }
+
             bool  atEnd = currentTime_ >= total;
             if (atEnd) currentTime_ = total;
 
@@ -2834,7 +2904,8 @@ void Engine::playbackLoop() {
                 nextLapMeasuresCheck_ = reader_.v6NextLapEndAfter(currentTime_);
             }
 
-            if (atEnd) {
+            // Lap-synced, the slower file may still be finishing after A's end.
+            if (merged_ ? mergedEnded : atEnd) {
                 playing_ = false;
                 finished = true;
             }

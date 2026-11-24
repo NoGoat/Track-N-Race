@@ -11,6 +11,10 @@ import { useResolvedTrackMap, useTrackMapStore } from '../stores/trackMapStore'
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../app/appConfig'
 import { safetyCarActionLabel, safetyCarTypeLabel } from '../app/bannerHelpers'
 import type { DensityMode } from '../lib/graphSections'
+import FileTableCards, { type FileTableCard, type FileTableValue } from './FileTableCards'
+import { useSecondaryOpenFile } from '../lib/secondaryComparison'
+import { secondaryCars, useSecondaryState } from '../lib/secondaryStream'
+import { fileDateLabels } from '../lib/secondaryFile'
 
 // ─── Lookup tables ───────────────────────────────────────────────────────────
 
@@ -325,6 +329,56 @@ const MarshalStrip = memo(function MarshalStrip({ zones, isDark }: MarshalProps)
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+function pitWindowOf(session: SessionMsg | null): string {
+  return session && session.pit_stop_window_ideal_lap > 0
+    ? `L${session.pit_stop_window_ideal_lap}–${session.pit_stop_window_latest_lap}` : '—'
+}
+
+function rejoinOf(session: SessionMsg | null): string {
+  return session && session.pit_stop_rejoin_position > 0 ? `P${session.pit_stop_rejoin_position}` : '—'
+}
+
+/** A map's caption with two files open: the file's coloured date, its driver and lap. */
+function MapCaption({ date, colorVar, driver, lap, total }: { date: string; colorVar: string; driver: string; lap: number | null; total: number }) {
+  return (
+    <div className="absolute left-3.5 top-2.5 flex items-baseline gap-2 font-mono text-[11.5px] pointer-events-none select-none">
+      <span className="text-[13px] font-bold whitespace-nowrap" style={{ color: `var(${colorVar})` }}>{date}</span>
+      {driver && <span className="font-bold text-[var(--text-primary)]">{driver}</span>}
+      {lap !== null && <span className="text-[var(--text-secondary)]">Lap {lap}{total > 0 ? ` / ${total}` : ''}</span>}
+    </div>
+  )
+}
+
+/** One file's weather with two files open: its coloured date, now, then the forecast steps. */
+function WeatherRow({ date, colorVar, session, isDark }: { date: string; colorVar: string; session: SessionMsg | null; isDark: boolean }) {
+  const forecast = session ? currentSessionForecast(session) : []
+  const now = forecast.find(sample => sample.time_offset === 0)
+  const cells = [
+    { key: 'now', weather: session?.weather ?? null, when: 'NOW', rain: now?.rain_percentage ?? null },
+    ...forecast.filter(sample => sample.time_offset > 0).slice(0, 5)
+      .map(sample => ({ key: String(sample.time_offset), weather: sample.weather, when: `+${sample.time_offset}m`, rain: sample.rain_percentage })),
+  ]
+  return (
+    <div className="shrink-0 flex h-[30px] border-t border-[var(--border)] font-mono select-none">
+      <div className="w-[84px] shrink-0 flex items-center pl-4">
+        <span className="text-[11.5px] font-bold whitespace-nowrap" style={{ color: `var(${colorVar})` }}>{date}</span>
+      </div>
+      <div className="flex-1 grid min-w-0" style={{ gridTemplateColumns: 'repeat(6, minmax(0, 1fr))' }}>
+        {cells.map(cell => (
+          <div key={cell.key} className="flex items-center gap-2 px-3 border-l border-[var(--border)] min-w-0 text-[11.5px]">
+            {cell.weather !== null && <span className="shrink-0 flex"><WeatherIcon id={cell.weather} size={14} isDark={isDark} /></span>}
+            <span className="font-bold truncate text-[var(--text-primary)]">{cell.weather !== null ? WEATHER_LABELS[cell.weather] ?? '—' : '—'}</span>
+            <span className="ml-auto text-[10px] text-[var(--text-secondary)]">{cell.when}</span>
+            {cell.rain !== null && (
+              <span className="text-[11px] font-bold tabular-nums" style={{ color: cell.rain > 50 ? '#5794F2' : cell.rain > 20 ? '#73BF69' : 'var(--text-primary)' }}>{cell.rain}%</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 interface Props {
   session: SessionMsg | null
   raceEvents: RaceEventMsg[]
@@ -410,17 +464,21 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
     ? currentSessionForecast(session).filter(s => s.time_offset > 0).slice(0, 5)
     : []
 
+  // A second file open: its date, its state at its moment on the playhead and
+  // its cars on its map (Session 5 · Cards 5).
+  const secondary = useSecondaryOpenFile()
+  const secondaryState = useSecondaryState()
+  const secondarySnapshot = secondary ? secondaryState : null
+  const dates = secondary ? fileDateLabels(secondary.primaryFilename, secondary.file.filename) : [null, null]
+
   const visibleEvents = raceEvents
     .map(e => ({ event: e, fmt: formatEvent(e, participants, isDark, labels) }))
     .filter(({ fmt }) => fmt !== null)
     .reverse() as { event: RaceEventMsg; fmt: { label: string; color: string } }[]
 
-  return (
-    <div className="relative flex flex-col h-full overflow-hidden">
-
-      {/* ── Normal layout ── */}
-      {/* ── Header ── */}
-      {(layout.header.gpName || layout.header.marshalZones || layout.header.timeLeft) && (
+  // ── Header ── (shared by both layouts)
+  const headerBlock = (
+    (layout.header.gpName || layout.header.marshalZones || layout.header.timeLeft) && (
         <div
           className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]"
         >
@@ -483,10 +541,86 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
             </div>
           )}
         </div>
-      )}
+      )
+  )
 
-      {/* ── Stat cards ── */}
-      {Object.values(layout.statsCards).some(Boolean) && (
+  // ── Two files open (Session 5 · Cards 5): one header, the cards as a table
+  // (file A's values, file B's a size smaller under them), a map per file
+  // and a weather row per file. Proximity and Events make room for the maps.
+  if (secondary) {
+    const dateA = dates[0] ?? 'File A'
+    const dateB = dates[1] ?? 'File B'
+    const sessionB = secondarySnapshot?.session ?? null
+    const timingB = secondarySnapshot?.timing ?? null
+    const participantsB = secondarySnapshot?.participants ?? null
+    const followedB = secondary.file.driverIndex >= 0 ? secondary.file.driverIndex : timingB?.player_idx ?? -1
+    const carB = timingB?.cars.find(c => c.idx === followedB) ?? null
+    const remainingB = sessionB && sessionB.total_laps > 0 && carB ? Math.max(sessionB.total_laps - carB.lap_num + 1, 0) : null
+    const card = (key: string, label: string, a: FileTableValue, b: FileTableValue): FileTableCard => ({ key, label, a, b })
+    const sessionCards = [
+      layout.statsCards.totalLaps && card('totalLaps', 'Total Laps',
+        { value: session && session.total_laps > 0 ? String(session.total_laps) : '—' },
+        { value: sessionB && sessionB.total_laps > 0 ? String(sessionB.total_laps) : '—' }),
+      layout.statsCards.lapsRemaining && card('remaining', 'Remaining',
+        { value: remainingLaps !== null ? String(remainingLaps) : '—' },
+        { value: remainingB !== null ? String(remainingB) : '—' }),
+      layout.statsCards.pitSpeedLimit && card('pitSpeed', 'Pit Speed',
+        session ? { value: String(session.pit_speed_limit), unit: 'km/h', color: colorFn('session.pitSpeed') ?? undefined } : { value: '—' },
+        sessionB ? { value: String(sessionB.pit_speed_limit), unit: 'km/h', color: colorFn('session.pitSpeed') ?? undefined } : { value: '—' }),
+      layout.statsCards.pitWindow && card('pitWindow', 'Pit Window',
+        { value: pitWindowOf(session), color: session ? colorFn('session.pitWindow') ?? undefined : undefined },
+        { value: pitWindowOf(sessionB), color: sessionB ? colorFn('session.pitWindow') ?? undefined : undefined }),
+      layout.statsCards.pitRejoin && card('rejoin', 'Rejoin',
+        { value: rejoinOf(session), color: session ? colorFn('session.rejoin') ?? undefined : undefined },
+        { value: rejoinOf(sessionB), color: sessionB ? colorFn('session.rejoin') ?? undefined : undefined }),
+      layout.statsCards.trackTemp && card('trackTemp', 'Track',
+        session ? { value: String(session.track_temp), unit: '°C', color: colorFn('session.trackTemp', session.track_temp) ?? undefined } : { value: '—' },
+        sessionB ? { value: String(sessionB.track_temp), unit: '°C', color: colorFn('session.trackTemp', sessionB.track_temp) ?? undefined } : { value: '—' }),
+      layout.statsCards.airTemp && card('airTemp', 'Air',
+        session ? { value: String(session.air_temp), unit: '°C', color: colorFn('session.airTemp', session.air_temp) ?? undefined } : { value: '—' },
+        sessionB ? { value: String(sessionB.air_temp), unit: '°C', color: colorFn('session.airTemp', sessionB.air_temp) ?? undefined } : { value: '—' }),
+      layout.statsCards.trackLength && card('trackLength', 'Track Length',
+        { value: session ? `${(session.track_length_m / 1000).toFixed(3)} km` : '—' },
+        { value: sessionB ? `${(sessionB.track_length_m / 1000).toFixed(3)} km` : '—' }),
+      layout.statsCards.timeOfDay && card('time', 'Time',
+        { value: session ? fmtTimeOfDay(session.time_of_day) : '—' },
+        { value: sessionB ? fmtTimeOfDay(sessionB.time_of_day) : '—' }),
+    ].filter((entry): entry is FileTableCard => !!entry)
+    const playerA = timing?.cars.find(c => c.idx === timing.player_idx) ?? null
+    const lapA = playerA?.lap_num ?? null
+    const lapB = carB?.lap_num ?? null
+    return (
+      <div className="relative flex flex-col h-full overflow-hidden">
+        {headerBlock}
+        <FileTableCards cards={sessionCards} />
+        {layout.showMap && (
+          <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]">
+            <div className="relative flex-1 min-w-0">
+              <TrackMap trackId={session?.track_id ?? null} participants={participants} isDark={isDark} sectorColors={sectorColors}
+                driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode}
+                slmTrackStatus={session?.active_aero_track_status ?? -1} mapResolution={mapResolution} />
+              <MapCaption date={dateA} colorVar="--file-a" driver={driverName(participants, timing?.player_idx ?? -1)} lap={lapA} total={session?.total_laps ?? 0} />
+            </div>
+            <div className="relative flex-1 min-w-0">
+              <TrackMap trackId={sessionB?.track_id ?? secondary.file.trackId ?? null} participants={participantsB} isDark={isDark} sectorColors={sectorColors}
+                driversMode={driversMode} mapTimeout={0} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode}
+                slmTrackStatus={sessionB?.active_aero_track_status ?? -1}
+                mapResolution={(sessionB?.track_id ?? secondary.file.trackId) === session?.track_id ? mapResolution : null}
+                carsSource={secondaryCars} />
+              <MapCaption date={dateB} colorVar="--file-b" driver={driverName(participantsB, followedB)} lap={lapB} total={sessionB?.total_laps ?? 0} />
+            </div>
+          </div>
+        )}
+        {layout.showWeather && <>
+          <WeatherRow date={dateA} colorVar="--file-a" session={session} isDark={isDark} />
+          <WeatherRow date={dateB} colorVar="--file-b" session={sessionB} isDark={isDark} />
+        </>}
+      </div>
+    )
+  }
+
+  const statCards = (
+    Object.values(layout.statsCards).some(Boolean) && (
         <div className="shrink-0 flex min-w-0 overflow-hidden border-b border-[var(--border)]">
           {layout.statsCards.totalLaps && <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} sub="Total distance" compact={compactCards} />}
           {layout.statsCards.lapsRemaining && (remainingLaps !== null
@@ -501,7 +635,16 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
           {layout.statsCards.trackLength && <StatCard label="Track Length" value={session ? `${(session.track_length_m / 1000).toFixed(3)} km` : '—'} sub="Lap distance" compact={compactCards} />}
           {layout.statsCards.timeOfDay && <StatCard label="Time of Day"  value={session ? fmtTimeOfDay(session.time_of_day) : '—'} sub="Circuit local" compact={compactCards} />}
         </div>
-      )}
+      )
+  )
+
+  return (
+    <div className="relative flex flex-col h-full overflow-hidden">
+
+      {/* ── Normal layout ── */}
+      {headerBlock}
+
+      {statCards}
 
       {/* ── Main body — two columns that both fill the available height ── */}
       {(layout.showMap || layout.showWeather || layout.showProximity || layout.showEvents) && (

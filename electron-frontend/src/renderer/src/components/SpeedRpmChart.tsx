@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState } from 'react'
+import { memo, useCallback, useMemo } from 'react'
 import type { AlignedTable, TelemetryRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import SpeedRpmTimeChart, {
@@ -9,7 +9,9 @@ import SpeedRpmTimeChart, {
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import { useLapDataSide, useSideRows } from '../lib/lapDataSide'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { ChartHeader, useSplitLegendState } from '../lib/chartSplit'
 import { themeSeriesColor } from '../lib/themeColors'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 import type { ColumnView } from '../lib/columnStore'
@@ -38,6 +40,10 @@ function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(
 function SpeedRpmChartContent(props: Props) {
   const { isDark, view = 'chart', windowSeconds = 30 } = props
   const coordinates = useChartCoordinates()
+  // Two files side by side share the scales: A's half labels speed at the
+  // left, B's half RPM and ERS at the right (as Trends does).
+  const side = useLapDataSide()
+  const axisLabels = side?.side === 'A' ? 'left' : side?.side === 'B' ? 'right' : 'both'
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const colorSpeed = themeSeriesColor(COLOR_SPEED, isDark)
   const colorRpm = themeSeriesColor(COLOR_RPM, isDark)
@@ -47,7 +53,7 @@ function SpeedRpmChartContent(props: Props) {
     rpm: colorRpm,
     ers: colorErs,
   }), [colorErs, colorRpm, colorSpeed])
-  const [visibleSeries, setVisibleSeries] = useState<SpeedRpmSeriesVisibility>({
+  const [visibleSeries, setVisibleSeries] = useSplitLegendState<SpeedRpmSeriesVisibility>({
     speed: true,
     rpm: true,
     ers: true,
@@ -60,8 +66,8 @@ function SpeedRpmChartContent(props: Props) {
     { header: 'RPM', color: colorRpm, format: v => Math.round(v).toLocaleString() },
     { header: 'ERS', color: colorErs, format: v => `${Math.round(v)}%` },
   ], [colorErs, colorRpm, colorSpeed])
-  const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
-  const statusHistory = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory)
+  const data = useSideRows('telemetry', useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry))
+  const statusHistory = useSideRows('statusHistory', useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory))
   const getTableValues = useCallback((rows: ColumnView<TelemetryRow>, i: number) => {
     const status = statusHistory.lowerBound(rows.time(i), false) - 1
     return [rows.num('speed_kph', i), rows.num('rpm', i), status >= 0 ? statusHistory.num('ers_pct', status) : NaN]
@@ -77,7 +83,7 @@ function SpeedRpmChartContent(props: Props) {
     return [
       `<div style="color:var(--text-secondary);margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(current),
-      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
+      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues, coordinates.comparisonLabel),
     ].join('')
   }, [colorErs, colorRpm, colorSpeed, coordinates, visibleSeries])
 
@@ -100,7 +106,7 @@ function SpeedRpmChartContent(props: Props) {
   }, [coordinates, data, statusHistory, view])
 
   return <div className="chart-panel bg-[var(--bg-panel)] flex flex-col h-full">
-    <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
+    <ChartHeader className="flex h-[22px] items-center justify-between mb-3 shrink-0">
       <div className="flex items-center gap-0">
         <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Speed + RPM + ERS</h2>
         <ChartWindowOverrideSelect />
@@ -117,13 +123,13 @@ function SpeedRpmChartContent(props: Props) {
             — {item.label}
           </button>)}
       </div>}
-    </div>
+    </ChartHeader>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0
         ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data — start driving to see telemetry</div>
         : view === 'table'
           ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} allLapsDataMask={HISTORY_ROW.telemetry | HISTORY_ROW.status} />
-          : <SpeedRpmTimeChart isDark={isDark} telemetry={data} statuses={statusHistory}
+          : <SpeedRpmTimeChart key={axisLabels} axisLabels={axisLabels} isDark={isDark} telemetry={data} statuses={statusHistory}
               comparisonTelemetry={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined}
               comparisonStatuses={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
               colors={colors}

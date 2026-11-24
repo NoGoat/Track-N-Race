@@ -57,6 +57,8 @@ export type InputPageLayout = 'grid' | 'vertical'
 export type InputPedalLayout = 'combined' | 'combined2' | 'split'
 export type PowerPageLayout = 'grid' | 'vertical'
 export type TyresPageLayout = 'grid' | 'vertical'
+// The Tyres page's allocation with one file or live: the list, or the tyre rack (always the rack with two files).
+export type TyresAllocationView = 'list' | 'rack'
 export type MiscSeriesLayout = 'combined' | 'split'
 export type TrendsPageLayout = 'separate' | 'combined' | 'combinedNoRecharge' | 'bars'
 export interface PageLayouts {
@@ -66,6 +68,7 @@ export interface PageLayouts {
   miscRideHeight: MiscSeriesLayout
   power: PowerPageLayout
   tyres: TyresPageLayout
+  tyresAllocation: TyresAllocationView
   trends: TrendsPageLayout
 }
 export const DEFAULT_PAGE_LAYOUTS: PageLayouts = {
@@ -75,6 +78,7 @@ export const DEFAULT_PAGE_LAYOUTS: PageLayouts = {
   miscRideHeight: 'combined',
   power: 'grid',
   tyres: 'grid',
+  tyresAllocation: 'list',
   trends: 'separate',
 }
 

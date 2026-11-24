@@ -1,12 +1,14 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 import type { AlignedTable, TelemetryRow } from '../types'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import { useSideRows } from '../lib/lapDataSide'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import { alignedFromView, sessionTimeAt, type ColumnView } from '../lib/columnStore'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { ChartHeader, useSplitLegendState } from '../lib/chartSplit'
 import { themeSeriesColor } from '../lib/themeColors'
 import { INPUT_CHART_Y_AXIS_SIZE } from '../lib/inputChartLayout'
 
@@ -31,7 +33,7 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const colorSteer = themeSeriesColor(COLOR_STEER, isDark)
-  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const [hiddenSeries, setHiddenSeries] = useSplitLegendState<Record<string, boolean>>({})
   const toggleSeries = useCallback((label: string) => {
     setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
   }, [])
@@ -41,7 +43,7 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
     visible: !hiddenSeries[series.label],
   })), [colorSteer, hiddenSeries])
   const tableColumns = useMemo(() => TABLE_COLS.map(column => ({ ...column, color: colorSteer })), [colorSteer])
-  const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
+  const data = useSideRows('telemetry', useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry))
   const getTableValues = useCallback((rows: ColumnView<TelemetryRow>, i: number) => [rows.num('steering', i)], [])
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
@@ -53,7 +55,7 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
     return [
       `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(v),
-      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
+      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues, coordinates.comparisonLabel),
     ].join('')
   }, [axisColor, colorSteer, coordinates, hiddenSeries])
   const cursorSync = useMemo(() => ({
@@ -65,7 +67,7 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
   }), [colorSteer, hiddenSeries.Steering])
 
   return <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
-    <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
+    <ChartHeader className="flex h-[22px] items-center justify-between mb-3 shrink-0">
       <div className="flex items-center gap-0">
         <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Steering</h2>
         <ChartWindowOverrideSelect />
@@ -80,7 +82,7 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
         </span>
         <span className="text-[var(--text-secondary)]">L = left / R = right</span>
       </div>}
-    </div>
+    </ChartHeader>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />

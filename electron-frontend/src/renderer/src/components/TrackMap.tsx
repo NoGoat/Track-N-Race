@@ -1308,9 +1308,15 @@ interface Props {
   onMapPinned?:        () => void
   /** Draws this map instead of the track's (Edit Map's preview). */
   mapOverride?:        TrackMapData | null
+  /**
+   * The cars to draw, read inside the map rAF, in place of the live positions
+   * feed (a second recording's cars at its own moment). Drawn exactly as live
+   * cars are, with `participants` naming and colouring them.
+   */
+  carsSource?:         () => PositionsMsg['cars'] | null
 }
 
-export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1, markerSource, trackPaint = null, trackMarks = null, racingLines = null, view, onViewChange, onViewFit, mapResolution = null, onMapPinned, mapOverride = null }: Props) {
+export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1, markerSource, trackPaint = null, trackMarks = null, racingLines = null, view, onViewChange, onViewFit, mapResolution = null, onMapPinned, mapOverride = null, carsSource }: Props) {
   const { ref: wrapRef, width, height } = useSize()
   const { raw: labels } = useLabels()
   const backgroundCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -1329,6 +1335,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const aeroModeRef       = useRef<'drs' | 'slm'>(aeroMode)
   const slmTrackStatusRef = useRef<number>(slmTrackStatus)
   const markerSourceRef = useRef(markerSource)
+  const carsSourceRef = useRef(carsSource)
   const trackPaintRef = useRef<TrackPaint | null>(trackPaint)
   const trackMarksRef = useRef<readonly TrackMark[] | null>(trackMarks)
   const racingLinesRef = useRef<readonly RacingLine[] | null>(racingLines)
@@ -1450,6 +1457,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   // ahead of every other effect so they see this render's values.
   useLayoutEffect(() => {
     markerSourceRef.current     = markerSource
+    carsSourceRef.current       = carsSource
     selectedDriverIdxRef.current = selectedDriverIdx
     zoomLevelRef.current        = zoomLevel
     participantsRef.current     = participants
@@ -1475,8 +1483,9 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const lastPosRef = useRef<Record<number, { x: number; z: number; lastMovedTime: number }>>({})
 
   // Subscribe to position updates directly — bypasses React state to avoid 60 Hz re-renders
+  const ownCars = carsSource !== undefined
   useEffect(() => {
-    if (controlledMarkers) return
+    if (controlledMarkers || ownCars) return
     const handleMsg = (raw: unknown) => {
       const msg = raw as Partial<PositionsMsg> | null
       if (msg?.type === 'positions' && msg.cars) {
@@ -1556,7 +1565,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
       unsubOn()
       unsubBinary()
     }
-  }, [controlledMarkers])
+  }, [controlledMarkers, ownCars])
 
 
   // Track geometry lives on a separate Canvas 2D layer. In overview mode it is
@@ -1621,7 +1630,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
           let layout = baseLayout
 
           const followIdx = selectedDriverIdxRef.current
-          const cars = carsRef.current
+          const cars = carsSourceRef.current ? carsSourceRef.current() : carsRef.current
           if (followIdx !== null && cars) {
             const car = cars.find(c => c.idx === followIdx)
             if (car && (car.x !== 0 || car.z !== 0)) {

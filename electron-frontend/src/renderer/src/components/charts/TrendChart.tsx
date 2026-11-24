@@ -25,6 +25,9 @@ const axisTicks = () => AXIS_TICKS
 const EXTRA_AXIS_WIDTH = 42
 const NICE_STEPS = [1, 2, 2.5, 5]
 
+// B's half of a split chart: no left labels, just room for the plot's edge.
+const UNLABELLED_Y_AXIS_SIZE = 8
+
 export interface TrendAxis {
   min: number
   max: number
@@ -84,6 +87,17 @@ interface Props {
   isDark: boolean
   discrete?: boolean
   fixedRange?: [number, number]
+  /** File B's points on the same channels, drawn dimmed behind these (side-by-side off). */
+  comparisonPoints?: TrendChartPoint[]
+  /** Names B's values in the tooltip (B's date). */
+  comparisonLabel?: string
+  /**
+   * Which scales carry labels. Two files side by side share their scales, so
+   * A's half keeps the left one and B's half the right ones.
+   */
+  axisLabels?: 'both' | 'left' | 'right'
+  /** First and last lap shown; two files side by side share one lap axis. */
+  xDomain?: [number, number]
   zeroBaselineHeadroom?: number
   formatX: (value: number) => string
   formatY: (value: number) => string
@@ -150,7 +164,7 @@ function rowsOf(points: readonly TrendChartPoint[]) {
 
 // Adapt the selected-driver snapshot to the same WebGL renderer used by Tyres.
 // Rendering, cursor points, tooltip placement and interaction stay shared.
-export default function TrendChart({ title, points, series, isDark, discrete, fixedRange, zeroBaselineHeadroom, formatX, formatY, formatTooltipY = formatY, cursorSync, axes, lapPoints, bars }: Props) {
+export default function TrendChart({ title, points, series, isDark, discrete, fixedRange, comparisonPoints, comparisonLabel, axisLabels = 'both', xDomain, zeroBaselineHeadroom, formatX, formatY, formatTooltipY = formatY, cursorSync, axes, lapPoints, bars }: Props) {
   // Rebuild only if history before the newest point actually changed.
   // Appends and newest-point patches use the shared incremental GPU bridge.
   // The previous points are state updated during render, as React documents
@@ -185,6 +199,9 @@ export default function TrendChart({ title, points, series, isDark, discrete, fi
     return slots
   }, [channels, series])
   const rows = useMemo(() => bars ? barRowsOf(points, barSlots) : rowsOf(points), [bars, points, barSlots])
+  const comparisonRows = useMemo(() => comparisonPoints && comparisonPoints.length > 0
+    ? bars ? barRowsOf(comparisonPoints, barSlots) : rowsOf(comparisonPoints)
+    : undefined, [bars, comparisonPoints, barSlots])
   // Reversed so the first listed is drawn last, on top; a stack's bottom
   // segment, listed first, is its shortest rectangle and so stays visible.
   const seriesDefs = useCallback((perLap: boolean) => series.flatMap((item, index): SeriesDef<StintRow>[] => {
@@ -224,11 +241,12 @@ export default function TrendChart({ title, points, series, isDark, discrete, fi
   }, [axes, fixedRange, points, zeroBaselineHeadroom])
   const axisLabel = useCallback((axis: TrendAxis) => (value: number) =>
     axis.format(axis.min + value * (axis.max - axis.min)), [])
-  const yTickFormat = useMemo(() => axes ? axisLabel(axes[0]) : formatY, [axes, axisLabel, formatY])
-  const extraYAxes = useMemo(() => axes?.slice(1).map((axis, i) => ({
+  const leftLabels = axisLabels !== 'right'
+  const yTickFormat = useMemo(() => !leftLabels ? () => '' : axes ? axisLabel(axes[0]) : formatY, [axes, axisLabel, formatY, leftLabels])
+  const extraYAxes = useMemo(() => axisLabels === 'left' ? undefined : axes?.slice(1).map((axis, i) => ({
     side: 'right' as const, offset: 4 + i * EXTRA_AXIS_WIDTH, color: axis.color ?? tyreColorsFor(isDark).axis,
     values: AXIS_TICKS, format: axisLabel(axis),
-  })), [axes, axisLabel, isDark])
+  })), [axes, axisLabel, axisLabels, isDark])
   const axisLook = useMemo<AxisLook>(() => extraYAxes?.length
     ? { ...TYRE_AXIS_LOOK, paddingRight: 4 + extraYAxes.length * EXTRA_AXIS_WIDTH }
     : TYRE_AXIS_LOOK, [extraYAxes])
@@ -236,8 +254,8 @@ export default function TrendChart({ title, points, series, isDark, discrete, fi
   // new scale, or a series added, removed or reordered, remounts it.
   const axesKey = axes?.map(axis => `${axis.min}:${axis.max}`).join('|') ?? ''
   const seriesKey = `${bars ? 'bars' : 'lines'}|` + series.map((item, index) => `${item.label}:${item.perLap ? 1 : 0}:${channels[index]}:${item.axis ?? 0}:${item.stack ?? ''}`).join('|')
-  const first = Math.min(points[0]?.x ?? Infinity, lapPoints?.[0]?.x ?? Infinity)
-  const last = Math.max(points.at(-1)?.x ?? -Infinity, lapPoints?.at(-1)?.x ?? -Infinity)
+  const first = xDomain?.[0] ?? Math.min(points[0]?.x ?? Infinity, lapPoints?.[0]?.x ?? Infinity)
+  const last = xDomain?.[1] ?? Math.max(points.at(-1)?.x ?? -Infinity, lapPoints?.at(-1)?.x ?? -Infinity)
   const xRange = useMemo(() => {
     if (!Number.isFinite(first)) return { min: 0, max: 1 }
     return { min: discrete ? first - 0.5 : first, max: discrete ? last + 0.5 : Math.max(last, first + 1) }
@@ -255,6 +273,16 @@ export default function TrendChart({ title, points, series, isDark, discrete, fi
     })
     return html
   }, [series, channels, axes, isDark, formatTooltipY])
+  // File B's values at the same lap, under its date.
+  const comparisonTooltip = useCallback((x: number) => {
+    if (!comparisonPoints || comparisonPoints.length === 0 || !comparisonLabel) return ''
+    let best: TrendChartPoint | undefined
+    for (const candidate of comparisonPoints)
+      if (!best || Math.abs(candidate.x - x) < Math.abs(best.x - x)) best = candidate
+    if (!best || Math.abs(best.x - x) > 0.5) return ''
+    return `<div style="color:var(--text-secondary);border-top:1px solid var(--border);margin-top:5px;padding-top:4px">${comparisonLabel} · ${best.label}</div>`
+      + `<div style="opacity:0.6">${formatValues(best.values)}</div>`
+  }, [comparisonPoints, comparisonLabel, formatValues])
   const tooltipFormat = useCallback((x: number) => {
     let lo = 0, hi = points.length
     while (lo < hi) { const mid = (lo + hi) >> 1; if (points[mid].x < x) lo = mid + 1; else hi = mid }
@@ -275,11 +303,11 @@ export default function TrendChart({ title, points, series, isDark, discrete, fi
         const format = axis ? axis.formatTooltip ?? axis.format : formatTooltipY
         html += `<div><span style="color:${themeSeriesColor(item.color, isDark)}">${item.label}</span>: ${value != null && Number.isFinite(value) ? format(value) : '—'}</div>`
       })
-      return html
+      return html + comparisonTooltip(x)
     }
     // The point holds the raw values; the chart's own may be normalized.
-    return header(point ? pointLabel(point) : formatX(x)) + (point ? formatValues(point.values) : '')
-  }, [points, lapPoints, series, channels, axes, isDark, formatX, formatTooltipY, pointLabel, formatValues])
+    return header(point ? pointLabel(point) : formatX(x)) + (point ? formatValues(point.values) : '') + comparisonTooltip(point?.x ?? x)
+  }, [points, lapPoints, series, channels, axes, isDark, formatX, formatTooltipY, pointLabel, formatValues, comparisonTooltip])
   // Rows are built one per point, so a row index is a point index.
   const syncConfig = useMemo(() => cursorSync && {
     ...cursorSync,
@@ -301,11 +329,11 @@ export default function TrendChart({ title, points, series, isDark, discrete, fi
       },
     },
   }, [cursorSync, points, isDark, title, pointLabel, formatValues])
-  return <LocalChartCoordinatesProvider>
+  return <LocalChartCoordinatesProvider comparisonLabel={comparisonRows ? comparisonLabel ?? 'Second file' : null}>
     <div className="relative h-full min-h-0 w-full" aria-label={title}>
-      <TimeChartView<StintRow> key={`${revision}:${axesKey}:${seriesKey}`} isDark={isDark} rows={rows} getX={sessionTimeAt} series={chartSeries}
+      <TimeChartView<StintRow> key={`${revision}:${axesKey}:${seriesKey}`} isDark={isDark} rows={rows} comparisonRows={comparisonRows} getX={sessionTimeAt} series={chartSeries}
         fixedXRange={xRange} windowSeconds={xRange.max - xRange.min} yRange={yRange}
-        yAxisSize={TYRE_CHART_Y_AXIS_SIZE} yTickValues={axes ? axisTicks : roundYTicks} yTickFormat={yTickFormat} yAxisColor={axes?.[0].color} extraYAxes={extraYAxes}
+        yAxisSize={leftLabels ? TYRE_CHART_Y_AXIS_SIZE : UNLABELLED_Y_AXIS_SIZE} yTickValues={axes ? axisTicks : roundYTicks} yTickFormat={yTickFormat} yAxisColor={axes?.[0].color} extraYAxes={extraYAxes}
         xTickFormat={formatX} xTickValues={lapTicks}
         overlay={overlay} tooltipFormat={tooltipFormat} cursorSync={syncConfig} colorsFor={tyreColorsFor} axisLook={axisLook} tooltipStyle={TYRE_TOOLTIP_STYLE}
         />

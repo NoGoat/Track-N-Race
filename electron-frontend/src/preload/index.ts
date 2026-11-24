@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { PlaybackState, TrackMapEdit, TrackMapResult, TrackMapSettings } from '../main/bridgeManager'
+import type { PlaybackState, SecondaryStreamMessage, TrackMapEdit, TrackMapResult, TrackMapSettings } from '../main/bridgeManager'
 
 const storeAPI = {
   get: (key: string, defaultValue: unknown): unknown =>
@@ -321,10 +321,16 @@ const playerBridge = {
   load: (filePath: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:load', filePath),
   play: () => ipcRenderer.send('player:play'),
   pause: () => ipcRenderer.send('player:pause'),
-  seek: (pct: number) => {
+  // `mergedTime`: with two files open, the seek is to that time on the
+  // lap-synced timeline (the engine places file A from it).
+  seek: (pct: number, mergedTime?: number) => {
     for (const listener of seekStartListeners) listener(playerAllLapsMode)
-    ipcRenderer.send('player:seek', pct, playerAllLapsMode, playerAllLapsRowMask, playerWindowSeconds)
+    ipcRenderer.send('player:seek', pct, playerAllLapsMode, playerAllLapsRowMask, playerWindowSeconds,
+      ...typeof mergedTime === 'number' && Number.isFinite(mergedTime) ? [mergedTime] : [])
   },
+  // Lap-synced playback with the second file: the timeline input
+  // (mergedLapTimeline's), or null to play file A alone.
+  setMergedTimeline: (inputJson: string | null) => ipcRenderer.send('player:set-merged-timeline', inputJson),
   setAllLapsMode: (enabled: boolean, rowTypeMask = 0xFFFFFFFF, windowSeconds = 0) => {
     playerAllLapsMode = enabled
     playerAllLapsRowMask = rowTypeMask >>> 0
@@ -383,6 +389,33 @@ const analysisBridge = {
     source: 'file1' | 'file2' = 'file2', driverIndex = -1,
   ): Promise<unknown | null> =>
     ipcRenderer.invoke('analysis:get-lap-data', lapNum, rowTypeMask >>> 0, source, driverIndex),
+  // Both files' laps on one lap-synced timeline, as merged_lap_timeline JSON.
+  mergedLapTimeline: (inputJson: string): Promise<string | null> =>
+    ipcRenderer.invoke('analysis:merged-lap-timeline', inputJson),
+  // The second file's lap as V6 column blocks (no JSON); null without column history.
+  lapHistory: (lapNum: number, rowTypeMask: number, driverIndex: number, v6Types: number[] = []): Promise<{
+    lapNum: number; startSessionTime: number; endSessionTime: number; rowTypeMask: number; history: Uint8Array
+  } | null> => ipcRenderer.invoke('analysis:lap-history', lapNum, rowTypeMask >>> 0, driverIndex, v6Types),
+  // Whether a page shows file B's streamed rows, the car followed in B, and
+  // the longer history B's windows need (row type bits; seconds, -1 all).
+  setStreaming: (enabled: boolean, driverIndex: number, longMask = 0, longSeconds = 0): void =>
+    ipcRenderer.send('analysis:set-streaming', enabled, driverIndex, longMask >>> 0, longSeconds),
+  // The car whose lap-times view is open on file B (-1: none); B's stream pushes its laps.
+  setLapHistoryCar: (carIdx: number): void => ipcRenderer.send('analysis:lap-history-car', carIdx),
+  // The car selected in file B's Standings tower (-1: none); B's stream carries its private status.
+  setFocusDriver: (driverIndex: number): void => ipcRenderer.send('analysis:set-focus-driver', driverIndex),
+  // File B's row stream at its moment on the playhead (SecondaryStream in the addon).
+  onBatch: (callback: (message: SecondaryStreamMessage) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, message: SecondaryStreamMessage) => callback(message)
+    ipcRenderer.on('analysis-batch', listener)
+    return () => ipcRenderer.removeListener('analysis-batch', listener)
+  },
+  // The same lap as an unparsed JSON string (cheaper across IPC and the context bridge).
+  getLapDataJson: (
+    lapNum: number, rowTypeMask = 0xFFFFFFFF,
+    source: 'file1' | 'file2' = 'file2', driverIndex = -1,
+  ): Promise<string | null> =>
+    ipcRenderer.invoke('analysis:get-lap-data-json', lapNum, rowTypeMask >>> 0, source, driverIndex),
   compareLaps: (
     currentLapNum: number,
     currentSource: 'file1' | 'file2',

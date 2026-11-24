@@ -50,6 +50,13 @@ import {
   playerClose,
   analysisLoadFile,
   analysisGetLapData,
+  analysisLapHistory,
+  analysisSetStreaming,
+  analysisSetLapHistoryCar,
+  analysisSetFocusDriver,
+  playerSetMergedTimeline,
+  analysisGetLapDataJson,
+  mergedLapTimelineJson,
   analysisCompareLaps,
   analysisMap,
   analysisCloseFile,
@@ -370,8 +377,8 @@ ipcMain.handle('player:load', async (_event, filePath: string) => {
 ipcMain.on('page-visibility', (_e, visible: boolean) => setRendererVisible(visible))
 ipcMain.on('player:play', () => playerPlay())
 ipcMain.on('player:pause', () => playerPause())
-ipcMain.on('player:seek', (_event, pct: number, allHistory: boolean, rowTypeMask?: number, windowSeconds?: number) =>
-  playerSeek(pct, allHistory === true, rowTypeMask, windowSeconds))
+ipcMain.on('player:seek', (_event, pct: number, allHistory: boolean, rowTypeMask?: number, windowSeconds?: number, mergedTime?: number) =>
+  playerSeek(pct, allHistory === true, rowTypeMask, windowSeconds, mergedTime))
 ipcMain.on('player:seek-installed', (_event, requestId: number) =>
   playerSeekInstalled(requestId))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
@@ -403,6 +410,18 @@ ipcMain.handle('analysis:get-lap-data', (
   _event, lapNum: number, rowTypeMask: number | undefined,
   source: 'file1' | 'file2', driverIndex: number,
 ) => analysisGetLapData(lapNum, rowTypeMask, source, driverIndex))
+ipcMain.handle('analysis:merged-lap-timeline', (_event, inputJson: string) => mergedLapTimelineJson(inputJson))
+ipcMain.handle('analysis:lap-history', (_event, lapNum: number, rowTypeMask: number, driverIndex: number, v6Types: number[]) =>
+  analysisLapHistory(lapNum, rowTypeMask, driverIndex, v6Types))
+ipcMain.on('analysis:set-streaming', (_event, enabled: boolean, driverIndex: number, longMask: number, longSeconds: number) =>
+  analysisSetStreaming(enabled === true, driverIndex, longMask, longSeconds))
+ipcMain.on('analysis:lap-history-car', (_event, carIdx: number) => analysisSetLapHistoryCar(carIdx))
+ipcMain.on('analysis:set-focus-driver', (_event, driverIndex: number) => analysisSetFocusDriver(driverIndex))
+ipcMain.on('player:set-merged-timeline', (_event, inputJson: string | null) => playerSetMergedTimeline(inputJson))
+ipcMain.handle('analysis:get-lap-data-json', (
+  _event, lapNum: number, rowTypeMask: number | undefined,
+  source: 'file1' | 'file2', driverIndex: number,
+) => analysisGetLapDataJson(lapNum, rowTypeMask, source, driverIndex))
 ipcMain.handle('analysis:compare-laps', (
   _event,
   currentLapNum: number,

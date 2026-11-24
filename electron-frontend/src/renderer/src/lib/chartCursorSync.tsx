@@ -5,13 +5,59 @@ import { ChartTooltipPortal, useChartTooltip } from '../hooks/useChartTooltip'
 // through their own rows.
 export type ChartCursorAxisKind = 'time' | 'distance' | 'lap'
 
+// Which recording a chart draws while two are open. Session times only mean
+// something within one recording, so they travel between charts on file A's
+// clock ("shared"); a file B chart converts on the way in and out.
+export type ChartCursorSyncFile = 'A' | 'B'
+
+interface ChartCursorSyncFileValue {
+  file: ChartCursorSyncFile
+  /** This chart's session time on file A's clock (NaN where it has none). */
+  toShared: (sessionTime: number) => number
+  /** File A's session time on this chart's clock (NaN where it has none). */
+  fromShared: (sessionTime: number) => number
+}
+
+const identity = (sessionTime: number) => sessionTime
+const FILE_A: ChartCursorSyncFileValue = { file: 'A', toShared: identity, fromShared: identity }
+const ChartCursorSyncFileContext = createContext<ChartCursorSyncFileValue>(FILE_A)
+
+/**
+ * Marks the charts inside as file B's. Without clock maps, they match file A's
+ * charts by axis position only (lap distance or lap number).
+ */
+export function ChartCursorSyncFileProvider({ toShared, fromShared, children }: {
+  toShared?: (sessionTime: number) => number
+  fromShared?: (sessionTime: number) => number
+  children: React.ReactNode
+}) {
+  const value = useMemo<ChartCursorSyncFileValue>(() => ({
+    file: 'B',
+    toShared: toShared ?? (() => NaN),
+    fromShared: fromShared ?? (() => NaN),
+  }), [fromShared, toShared])
+  return <ChartCursorSyncFileContext.Provider value={value}>{children}</ChartCursorSyncFileContext.Provider>
+}
+
+export function useChartCursorSyncFile(): ChartCursorSyncFileValue {
+  return useContext(ChartCursorSyncFileContext)
+}
+
+/** A file B chart's sync id, so it never replaces file A's copy of the same chart. */
+export function cursorSyncIdFor(id: string, file: ChartCursorSyncFile): string {
+  return file === 'B' ? `${id}:B` : id
+}
+
 export interface ChartCursorSyncParticipant {
   id: string
   order: number
+  /** The recording this chart draws. */
+  file: ChartCursorSyncFile
   axisKind: ChartCursorAxisKind
   resolveAxisX: (axisX: number) => { sessionTime: number; sampledAxisX: number } | null
   formatAxisX: (axisX: number) => string
-  syncToSessionTime: (sessionTime: number, axisX: number, plotYRatio: number | null, sourceAxisKind: ChartCursorAxisKind, source: boolean, secondaryVerticalCrosshair: boolean) => {
+  /** `sessionTime` is on file A's clock (see ChartCursorSyncFile); `sourceFile` is the hovered chart's. */
+  syncToSessionTime: (sessionTime: number, axisX: number, plotYRatio: number | null, sourceAxisKind: ChartCursorAxisKind, source: boolean, secondaryVerticalCrosshair: boolean, sourceFile: ChartCursorSyncFile) => {
     current: string
     comparison?: string
     comparisonLabel?: string
@@ -79,6 +125,7 @@ export function ChartCursorSyncProvider({ enabled, secondaryHorizontalCrosshair 
             source.axisKind,
             participant.id === sourceId,
             secondaryVerticalCrosshairRef.current,
+            source.file,
           ))
         const fragments = samples.map(sample => sample.current).filter(Boolean)
         const comparisonGroups = new Map<string, { label: string; fragments: string[] }>()

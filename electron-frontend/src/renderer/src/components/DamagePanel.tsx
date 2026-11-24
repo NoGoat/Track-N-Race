@@ -1,6 +1,8 @@
 import { memo } from 'react'
 import type { DamageRow } from '../types'
 import type { DensityMode } from '../lib/graphSections'
+import FileTableCards from './FileTableCards'
+import { useSecondaryCards } from '../lib/secondaryLive'
 
 interface VisibleItems {
   wingFl: boolean; wingFr: boolean; wingRear: boolean; floor: boolean
@@ -75,7 +77,17 @@ const DamageCard = memo(function DamageCard({ label, v, connected, isDark, compa
   )
 })
 
+// Each item's value in a damage row.
+const DAMAGE_FIELDS: Record<keyof VisibleItems, keyof DamageRow> = {
+  tyreDmgFl: 'tyre_dmg_fl', brakeDmgFl: 'brake_dmg_fl', tyreDmgFr: 'tyre_dmg_fr', brakeDmgFr: 'brake_dmg_fr',
+  tyreDmgRl: 'tyre_dmg_rl', brakeDmgRl: 'brake_dmg_rl', tyreDmgRr: 'tyre_dmg_rr', brakeDmgRr: 'brake_dmg_rr',
+  wingFl: 'wing_fl', wingFr: 'wing_fr', wingRear: 'wing_rear', floor: 'floor_damage',
+  diffuser: 'diffuser_damage', sidepod: 'sidepod_damage', gearbox: 'gearbox_damage', engine: 'engine_damage',
+}
+
 const DamagePanel = memo(function DamagePanel({ connected, damage, visibleItems, twoRow, isDark, compact }: Props) {
+  // Side-by-side with a second file: one table, A's values over B's at B's moment on the playhead.
+  const secondary = useSecondaryCards()
   const allItems = [
     { key: 'tyreDmgFl'  as keyof VisibleItems, label: 'Tyre FL',   v: damage?.tyre_dmg_fl    ?? 0 },
     { key: 'brakeDmgFl' as keyof VisibleItems, label: 'Brake FL',  v: damage?.brake_dmg_fl   ?? 0 },
@@ -94,6 +106,19 @@ const DamagePanel = memo(function DamagePanel({ connected, damage, visibleItems,
     { key: 'gearbox'    as keyof VisibleItems, label: 'Gearbox',   v: damage?.gearbox_damage  ?? 0 },
     { key: 'engine'     as keyof VisibleItems, label: 'Engine',    v: damage?.engine_damage   ?? 0 },
   ].filter(item => visibleItems[item.key])
+
+  if (secondary) {
+    const tone = (v: number) => v > 0 ? '#C4162A' : (isDark ? '#37872D' : '#137333')
+    return <FileTableCards dateA={secondary.dateA} dateB={secondary.dateB} cards={allItems.map(item => {
+      const raw = secondary.damage?.[DAMAGE_FIELDS[item.key]]
+      const b = typeof raw === 'number' && Number.isFinite(raw) ? raw : null
+      return {
+        key: item.key, label: item.label,
+        a: connected ? { value: String(item.v), unit: '%', color: tone(item.v) } : { value: '—' },
+        b: b !== null ? { value: String(b), unit: '%', color: tone(b) } : { value: '—' },
+      }
+    })} />
+  }
 
   if (twoRow) {
     const split = Math.ceil(allItems.length / 2)

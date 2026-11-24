@@ -6,6 +6,9 @@ import carSvgSource from '../assets/car/f1-car-wireframe.svg?raw'
 import type { DensityMode } from '../lib/graphSections'
 import type { DamageRow } from '../types'
 import type { DamageLayout } from '../app/appConfig'
+import FileTableCards, { type FileTableCard, type FileTableValue } from './FileTableCards'
+import { useSecondaryCards, type FileHeaderCell } from '../lib/secondaryLive'
+import { useSecondaryState } from '../lib/secondaryStream'
 
 const missing = '—'
 
@@ -100,23 +103,25 @@ const LABELS: { value: string; label: string; x: number; y: number; anchor: 'sta
   { value: 'v-fw-r', label: 'WING R', x: 1320, y: 312, anchor: 'start' },
 ]
 
-function CarDiagram({ damage, isDark }: { damage: DamageRow | null; isDark: boolean }) {
+/**
+ * The wireframe's zone styling, as CSS by id under `scope` (one class per drawn
+ * car, so two cars on the page don't style each other): it overrides the
+ * asset's presentation attributes and keeps the inline SVG markup static.
+ */
+function carRules(scope: string, damage: DamageRow | null, isDark: boolean): string[] {
   const colors = palette(isDark)
   const tyreColors = tyrePalette(isDark)
-  const pct = (v: number | null) => v === null ? missing : `${v}%`
-  // Zone styling is generated as CSS by id: it overrides the asset's presentation
-  // attributes and keeps the inline SVG markup itself static.
   const rules: string[] = [
-    `.damage-car .wire { stroke: ${isDark ? '#8a93c4' : '#3d434b'}; }`,
-    '.damage-car .solid { fill: var(--bg-panel); }',
-    `.damage-car .tube { stroke: ${isDark ? '#4a5175' : '#8f9397'}; }`,
+    `.${scope} .wire { stroke: ${isDark ? '#8a93c4' : '#3d434b'}; }`,
+    `.${scope} .solid { fill: var(--bg-panel); }`,
+    `.${scope} .tube { stroke: ${isDark ? '#4a5175' : '#8f9397'}; }`,
   ]
   // A part with no data is drawn like an undamaged one;
   // its callout shows the missing value.
   const zone = (id: string, sev: Severity) => {
     if (sev === 'warn' || sev === 'crit')
-      rules.push(`.damage-car #${id} { stroke: ${colors[sev]}; stroke-width: 3.2; }`,
-        `.damage-car #${id} .solid { fill: color-mix(in srgb, ${colors[sev]} 12%, var(--bg-panel)); }`)
+      rules.push(`.${scope} #${id} { stroke: ${colors[sev]}; stroke-width: 3.2; }`,
+        `.${scope} #${id} .solid { fill: color-mix(in srgb, ${colors[sev]} 12%, var(--bg-panel)); }`)
   }
   for (const part of BODY_PARTS) for (const id of part.zones) zone(id, damageSeverity(num(damage, part.key)))
   for (const wheel of WHEELS) {
@@ -125,49 +130,128 @@ function CarDiagram({ damage, isDark }: { damage: DamageRow | null; isDark: bool
     // Tyre outlines always take the band colour of the worst wheel value, green included.
     const band = known.length === 0 ? 'na' : tyreBand(Math.max(...known))
     if (band !== 'na')
-      rules.push(`.damage-car #t-${wheel.id} { stroke: ${tyreColors[band]}; stroke-width: 3.2; }`,
-        `.damage-car #t-${wheel.id} .solid { fill: color-mix(in srgb, ${tyreColors[band]} 12%, var(--bg-panel)); }`)
+      rules.push(`.${scope} #t-${wheel.id} { stroke: ${tyreColors[band]}; stroke-width: 3.2; }`,
+        `.${scope} #t-${wheel.id} .solid { fill: color-mix(in srgb, ${tyreColors[band]} 12%, var(--bg-panel)); }`)
   }
+  return rules
+}
 
-  return <svg className="damage-car block w-full h-full" viewBox="0 0 1580 520" role="img" aria-label="Car damage by part">
+type WheelId = typeof WHEELS[number]['id']
+type Anchor = 'start' | 'middle' | 'end'
+/** Where a car diagram puts the car and its callouts, in its own drawing units. */
+interface DiagramLayout {
+  viewBox: string
+  carX: number; carY: number
+  leaders: [string, number, number][]
+  labels: { value: string; label: string; x: number; y: number; anchor: Anchor }[]
+  wheels: Record<WheelId, { tx: number; ty: number; anchor: Anchor; cols: readonly number[] }>
+  // Font sizes and the offsets of a value under its label.
+  partLabel: number; partValue: number; partGap: number
+  wheelTitle: number; cellLabel: number; cellValue: number; cellLabelGap: number; cellValueGap: number
+}
+
+const FULL_LAYOUT: DiagramLayout = {
+  viewBox: '0 0 1580 520', carX: CAR_X, carY: CAR_Y, leaders: LEADERS, labels: LABELS,
+  wheels: Object.fromEntries(WHEELS.map(w => [w.id, { tx: w.tx, ty: w.ty, anchor: w.anchor, cols: w.cols }])) as unknown as DiagramLayout['wheels'],
+  partLabel: 14, partValue: 26, partGap: 34, wheelTitle: 16, cellLabel: 13, cellValue: 20, cellLabelGap: 26, cellValueGap: 50,
+}
+
+// The half-width car for two files: the same callouts, but the wheel blocks sit above
+// and below their wheels instead of beside them, so the drawing is narrower and every
+// number can be drawn larger relative to the car.
+const HALF_X = 190
+const HALF_Y = 260
+const HALF_LAYOUT: DiagramLayout = {
+  viewBox: '0 90 1280 700', carX: HALF_X, carY: HALF_Y,
+  leaders: [
+    ['M318 144 H340 V310', 340, 310], ['M318 684 H340 V590', 340, 590],
+    ['M950 144 H924 V302', 924, 302], ['M950 684 H924 V588', 924, 588],
+    ['M180 430 H240', 240, 430], ['M180 510 H340', 340, 510],
+    ['M784 194 V302', 784, 302], ['M634 558 V660', 634, 558],
+    ['M1160 380 H1080', 1080, 380], ['M1160 510 H1080', 1080, 510],
+  ],
+  labels: [
+    { value: 'v-rw', label: 'REAR WING', x: 170, y: 436, anchor: 'end' },
+    { value: 'v-diff', label: 'DIFFUSER', x: 170, y: 516, anchor: 'end' },
+    { value: 'v-floor', label: 'FLOOR', x: 784, y: 136, anchor: 'middle' },
+    { value: 'v-sp', label: 'SIDEPODS', x: 634, y: 690, anchor: 'middle' },
+    { value: 'v-fw-l', label: 'WING L', x: 1170, y: 386, anchor: 'start' },
+    { value: 'v-fw-r', label: 'WING R', x: 1170, y: 516, anchor: 'start' },
+  ],
+  wheels: {
+    rl: { tx: 308, ty: 150, anchor: 'end', cols: [20, 120, 220] },
+    rr: { tx: 308, ty: 690, anchor: 'end', cols: [20, 120, 220] },
+    fl: { tx: 960, ty: 150, anchor: 'start', cols: [960, 1060, 1160] },
+    fr: { tx: 960, ty: 690, anchor: 'start', cols: [960, 1060, 1160] },
+  },
+  partLabel: 18, partValue: 32, partGap: 40, wheelTitle: 22, cellLabel: 15, cellValue: 26, cellLabelGap: 32, cellValueGap: 64,
+}
+
+function CarDiagram({ damage, isDark, scope = 'damage-car', label = 'Car damage by part', layout = FULL_LAYOUT }: {
+  damage: DamageRow | null; isDark: boolean; scope?: string; label?: string; layout?: DiagramLayout
+}) {
+  const colors = palette(isDark)
+  const tyreColors = tyrePalette(isDark)
+  const pct = (v: number | null) => v === null ? missing : `${v}%`
+  const rules = carRules(scope, damage, isDark)
+  const L = layout
+
+  return <svg className={`${scope} block w-full h-full`} viewBox={L.viewBox} role="img" aria-label={label}>
     <style>{rules.join('\n')}</style>
-    <g transform={`translate(${CAR_X} ${CAR_Y})`} dangerouslySetInnerHTML={{ __html: CAR_INNER }} />
+    <g transform={`translate(${L.carX} ${L.carY})`} dangerouslySetInnerHTML={{ __html: CAR_INNER }} />
     <g stroke="var(--text-muted)" strokeWidth="1.5" fill="none">
-      {LEADERS.map(([d]) => <path key={d} d={d} />)}
+      {L.leaders.map(([d]) => <path key={d} d={d} />)}
     </g>
     <g fill="var(--text-dim)">
-      {LEADERS.map(([d, x, y]) => <circle key={d} cx={x} cy={y} r="4" />)}
+      {L.leaders.map(([d, x, y]) => <circle key={d} cx={x} cy={y} r="4" />)}
     </g>
-    {LABELS.map(label => {
+    {L.labels.map(label => {
       const part = BODY_PARTS.find(p => p.value === label.value)!
       const v = num(damage, part.key)
       return <g key={label.value} fontFamily="inherit">
-        <text x={label.x} y={label.y} textAnchor={label.anchor} fontSize="14" letterSpacing="1.4" fill="var(--text-secondary)">{label.label}</text>
-        <text x={label.x} y={label.y + 34} textAnchor={label.anchor} fontSize="26" fontWeight="700" fill={colors[damageSeverity(v)]}>{pct(v)}</text>
+        <text x={label.x} y={label.y} textAnchor={label.anchor} fontSize={L.partLabel} letterSpacing="1.4" fill="var(--text-secondary)">{label.label}</text>
+        <text x={label.x} y={label.y + L.partGap} textAnchor={label.anchor} fontSize={L.partValue} fontWeight="700" fill={colors[damageSeverity(v)]}>{pct(v)}</text>
       </g>
     })}
     {WHEELS.map(wheel => {
+      const at = L.wheels[wheel.id]
       const cells: [string, number | null][] = [['TYRE', num(damage, wheel.tyre)], ['BRAKE', num(damage, wheel.brake)], ['BLISTERS', num(damage, wheel.blisters)]]
       return <g key={wheel.id} fontFamily="inherit">
-        <text x={wheel.tx} y={wheel.ty} textAnchor={wheel.anchor} fontSize="16" fontWeight="700" letterSpacing="1.6"
+        <text x={at.tx} y={at.ty} textAnchor={at.anchor} fontSize={L.wheelTitle} fontWeight="700" letterSpacing="1.6"
           fill={isDark ? wheel.color : wheel.lightColor}>{wheel.id.toUpperCase()}</text>
         {cells.map(([label, v], i) => <g key={label}>
-          <text x={wheel.cols[i]} y={wheel.ty + 26} fontSize="13" letterSpacing="1" fill="var(--text-secondary)">{label}</text>
-          <text x={wheel.cols[i]} y={wheel.ty + 50} fontSize="20" fontWeight="700" fill={tyreColors[tyreBand(v)]}>{pct(v)}</text>
+          <text x={at.cols[i]} y={at.ty + L.cellLabelGap} fontSize={L.cellLabel} letterSpacing="1" fill="var(--text-secondary)">{label}</text>
+          <text x={at.cols[i]} y={at.ty + L.cellValueGap} fontSize={L.cellValue} fontWeight="700" fill={tyreColors[tyreBand(v)]}>{pct(v)}</text>
         </g>)}
       </g>
     })}
   </svg>
 }
 
-// The page follows the streamed driver: the player live, the driver selector's car in
-// V6 playback. Everything comes from the latest damage row.
-export default memo(function DamagePage({ isDark, compact, visible }: { isDark: boolean; compact: DensityMode; visible: DamageLayout }) {
-  const damage = useTelemetryStore(s => s.damage)
-  const { t } = useLabels()
+/** One file's half: its coloured date, driver and lap, then the car diagram in its half-width layout. */
+function FileHalf({ scope, date, colorVar, driver, detail, damage, isDark, showDiagram }: {
+  scope: string; date: string; colorVar: '--file-a' | '--file-b'; driver: string | null; detail: string
+  damage: DamageRow | null; isDark: boolean; showDiagram: boolean
+}) {
+  return <div className="flex-1 min-w-0 min-h-0 flex flex-col font-mono">
+    <div className="shrink-0 h-8 flex items-baseline gap-2.5 px-4 pt-[9px] whitespace-nowrap overflow-hidden">
+      <span className="text-[14px] font-bold" style={{ color: `var(${colorVar})` }}>{date}</span>
+      {driver && <span className="text-[11.5px] font-bold uppercase truncate text-[var(--text-primary)]">{driver}</span>}
+      {detail && <span className="text-[11px] truncate text-[var(--text-secondary)]">{detail}</span>}
+    </div>
+    {showDiagram
+      ? <div className="flex-1 min-h-0 px-3 pt-3 pb-2"><CarDiagram scope={scope} damage={damage} isDark={isDark} label={`Car damage for ${date}`} layout={HALF_LAYOUT} /></div>
+      : <div className="flex-1 min-h-0" />}
+  </div>
+}
+
+type StatusCardId = keyof DamageLayout['statusCards']
+interface StatusValue { value: string; unit?: string; color?: string }
+
+/** The five status cards' values for one damage row, by card. */
+function statusValues(damage: DamageRow | null, isDark: boolean): Record<StatusCardId, StatusValue> {
   const colors = palette(isDark)
   const pctText = (v: number | null) => v === null ? missing : String(v)
-
   const engine = num(damage, 'engine_damage')
   const gearbox = num(damage, 'gearbox_damage')
   const flag = (key: DamageKey) => num(damage, key)
@@ -177,20 +261,78 @@ export default memo(function DamagePage({ isDark, compact, visible }: { isDark: 
   // overall engine wear at 100% without either flag reads as FAIL.
   const engineStatus = seized ? 'SEIZED' : blown ? 'BLOWN' : engine !== null && engine >= 100 ? 'FAIL'
     : seized === null && blown === null ? null : 'OK'
-
   const fault = (v: number | null) => v === null ? missing : v ? 'FAULT' : 'OK'
   const faultColor = (v: number | null) => v === null ? undefined : v ? colors.crit : colors.ok
+  return {
+    engine: { value: pctText(engine), unit: '%', color: engine === null ? undefined : colors[wearSeverity(engine)] },
+    gearbox: { value: pctText(gearbox), unit: '%', color: gearbox === null ? undefined : colors[wearSeverity(gearbox)] },
+    wingFault: { value: fault(drs), color: faultColor(drs) },
+    ersFault: { value: fault(ers), color: faultColor(ers) },
+    engineStatus: { value: engineStatus ?? missing, color: engineStatus === null ? undefined : engineStatus === 'OK' ? colors.ok : colors.crit },
+  }
+}
 
-  const statusCards = ([
-    { id: 'engine', label: 'Engine', value: pctText(engine), unit: '%', color: engine === null ? undefined : colors[wearSeverity(engine)], sub: 'Overall wear' },
-    { id: 'gearbox', label: 'Gearbox', value: pctText(gearbox), unit: '%', color: gearbox === null ? undefined : colors[wearSeverity(gearbox)], sub: 'Wear' },
+/** A wear tile's value for one damage row. */
+function wearValue(damage: DamageRow | null, key: DamageKey, isDark: boolean): StatusValue {
+  const value = num(damage, key)
+  return value === null ? { value: missing } : { value: String(value), unit: '%', color: palette(isDark)[wearSeverity(value)] }
+}
+
+const tableValue = ({ value, unit, color }: StatusValue): FileTableValue => value === missing ? { value: missing } : { value, unit, color }
+
+/** "race · lap 25 / 71": the session from the header's detail, then the lap the file is on. */
+function lapDetail(header: FileHeaderCell, lap: number | null, totalLaps: number | null): string {
+  const session = header.detail.split(' · ')[0] ?? ''
+  if (lap === null || lap <= 0) return session
+  return [session, `lap ${lap}${totalLaps && totalLaps > 0 ? ` / ${totalLaps}` : ''}`].filter(Boolean).join(' · ')
+}
+
+// The page follows the streamed driver: the player live, the driver selector's car in
+// V6 playback. Everything comes from the latest damage row.
+export default memo(function DamagePage({ isDark, compact, visible }: { isDark: boolean; compact: DensityMode; visible: DamageLayout }) {
+  const damage = useTelemetryStore(s => s.damage)
+  const lapA = useTelemetryStore(s => s.lap?.lap_num ?? null)
+  const totalLapsA = useTelemetryStore(s => s.session?.total_laps ?? null)
+  // Side-by-side with a second file (Damage 9): B's newest damage row at its moment on the playhead.
+  const secondary = useSecondaryCards()
+  const totalLapsB = useSecondaryState().session?.total_laps ?? null
+  const { t } = useLabels()
+  const colors = palette(isDark)
+  const pctText = (v: number | null) => v === null ? missing : String(v)
+
+  const statusLabels: { id: StatusCardId; label: string; sub: string }[] = [
+    { id: 'engine', label: 'Engine', sub: 'Overall wear' },
+    { id: 'gearbox', label: 'Gearbox', sub: 'Wear' },
     // m_drsFault: titled DRS, or Rear Wing for F1 26 sessions (format catalog, like the Overview wing card).
-    { id: 'wingFault', label: t('ui.damage.wing_fault'), value: fault(drs), color: faultColor(drs), sub: 'Fault flag' },
-    { id: 'ersFault', label: 'ERS', value: fault(ers), color: faultColor(ers), sub: 'Fault flag' },
-    { id: 'engineStatus', label: 'Engine status', value: engineStatus ?? missing, color: engineStatus === null ? undefined : engineStatus === 'OK' ? colors.ok : colors.crit, sub: 'Blown / seized / fail' },
-  ] as { id: keyof DamageLayout['statusCards']; label: string; value: string; unit?: string; color?: string; sub: string }[])
-    .filter(card => visible.statusCards[card.id])
+    { id: 'wingFault', label: t('ui.damage.wing_fault'), sub: 'Fault flag' },
+    { id: 'ersFault', label: 'ERS', sub: 'Fault flag' },
+    { id: 'engineStatus', label: 'Engine status', sub: 'Blown / seized / fail' },
+  ]
+  const shownStatus = statusLabels.filter(card => visible.statusCards[card.id])
+  const statusA = statusValues(damage, isDark)
+  const statusCards = shownStatus.map(card => ({ ...card, ...statusA[card.id] }))
   const wearTiles = WEAR_TILES.filter(tile => visible.wearTiles[tile.id])
+
+  if (secondary) {
+    const statusB = statusValues(secondary.damage, isDark)
+    const statusTable: FileTableCard[] = shownStatus.map(card => ({
+      key: card.id, label: card.label, a: tableValue(statusA[card.id]), b: tableValue(statusB[card.id]),
+    }))
+    const wearTable: FileTableCard[] = wearTiles.map(tile => ({
+      key: tile.id, label: `${tile.name} (Wear)`,
+      a: tableValue(wearValue(damage, tile.key, isDark)), b: tableValue(wearValue(secondary.damage, tile.key, isDark)),
+    }))
+    return <div className="h-full min-h-0 overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)] flex flex-col">
+      <FileTableCards cards={statusTable} />
+      <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
+        <FileHalf scope="damage-car-a" date={secondary.dateA} colorVar="--file-a" driver={secondary.headerA.driver}
+          detail={lapDetail(secondary.headerA, lapA, totalLapsA)} damage={damage} isDark={isDark} showDiagram={visible.showDiagram} />
+        <FileHalf scope="damage-car-b" date={secondary.dateB} colorVar="--file-b" driver={secondary.headerB.driver}
+          detail={lapDetail(secondary.headerB, secondary.lap?.lap_num ?? null, totalLapsB)} damage={secondary.damage} isDark={isDark} showDiagram={visible.showDiagram} />
+      </div>
+      {wearTable.length > 0 && <div className="shrink-0 border-t border-[var(--border)] [&>div]:border-b-0"><FileTableCards cards={wearTable} /></div>}
+    </div>
+  }
 
   return <div className="h-full min-h-0 overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)] flex flex-col">
     {statusCards.length > 0 && <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">

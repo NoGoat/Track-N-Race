@@ -50,6 +50,9 @@
   --text-inactive: #262a3a;
   --color-info: #5794F2;
   --color-fastest: #BF5FFF;
+  /* Second-file comparison: file A and file B (title bar, labels, headers). */
+  --file-a: #5794F2;
+  --file-b: #f29a2e;
   --chart-grid: rgba(255,255,255,0.04);
   --chart-ref: rgba(255,255,255,0.08);
   --chart-axis: #7c8098;
@@ -86,6 +89,9 @@
   --text-inactive: #1e2028;
   --color-info: #5794F2;
   --color-fastest: #c065f5;
+  /* Second-file comparison: file A and file B (title bar, labels, headers). */
+  --file-a: #5794F2;
+  --file-b: #f29a2e;
   --chart-grid: rgba(255,255,255,0.03);
   --chart-ref: rgba(255,255,255,0.065);
   --chart-axis: #7a7d8c;
@@ -123,6 +129,9 @@
   --text-inactive: #a9acae;
   --color-info: #0B57D0;
   --color-fastest: #7C3BA6;
+  /* Second-file comparison: file A and file B (title bar, labels, headers). */
+  --file-a: #0B57D0;
+  --file-b: #b45309;
   --chart-grid: rgba(36,39,43,0.075);
   --chart-ref: rgba(36,39,43,0.11);
   --chart-axis: #596168;
@@ -343,6 +352,24 @@ body {
 
 .chart-panel-title {
   margin-left: 16px;
+}
+
+/* Two files open: a split chart's one header row carries the panel's top
+   padding, so the A and B halves under it start flush. */
+.file-split-header {
+  padding: 0.75rem 1rem 0 0;
+}
+
+.file-split-half > .chart-panel {
+  padding-top: 0;
+}
+
+/* B's own window selector: at the start of B's half, level with the header's
+   22px title row under its 0.75rem top padding. */
+.file-split-header-b {
+  top: 0.75rem;
+  height: 22px;
+  left: calc(50% + 16px);
 }
 
 /* Each tyre graph responds to its own tile width, not the application width.

@@ -6,6 +6,7 @@ dist/
 /release/
 reference_docs/
 launch-diagnostics-heapdumps/
+udp sender and recorder/
 
 .agents
 tools

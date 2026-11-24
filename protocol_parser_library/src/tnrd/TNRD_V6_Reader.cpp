@@ -609,6 +609,13 @@ public:
     float v6NextLapEndAfter(float t) const override;
 
     std::unique_ptr<TnrdReader::HistoryReader> openHistoryReader(std::string* errorOut) const override;
+    bool lapHistoryRequest(int lapNum, uint32_t mask, int driverIndex,
+                           const std::vector<uint8_t>& v6Types,
+                           TnrdReader::HistoryRequest& out, float& startOut,
+                           float& endOut) const override;
+    bool rangeHistoryRequest(float from, float to, uint32_t mask, int driverIndex,
+                             const std::vector<uint8_t>& v6Types,
+                             TnrdReader::HistoryRequest& out) const override;
     bool historyRequest(float from, float to, uint32_t mask,
                         TnrdReader::HistoryRequest& out) const override;
 
@@ -2454,6 +2461,66 @@ bool TnrdV6Reader::historyRequest(float from, float to, uint32_t mask,
     // The same fields and seeding as seekFlush().
     out.types = historyV6Types();
     out.seed = !out.types.empty();
+    out.mask = mask;
+    out.from = from;
+    out.to = to;
+    return true;
+}
+
+bool TnrdV6Reader::lapHistoryRequest(int lapNum, uint32_t mask, int driverIndex,
+                                     const std::vector<uint8_t>& v6Types,
+                                     TnrdReader::HistoryRequest& out, float& startOut,
+                                     float& endOut) const {
+    // A HistoryReader opens the file again by path.
+    if (v6Path_.empty()) return false;
+    auto* v6 = indexedArchive_.get();
+    if (!v6) return false;
+    // The same lap getLapDataMessage() reads: another car's race lap from its
+    // own lap summaries, the playback driver's from the lap catalog.
+    if (driverIndex >= 0 && driverIndex != playbackDriverIndex_) {
+        if (driverIndex >= 24 || !v6->driverHeader(static_cast<uint8_t>(driverIndex))) return false;
+        std::optional<detail::V6LapSummary> selectedLap;
+        for (const auto& lap : v6->driverLapSummaries(static_cast<uint8_t>(driverIndex))) {
+            if (lap.phase == detail::V6Phase::Race && static_cast<int>(lap.lapNumber) == lapNum)
+                selectedLap = lap;
+        }
+        if (!selectedLap) return false;
+        out.driver = static_cast<uint8_t>(driverIndex);
+        startOut = selectedLap->startSessionTime;
+        endOut = selectedLap->endSessionTime;
+    } else {
+        const int driver = effectivePlaybackDriver();
+        if (driver < 0 || driver >= 24) return false;
+        const auto it = lapBlocks_.find(lapNum);
+        if (it == lapBlocks_.end()) return false;
+        out.driver = static_cast<uint8_t>(driver);
+        startOut = it->second.startSessionTime;
+        endOut = it->second.endSessionTime;
+    }
+    // Only the fields asked for (the page's history and stream fields, as a
+    // seek reads for the playback file), or else every field of the requested
+    // row families; each seeded with its value at the lap line, as a seek's
+    // history is. columnarHistory() also drops any field outside `mask`.
+    out.types = v6Types.empty() ? v6TypesForRowMask(mask) : v6Types;
+    out.seed = true;
+    out.mask = mask;
+    out.from = startOut;
+    out.to = endOut;
+    return true;
+}
+
+bool TnrdV6Reader::rangeHistoryRequest(float from, float to, uint32_t mask, int driverIndex,
+                                       const std::vector<uint8_t>& v6Types,
+                                       TnrdReader::HistoryRequest& out) const {
+    if (v6Path_.empty() || !indexedArchive_ || !(to >= from)) return false;
+    const int driver = driverIndex >= 0 ? driverIndex : effectivePlaybackDriver();
+    if (driver < 0 || driver >= 24) return false;
+    if (driver != playbackDriverIndex_ && driverIndex >= 0 &&
+        !indexedArchive_->driverHeader(static_cast<uint8_t>(driver))) return false;
+    out.driver = static_cast<uint8_t>(driver);
+    // As lapHistoryRequest(): the fields asked for, seeded at `from`.
+    out.types = v6Types.empty() ? v6TypesForRowMask(mask) : v6Types;
+    out.seed = true;
     out.mask = mask;
     out.from = from;
     out.to = to;

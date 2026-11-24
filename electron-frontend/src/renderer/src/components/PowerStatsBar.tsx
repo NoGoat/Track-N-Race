@@ -3,6 +3,8 @@ import type { StatusRow } from '../types'
 import { useLabels } from '../lib/labels'
 import { POWER_RESOLVERS, useColorFn, type CardCtx, type CardDesc } from '../lib/cards'
 import type { DensityMode } from '../lib/graphSections'
+import FileTableCards, { type FileTableCard } from './FileTableCards'
+import { tableValue, useSecondaryCards } from '../lib/secondaryLive'
 
 const Card = memo(function Card({
   label, value, unit, color, sub, compact,
@@ -70,6 +72,9 @@ interface Props {
 const PowerStatsBar = memo(function PowerStatsBar({ status, visibleCards, isDark, compact }: Props) {
   const { t, tn } = useLabels()
   const color = useColorFn(null, status, isDark)
+  // Side-by-side with a second file: one table, A's values over B's at B's moment on the playhead.
+  const secondary = useSecondaryCards()
+  const secondaryColor = useColorFn(null, secondary?.status ?? null, isDark)
 
   const descs: (CardDesc & { vis: keyof VisibleCards })[] = [
     { key: 'totalPower', label: 'Total Power', vis: 'totalPower' },
@@ -81,6 +86,22 @@ const PowerStatsBar = memo(function PowerStatsBar({ status, visibleCards, isDark
     { key: 'fuel',       label: 'Fuel',        vis: 'fuel' },
   ]
   const ctx: CardCtx = { latest: null, status, lap: null, damage: null, session: null, isDark, t, tn, color }
+  if (secondary) {
+    const bCtx: CardCtx = { latest: null, status: secondary.status, lap: null, damage: null, session: null, isDark, t, tn, color: secondaryColor }
+    const resolve = (source: CardCtx, key: string) => {
+      if (!source.status) return { value: '—' }
+      try { return POWER_RESOLVERS[key]?.(source) ?? { value: '—' } } catch { return { value: '—' } }
+    }
+    const cards: FileTableCard[] = descs.filter(d => visibleCards[d.vis]).map(d => {
+      const a = resolve(ctx, d.key), b = resolve(bCtx, d.key)
+      return {
+        key: d.vis, label: d.label,
+        a: { value: tableValue(a.value), unit: a.unit, color: a.color },
+        b: { value: tableValue(b.value), unit: b.unit, color: b.color },
+      }
+    })
+    return <FileTableCards dateA={secondary.dateA} dateB={secondary.dateB} cards={cards} />
+  }
 
   const isSpacious = compact === 'spacious'
 

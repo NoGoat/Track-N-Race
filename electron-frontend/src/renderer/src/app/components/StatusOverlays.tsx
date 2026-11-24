@@ -5,15 +5,17 @@ interface StatusOverlaysProps {
   exportStage: string
   exportState: 'idle' | 'busy' | 'error'
   isScanning: boolean
+  /** The second recording is being read from the title bar's upload button. */
+  secondaryLoading: boolean
 }
 
-export default memo(function StatusOverlays({ exportProgress, exportStage, exportState, isScanning }: StatusOverlaysProps) {
+export default memo(function StatusOverlays({ exportProgress, exportStage, exportState, isScanning, secondaryLoading }: StatusOverlaysProps) {
   const progress = Math.max(0, Math.min(100, exportProgress))
   return (
     <>
-      {isScanning && (
+      {(isScanning || secondaryLoading) && (
         <div className="loading-scrim fixed inset-0 z-[100] flex flex-col items-center justify-center">
-          <div className="loading-scrim-label text-xl font-bold mb-4 tracking-widest uppercase text-sm">Analyzing Session Data</div>
+          <div className="loading-scrim-label text-xl font-bold mb-4 tracking-widest uppercase text-sm">{isScanning ? 'Analyzing Session Data' : 'Loading Second File'}</div>
           <div className="loading-scrim-track w-64 h-1.5 rounded-full overflow-hidden relative"><div className="loading-scrim-fill absolute inset-y-0 left-0 w-1/2 rounded-full animate-bounce" style={{ animation: 'scan 1.5s infinite linear' }} /></div>
           <style>{`@keyframes scan { 0% { left: -50%; } 100% { left: 100%; } }`}</style>
         </div>

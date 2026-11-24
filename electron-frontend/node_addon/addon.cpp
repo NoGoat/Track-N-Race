@@ -1,10 +1,13 @@
 #include <napi.h>
 #include <tnrp/AnalysisMap.h>
 #include <tnrp/AnalysisMapPaint.h>
+#include <tnrp/Capabilities.h>
+#include <tnrp/DriverLapHistory.h>
 #include <tnrp/Engine.h>
 #include <tnrp/Labels.h>
 #include <tnrp/CardColors.h>
 #include <tnrp/LapDelta.h>
+#include <tnrp/MergedLapTimeline.h>
 #include <tnrp/NetworkSetup.h>
 #include <tnrp/Updates.h>
 #include <tnrp/TnrdReader.h>
@@ -13,17 +16,21 @@
 #include <tnrp/ParquetExport.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 #include <deque>
+#include <limits>
 #include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <vector>
 
 using namespace Napi;
@@ -160,11 +167,11 @@ class PlayerSeekWorker : public Napi::AsyncWorker {
 public:
     PlayerSeekWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
                      float pct, bool allHistory, uint64_t requestId,
-                     uint32_t rowTypeMask, float windowSeconds)
+                     uint32_t rowTypeMask, float windowSeconds, double mergedTime)
         : Napi::AsyncWorker(env), engine_(std::move(engine)), pct_(pct),
           allHistory_(allHistory), requestId_(requestId), rowTypeMask_(rowTypeMask),
-          windowSeconds_(windowSeconds) {}
-    void Execute() override { engine_->playerSeek(pct_, allHistory_, requestId_, rowTypeMask_, windowSeconds_); }
+          windowSeconds_(windowSeconds), mergedTime_(mergedTime) {}
+    void Execute() override { engine_->playerSeek(pct_, allHistory_, requestId_, rowTypeMask_, windowSeconds_, mergedTime_); }
 private:
     std::shared_ptr<tnrp::Engine> engine_;
     float pct_;
@@ -172,6 +179,7 @@ private:
     uint64_t requestId_;
     uint32_t rowTypeMask_;
     float windowSeconds_;
+    double mergedTime_;
 };
 
 // A V6 driver change rebuilds the lap catalog and sector metadata from the new
@@ -292,10 +300,363 @@ private:
     std::vector<uint8_t> v6HistoryTypes_;
 };
 
+// File B's rows at its moment on the lap-synced playhead, streamed the way the
+// engine streams file A's (Engine::playbackLoop). The engine's merged clock
+// sets where B is (Engine::setMergedPlayheadCallback); this keeps a playback
+// cursor on its own handle on B's file, reads forward to there with
+// pullUntilSplit() every 16 ms, and pushes what it read as one batch per tick.
+//
+// Like A's seek, a jump (backwards, more than a second ahead, a new driver, a
+// restart, a longer history wanted) first sends a flush: the followed car's
+// history to the new time as column blocks (the seek flush's format) and the
+// newest row of every family at that time; the stream then carries on from
+// there. The history starts at the followed car's lap, or, for the families
+// B's longer windows show (time windows, Stint and All Laps, Trends), as far
+// back as those need, as A's history covers its widest visible window.
+// Rows: session, timing, participants and positions for every car; the
+// followed car's telemetry, status, damage, lap, motion and tyre sets; and its
+// completed laps with their ERS and fuel (lap_trends), at each new lap, as the
+// engine pushes A's lap history.
+class SecondaryStream {
+public:
+    struct Batch {
+        std::string json;                 // newline-joined rows
+        std::vector<uint8_t> binary;      // packed hot rows (decodeBinaryBatch)
+        // The followed car's lap at the batch's end, and where it started.
+        int lapNum = 0;
+        float lapStart = 0.0f;
+        float time = 0.0f;
+        // A flush: the lap's history from lapStart to `time`, and the longer
+        // families' from longFrom; the stream's rows carry on after it.
+        bool flush = false;
+        std::vector<uint8_t> history;     // column blocks; empty without V6 history
+        std::vector<uint8_t> longHistory;
+        float longFrom = 0.0f;
+        // A recording without column history (before V6) flushes as A's seek
+        // does for those: packed hot rows and the rest as JSON, both spans.
+        std::vector<uint8_t> historyBinary;
+        std::string historyJson;
+    };
+
+    SecondaryStream() : thread_([this] { loop(); }) {}
+    ~SecondaryStream() {
+        run_.store(false);
+        if (thread_.joinable()) thread_.join();
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        if (hasCallback_) callback_.Release();
+    }
+
+    // On the load worker's thread, with B's analysis reader.
+    void open(const std::string& path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        history_.reset();
+        reader_.close();
+        // Loaded as the engine loads file A in Electron (binaryPlayback and
+        // sparseV6Playback), so pullUntilSplit() hands out the same rows A's
+        // playback does: packed hot rows, sparse per-car patches.
+        reader_.setBinaryPlayback(true);
+        reader_.setSparseV6Playback(true);
+        reader_.setPlaybackRowMask(kRowMask, 0.0f);
+        tnrp::HeaderRow header;
+        loaded_ = reader_.load(path, header);
+        hasMguh_ = loaded_ && tnrp::hasMguh(tnrp::presentationFormat(
+            header.protocol >= 2024 ? static_cast<uint16_t>(header.protocol) : 2025,
+            header.regulations_2026, header.formula));
+        if (!loaded_) {
+            std::fprintf(stderr, "[analysis] second file stream did not open: %s\n", reader_.lastError().c_str());
+        } else {
+            std::string error;
+            history_ = reader_.openHistoryReader(&error);
+            if (!history_ && !error.empty())
+                std::fprintf(stderr, "[analysis] second file stream has no column history: %s\n", error.c_str());
+            if (driver_ >= 0) reader_.setPlaybackDriver(driver_, false, reader_.startTime());
+        }
+        cursor_ = NAN;
+        trendsLap_ = -1;
+        lastLapHistoryJson_.clear();
+        lapHistoryForce_ = true;
+        // A load starts with no focus car; the one selected is applied again.
+        focusPending_ = true;
+    }
+
+    void close() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        history_.reset();
+        reader_.close();
+        loaded_ = false;
+        cursor_ = NAN;
+        target_.store(NAN);
+    }
+
+    // B's session time at the playhead (the engine's merged clock).
+    void setTarget(float t) { target_.store(std::isfinite(t) ? t : NAN); }
+
+    // Whether a page shows B's streamed rows; the car followed in B (-1: its
+    // recorded player); and the families B's longer windows show (row type
+    // bits) with how far back (seconds; -1 the whole race; 0 none). Turning
+    // it on, another car or another history starts with a flush.
+    void configure(bool enabled, int driver, uint32_t longMask, float longSeconds) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        longMask &= kHistoryMask;
+        if (longMask == 0 || longSeconds == 0.0f) { longMask = 0; longSeconds = 0.0f; }
+        if (driver != driver_) {
+            driver_ = driver;
+            if (loaded_) reader_.setPlaybackDriver(driver, false, std::isfinite(cursor_) ? cursor_ : reader_.startTime());
+            cursor_ = NAN;
+            trendsLap_ = -1;
+        }
+        if (longMask != longMask_ || longSeconds != longSeconds_) {
+            longMask_ = longMask;
+            longSeconds_ = longSeconds;
+            cursor_ = NAN;
+        }
+        if (enabled && !enabled_) cursor_ = NAN;
+        enabled_ = enabled;
+    }
+
+    // The car selected in B's Standings tower (-1 when none), as
+    // Engine::playerSetFocusDriver for A: V6 playback reads a car's private
+    // status (ERS, fuel, DRS, brake bias) only for the focus car; the rest of
+    // the grid streams lap timing and tyres.
+    void setFocusDriver(int driverIndex) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (driverIndex == focusDriver_) return;
+        focusDriver_ = driverIndex;
+        focusPending_ = true;
+    }
+
+    // The car whose lap-times view is open on B (-1 when none), as
+    // Engine::setLapHistoryCar for A: its driver_lap_history row is pushed now
+    // and again only when it changes.
+    void setLapHistoryCar(int carIdx) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lapHistoryCar_ = carIdx >= 0 && carIdx < kCarSlots ? carIdx : -1;
+        lastLapHistoryJson_.clear();
+        lapHistoryForce_ = true;
+    }
+
+    void setCallback(Napi::Env env, Napi::Function fn) {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        if (hasCallback_) callback_.Release();
+        callback_ = Napi::ThreadSafeFunction::New(env, fn, "analysisStream", 0, 1);
+        callback_.Unref(env);
+        hasCallback_ = true;
+    }
+
+private:
+    // Row type bits (Engine.cpp rowTypeOf). The followed car's chart families
+    // (telemetry, status, damage, lap, motion, motion_ex), flushed as history
+    // on a jump:
+    static constexpr uint32_t kHistoryMask = (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 11) | (1u << 12);
+    // ...and session, timing, participants, every car's status (the
+    // Standings tower's tyres), tyre sets, positions and each car's lap
+    // history (session_history_fastest: the fastest-lap holder in recordings
+    // without fastest_lap rows, as A's store finds it).
+    static constexpr uint32_t kRowMask = kHistoryMask | (1u << 5) | (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13) | (1u << 14);
+    // Car slots read for the lap-times view, as the engine's (Engine::liveLapHistoryRows_).
+    static constexpr int kCarSlots = 24;
+
+    // Under mutex_: the followed car's history of `mask` over [from, to] as column blocks.
+    void readHistory(float from, float to, uint32_t mask, std::vector<uint8_t>& out) {
+        tnrp::TnrdReader::HistoryRequest request;
+        if (!history_ || mask == 0 || !reader_.rangeHistoryRequest(from, to, mask, driver_, {}, request)) return;
+        std::string error;
+        if (!history_->read(request, out, &error, {})) {
+            std::fprintf(stderr, "[analysis] second file flush read failed: %s\n", error.c_str());
+            out.clear();
+        }
+    }
+
+    // Under mutex_: a span's rows for a recording without column history, as
+    // the seek flush A's playback uses for those formats.
+    void readFlush(float target, float lapStart, uint32_t mask, bool all, float windowSeconds, Batch& out) {
+        if (mask == 0) return;
+        const auto flush = reader_.seekFlush(target, lapStart, all, mask, windowSeconds, false);
+        if (flush.binaryStore && flush.binaryEnd > flush.binaryBegin)
+            out.historyBinary.insert(out.historyBinary.end(), flush.binaryStore->begin() + flush.binaryBegin,
+                                     flush.binaryStore->begin() + flush.binaryEnd);
+        out.historyJson += flush.coldJson;
+        if (!out.historyJson.empty() && out.historyJson.back() != '\n') out.historyJson.push_back('\n');
+    }
+
+    // Under mutex_: the flush for a jump to `target`.
+    void flushTo(float target, Batch& out) {
+        out.flush = true;
+        const uint32_t lapMask = kHistoryMask & ~longMask_;
+        if (longMask_)
+            out.longFrom = longSeconds_ < 0.0f ? reader_.startTime()
+                : std::max(reader_.startTime(), std::min(out.lapStart, target - longSeconds_));
+        if (history_) {
+            readHistory(out.lapStart, target, lapMask, out.history);
+            if (longMask_) readHistory(out.longFrom, target, longMask_, out.longHistory);
+        } else {
+            readFlush(target, out.lapStart, lapMask, false, 0.0f, out);
+            if (longMask_) readFlush(target, out.lapStart, longMask_, longSeconds_ < 0.0f,
+                                     longSeconds_ > 0.0f ? target - out.longFrom : 0.0f, out);
+        }
+        std::vector<uint8_t> types;
+        for (uint8_t type = 1; type < 16; ++type)
+            if (kRowMask & (1u << type)) types.push_back(type);
+        for (auto& [type, line] : reader_.latestOfTypesTagged(target, types)) {
+            out.json += line;
+            out.json.push_back('\n');
+        }
+        reader_.setCursor(target);
+    }
+
+    void loop() {
+        while (run_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            const float target = target_.load();
+            if (!std::isfinite(target)) continue;
+            auto batch = std::make_unique<Batch>();
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!loaded_ || !enabled_) continue;
+                // A new focus car: its private families join the playback lanes
+                // from where the stream is, and its status is sent at once, as
+                // Engine::playerSetFocusDriver does (v6FocusStatusSnapshot).
+                const bool focusChanged = focusPending_;
+                if (focusPending_) {
+                    focusPending_ = false;
+                    reader_.setV6FocusDriver(focusDriver_, std::isfinite(cursor_) ? cursor_ : target);
+                }
+                const bool jump = !std::isfinite(cursor_) || target < cursor_ || target > cursor_ + 1.0f;
+                batch->time = target;
+                batch->lapStart = target;
+                reader_.currentLapAt(target, batch->lapStart, batch->lapNum);
+                if (jump) {
+                    flushTo(target, *batch);
+                } else if (target > cursor_) {
+                    uint32_t seen = 0;
+                    reader_.pullUntilSplit(target, batch->json, batch->binary, seen);
+                }
+                cursor_ = target;
+                if (focusChanged) {
+                    for (auto& row : reader_.v6FocusStatusSnapshot(target)) {
+                        batch->json += row;
+                        batch->json.push_back('\n');
+                    }
+                }
+                // The fastest-lap holder, which V6 recordings derive from their
+                // lap summaries, as the engine sends A's
+                // (Engine::playbackFastestLapRowLocked): on a flush and when it
+                // changes. Other formats find it from session_history_fastest.
+                tnrp::FastestLapRow fastest;
+                if (reader_.v6FastestLapAt(target, fastest) && (jump || fastest.car_idx != fastestCar_)) {
+                    fastestCar_ = fastest.car_idx;
+                    std::string row;
+                    (void)glz::write_json(fastest, row);
+                    batch->json += row;
+                    batch->json.push_back('\n');
+                }
+                // The lap-times view's car: its driver_lap_history row, as the
+                // engine pushes A's (Engine::lapHistoryRowLocked): when claimed or
+                // on a jump, and when the cursor passes a lap end if it changed.
+                if (lapHistoryCar_ >= 0 && (jump || lapHistoryForce_ || target >= nextLapHistoryCheck_)) {
+                    const bool force = jump || lapHistoryForce_;
+                    lapHistoryForce_ = false;
+                    nextLapHistoryCheck_ = reader_.v6NextLapEndAfter(target);
+                    const auto history = tnrp::buildDriverLapHistory(lapHistoryCar_, kCarSlots,
+                        [&](int car, int* stintStartLap) {
+                            auto row = reader_.driverLapHistory(car, target);
+                            if (stintStartLap) *stintStartLap = row.stint_start_lap;
+                            return std::move(row.laps);
+                        });
+                    std::string row;
+                    (void)glz::write_json(history, row);
+                    if (force || row != lastLapHistoryJson_) {
+                        lastLapHistoryJson_ = row;
+                        batch->json += row;
+                        batch->json.push_back('\n');
+                    }
+                }
+                // The followed car's completed laps, on a flush and at each new lap.
+                if (jump || batch->lapNum != trendsLap_) {
+                    trendsLap_ = batch->lapNum;
+                    batch->json += reader_.lapTrendsMessage(driver_, target, hasMguh_);
+                    batch->json.push_back('\n');
+                }
+            }
+            if (!batch->flush && batch->json.empty() && batch->binary.empty()) continue;
+            std::lock_guard<std::mutex> lock(callbackMutex_);
+            if (!hasCallback_) continue;
+            Batch* data = batch.release();
+            const auto status = callback_.NonBlockingCall(data, [](Napi::Env env, Napi::Function cb, Batch* d) {
+                if (env != nullptr && cb != nullptr) {
+                    try {
+                        Napi::Object message = Napi::Object::New(env);
+                        message.Set("json", Napi::String::New(env, d->json));
+                        message.Set("time", d->time);
+                        message.Set("lapNum", d->lapNum);
+                        message.Set("lapStart", d->lapStart);
+                        if (!d->binary.empty())
+                            message.Set("binary", Napi::Buffer<uint8_t>::Copy(env, d->binary.data(), d->binary.size()));
+                        if (d->flush) {
+                            message.Set("flush", true);
+                            if (!d->history.empty())
+                                message.Set("history", Napi::Buffer<uint8_t>::Copy(env, d->history.data(), d->history.size()));
+                            if (!d->longHistory.empty()) {
+                                message.Set("longHistory", Napi::Buffer<uint8_t>::Copy(env, d->longHistory.data(), d->longHistory.size()));
+                                message.Set("longFrom", d->longFrom);
+                            }
+                            if (!d->historyBinary.empty())
+                                message.Set("historyBinary", Napi::Buffer<uint8_t>::Copy(env, d->historyBinary.data(), d->historyBinary.size()));
+                            if (!d->historyJson.empty())
+                                message.Set("historyJson", Napi::String::New(env, d->historyJson));
+                        }
+                        cb.Call({ message });
+                    } catch (const std::exception& e) {
+                        std::fprintf(stderr, "[addon] second file stream callback failed: %s\n", e.what());
+                    }
+                }
+                delete d;
+            });
+            if (status != napi_ok) delete data;
+        }
+    }
+
+    std::mutex mutex_;
+    tnrp::TnrdReader reader_;
+    std::unique_ptr<tnrp::TnrdReader::HistoryReader> history_;
+    bool loaded_ = false;
+    bool enabled_ = false;
+    bool hasMguh_ = false;
+    int driver_ = -1;
+    uint32_t longMask_ = 0;
+    float longSeconds_ = 0.0f;
+    int trendsLap_ = -1;          // the lap the last lap_trends was sent at
+    int fastestCar_ = -2;         // the fastest-lap holder last sent (-2: none)
+    int lapHistoryCar_ = -1;      // the lap-times view's car (-1: none)
+    int focusDriver_ = -1;        // the car selected in B's tower (-1: none)
+    bool focusPending_ = false;   // apply focusDriver_ on the next tick
+    bool lapHistoryForce_ = false;  // send its row on the next tick
+    float nextLapHistoryCheck_ = std::numeric_limits<float>::infinity();
+    std::string lastLapHistoryJson_;
+    float cursor_ = NAN;         // the time the stream has delivered through
+    std::atomic<float> target_{NAN};
+    std::atomic<bool> run_{true};
+    std::mutex callbackMutex_;
+    Napi::ThreadSafeFunction callback_;
+    bool hasCallback_ = false;
+    std::thread thread_;          // last: starts once everything above exists
+};
+
 struct AnalysisReaderState {
+    // File B's rows streamed at its playhead (SecondaryStream), on a handle
+    // of its own so its cursor never moves the reader Trends and laps use.
+    std::shared_ptr<SecondaryStream> stream = std::make_shared<SecondaryStream>();
     std::mutex mutex;
     tnrp::TnrdReader reader;
     std::atomic<bool> busy{false};
+    // The loaded file's regulations decide whether MGU-H counts as recharge.
+    bool hasMguh = false;
+    // A second handle on the file for its laps as column blocks (the history
+    // playback reads on a seek), opened with the file. It has its own lock, so
+    // a lap is read while Trends or tyre wear hold `mutex`. Null for
+    // recordings without column history (anything but V6).
+    std::mutex historyMutex;
+    std::unique_ptr<tnrp::TnrdReader::HistoryReader> history;
 };
 
 // Loads a second recording for Analysis without replacing or controlling the
@@ -311,13 +672,29 @@ public:
         std::lock_guard<std::mutex> lock(state_->mutex);
         tnrp::HeaderRow header;
         state_->reader.setLapStatusSummaries(true);
+        {
+            std::lock_guard<std::mutex> historyLock(state_->historyMutex);
+            state_->history.reset();
+        }
         ok_ = state_->reader.load(path_, header);
         if (ok_) {
+            {
+                std::string historyError;
+                auto history = state_->reader.openHistoryReader(&historyError);
+                if (!history && !historyError.empty())
+                    std::fprintf(stderr, "[analysis] no column history for the second file: %s\n", historyError.c_str());
+                std::lock_guard<std::mutex> historyLock(state_->historyMutex);
+                state_->history = std::move(history);
+            }
+            state_->stream->open(path_);
             state_->reader.startErsPeakSweep();
             state_->reader.startTrackCornerSweep();
             blocksJson_ = state_->reader.lapBlocksMessage();
             trackId_ = header.track_id;
             trackName_ = header.track_name;
+            state_->hasMguh = tnrp::hasMguh(tnrp::presentationFormat(
+                header.protocol >= 2024 ? static_cast<uint16_t>(header.protocol) : 2025,
+                header.regulations_2026, header.formula));
         }
         else error_ = state_->reader.lastError();
     }
@@ -353,6 +730,108 @@ private:
 // Computes a complete lap-to-lap delta off the Electron main thread. The two
 // laps may come from the active player or the independent secondary Analysis
 // reader; the renderer sends identities only and never performs interpolation.
+// Reads one lap's rows off the JS thread, like playerGetLapData does for the
+// playback file, so a large lap never stalls the main process. Resolves with
+// the playback_lap_data JSON ("" when the lap or file is unavailable).
+class AnalysisLapDataWorker : public Napi::AsyncWorker {
+public:
+    AnalysisLapDataWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                          std::shared_ptr<AnalysisReaderState> secondary,
+                          int lapNum, uint32_t rowTypeMask, bool useSecondary, int driverIndex)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)),
+          secondary_(std::move(secondary)), lapNum_(lapNum), rowTypeMask_(rowTypeMask),
+          useSecondary_(useSecondary), driverIndex_(driverIndex),
+          deferred_(Napi::Promise::Deferred::New(env)) {}
+
+    void Execute() override {
+        if (useSecondary_) {
+            if (secondary_->busy.load()) return;
+            std::lock_guard<std::mutex> lock(secondary_->mutex);
+            json_ = secondary_->reader.getLapDataMessage(lapNum_, rowTypeMask_, driverIndex_);
+        } else if (engine_) {
+            json_ = engine_->playerGetAnalysisLapData(lapNum_, rowTypeMask_, driverIndex_);
+        }
+    }
+    void OnOK() override { deferred_.Resolve(Napi::String::New(Env(), json_)); }
+    void OnError(const Napi::Error& e) override { deferred_.Reject(e.Value()); }
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    std::shared_ptr<AnalysisReaderState> secondary_;
+    int lapNum_;
+    uint32_t rowTypeMask_;
+    bool useSecondary_;
+    int driverIndex_;
+    std::string json_;
+    Napi::Promise::Deferred deferred_;
+};
+
+// One of the second file's laps as V6 column blocks (columnStore.ts decodes
+// them, as it does a seek's history), read off the JS thread. No JSON: the
+// lap's rows go from the file's columns straight into the payload. Resolves
+// with { lapNum, startSessionTime, endSessionTime, history } where history is
+// the V6H1 payload, or with null when the file has no column history (not V6)
+// or no such lap; the caller then uses the JSON lap.
+class AnalysisLapHistoryWorker : public Napi::AsyncWorker {
+public:
+    AnalysisLapHistoryWorker(Napi::Env env, std::shared_ptr<AnalysisReaderState> state,
+                             int lapNum, uint32_t rowTypeMask, int driverIndex,
+                             std::vector<uint8_t> v6Types)
+        : Napi::AsyncWorker(env), state_(std::move(state)), lapNum_(lapNum),
+          rowTypeMask_(rowTypeMask), driverIndex_(driverIndex), v6Types_(std::move(v6Types)),
+          deferred_(Napi::Promise::Deferred::New(env)) {}
+
+    void Execute() override {
+        if (state_->busy.load()) return;
+        tnrp::TnrdReader::HistoryRequest request;
+        {
+            // Only the lap lookup takes the reader's lock; the read below does not.
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            if (!state_->reader.lapHistoryRequest(lapNum_, rowTypeMask_, driverIndex_, v6Types_,
+                                                  request, start_, end_)) return;
+        }
+        std::lock_guard<std::mutex> historyLock(state_->historyMutex);
+        if (!state_->history) return;
+        std::string error;
+        if (!state_->history->read(request, bytes_, &error, {})) {
+            std::fprintf(stderr, "[analysis] second-file lap %d column read failed: %s\n", lapNum_, error.c_str());
+            bytes_.clear();
+            return;
+        }
+        ok_ = true;
+    }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (!ok_) {
+            deferred_.Resolve(env.Null());
+            return;
+        }
+        Napi::Object result = Napi::Object::New(env);
+        result.Set("lapNum", lapNum_);
+        result.Set("startSessionTime", start_);
+        result.Set("endSessionTime", end_);
+        result.Set("rowTypeMask", rowTypeMask_);
+        result.Set("history", Napi::Buffer<uint8_t>::Copy(env, bytes_.data(), bytes_.size()));
+        deferred_.Resolve(result);
+    }
+    void OnError(const Napi::Error& e) override { deferred_.Reject(e.Value()); }
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+
+private:
+    std::shared_ptr<AnalysisReaderState> state_;
+    int lapNum_;
+    uint32_t rowTypeMask_;
+    int driverIndex_;
+    std::vector<uint8_t> v6Types_;
+    float start_ = 0.0f;
+    float end_ = 0.0f;
+    std::vector<uint8_t> bytes_;
+    bool ok_ = false;
+    Napi::Promise::Deferred deferred_;
+};
+
 class AnalysisDeltaWorker : public Napi::AsyncWorker {
 public:
     AnalysisDeltaWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
@@ -590,6 +1069,13 @@ public:
             InstanceMethod("setHostVisible", &TNRPAddon::SetHostVisible),
             InstanceMethod("analysisLoadFile", &TNRPAddon::AnalysisLoadFile),
             InstanceMethod("analysisGetLapData", &TNRPAddon::AnalysisGetLapData),
+            InstanceMethod("analysisLapHistory", &TNRPAddon::AnalysisLapHistory),
+            InstanceMethod("analysisStream", &TNRPAddon::AnalysisStream),
+            InstanceMethod("analysisSetStreaming", &TNRPAddon::AnalysisSetStreaming),
+            InstanceMethod("analysisSetLapHistoryCar", &TNRPAddon::AnalysisSetLapHistoryCar),
+            InstanceMethod("analysisSetFocusDriver", &TNRPAddon::AnalysisSetFocusDriver),
+            InstanceMethod("mergedLapTimeline", &TNRPAddon::MergedLapTimeline),
+            InstanceMethod("playerSetMergedTimeline", &TNRPAddon::PlayerSetMergedTimeline),
             InstanceMethod("analysisCompareLaps", &TNRPAddon::AnalysisCompareLaps),
             InstanceMethod("analysisMap", &TNRPAddon::AnalysisMap),
             InstanceMethod("analysisCloseFile", &TNRPAddon::AnalysisCloseFile),
@@ -755,6 +1241,11 @@ public:
         TRACE("TNRPAddon ctor: about to construct Engine");
 
         engine = std::make_shared<tnrp::Engine>(config, this);
+        // Lap-synced playback: the engine's merged clock places the second
+        // file, and its stream reads to there (SecondaryStream).
+        engine->setMergedPlayheadCallback([stream = analysisReader_->stream](float secondTime) {
+            stream->setTarget(secondTime);
+        });
         TRACE("TNRPAddon ctor: Engine constructed, done");
     }
 
@@ -1866,13 +2357,31 @@ private:
                 ? info[3].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
             const float windowSeconds = info.Length() >= 5 && info[4].IsNumber()
                 ? std::max(0.0f, info[4].As<Napi::Number>().FloatValue()) : 0.0f;
+            // A seek on the lap-synced timeline (two files open): its merged time.
+            const double mergedTime = info.Length() >= 6 && info[5].IsNumber()
+                ? info[5].As<Napi::Number>().DoubleValue() : NAN;
             engine->playerRequestSeek(requestId);
             // Every indexed seek can decompress, rebuild sparse state and prime
             // the streaming frontier. Never charge that work to Electron's
             // main thread, including current-lap/zero-window seeks.
             (new PlayerSeekWorker(info.Env(), engine,
                 info[0].As<Napi::Number>().FloatValue(), allHistory, requestId,
-                rowTypeMask, windowSeconds))->Queue();
+                rowTypeMask, windowSeconds, mergedTime))->Queue();
+        }
+        return info.Env().Undefined();
+    }
+
+    // (inputJson | null) — lap-synced playback with the second file
+    // (Engine::playerSetMergedTimeline); the input is mergedLapTimeline's.
+    Napi::Value PlayerSetMergedTimeline(const Napi::CallbackInfo& info) {
+        if (engine) {
+            auto target = engine;
+            std::string input = info.Length() >= 1 && info[0].IsString()
+                ? info[0].As<Napi::String>().Utf8Value() : std::string();
+            queueOrderedEngineCall(info.Env(), orderedCalls_, [target, input] {
+                target->playerSetMergedTimeline(input.empty()
+                    ? std::nullopt : tnrp::mergedLapTimelineFromInput(input));
+            });
         }
         return info.Env().Undefined();
     }
@@ -2046,23 +2555,92 @@ private:
         return promise;
     }
 
+    // Promise<string>: the lap is read on a worker thread (AnalysisLapDataWorker).
     Napi::Value AnalysisGetLapData(const Napi::CallbackInfo& info) {
         if (info.Length() < 4 || !info[0].IsNumber() || !info[1].IsNumber() ||
-            !info[2].IsBoolean() || !info[3].IsNumber() || analysisReader_->busy.load())
-            return Napi::String::New(info.Env(), "");
-        const int lapNum = info[0].As<Napi::Number>().Int32Value();
-        const uint32_t rowTypeMask = info[1].As<Napi::Number>().Uint32Value();
-        const bool secondary = info[2].As<Napi::Boolean>().Value();
-        const int driverIndex = info[3].As<Napi::Number>().Int32Value();
-        std::string json;
-        if (secondary) {
-            std::lock_guard<std::mutex> lock(analysisReader_->mutex);
-            json = analysisReader_->reader.getLapDataMessage(
-                lapNum, rowTypeMask, driverIndex);
-        } else if (engine) {
-            json = engine->playerGetAnalysisLapData(lapNum, rowTypeMask, driverIndex);
+            !info[2].IsBoolean() || !info[3].IsNumber() || analysisReader_->busy.load()) {
+            auto deferred = Napi::Promise::Deferred::New(info.Env());
+            deferred.Resolve(Napi::String::New(info.Env(), ""));
+            return deferred.Promise();
         }
-        return Napi::String::New(info.Env(), json);
+        auto* worker = new AnalysisLapDataWorker(
+            info.Env(), engine, analysisReader_,
+            info[0].As<Napi::Number>().Int32Value(), info[1].As<Napi::Number>().Uint32Value(),
+            info[2].As<Napi::Boolean>().Value(), info[3].As<Napi::Number>().Int32Value());
+        Napi::Promise promise = worker->GetPromise();
+        worker->Queue();
+        return promise;
+    }
+
+    // (lapNum, rowTypeMask, driverIndex, v6Types?: number[]) → Promise<object | null>:
+    // one of the second file's laps as column blocks (AnalysisLapHistoryWorker),
+    // holding only the V6 fields in v6Types (absent or empty: every field).
+    Napi::Value AnalysisLapHistory(const Napi::CallbackInfo& info) {
+        if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber() ||
+            analysisReader_->busy.load()) {
+            auto deferred = Napi::Promise::Deferred::New(info.Env());
+            deferred.Resolve(info.Env().Null());
+            return deferred.Promise();
+        }
+        std::vector<uint8_t> v6Types;
+        if (info.Length() >= 4 && info[3].IsArray()) {
+            const auto values = info[3].As<Napi::Array>();
+            for (uint32_t i = 0; i < values.Length(); ++i) {
+                const Napi::Value value = values.Get(i);
+                if (!value.IsNumber()) continue;
+                const int type = value.As<Napi::Number>().Int32Value();
+                if (type > 0 && type <= 255) v6Types.push_back(static_cast<uint8_t>(type));
+            }
+        }
+        auto* worker = new AnalysisLapHistoryWorker(
+            info.Env(), analysisReader_, info[0].As<Napi::Number>().Int32Value(),
+            info[1].As<Napi::Number>().Uint32Value(), info[2].As<Napi::Number>().Int32Value(),
+            std::move(v6Types));
+        Napi::Promise promise = worker->GetPromise();
+        worker->Queue();
+        return promise;
+    }
+
+    // (callback(batch: string)) — file B's streamed rows (SecondaryStream).
+    Napi::Value AnalysisStream(const Napi::CallbackInfo& info) {
+        if (info.Length() >= 1 && info[0].IsFunction())
+            analysisReader_->stream->setCallback(info.Env(), info[0].As<Napi::Function>());
+        return info.Env().Undefined();
+    }
+
+    // (enabled, driverIndex, longMask, longSeconds) — whether a page shows
+    // file B's streamed rows, the car followed in B (-1: its recorded player),
+    // and the longer history B's windows need (SecondaryStream::configure).
+    // The engine places B on the playhead; this only starts, stops and points
+    // the stream.
+    Napi::Value AnalysisSetStreaming(const Napi::CallbackInfo& info) {
+        const bool enabled = info.Length() >= 1 && info[0].IsBoolean() && info[0].As<Napi::Boolean>().Value();
+        const int driver = info.Length() >= 2 && info[1].IsNumber() ? info[1].As<Napi::Number>().Int32Value() : -1;
+        const uint32_t longMask = info.Length() >= 3 && info[2].IsNumber() ? info[2].As<Napi::Number>().Uint32Value() : 0;
+        const float longSeconds = info.Length() >= 4 && info[3].IsNumber() ? info[3].As<Napi::Number>().FloatValue() : 0.0f;
+        analysisReader_->stream->configure(enabled, driver, longMask, longSeconds);
+        return info.Env().Undefined();
+    }
+
+    // (driverIndex) — the car selected in file B's Standings tower (-1: none).
+    Napi::Value AnalysisSetFocusDriver(const Napi::CallbackInfo& info) {
+        const int driver = info.Length() >= 1 && info[0].IsNumber() ? info[0].As<Napi::Number>().Int32Value() : -1;
+        analysisReader_->stream->setFocusDriver(driver);
+        return info.Env().Undefined();
+    }
+
+    // (carIdx) — the car whose lap-times view is open on file B (-1: none).
+    Napi::Value AnalysisSetLapHistoryCar(const Napi::CallbackInfo& info) {
+        const int car = info.Length() >= 1 && info[0].IsNumber() ? info[0].As<Napi::Number>().Int32Value() : -1;
+        analysisReader_->stream->setLapHistoryCar(car);
+        return info.Env().Undefined();
+    }
+
+    // (inputJson) → string: two files' laps on one timeline (tnrp/MergedLapTimeline.h).
+    // Pure arithmetic over the laps given, so it runs inline.
+    Napi::Value MergedLapTimeline(const Napi::CallbackInfo& info) {
+        if (info.Length() < 1 || !info[0].IsString()) return Napi::String::New(info.Env(), "");
+        return Napi::String::New(info.Env(), tnrp::mergedLapTimelineJson(info[0].As<Napi::String>().Utf8Value()));
     }
 
     Napi::Value AnalysisCompareLaps(const Napi::CallbackInfo& info) {
@@ -2112,6 +2690,11 @@ private:
     Napi::Value AnalysisCloseFile(const Napi::CallbackInfo& info) {
         if (!analysisReader_->busy.load()) {
             std::lock_guard<std::mutex> lock(analysisReader_->mutex);
+            {
+                std::lock_guard<std::mutex> historyLock(analysisReader_->historyMutex);
+                analysisReader_->history.reset();
+            }
+            analysisReader_->stream->close();
             analysisReader_->reader.close();
         }
         return info.Env().Undefined();

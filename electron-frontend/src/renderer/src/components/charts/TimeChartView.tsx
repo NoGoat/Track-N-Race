@@ -12,6 +12,7 @@ import { createReferenceLinesPlugin, type RefLine, type RefLinesConfig } from '.
 import { niceTicks } from '../../lib/timechart/ticks'
 import type { CSSProperties } from 'react'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
+import { useLapDataSide } from '../../lib/lapDataSide'
 import { getChartComparisonLabel } from '../../lib/chartComparisonTooltip'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { playbackDebug } from '../../lib/playbackDebug'
@@ -19,7 +20,7 @@ import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
 import { HISTORY_ROW } from '../../lib/historyDependencies'
 import { themeSeriesColor } from '../../lib/themeColors'
-import { useChartCursorSync, type ChartCursorAxisKind } from '../../lib/chartCursorSync'
+import { cursorSyncIdFor, useChartCursorSync, useChartCursorSyncFile, type ChartCursorAxisKind } from '../../lib/chartCursorSync'
 
 // Reusable WebGL chart. This is the migration target that replaces per-chart
 // <UPlotReact> usage: it owns TimeChart creation/disposal, the incremental data
@@ -237,13 +238,23 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
   }
 }
 
+// B's half of a split chart: no left labels, just room for the plot's edge.
+const UNLABELLED_Y_AXIS_SIZE = 8
+const NO_LABEL = () => ''
+
 export default function TimeChartView<T extends { session_time: number }>(props: TimeChartViewProps<T>) {
   const {
-    isDark, rows, comparisonRows, getX, series, windowSeconds, fixedXRange, yRange, yAxisSize,
-    yTickValues, yTickFormat, yAxisColor, extraYAxes, overlay, xTickFormat, xTickValues, refLines, tooltipFormat,
+    isDark, rows, comparisonRows, getX, series, windowSeconds, fixedXRange, yRange,
+    yTickValues, yAxisColor, extraYAxes, overlay, xTickFormat, xTickValues, refLines, tooltipFormat,
     colorsFor = defaultColors, axisLook, tooltipStyle = TOOLTIP_STYLE, fastScroll,
     followSessionClock, minScrollStallS, allLapsDataMask = HISTORY_ROW.telemetry, cursorSync,
   } = props
+  // Two files side by side share their scales: A's half labels the left scale
+  // and B's half drops it, as Trends does. A half's side never changes for its
+  // life, so the narrower left margin is set when B's chart is created.
+  const unlabelledLeft = useLapDataSide()?.side === 'B'
+  const yAxisSize = unlabelledLeft ? UNLABELLED_Y_AXIS_SIZE : props.yAxisSize
+  const yTickFormat = unlabelledLeft ? NO_LABEL : props.yTickFormat
 
   const look = axisLook ?? {}
   const coordinates = useChartCoordinates()
@@ -270,21 +281,29 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const syncPointRefs = useRef<(SVGCircleElement | null)[]>([])
   const { tooltipRef, show, hide } = useChartTooltip(containerRef)
   const cursorSyncContext = useChartCursorSync()
+  // Which recording this chart draws, and its clock relative to file A's.
+  const cursorSyncFile = useChartCursorSyncFile()
+  const cursorSyncFileRef = useRef(cursorSyncFile)
   const cursorSyncContextRef = useRef(cursorSyncContext)
   const cursorSyncConfigRef = useRef(cursorSync)
   const rowsRef = useRef(rows)
   const comparisonRowsRef = useRef(comparisonRows)
   const axisKindRef = useRef<ChartCursorAxisKind>(cursorSync?.lapAxis ? 'lap' : coordinates.distanceMode ? 'distance' : 'time')
-  const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode))
+  const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode, coordinates.comparisonLabel))
   const comparisonKeyRef = useRef('')
   const comparisonLapNum = coordinates.lapData?.lapNum
-  const baseComparisonLabel = getChartComparisonLabel(coordinates.mode)
-  const comparisonLabel = coordinates.mode === 'RL' && comparisonLapNum != null
-    ? `${baseComparisonLabel} ${comparisonLapNum}`
-    : baseComparisonLabel
-  const comparisonKey = coordinates.mode === 'RL'
-    ? `RL:${comparisonLapNum ?? ''}`
-    : coordinates.mode ?? ''
+  const baseComparisonLabel = getChartComparisonLabel(coordinates.mode, coordinates.comparisonLabel)
+  // File B's background trace is named by its date and lap ("13 Sep · Lap 18").
+  const comparisonLabel = coordinates.comparisonLabel && comparisonLapNum != null
+    ? `${baseComparisonLabel} · Lap ${comparisonLapNum}`
+    : coordinates.mode === 'RL' && comparisonLapNum != null
+      ? `${baseComparisonLabel} ${comparisonLapNum}`
+      : baseComparisonLabel
+  const comparisonKey = coordinates.comparisonLabel
+    ? `BG:${comparisonLapNum ?? ''}`
+    : coordinates.mode === 'RL'
+      ? `RL:${comparisonLapNum ?? ''}`
+      : coordinates.mode ?? ''
   const chartRef = useRef<TChart | null>(null)
   const bridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
   const comparisonBridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
@@ -365,6 +384,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   // Static per-chart bits captured at mount (labels/colors/getY don't change).
   const seriesDefs = useRef(series)
   const getXRef = useRef(effectiveGetX)
+  // Read through a ref like getX: file B's background can start after the chart
+  // is created (a time window keeps its chart), bringing a new accessor.
+  const getComparisonXRef = useRef(coordinates.getComparisonX)
 
   // Latest render values for the chart's imperative handlers and plugins.
   // Declared ahead of every effect below, so each of them sees this render.
@@ -379,6 +401,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     tooltipFormatRef.current = tooltipFormat
     deltaRevisionRef.current = deltaRevision
     getXRef.current = effectiveGetX
+    getComparisonXRef.current = coordinates.getComparisonX
+    cursorSyncFileRef.current = cursorSyncFile
   })
 
   const blendColor = (hex: string): string => {
@@ -403,7 +427,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         : requested
     }
     const bridge = new TimeChartDataBridge<T>((source, i) => getXRef.current(source, i), defs.map((s) => s.getY))
-    const comparisonBridge = new TimeChartDataBridge<T>((source, i) => coordinates.getComparisonX(source.time(i)), defs.map((s) => s.getY))
+    const comparisonBridge = new TimeChartDataBridge<T>((source, i) => getComparisonXRef.current(source.time(i)), defs.map((s) => s.getY))
     const overlayDefs = overlaySeriesDefs.current
     // A data buffer needs at least one channel, so a chart without an overlay has no overlay bridge.
     const overlayBridge = overlayDefs.length > 0
@@ -498,8 +522,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       cursorSyncConfigRef.current?.lapAxis?.lapStartAt(source, i) ?? source.time(i)
     const unregisterSync = syncManager && syncConfig
       ? syncManager.register({
-          id: syncConfig.id,
+          id: cursorSyncIdFor(syncConfig.id, cursorSyncFileRef.current.file),
           order: syncConfig.order,
+          get file() { return cursorSyncFileRef.current.file },
           get axisKind() { return axisKindRef.current },
           resolveAxisX: axisX => {
             const currentRows = rowsRef.current
@@ -508,29 +533,44 @@ export default function TimeChartView<T extends { session_time: number }>(props:
             const sampledAxisX = getXRef.current(currentRows, index)
             if (!Number.isFinite(sampledAxisX)) return null
             return {
-              sessionTime: syncSessionTimeAt(currentRows, index),
+              sessionTime: cursorSyncFileRef.current.toShared(syncSessionTimeAt(currentRows, index)),
               sampledAxisX,
             }
           },
           formatAxisX: axisX => axisCfgRef.current.xTickFormat(axisX),
-          syncToSessionTime: (sessionTime, sourceAxisX, plotYRatio, sourceAxisKind, source, secondaryVerticalCrosshair) => {
+          syncToSessionTime: (sharedSessionTime, sourceAxisX, plotYRatio, sourceAxisKind, source, secondaryVerticalCrosshair, sourceFile) => {
             const syncAxisKind = axisKindRef.current
             const line = syncCrosshairRef.current
             const horizontalLine = syncHorizontalCrosshairRef.current
             const currentRows = rowsRef.current
             const lapAxis = cursorSyncConfigRef.current?.lapAxis
+            // The other recording's chart: lap distance lines up directly (the
+            // same point on track); session times go through file A's clock.
+            const fileMap = cursorSyncFileRef.current
+            const crossFile = sourceFile !== fileMap.file
+            const distanceMatch = crossFile && sourceAxisKind === 'distance' && syncAxisKind === 'distance'
+            const localSessionTime = fileMap.fromShared(sharedSessionTime)
             // Lap charts match each other by lap number, which also covers
             // laps whose start time is not known.
-            const index = !lapAxis
-              ? nearestRowIndexBySessionTime(currentRows, sessionTime)
-              : sourceAxisKind === 'lap'
-                ? nearestRowIndexByX(currentRows, getXRef.current, sourceAxisX)
-                : lapAxis.rowAtSessionTime(currentRows, sessionTime)
+            const byLapNumber = !!lapAxis && sourceAxisKind === 'lap'
+            if (!distanceMatch && !byLapNumber && !Number.isFinite(localSessionTime)) {
+              clearSyncedCursor()
+              return { current: '' }
+            }
+            const index = distanceMatch || byLapNumber
+              ? nearestRowIndexByX(currentRows, getXRef.current, sourceAxisX)
+              : !lapAxis
+                ? nearestRowIndexBySessionTime(currentRows, localSessionTime)
+                : lapAxis.rowAtSessionTime(currentRows, localSessionTime)
             if (index < 0) {
               clearSyncedCursor()
               return { current: '' }
             }
-            const cursorAxisX = sourceAxisKind === syncAxisKind
+            const sessionTime = distanceMatch || (byLapNumber && !Number.isFinite(localSessionTime))
+              ? syncSessionTimeAt(currentRows, index)
+              : localSessionTime
+            // A time axis on the other recording's clock takes the converted time, not the source's X.
+            const cursorAxisX = sourceAxisKind === syncAxisKind && !(crossFile && syncAxisKind === 'time')
               ? sourceAxisX
               : syncAxisKind === 'time'
                 ? sessionTime

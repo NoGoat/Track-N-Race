@@ -41,6 +41,8 @@ export function useAppConfiguration() {
   const [mapDimmed, setMapDimmed] = useAppConfig<boolean>('mapDimmed', false)
   const [inputCursorSyncEnabled, setInputCursorSyncEnabled] = useAppConfig<boolean>('inputCursorSyncEnabled', false)
   const [sectorBoundariesEnabled, setSectorBoundariesEnabled] = useAppConfig<boolean>('sectorBoundariesEnabled', false)
+  // Side-by-side A | B charts with a second file open (title-bar toggle).
+  const [fileSplitEnabled, setFileSplitEnabled] = useAppConfig<boolean>('fileSplitEnabled', false)
   const [secondaryHorizontalCrosshairEnabled, setSecondaryHorizontalCrosshairEnabled] = useAppConfig<boolean>('secondaryHorizontalCrosshairEnabled', false)
   const [secondaryVerticalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled] = useAppConfig<boolean>('secondaryVerticalCrosshairEnabled', true)
   const [nativeTitlebar, setNativeTitlebar] = useAppConfig<boolean>('nativeTitlebar', false)
@@ -150,6 +152,7 @@ export function useAppConfiguration() {
     miscRideHeight: rawPageLayouts?.miscRideHeight === 'split' ? 'split' : DEFAULT_PAGE_LAYOUTS.miscRideHeight,
     power: rawPageLayouts?.power === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.power,
     tyres: rawPageLayouts?.tyres === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.tyres,
+    tyresAllocation: rawPageLayouts?.tyresAllocation === 'rack' ? 'rack' : DEFAULT_PAGE_LAYOUTS.tyresAllocation,
     trends: rawPageLayouts?.trends === 'combined' || rawPageLayouts?.trends === 'combinedNoRecharge' || rawPageLayouts?.trends === 'bars'
       ? rawPageLayouts.trends
       : DEFAULT_PAGE_LAYOUTS.trends,
@@ -209,10 +212,10 @@ export function useAppConfiguration() {
   }, [rawChartYAxis])
 
   return {
-    actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, damageLayout, driversMode,
+    actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, damageLayout, driversMode, fileSplitEnabled,
     fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, sectorBoundariesEnabled,
     nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, sessionLayout, standingsLayout, titlebarUpdateInterval,
-    setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDamageLayout, setDriversMode,
+    setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDamageLayout, setDriversMode, setFileSplitEnabled,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
     setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorBoundariesEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTrendsLayout, setTyreView, setTyreWearMode, setTyresLayout,

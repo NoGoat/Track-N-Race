@@ -7,7 +7,7 @@ import { tyreCompoundColor } from '../lib/tyreCompounds'
 import { StintTyreWearChart, cornerColors } from './TyreTrendCharts'
 import TrendChart, { quarterAxisRange, type TrendAxis, type TrendChartPoint } from './charts/TrendChart'
 import { ChartCoordinatesProvider, lapStartSessionTime, useLapBoundaries } from '../lib/chartCoordinates'
-import { ChartCursorSyncProvider } from '../lib/chartCursorSync'
+import { ChartCursorSyncFileProvider, ChartCursorSyncProvider } from '../lib/chartCursorSync'
 import { DATA_ROW } from '../lib/historyDependencies'
 import { claimLapHistoryCar } from '../lib/lapHistoryCar'
 import Select from '../lib/AnimatedSelect'
@@ -18,7 +18,16 @@ import { StatCard } from './LiveStats'
 import type { DensityMode, YAxisBehavior } from '../lib/graphSections'
 import type { TrendsLayout, TrendsPageLayout } from '../app/appConfig'
 import type { ColumnView } from '../lib/columnStore'
-import type { DamageRow, LapMeasure } from '../types'
+import type { AnalyzeLapData, DamageRow, DriverLapHistoryLap, LapMeasure } from '../types'
+import { useSecondaryLapState } from '../lib/chartSplit'
+import { useSecondaryBackgroundFile } from '../lib/secondaryComparison'
+import { fileDateLabels } from '../lib/secondaryFile'
+import { useSecondaryTrends } from '../app/hooks/useSecondaryTrends'
+import { useSecondaryHistoryNeed, useSecondaryState } from '../lib/secondaryStream'
+import { LapDataSideProvider, type LapDataSide } from '../lib/lapDataSide'
+import { emptyView } from '../lib/columnStore'
+import type { SecondaryFileData } from './AnalyzeScreen'
+import FileTableCards, { type FileTableCard } from './FileTableCards'
 
 const missing = '—'
 const lapX = (value: number) => `L${Math.round(value)}`
@@ -58,7 +67,15 @@ function RangeSelect({ label, range, onChange }: { label: string; range: LapRang
   </div>
 }
 
-function ChartSection({ title, controls, ...chart }: ComponentProps<typeof TrendChart> & { controls?: ReactNode }) {
+/** File B's half of a chart while two files are open, with each half's caption. */
+interface SecondarySection {
+  points: TrendChartPoint[]
+  lapPoints?: TrendChartPoint[]
+  primaryCaption: ReactNode
+  caption: ReactNode
+}
+
+function ChartSection({ title, controls, secondary, ...chart }: ComponentProps<typeof TrendChart> & { controls?: ReactNode; secondary?: SecondarySection }) {
   const [hidden, setHidden] = useState<Record<string, boolean>>({})
   const series = useMemo(() => chart.series.map(item => ({ ...item, visible: !hidden[item.label] })), [chart.series, hidden])
   return <section className="chart-panel tyre-chart-container min-w-0 min-h-0 flex flex-col" aria-label={title}>
@@ -66,6 +83,7 @@ function ChartSection({ title, controls, ...chart }: ComponentProps<typeof Trend
       <div className="tyre-chart-controls flex min-w-0 flex-1 items-center gap-0">
         <h2 className="chart-panel-title tyre-chart-title shrink-0 text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
         {controls}
+        {secondary && <span className="ml-2 shrink-0 whitespace-nowrap text-[10.5px] normal-case tracking-normal text-[var(--text-secondary)]">both files</span>}
       </div>
       <div className="tyre-chart-legend flex shrink-0 items-center gap-3">
         {chart.series.map(series => <button key={series.label} type="button" aria-label={`Toggle ${series.label}`} aria-pressed={!hidden[series.label]}
@@ -76,8 +94,32 @@ function ChartSection({ title, controls, ...chart }: ComponentProps<typeof Trend
         </button>)}
       </div>
     </div>
-    <div className="flex-1 min-h-0"><TrendChart {...chart} title={title} series={series} /></div>
+    {secondary ? <div className="flex-1 min-h-0 grid grid-cols-2 divide-x divide-[var(--border)]">
+      <SplitHalf caption={secondary.primaryCaption}><TrendChart {...chart} title={title} series={series} axisLabels="left" /></SplitHalf>
+      <SplitHalf caption={secondary.caption}>
+        {/* Syncs with A's half and the other graphs by lap number. */}
+        <ChartCursorSyncFileProvider>
+          <TrendChart {...chart} title={`${title} · second file`} points={secondary.points} lapPoints={secondary.lapPoints} series={series} axisLabels="right" />
+        </ChartCursorSyncFileProvider>
+      </SplitHalf>
+    </div> : <div className="flex-1 min-h-0"><TrendChart {...chart} title={title} series={series} /></div>}
   </section>
+}
+
+/** One file's half of a split Trends chart: the chart, then its caption. */
+function SplitHalf({ caption, children }: { caption: ReactNode; children: ReactNode }) {
+  return <div className="min-w-0 min-h-0 flex flex-col">
+    <div className="flex-1 min-h-0">{children}</div>
+    <div className="shrink-0 h-6 flex items-center gap-2 px-4 font-mono text-[10.5px] text-[var(--text-secondary)] whitespace-nowrap overflow-hidden">{caption}</div>
+  </div>
+}
+
+/** A half's caption: the file's coloured date and what it holds. */
+function FileCaption({ date, colorVar, detail }: { date: string; colorVar: '--file-a' | '--file-b'; detail: string }) {
+  return <>
+    <span className="text-[11.5px] font-bold" style={{ color: `var(${colorVar})` }}>{date}</span>
+    <span className="truncate">{detail}</span>
+  </>
 }
 /** The Overview stat card, with a hover title and no unit beside a missing value. */
 function Summary({ label, value, unit, title, color, sub, compact }: {
@@ -148,25 +190,12 @@ export default memo(function TrendPanel({ isDark, compact, layout, visible, wear
   const measures = useMemo(() => new Map<number, LapMeasure>(pushedMeasures?.car_idx === driver
     ? pushedMeasures.laps.map(lap => [lap.lap_num, lap]) : []), [pushedMeasures, driver])
 
-  const fastestLap = stintLaps.reduce<(typeof stintLaps)[number] | null>((best, lap) =>
-    lap.lap_valid && lap.lap_time_ms > 0 && (best === null || lap.lap_time_ms < best.lap_time_ms) ? lap : best, null)
-  const previous = stintLaps.at(-1) ?? null
-  const deployedAverage = average(stintLaps.map(lap => measures.get(lap.lap_num)?.ers_deployed_mj ?? null))
-  const harvestedAverage = average(stintLaps.map(lap => measures.get(lap.lap_num)?.ers_harvested_mj ?? null))
-  const fuelAverage = average(stintLaps.map(lap => measures.get(lap.lap_num)?.fuel_used_kg ?? null))
+  const { fastestLap, previous, deployedAverage, harvestedAverage, fuelAverage } = stintSummary(stintLaps, measures)
   const wearPerLap = tyreSets?.sets.find(set => set.fitted)?.avg_wear_per_lap
 
   // Fastest marks the quickest valid lap among those the graph shows.
   const lapPointLaps = lapsFor(lapRange)
-  const lapPoints = useMemo<TrendChartPoint[]>(() => {
-    const shownFastest = lapPointLaps.reduce<number | null>((best, lap) =>
-      lap.lap_valid && lap.lap_time_ms > 0 && (best === null || lap.lap_time_ms < best) ? lap.lap_time_ms : best, null)
-    return lapPointLaps.map(lap => ({
-      x: lap.lap_num, values: [lap.lap_time_ms > 0 ? lap.lap_time_ms / 1000 : null], label: `Lap ${lap.lap_num}`,
-      invalid: lap.lap_time_ms > 0 && !lap.lap_valid, fastest: lap.lap_valid && lap.lap_time_ms === shownFastest,
-      lapStart: lapStartSessionTime(boundaries, lap.lap_num),
-    }))
-  }, [lapPointLaps, boundaries])
+  const lapPoints = useMemo(() => buildLapTimePoints(lapPointLaps, boundaries), [lapPointLaps, boundaries])
 
   // The page renders on every status frame, but the combined points change only
   // when the tyre history does: rebuild them only then, so the chart is not
@@ -215,6 +244,134 @@ export default memo(function TrendPanel({ isDark, compact, layout, visible, wear
     ]
   }, [isDark, showRecharge, colors.lapTime, colors.used, colors.recharged])
 
+  // ── File B, side by side: the same graphs from B's own completed laps ──
+  // B's laps stay in step with A's by number: those before the lap A is on.
+  // Side-by-side on: B gets its own half of each chart. Off, with B open: B
+  // is drawn dimmed behind A on the same charts, as on the other pages.
+  const secondaryLap = useSecondaryLapState()
+  const backgroundFile = useSecondaryBackgroundFile()
+  const split = secondaryLap !== null
+  const secondaryFile = secondaryLap?.file ?? backgroundFile?.file ?? null
+  const bOpen = secondaryFile !== null
+  const overlay = bOpen && !split
+  const [dateA, dateB] = bOpen ? fileDateLabels(secondaryLap?.primaryFilename ?? backgroundFile?.primaryFilename, secondaryFile.filename) : [null, null]
+  const streamedTrends = useSecondaryTrends()
+  const secondaryTrends = bOpen ? streamedTrends : null
+  const bAllLaps = secondaryTrends?.laps ?? NO_LAPS
+  const bStintStart = secondaryTrends?.stintStartLap ?? 1
+  const bStintLaps = useMemo(() => bAllLaps.filter(lap => lap.lap_num >= bStintStart), [bAllLaps, bStintStart])
+  const bLapsFor = (range: LapRange) => range === 'all' ? bAllLaps : bStintLaps
+  const bMeasures = secondaryTrends?.measures ?? NO_MEASURES
+  const bSummary = stintSummary(bStintLaps, bMeasures)
+  const bMissing = useMemo(() => missingLaps(secondaryFile), [secondaryFile])
+  const bLapTimeLaps = bLapsFor(lapRange)
+  const bLapPoints = useMemo(() => bOpen ? withGaps(buildLapTimePoints(bLapTimeLaps, NO_BOUNDARIES), bMissing, 1) : NO_POINTS,
+    [bOpen, bLapTimeLaps, bMissing])
+  const bDeploymentLaps = bLapsFor(deploymentRange)
+  const bDeploymentPoints = useMemo(() => bOpen ? withGaps(energyPoints('ers_deployed_mj', bDeploymentLaps, bMeasures, NO_BOUNDARIES), bMissing, 1) : NO_POINTS,
+    [bOpen, bDeploymentLaps, bMeasures, bMissing])
+  const bRechargeLaps = bLapsFor(rechargeRange)
+  const bRechargePoints = useMemo(() => bOpen ? withGaps(energyPoints('ers_harvested_mj', bRechargeLaps, bMeasures, NO_BOUNDARIES), bMissing, 1) : NO_POINTS,
+    [bOpen, bRechargeLaps, bMeasures, bMissing])
+  const bCombinedLaps = bLapsFor(combinedRange)
+  const bCombinedLapPoints = useMemo(() => bOpen && combined ? withGaps(buildLapEndPoints(bCombinedLaps, bMeasures), bMissing, 3) : NO_POINTS,
+    [bOpen, combined, bCombinedLaps, bMeasures, bMissing])
+  // B's tyre wear, built into points by the same functions as A's damage
+  // history. B's stream holds its whole race of tyre wear while this page shows it,
+  // as A's store holds A's for Trends; the rows run to B's playhead.
+  useSecondaryHistoryNeed(bOpen ? B_TYRE_WEAR_NEED : null)
+  const bHistory = useSecondaryState().history
+  // B's lap starts from its lap catalog, in time order.
+  const bBoundaries = useMemo(() => secondaryFile
+    ? secondaryFile.blocks
+      .filter(block => block.lapNum >= 1)
+      .map(block => ({ lapNum: block.lapNum, sessionTime: block.startSessionTime }))
+      .sort((a, b) => a.sessionTime - b.sessionTime)
+    : NO_BOUNDARIES, [secondaryFile])
+  const bRows = bOpen ? bHistory?.damageHistory ?? null : null
+  const bCombinedFirstLap = combinedRange === 'all' ? bAllLaps[0]?.lap_num ?? 1 : bStintStart
+  const bCombinedTyrePoints = useMemo(() => bOpen && combined
+    ? buildTyreSamples(bCombinedLaps, bCombinedFirstLap, currentLap, bBoundaries, bRows, wearMode)
+    : NO_POINTS, [bOpen, combined, bCombinedLaps, bCombinedFirstLap, currentLap, bBoundaries, bRows, wearMode])
+  const bBarPoints = useMemo(() => bOpen && bars
+    ? withGaps(buildBarPoints(bCombinedLaps, bMeasures, bBoundaries, bRows, wearMode), bMissing, 6)
+    : NO_POINTS, [bOpen, bars, bCombinedLaps, bMeasures, bBoundaries, bRows, bMissing, wearMode])
+  // B's tyre chart and A's sync by lap fraction: a B time lands at the same
+  // fraction of A's lap with that number, and back.
+  const bTyreToShared = useMemo(() => lapStretchMap(boundaries, bBoundaries), [boundaries, bBoundaries])
+  const bTyreFromShared = useMemo(() => lapStretchMap(bBoundaries, boundaries), [bBoundaries, boundaries])
+  // The separate layout's tyre chart reads its rows through the side context:
+  // on B's side, B's wear history in place of the store's damage history.
+  const bTyreSide = useMemo<LapDataSide>(() => ({
+    // B's wear runs to B's playhead already (B's stream).
+    side: 'B', lapNum: currentLap,
+    lapData: {
+      lapNum: currentLap ?? 0, startSessionTime: 0, endSessionTime: 0,
+      telemetry: emptyView('telemetry'), motion: emptyView('motion'), motionEx: emptyView('motion_ex'),
+      statusHistory: emptyView('status'), damageHistory: bRows ?? emptyView<DamageRow>('damage'),
+      lapProgress: emptyView('lap'), playerPositions: [], rowTypeMask: DATA_ROW.damage,
+    },
+  }), [bRows, currentLap])
+  // ── Side-by-side off: B behind A on the same charts ──
+  // Combined: B's per-lap values ride on the lap points as channels 3-5.
+  const overlayCombinedLapPoints = useMemo(() => {
+    if (!overlay || !combined) return combinedLapPoints
+    const byLap = new Map(bCombinedLapPoints.map(point => [point.x, point.values]))
+    return combinedLapPoints.map(point => ({ ...point, values: [...point.values, ...(byLap.get(point.x) ?? [null, null, null])] }))
+  }, [overlay, combined, combinedLapPoints, bCombinedLapPoints])
+  const overlayCombinedSeries = useMemo(() => {
+    if (!overlay) return combinedSeries
+    const name = dateB ?? 'second file'
+    return [
+      ...combinedSeries,
+      { label: `Used · ${name}`, color: dimColor(colors.used, isDark), axis: 1, perLap: true, channel: 3 },
+      ...showRecharge ? [{ label: `Recharged · ${name}`, color: dimColor(colors.recharged, isDark), axis: 1, perLap: true, channel: 4 }] : [],
+      { label: `Lap time · ${name}`, color: dimColor(colors.lapTime, isDark), axis: 0, perLap: true, channel: 5 },
+    ]
+  }, [overlay, combinedSeries, dateB, colors.used, colors.recharged, colors.lapTime, showRecharge, isDark])
+  // Separate tyre chart: B's wear history placed on A's time axis lap by lap,
+  // each B lap stretched to A's lap of the same number.
+  const tyreComparison = useMemo(() => {
+    if (!overlay || !bRows || bRows.length === 0 || bBoundaries.length === 0) return null
+    const firstLine = bBoundaries[0].sessionTime
+    const rows = bRows.slice(bRows.lowerBound(firstLine, true))
+    return {
+      label: dateB ?? 'Second file',
+      getComparisonX: lapStretchMap(boundaries, bBoundaries),
+      lapData: {
+        lapNum: currentLap ?? 0, startSessionTime: firstLine, endSessionTime: firstLine,
+        telemetry: emptyView('telemetry'), motion: emptyView('motion'), motionEx: emptyView('motion_ex'),
+        statusHistory: emptyView('status'), damageHistory: rows, lapProgress: emptyView('lap'), playerPositions: [],
+        rowTypeMask: DATA_ROW.damage,
+      } satisfies AnalyzeLapData,
+    }
+  }, [overlay, bRows, bBoundaries, boundaries, dateB, currentLap])
+  const bWearPerLap = useMemo(() => averageWearPerLap(bStintLaps, bBoundaries, bRows), [bStintLaps, bBoundaries, bRows])
+  // Both halves share the scales, so the same lap or value sits at the same place.
+  const mergedCombinedLapPoints = useMemo(() => bOpen ? [...combinedLapPoints, ...bCombinedLapPoints] : combinedLapPoints,
+    [bOpen, combinedLapPoints, bCombinedLapPoints])
+  const mergedCombinedTyrePoints = useMemo(() => bOpen ? [...combinedTyrePoints, ...bCombinedTyrePoints] : combinedTyrePoints,
+    [bOpen, combinedTyrePoints, bCombinedTyrePoints])
+  const sharedCombinedAxes = useCombinedAxes(combined && bOpen ? mergedCombinedLapPoints : null, mergedCombinedTyrePoints, showRecharge, colors.lapTime, tyreYAxis)
+  const mergedBarPoints = useMemo(() => bOpen ? [...barPoints, ...bBarPoints] : barPoints, [bOpen, barPoints, bBarPoints])
+  const sharedBarAxes = useBarAxes(bars && bOpen ? mergedBarPoints : null, colors.lapTime, tyreYAxis)
+  const playbackBlocks = useTelemetryStore(s => bOpen ? s.speedRpmBlocks : null)
+  const aTotalLaps = useMemo(() => (playbackBlocks ?? []).reduce((max, block) => Math.max(max, Number(block.lapNum) || 0), 0), [playbackBlocks])
+  const bTotalLaps = useMemo(() => (secondaryFile?.blocks ?? []).reduce((max, block) => Math.max(max, block.lapNum), 0), [secondaryFile])
+  const bDetail = [
+    `${bTotalLaps} laps`,
+    ...bMissing.size > 0 ? [`no ${[...bMissing].map(lap => `L${lap}`).join(', ')}`] : [],
+    ...aTotalLaps > 0 && bTotalLaps > 0 && bTotalLaps < aTotalLaps ? [`ends L${bTotalLaps}`] : [],
+  ].join(' · ')
+  const section = (points: TrendChartPoint[], lapPoints?: TrendChartPoint[]): SecondarySection | undefined => split ? {
+    points, lapPoints,
+    primaryCaption: <FileCaption date={dateA ?? 'File A'} colorVar="--file-a" detail={aTotalLaps > 0 ? `${aTotalLaps} laps` : ''} />,
+    caption: <FileCaption date={dateB ?? 'File B'} colorVar="--file-b" detail={bDetail} />,
+  } : undefined
+  const bLap = secondaryFile && currentLap !== null ? secondaryFile.blocks.find(block => block.lapNum === currentLap) : undefined
+  const bCompound = bLap?.statusHistory?.[0]?.tyre_compound ?? 0
+  const bVisualCompound = bLap?.statusHistory?.[0]?.visual_compound ?? 0
+
   const tyreCompound = status?.tyre_compound ?? 0
   const cards = visible.statsCards
   const charts = visible.charts
@@ -222,8 +379,39 @@ export default memo(function TrendPanel({ isDark, compact, layout, visible, wear
   const ersCharts = Number(charts.ersUsage) + Number(charts.recharge)
   const chartRows = [charts.lapTimes && '1fr', ersCharts > 0 && '1fr', charts.tyreWear && '1.1fr']
     .filter((row): row is string => row !== false).map(row => `minmax(0,${row})`).join(' ')
+  // The cards as one table while two files are open (Cards 5).
+  const bHasTrends = secondaryTrends !== null
+  const fileCards: FileTableCard[] = !bOpen ? [] : [
+    ...cards.stintLaps ? [{ key: 'stintLaps', label: 'Stint Laps',
+      a: { value: history ? String(stintLaps.length) : missing, title: history ? `Current stint starts on lap ${stintStart}` : undefined },
+      b: { value: bHasTrends ? String(bStintLaps.length) : missing, title: bHasTrends ? `Stint starts on lap ${bStintStart}` : undefined } }] : [],
+    ...cards.wearPerLap ? [{ key: 'wearPerLap', label: 'Wear/Lap',
+      a: { value: wearPerLap != null ? wearPerLap.toFixed(2) : missing, unit: '%/L' },
+      b: { value: bWearPerLap != null ? bWearPerLap.toFixed(2) : missing, unit: '%/L',
+        title: bWearPerLap != null ? 'Average of the four tyres\' wear per lap over consecutive laps of the stint' : undefined } }] : [],
+    ...cards.recPerLap ? [{ key: 'recPerLap', label: 'Rec/Lap',
+      a: { value: harvestedAverage.value, unit: 'MJ/L', color: colors.recharged, title: harvestedAverage.title },
+      b: { value: bSummary.harvestedAverage.value, unit: 'MJ/L', color: colors.recharged, title: bSummary.harvestedAverage.title } }] : [],
+    ...cards.ersPerLap ? [{ key: 'ersPerLap', label: 'ERS/Lap',
+      a: { value: deployedAverage.value, unit: 'MJ/L', color: colors.used, title: deployedAverage.title },
+      b: { value: bSummary.deployedAverage.value, unit: 'MJ/L', color: colors.used, title: bSummary.deployedAverage.title } }] : [],
+    ...cards.fuelPerLap ? [{ key: 'fuelPerLap', label: 'Fuel/Lap',
+      a: { value: fuelAverage.value, unit: 'kg/L', title: fuelAverage.title },
+      b: { value: bSummary.fuelAverage.value, unit: 'kg/L', title: bSummary.fuelAverage.title } }] : [],
+    ...cards.fastestLap ? [{ key: 'fastestLap', label: 'Fastest',
+      a: { value: fastestLap ? fmtMs(fastestLap.lap_time_ms) : missing, color: 'var(--color-fastest)', title: fastestLap ? `Lap ${fastestLap.lap_num}` : undefined },
+      b: { value: bSummary.fastestLap ? fmtMs(bSummary.fastestLap.lap_time_ms) : missing, color: 'var(--color-fastest)', title: bSummary.fastestLap ? `Lap ${bSummary.fastestLap.lap_num}` : undefined } }] : [],
+    ...cards.previousLap ? [{ key: 'previousLap', label: 'Previous',
+      a: { value: previous && previous.lap_time_ms > 0 ? fmtMs(previous.lap_time_ms) : missing, color: previous && !previous.lap_valid ? '#C4162A' : undefined },
+      b: { value: bSummary.previous && bSummary.previous.lap_time_ms > 0 ? fmtMs(bSummary.previous.lap_time_ms) : missing,
+        color: bSummary.previous && !bSummary.previous.lap_valid ? '#C4162A' : undefined,
+        title: bSummary.previous ? `Lap ${bSummary.previous.lap_num}${bSummary.previous.lap_valid ? '' : ' · Invalid'}` : undefined } }] : [],
+    ...cards.tyre ? [{ key: 'tyre', label: 'Tyre',
+      a: { value: tyreCompound > 0 ? tn('tyre.actual', tyreCompound) : missing, color: tyreCompound > 0 ? tyreCompoundColor(tyreCompound, status?.visual_compound ?? 0) : undefined },
+      b: { value: bCompound > 0 ? tn('tyre.actual', bCompound) : missing, color: bCompound > 0 ? tyreCompoundColor(bCompound, bVisualCompound) : undefined } }] : [],
+  ]
   return <div className="h-full min-h-0 overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)] flex flex-col">
-    {Object.values(cards).some(Boolean) && <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
+    {bOpen ? <FileTableCards dateA={dateA ?? 'File A'} dateB={dateB ?? 'File B'} cards={fileCards} /> : Object.values(cards).some(Boolean) && <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
       {cards.stintLaps && <Summary compact={compact} label="Stint Laps" value={history ? String(stintLaps.length) : missing} title={history ? `Current stint starts on lap ${stintStart}` : undefined}
         sub={history ? `From lap ${stintStart}` : undefined} />}
       {cards.wearPerLap && <Summary compact={compact} label="Wear/Lap" value={wearPerLap != null ? wearPerLap.toFixed(2) : missing} unit="%/L" title="Average wear per lap on the fitted set in this session; same calculation as the Tyres page."
@@ -239,28 +427,51 @@ export default memo(function TrendPanel({ isDark, compact, layout, visible, wear
         sub={status && Number.isFinite(status.tyre_age_laps) ? `${status.tyre_age_laps}L age` : undefined} />}
     </div>}
     {bars ? <div className="flex-1 min-w-0 min-h-0 grid grid-rows-[minmax(0,1fr)]">
-      {charts.bars && <ChartSection title={wearMode === 'life' ? 'Tyre Life · ERS · Lap Times' : 'Tyre Wear · ERS · Lap Times'} points={barPoints} series={barSeries} axes={barAxes}
+      {charts.bars && <ChartSection title={wearMode === 'life' ? 'Tyre Life · ERS · Lap Times' : 'Tyre Wear · ERS · Lap Times'} points={barPoints} series={barSeries} axes={bOpen ? sharedBarAxes : barAxes}
         isDark={isDark} bars discrete formatX={lapX} formatY={lapAxisY}
+        xDomain={sharedDomain(bOpen, barPoints, bBarPoints)} secondary={section(bBarPoints)}
+        comparisonPoints={overlay ? bBarPoints : undefined} comparisonLabel={dateB ?? undefined}
         controls={<RangeSelect label="Bar graph range" range={combinedRange} onChange={setCombinedRange} />} />}
     </div> : combined ? <div className="flex-1 min-w-0 min-h-0 grid grid-rows-[minmax(0,1fr)]">
-      {charts.combined && <ChartSection title={wearMode === 'life' ? 'Lap Times · ERS · Tyre Life' : 'Lap Times · ERS · Tyre Wear'} points={combinedTyrePoints} lapPoints={combinedLapPoints} series={combinedSeries} axes={combinedAxes}
+      {charts.combined && <ChartSection title={wearMode === 'life' ? 'Lap Times · ERS · Tyre Life' : 'Lap Times · ERS · Tyre Wear'} points={combinedTyrePoints} lapPoints={overlayCombinedLapPoints} series={overlayCombinedSeries} axes={bOpen ? sharedCombinedAxes : combinedAxes}
         isDark={isDark} formatX={lapX} formatY={lapAxisY}
+        xDomain={sharedDomain(bOpen, combinedLapPoints, combinedTyrePoints, bCombinedLapPoints)} secondary={section(bCombinedTyrePoints, bCombinedLapPoints)}
+        comparisonPoints={overlay ? bCombinedTyrePoints : undefined} comparisonLabel={dateB ?? undefined}
         controls={<RangeSelect label="Combined graph range" range={combinedRange} onChange={setCombinedRange} />} />}
     </div> : <div className="flex-1 min-w-0 min-h-0">
       <ChartCursorSyncProvider enabled={cursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshair} secondaryVerticalCrosshair={secondaryVerticalCrosshair}>
         <div className="h-full min-w-0 min-h-0 grid divide-y divide-[var(--border)]" style={{ gridTemplateRows: chartRows }}>
           {charts.lapTimes && <ChartSection title="Lap Times" points={lapPoints} series={lapSeries} isDark={isDark} discrete formatX={lapX} formatY={lapAxisY} formatTooltipY={lapTooltipY} cursorSync={lapTimeSync}
+            xDomain={sharedDomain(bOpen, lapPoints, bLapPoints)} fixedRange={bOpen ? paddedRange(lapPoints, bLapPoints) : undefined} secondary={section(bLapPoints)}
+            comparisonPoints={overlay ? bLapPoints : undefined} comparisonLabel={dateB ?? undefined}
             controls={<RangeSelect label="Lap times range" range={lapRange} onChange={setLapRange} />} />}
-          {ersCharts > 0 && <div className={`grid ${ersCharts === 2 ? 'grid-cols-2' : 'grid-cols-1'} divide-x divide-[var(--border)] min-h-0`}>
+          {ersCharts > 0 && <div className={`grid ${ersCharts === 2 && !split ? 'grid-cols-2 divide-x' : ersCharts === 2 ? 'grid-rows-2 divide-y' : 'grid-cols-1'} divide-[var(--border)] min-h-0`}>
             {charts.ersUsage && <ChartSection title="ERS Usage" points={deploymentPoints} series={deploymentSeries} isDark={isDark} discrete zeroBaselineHeadroom={0.5} formatX={lapX} formatY={energyAxisY} formatTooltipY={energyTooltipY} cursorSync={deploymentSync}
+              xDomain={sharedDomain(bOpen, deploymentPoints, bDeploymentPoints)} fixedRange={bOpen ? zeroBasedRange(0.5, deploymentPoints, bDeploymentPoints) : undefined} secondary={section(bDeploymentPoints)}
+              comparisonPoints={overlay ? bDeploymentPoints : undefined} comparisonLabel={dateB ?? undefined}
               controls={<RangeSelect label="ERS usage range" range={deploymentRange} onChange={setDeploymentRange} />} />}
             {charts.recharge && <ChartSection title="Recharge" points={rechargePoints} series={rechargeSeries} isDark={isDark} discrete zeroBaselineHeadroom={0.5} formatX={lapX} formatY={energyAxisY} formatTooltipY={energyTooltipY} cursorSync={rechargeSync}
+              xDomain={sharedDomain(bOpen, rechargePoints, bRechargePoints)} fixedRange={bOpen ? zeroBasedRange(0.5, rechargePoints, bRechargePoints) : undefined} secondary={section(bRechargePoints)}
+              comparisonPoints={overlay ? bRechargePoints : undefined} comparisonLabel={dateB ?? undefined}
               controls={<RangeSelect label="Recharge range" range={rechargeRange} onChange={setRechargeRange} />} />}
           </div>}
-          {charts.tyreWear && <ChartCoordinatesProvider mode={tyreRange === 'all' ? 'AL' : 'SL'} referenceLapNum={null} rowTypeMask={DATA_ROW.damage} sectorBoundaries={false} stintStartLap={history?.stint_start_lap || undefined}>
-            <StintTyreWearChart isDark={isDark} wearMode={wearMode} yAxis={tyreYAxis}
-              controls={<RangeSelect label="Tyre graph range" range={tyreRange} onChange={setTyreRange} />} />
-          </ChartCoordinatesProvider>}
+          {charts.tyreWear && <div className={split ? 'min-h-0 grid grid-cols-2 divide-x divide-[var(--border)]' : 'contents'}>
+            <ChartCoordinatesProvider mode={tyreRange === 'all' ? 'AL' : 'SL'} referenceLapNum={null} rowTypeMask={DATA_ROW.damage} sectorBoundaries={false} stintStartLap={history?.stint_start_lap || undefined}
+              comparison={tyreComparison}>
+              <StintTyreWearChart isDark={isDark} wearMode={wearMode} yAxis={tyreYAxis}
+                controls={<RangeSelect label="Tyre graph range" range={tyreRange} onChange={setTyreRange} />} />
+            </ChartCoordinatesProvider>
+            {/* B's half: A's own tyre chart, fed B's wear history and lap starts. */}
+            {split && <ChartCursorSyncFileProvider toShared={bTyreToShared} fromShared={bTyreFromShared}>
+            <LapDataSideProvider value={bTyreSide}>
+              <ChartCoordinatesProvider mode={tyreRange === 'all' ? 'AL' : 'SL'} referenceLapNum={null} rowTypeMask={DATA_ROW.damage} sectorBoundaries={false}
+                stintStartLap={bStintStart} lapBoundaries={bBoundaries}>
+                <StintTyreWearChart isDark={isDark} wearMode={wearMode} yAxis={tyreYAxis} followSessionClock={false}
+                  controls={<span className="ml-2 text-[11px] font-mono font-bold normal-case tracking-normal" style={{ color: 'var(--file-b)' }}>{dateB ?? 'File B'}</span>} />
+              </ChartCoordinatesProvider>
+            </LapDataSideProvider>
+            </ChartCursorSyncFileProvider>}
+          </div>}
         </div>
       </ChartCursorSyncProvider>
     </div>}
@@ -439,4 +650,156 @@ function useCombinedAxes(lapPoints: readonly TrendChartPoint[] | null, tyrePoint
     { min: energyMin, max: energyMax, format: energyAxisLabel, formatTooltip: energyTooltipY },
     { min: tyreMin, max: tyreMax, format: percentAxisLabel, formatTooltip: percentTooltip },
   ] : undefined, [enabled, lapMin, lapMax, energyMin, energyMax, tyreMin, tyreMax, lapColor])
+}
+
+const NO_LAPS: DriverLapHistoryLap[] = []
+const NO_MEASURES: LapMeasures = new Map()
+const NO_BOUNDARIES: ReturnType<typeof useLapBoundaries> = []
+// B's tyre wear for the whole race (damage rows), from B's stream.
+const B_TYRE_WEAR_NEED = { mask: DATA_ROW.damage, seconds: -1 }
+
+/** The stint cards' values from one file's laps and their measures. */
+function stintSummary(stintLaps: readonly DriverLapHistoryLap[], measures: LapMeasures) {
+  const fastestLap = stintLaps.reduce<DriverLapHistoryLap | null>((best, lap) =>
+    lap.lap_valid && lap.lap_time_ms > 0 && (best === null || lap.lap_time_ms < best.lap_time_ms) ? lap : best, null)
+  return {
+    fastestLap,
+    previous: stintLaps.at(-1) ?? null,
+    deployedAverage: average(stintLaps.map(lap => measures.get(lap.lap_num)?.ers_deployed_mj ?? null)),
+    harvestedAverage: average(stintLaps.map(lap => measures.get(lap.lap_num)?.ers_harvested_mj ?? null)),
+    fuelAverage: average(stintLaps.map(lap => measures.get(lap.lap_num)?.fuel_used_kg ?? null)),
+  }
+}
+
+/** Lap time per completed lap; Fastest marks the quickest valid lap among them. */
+function buildLapTimePoints(laps: readonly DriverLapHistoryLap[], boundaries: ReturnType<typeof useLapBoundaries>): TrendChartPoint[] {
+  const shownFastest = laps.reduce<number | null>((best, lap) =>
+    lap.lap_valid && lap.lap_time_ms > 0 && (best === null || lap.lap_time_ms < best) ? lap.lap_time_ms : best, null)
+  return laps.map(lap => ({
+    x: lap.lap_num, values: [lap.lap_time_ms > 0 ? lap.lap_time_ms / 1000 : null], label: `Lap ${lap.lap_num}`,
+    invalid: lap.lap_time_ms > 0 && !lap.lap_valid, fastest: lap.lap_valid && lap.lap_time_ms === shownFastest,
+    lapStart: lapStartSessionTime(boundaries, lap.lap_num),
+  }))
+}
+
+/** Lap numbers the second file never ran within its race (a red flag), from its lap catalog. */
+function missingLaps(file: SecondaryFileData | null): ReadonlySet<number> {
+  if (!file || file.blocks.length === 0) return new Set()
+  const held = new Set(file.blocks.map(block => block.lapNum))
+  const last = Math.max(...held)
+  const missingSet = new Set<number>()
+  for (let lap = 1; lap < last; lap++) if (!held.has(lap)) missingSet.add(lap)
+  return missingSet
+}
+
+/** A break in the line at each missing lap inside the points' span. */
+function withGaps(points: TrendChartPoint[], missingSet: ReadonlySet<number>, channels: number): TrendChartPoint[] {
+  if (points.length < 2 || missingSet.size === 0) return points
+  const first = points[0].x, last = points.at(-1)!.x
+  const gaps = [...missingSet].filter(lap => lap > first && lap < last && !points.some(point => point.x === lap))
+  if (gaps.length === 0) return points
+  return [...points, ...gaps.map(lap => ({ x: lap, values: Array<null>(channels).fill(null), label: `No lap ${lap}` }))]
+    .sort((a, b) => a.x - b.x)
+}
+
+/** One lap span for both halves: the first and last lap either file shows. */
+function sharedDomain(split: boolean, ...lists: readonly TrendChartPoint[][]): [number, number] | undefined {
+  if (!split) return undefined
+  let first = Infinity, last = -Infinity
+  for (const list of lists) {
+    if (list.length === 0) continue
+    first = Math.min(first, list[0].x)
+    last = Math.max(last, list.at(-1)!.x)
+  }
+  return Number.isFinite(first) ? [first, last] : undefined
+}
+
+function valueExtent(lists: readonly TrendChartPoint[][]): { min: number; max: number } {
+  let min = Infinity, max = -Infinity
+  for (const list of lists) for (const point of list) for (const value of point.values)
+    if (value != null && Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value) }
+  return { min, max }
+}
+
+/** The lap-time scale both halves share, padded as a single chart pads its own. */
+function paddedRange(...lists: readonly TrendChartPoint[][]): [number, number] | undefined {
+  const { min, max } = valueExtent(lists)
+  if (!Number.isFinite(min)) return undefined
+  const pad = max > min ? (max - min) * 0.1 : 1
+  return [min - pad, max + pad]
+}
+
+/** A scale from zero to `headroom` above the higher file's peak. */
+function zeroBasedRange(headroom: number, ...lists: readonly TrendChartPoint[][]): [number, number] | undefined {
+  const { max } = valueExtent(lists)
+  return [0, (Number.isFinite(max) ? Math.max(max, 0) : 0) + headroom]
+}
+
+/**
+ * Mean wear per lap across the four tyres: the wear at each lap line read from
+ * the damage history, over consecutive laps of the stint (the first stint lap
+ * has no line before it on this set).
+ */
+function averageWearPerLap(stintLaps: readonly DriverLapHistoryLap[], boundaries: ReturnType<typeof useLapBoundaries>,
+  rows: ColumnView<DamageRow> | null): number | null {
+  if (!rows || rows.length === 0) return null
+  const starts = new Map<number, number>()
+  for (const boundary of boundaries) starts.set(boundary.lapNum, boundary.sessionTime)
+  // The newest reading before lap `lap + 1` starts: the set's wear as lap `lap` closed.
+  const meanAtEnd = (lap: number) => {
+    const end = starts.get(lap + 1)
+    const index = end !== undefined ? rows.lowerBound(end, true) - 1 : -1
+    if (index < 0) return null
+    let sum = 0
+    for (const corner of CORNERS) {
+      const value = rows.num(`tyre_wear_${corner}`, index)
+      if (!Number.isFinite(value)) return null
+      sum += value
+    }
+    return sum / 4
+  }
+  let total = 0, count = 0
+  for (let i = 1; i < stintLaps.length; i++) {
+    const previous = stintLaps[i - 1].lap_num, lap = stintLaps[i].lap_num
+    if (lap !== previous + 1) continue
+    const before = meanAtEnd(previous), after = meanAtEnd(lap)
+    if (before === null || after === null || after < before) continue
+    total += after - before
+    count++
+  }
+  return count > 0 ? total / count : null
+}
+
+/** A series colour mixed toward the panel, as comparison traces are drawn. */
+function dimColor(hex: string, isDark: boolean): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex)
+  if (!match) return hex
+  const value = Number.parseInt(match[1], 16)
+  const bg = isDark ? [0x12, 0x14, 0x1f] : [0xeb, 0xea, 0xe6]
+  const rgb = [(value >> 16) & 255, (value >> 8) & 255, value & 255]
+  return `#${rgb.map((channel, i) => Math.round(channel * 0.35 + bg[i] * 0.65).toString(16).padStart(2, '0')).join('')}`
+}
+
+/**
+ * Maps a session time in file B onto file A's clock: the time falls in some
+ * B lap, and lands at the same fraction of A's lap with that number. The
+ * last lap of either, with no following line, keeps B's own pace.
+ */
+function lapStretchMap(aBoundaries: ReturnType<typeof useLapBoundaries>, bBoundaries: ReturnType<typeof useLapBoundaries>): (time: number) => number {
+  const aStarts = new Map<number, number>()
+  for (const boundary of aBoundaries) aStarts.set(boundary.lapNum, boundary.sessionTime)
+  const bLines = [...bBoundaries]
+  return (time: number) => {
+    let lo = 0, hi = bLines.length
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (bLines[mid].sessionTime <= time) lo = mid + 1; else hi = mid }
+    const index = lo - 1
+    if (index < 0) return NaN
+    const bLap = bLines[index]
+    const aStart = aStarts.get(bLap.lapNum)
+    if (aStart === undefined) return NaN
+    const bEnd = bLines[index + 1]?.sessionTime
+    const aEnd = aStarts.get(bLap.lapNum + 1)
+    if (bEnd === undefined || aEnd === undefined || bEnd <= bLap.sessionTime) return aStart + (time - bLap.sessionTime)
+    return aStart + (time - bLap.sessionTime) * (aEnd - aStart) / (bEnd - bLap.sessionTime)
+  }
 }

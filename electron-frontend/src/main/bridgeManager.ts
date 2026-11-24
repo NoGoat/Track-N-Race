@@ -278,7 +278,8 @@ interface NativeEngine extends NativePairEngine {
   playerClose(): void
   playerPlay(): void
   playerPause(): void
-  playerSeek(pct: number, allHistory: boolean, requestId: number, rowTypeMask: number, windowSeconds: number): void
+  playerSeek(pct: number, allHistory: boolean, requestId: number, rowTypeMask: number, windowSeconds: number, mergedTime?: number): void
+  playerSetMergedTimeline?(inputJson: string | null): void
   playerSetSpeed(mult: number): void
   playerSetDriver(driverIndex: number, useRecordedRows: boolean): Promise<void> | void
   playerSetFocusDriver(driverIndex: number): void
@@ -287,11 +288,27 @@ interface NativeEngine extends NativePairEngine {
   playerGetWindowData(windowSeconds: number, requestId: number, rowTypeMask: number): void
   playerExportParquet(srcPath: string, destDir: string, onProgress: (pct: number, stage: string) => void): Promise<{ ok: boolean; folder?: string; error?: string }>
   analysisLoadFile(filePath: string): Promise<{ ok: boolean; error?: string; blocksJson: string; trackId?: number; trackName?: string }>
-  analysisGetLapData(lapNum: number, rowTypeMask: number, secondary: boolean, driverIndex: number): string | null
+  /** Reads on a worker thread; older addon builds return the string directly. */
+  analysisGetLapData(lapNum: number, rowTypeMask: number, secondary: boolean, driverIndex: number): Promise<string | null> | string | null
+  /** The second file's lap as V6 column blocks; null without column history. Older addon builds lack it. */
+  analysisLapHistory?(lapNum: number, rowTypeMask: number, driverIndex: number, v6Types: number[]): Promise<SecondaryLapHistory | null>
+  /** The second file's newest row of each type at or before a time, as JSON lines. Older addon builds lack it. */
+  analysisStream?(callback: (message: SecondaryStreamMessage) => void): void
+  analysisSetStreaming?(enabled: boolean, driverIndex: number, longMask: number, longSeconds: number): void
+  /** The car whose lap-times view is open on the second file (-1: none). Older addon builds lack it. */
+  analysisSetLapHistoryCar?(carIdx: number): void
+  /** The car selected in the second file's Standings tower (-1: none). Older addon builds lack it. */
+  analysisSetFocusDriver?(driverIndex: number): void
+  /** A span of the second file's history as V6 column blocks; null without column history. Older addon builds lack it. */
   analysisCompareLaps(currentLapNum: number, currentSecondary: boolean, currentDriverIndex: number,
     comparisonLapNum: number, comparisonSecondary: boolean, comparisonDriverIndex: number, sectorDelta: boolean): Promise<string | null>
   analysisMap(mode: string, currentLapNum: number, currentSecondary: boolean, currentDriverIndex: number,
     comparisonLapNum: number, comparisonSecondary: boolean, comparisonDriverIndex: number): Promise<string | null>
+  /** lap_trends JSON for the second file; older addon builds lack it. */
+  /** The second file's tyre_sets at a time; older addon builds lack it. */
+  /** Two files' laps on one timeline (merged_lap_timeline JSON); older addon builds lack it. */
+  mergedLapTimeline?(inputJson: string): string
+  /** tyre_wear_history JSON for the second file; older addon builds lack it. */
   analysisCloseFile(): void
   trackMapsAddBuiltins(maps: string[]): number
   trackMapsSetDirectory(directory: string): void
@@ -375,6 +392,29 @@ export interface PlaybackState {
   totalTime: number
   filename: string | null
   isScanning: boolean
+  /** Lap-synced playback (two files): the engine's merged clock. */
+  mergedTime?: number
+}
+
+/** One tick of file B's row stream (SecondaryStream in the addon). */
+export interface SecondaryStreamMessage {
+  json: string
+  binary?: Uint8Array
+  /** B's session time, its followed car's lap there and where that lap started. */
+  time: number
+  lapNum: number
+  lapStart: number
+  /**
+   * A jump: the lap's history from lapStart to `time` (column blocks) comes
+   * first, and the longer families' from longFrom (SecondaryStream::configure).
+   */
+  flush?: boolean
+  history?: Uint8Array
+  longHistory?: Uint8Array
+  longFrom?: number
+  /** Before V6 (no column history): the same spans as packed hot rows and JSON, as A's seek flush. */
+  historyBinary?: Uint8Array
+  historyJson?: string
 }
 
 let activeFilePath: string | null = null
@@ -490,6 +530,11 @@ function releaseSeekForwarding(requestId: number): void {
 function activeFilename(): string | null {
   return activeFilePath ? path.basename(activeFilePath) : null
 }
+
+// The engine's latest playback_state for the open clip, so main's own state
+// updates (the end of a load) keep its position and duration instead of
+// zeroing them.
+let lastEngineState: Partial<PlaybackState> | null = null
 
 function emitPlaybackState(state: Partial<PlaybackState>): void {
   if (!onPlaybackState) return
@@ -620,15 +665,18 @@ function handlePlaybackRow(row: Record<string, unknown>): void {
   if (type === 'playback_state') {
     const total = (row.total_time as number) ?? 0
     const current = (row.current_time as number) ?? 0
-    emitPlaybackState({
+    lastEngineState = {
       isPlaying: !!row.playing,
       speed: (row.speed as number) ?? 1,
       progressPct: total > 0 ? current / total : 0,
       currentTime: ((row.start_time as number) ?? 0) + current,
       totalTime: total,
-    })
+      mergedTime: typeof row.merged_time === 'number' ? row.merged_time : undefined,
+    }
+    emitPlaybackState(lastEngineState)
   } else if (type === 'playback_close') {
     activeFilePath = null
+    lastEngineState = null
     emitPlaybackState({})   // paused, no file
   }
 }
@@ -957,6 +1005,14 @@ export function startBridge(): BridgeStartResult {
       receivePairServiceState(publicJson, persistedJson)
     }, pairDiagnosticCallback)
 
+    // File B's rows at its playhead, streamed like A's (SecondaryStream in
+    // the addon) and forwarded on their own channel.
+    engine.analysisStream?.((message: SecondaryStreamMessage) => {
+      // A flush carries the history the stream continues from: never dropped.
+      if (!rendererVisible && !message.flush) return
+      for (const win of BrowserWindow.getAllWindows())
+        if (!win.isDestroyed()) win.webContents.send('analysis-batch', message)
+    })
     engine.setDiagnosticsEnabled?.(additionalLoggingEnabled)
     engine.setNativeExceptionReporting?.(
       store.get('debug.nodeApiExceptions', false) === true)
@@ -1058,6 +1114,7 @@ export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
   // its playback buffers (playback_close) before the new clip's rows arrive.
   if (activeFilePath) engine.playerClose()
   activeFilePath = filePath
+  lastEngineState = null
   emitPlaybackState({ isScanning: true })
   let result: PlayerLoadResult
   try {
@@ -1071,9 +1128,14 @@ export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
     emitPlaybackState({})
     return result
   }
-  // The engine's own playback_state row (intercepted above) follows with the
-  // real duration; this one just clears the scanning flag deterministically.
-  emitPlaybackState({ isScanning: false })
+  // Clears the scanning flag deterministically. The engine's own playback_state
+  // row (intercepted above) can arrive before this or after it; when it came
+  // first, its position and duration are kept. Zeroing them left the renderer
+  // with no duration until the next engine state (the first play), and the
+  // two-file timeline cannot seek without one.
+  // (Set by handlePlaybackRow during the await; TypeScript still narrows it to null here.)
+  const engineState = lastEngineState as Partial<PlaybackState> | null
+  emitPlaybackState({ ...engineState, isScanning: false })
   return result
 }
 
@@ -1087,7 +1149,7 @@ function afterDriverSwitch(run: () => void): void {
 
 export function playerPlay(): void { engine?.playerPlay() }
 export function playerPause(): void { engine?.playerPause() }
-export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFFFFFF, windowSeconds = 0): void {
+export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFFFFFF, windowSeconds = 0, mergedTime?: number): void {
   const requestId = ++nextPlaybackRequestId
   latestSeekRequestId = requestId
   if (!engine) {
@@ -1112,7 +1174,18 @@ export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFF
     })}`)
   }
   const target = engine
-  afterDriverSwitch(() => target.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds)))
+  // Lap-synced playback (two files): the seek is to that merged time.
+  const merged = typeof mergedTime === 'number' && Number.isFinite(mergedTime) ? mergedTime : undefined
+  afterDriverSwitch(() => merged !== undefined
+    ? target.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds), merged)
+    : target.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds)))
+}
+/**
+ * Lap-synced playback with the second file (the engine's merged clock), from
+ * the timeline input the renderer builds (mergedLapTimeline's); null ends it.
+ */
+export function playerSetMergedTimeline(inputJson: string | null): void {
+  engine?.playerSetMergedTimeline?.(typeof inputJson === 'string' && inputJson.length > 0 ? inputJson : null)
 }
 export function playerSeekInstalled(requestId: number): void {
   releaseSeekForwarding(requestId)
@@ -1238,21 +1311,94 @@ export function setLapHistoryCar(carIdx: number): void {
   engine?.setLapHistoryCar(carIdx)
 }
 
-export function analysisGetLapData(
+export async function analysisGetLapData(
   lapNum: number,
   rowTypeMask = 0xFFFFFFFF,
   source: 'file1' | 'file2' = 'file2',
   driverIndex = -1,
-): unknown | null {
-  if (!engine) return null
-  const json = engine.analysisGetLapData(
-    lapNum, rowTypeMask >>> 0, source === 'file2', driverIndex)
+): Promise<unknown | null> {
+  const json = await analysisGetLapDataJson(lapNum, rowTypeMask, source, driverIndex)
   if (!json) return null
   try {
     return JSON.parse(json)
   } catch {
     return null
   }
+}
+
+/** Two files' laps on one timeline, as merged_lap_timeline JSON (null without the addon call). */
+export function mergedLapTimelineJson(inputJson: string): string | null {
+  return engine?.mergedLapTimeline?.(inputJson) || null
+}
+
+/** One of the second file's laps as V6 column blocks (the history format a seek delivers). */
+export interface SecondaryLapHistory {
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  rowTypeMask: number
+  history: Uint8Array
+}
+
+/**
+ * The second file's lap `lapNum` for one of its cars (-1: its recorded player)
+ * as column blocks, read on a worker thread and passed on as bytes: no JSON is
+ * built or parsed. `v6Types` limits it to those V6 fields (the page's, as
+ * file A's history is); empty reads every field of the families in the mask.
+ * Null when the file has no column history (not V6), the lap is not in it, or
+ * the addon predates this call.
+ */
+export async function analysisLapHistory(
+  lapNum: number, rowTypeMask: number, driverIndex: number, v6Types: number[] = [],
+): Promise<SecondaryLapHistory | null> {
+  if (!engine?.analysisLapHistory) return null
+  const types = Array.isArray(v6Types) ? v6Types.filter(value => Number.isInteger(value) && value > 0 && value <= 24) : []
+  const result = await engine.analysisLapHistory(lapNum, rowTypeMask >>> 0, driverIndex, types)
+  if (!result || !(result.history instanceof Uint8Array) || result.history.byteLength === 0) return null
+  return result
+}
+
+/**
+ * Whether a page shows file B's streamed rows; the car followed in B (-1: its
+ * recorded player); and the families B's longer windows show (row type bits)
+ * with how far back (seconds; -1 the whole race; 0 none). The engine's merged
+ * clock places B on the playhead.
+ */
+export function analysisSetStreaming(enabled: boolean, driverIndex: number, longMask: number, longSeconds: number): void {
+  engine?.analysisSetStreaming?.(enabled === true, Number.isInteger(driverIndex) ? driverIndex : -1,
+    Number.isFinite(longMask) ? longMask >>> 0 : 0, Number.isFinite(longSeconds) ? longSeconds : 0)
+}
+
+/**
+ * The car whose lap-times view is open on the second file (-1: none), as
+ * setLapHistoryCar for the open one: B's stream pushes its driver_lap_history.
+ */
+export function analysisSetLapHistoryCar(carIdx: number): void {
+  engine?.analysisSetLapHistoryCar?.(Number.isInteger(carIdx) ? carIdx : -1)
+}
+
+/**
+ * The car selected in the second file's Standings tower (-1: none), as
+ * playerSetFocusDriver for the open one: B's stream then carries its private
+ * status (ERS, fuel, DRS, brake bias).
+ */
+export function analysisSetFocusDriver(driverIndex: number): void {
+  engine?.analysisSetFocusDriver?.(Number.isSafeInteger(driverIndex) ? driverIndex : -1)
+}
+
+/**
+ * The lap's playback_lap_data JSON, unparsed. The renderer parses it once, as
+ * it does playback laps, instead of main parsing it and IPC cloning the object.
+ */
+export async function analysisGetLapDataJson(
+  lapNum: number,
+  rowTypeMask = 0xFFFFFFFF,
+  source: 'file1' | 'file2' = 'file2',
+  driverIndex = -1,
+): Promise<string | null> {
+  if (!engine) return null
+  return (await engine.analysisGetLapData(
+    lapNum, rowTypeMask >>> 0, source === 'file2', driverIndex)) || null
 }
 
 export async function analysisMap(

@@ -828,6 +828,19 @@ const Settings = memo(function Settings({
           onChange={(tyres) => onPageLayoutsChange({ ...pageLayouts, tyres })}
         />
       </Row>
+      <Row
+        label="Allocation"
+        description="Show the tyre allocation as a list or as the tyre rack when one file is open or in a live session. With a second file open, the rack is always shown, one file over the other."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'list' as const, label: 'List' },
+            { value: 'rack' as const, label: 'Rack' },
+          ]}
+          value={pageLayouts.tyresAllocation}
+          onChange={(tyresAllocation) => onPageLayoutsChange({ ...pageLayouts, tyresAllocation })}
+        />
+      </Row>
       <GroupLabel>Trends</GroupLabel>
       <Row
         label="Chart Layout"

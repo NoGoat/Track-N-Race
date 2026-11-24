@@ -1,4 +1,4 @@
-import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import type { AlignedTable, TelemetryRow, DamageRow } from '../types'
 import type { GraphSection, TyreYAxisGroupState } from '../lib/graphSections'
@@ -9,7 +9,9 @@ import { niceTicks } from '../lib/timechart/ticks'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import { useSideRows } from '../lib/lapDataSide'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { ChartHeader, useChartHeaderSlot, useChartSplit, useSplitLegendState } from '../lib/chartSplit'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 import { TYRE_CHART_Y_AXIS_SIZE } from '../lib/tyreChartLayout'
 import type { TyresPageLayout } from '../app/appConfig'
@@ -106,6 +108,8 @@ const temperatureYTicks = (min: number, max: number) => {
 }
 
 function useTyreTitleWidth() {
+  // Split charts mount the header into a slot after the first render; measure again then.
+  const headerSlot = useChartHeaderSlot()
   const controlsRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLSpanElement>(null)
 
@@ -142,7 +146,7 @@ function useTyreTitleWidth() {
       cancelAnimationFrame(animationFrame)
       observer.disconnect()
     }
-  }, [])
+  }, [headerSlot])
 
   return { controlsRef, titleRef }
 }
@@ -173,15 +177,15 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
   } = props
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
-  const rows = useTelemetryStore(s => (source === 'telemetry'
+  const rows = useSideRows(source === 'telemetry' ? 'telemetry' : 'damageHistory', useTelemetryStore(s => (source === 'telemetry'
     ? coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry
-    : coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory)) as unknown as ColumnView<T>
+    : coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory)) as unknown as ColumnView<T>)
   const comparisonRows = coordinates.comparisonMode
     ? (source === 'telemetry' ? coordinates.lapData?.telemetry : coordinates.lapData?.damageHistory) as ColumnView<T> | undefined
     : undefined
   const axisColor = isDark ? '#7c8098' : '#596168'
   const { controlsRef, titleRef } = useTyreTitleWidth()
-  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const [hiddenSeries, setHiddenSeries] = useSplitLegendState<Record<string, boolean>>({})
   const toggleSeries = useCallback((label: string) => {
     setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
   }, [])
@@ -221,7 +225,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
   const tooltipFormat = useCallback((x: number, values: number[], comparison?: number[]) => {
     let html = `<div style="color:${axisColor};margin-bottom:3px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`
     html += formatValues(values)
-    html += formatChartComparisonTooltip(comparison, coordinates.mode, formatValues)
+    html += formatChartComparisonTooltip(comparison, coordinates.mode, formatValues, coordinates.comparisonLabel)
     return html
   }, [axisColor, coordinates, formatValues])
   const cursorSync = useMemo(() => ({
@@ -235,7 +239,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
 
   return (
     <div className="chart-panel tyre-chart-container flex-1 min-w-0 bg-[var(--bg-panel)] flex flex-col">
-      <div className="tyre-chart-header flex h-[22px] items-center justify-between mb-2 shrink-0">
+      <ChartHeader className="tyre-chart-header flex h-[22px] items-center justify-between mb-2 shrink-0">
         <div ref={controlsRef} className="tyre-chart-controls flex min-w-0 flex-1 items-center gap-0">
           <span ref={titleRef} className="chart-panel-title tyre-chart-title min-w-min shrink-0 whitespace-normal text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</span>
           {props.controls ?? <ChartWindowOverrideSelect />}
@@ -258,7 +262,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
               )
             })}
         </div>}
-      </div>
+      </ChartHeader>
       <div className="flex-1 min-h-0 relative">
         {!hasData ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
@@ -299,8 +303,10 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
 const TyreLineChart = memo(TyreLineChartImpl) as typeof TyreLineChartImpl
 
 /** The Trends page's tyre graph: the Tyres page wear chart, following its settings, with its own header controls. */
-export function StintTyreWearChart({ isDark, wearMode, yAxis, controls }: {
+export function StintTyreWearChart({ isDark, wearMode, yAxis, controls, followSessionClock = true }: {
   isDark: boolean; wearMode: 'wear' | 'life'; yAxis: TyreYAxisGroupState['tyreLife']; controls: ReactNode
+  /** Off for another recording's rows (file B), which run on their own clock. */
+  followSessionClock?: boolean
 }) {
   const rows = useTelemetryStore(s => s.damageHistory)
   const series = useMemo<SeriesDef<DamageRow>[]>(() => {
@@ -312,7 +318,7 @@ export function StintTyreWearChart({ isDark, wearMode, yAxis, controls }: {
   }, [isDark, wearMode])
   return <TyreLineChart<DamageRow> key={wearMode} section="tyreWear" source="damage" title={wearMode === 'life' ? 'Tyre Life' : 'Tyre Wear'}
     unit="%" rows={rows} series={series} isDark={isDark} controls={controls}
-    fastScroll followSessionClock minScrollStallS={1} yRange={yAxis === 'fixed' ? WEAR_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
+    fastScroll followSessionClock={followSessionClock} minScrollStallS={1} yRange={yAxis === 'fixed' ? WEAR_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
 }
 
 function ScopedTyreLineChart<T extends { session_time: number }>(props: ChartProps<T>) {
@@ -352,6 +358,8 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
   const innerSeries = useMemo(() => tempSeries('tyre_temp_inner'), [tempSeries])
   const brakeSeries = useMemo(() => tempSeries('brake_temp'), [tempSeries])
 
+  // Two files open: one chart per row, so each chart's header spans A | B.
+  const chartLayout = useChartSplit() ? 'vertical' : layout
   const life = tyreWearMode === 'life'
   const wearSeries = useMemo((): SeriesDef<DamageRow>[] => [
     { label: 'FL', color: c.fl, getY: (rows, i) => life ? 100 - rows.num('tyre_wear_fl', i) : rows.num('tyre_wear_fl', i), lineWidth: 2 },
@@ -373,7 +381,7 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
   const brakeEl   = <ScopedTyreLineChart<TelemetryRow> section={sections.brake} source="telemetry" title="Brake Temp" unit="°C" rows={telemetry} series={brakeSeries} isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.brakeTemp === 'fixed' ? BRAKE_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
   const wearEl    = <ScopedTyreLineChart<DamageRow> key={tyreWearMode} section={sections.wear} source="damage" title={wearTitle} unit="%" rows={damageHistory} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} fastScroll followSessionClock minScrollStallS={1} yRange={yAxis.tyreLife === 'fixed' ? WEAR_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
 
-  if (layout !== 'row') {
+  if (chartLayout !== 'row') {
     const items = [
       { key: 'surfaceTemp', el: surfaceEl },
       { key: 'innerTemp',   el: innerEl },
@@ -382,7 +390,7 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
     ].filter(({ key }) => visibleGraphs[key as keyof typeof visibleGraphs])
 
     const odd = items.length % 2 !== 0
-    const vertical = layout === 'vertical'
+    const vertical = chartLayout === 'vertical'
 
     return (
       <div

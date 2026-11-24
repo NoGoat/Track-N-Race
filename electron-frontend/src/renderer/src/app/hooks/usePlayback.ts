@@ -29,11 +29,17 @@ export function usePlayback(onClose: () => void) {
   const [exportStage, setExportStage] = useState('')
 
   // New lap blocks mean a newly loaded file: capture where its session starts.
-  // currentTime - progressPct * totalTime is the file's start time, which the
-  // throttled state already carries for the current file.
+  // currentTime - progressPct * totalTime is the file's start time. The state
+  // that carries it can arrive after the blocks (a load's states carry no
+  // duration until the engine's own arrives), so it is taken from the first
+  // state with a duration.
+  const [startCaptured, setStartCaptured] = useState(false)
   if (speedRpmBlocks !== capturedBlocks) {
     setCapturedBlocks(speedRpmBlocks)
-    if (speedRpmBlocks && state) setSessionFileStart(state.currentTime - state.progressPct * state.totalTime)
+    setStartCaptured(false)
+  } else if (speedRpmBlocks && !startCaptured && state && state.totalTime > 0) {
+    setStartCaptured(true)
+    setSessionFileStart(state.currentTime - state.progressPct * state.totalTime)
   }
   useEffect(() => { blocksRef.current = speedRpmBlocks }, [speedRpmBlocks])
 
@@ -166,17 +172,19 @@ export function usePlayback(onClose: () => void) {
     console.log(`[close-trace] ${new Date().toISOString()} renderer state cleared; sending player:close`)
     window.playerBridge.close()
   }, [onClose])
+  // Opens a recording by path; selectFile and the second-file promotion both use it.
+  const loadFile = useCallback((file: string) => {
+    setState(previous => ({ ...(previous ?? IDLE_PLAYBACK), isScanning: true }))
+    window.playerBridge.load(file)
+  }, [])
   const selectFile = useCallback(async () => {
     const file = await window.fsBridge.selectTNRDFile()
-    if (file) {
-      setState(previous => ({ ...(previous ?? IDLE_PLAYBACK), isScanning: true }))
-      window.playerBridge.load(file)
-    }
-  }, [])
+    if (file) loadFile(file)
+  }, [loadFile])
 
   return {
     close, confirmOpenFilePath, currentLapNum, exportError, exportProgress, exportStage,
-    exportState, exportParquet, loadError, seekBackward, seekForward, seekProgress, selectFile, setSpeed,
+    exportState, exportParquet, loadError, loadFile, seekBackward, seekForward, seekProgress, selectFile, setSpeed,
     sessionFileStart, setConfirmOpenFilePath, setLoadError,
     speedRpmBlocks, state, togglePlay,
   }

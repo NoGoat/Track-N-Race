@@ -4,7 +4,8 @@ import type { DriverInfo, DriverLapHistoryLap } from '../types'
 import { useModalPresenceValue } from '../lib/useModalPresence'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { fmtMs, fmtSector } from '../lib/lapTimeFormat'
-import { claimLapHistoryCar } from '../lib/lapHistoryCar'
+import { claimLapHistoryCar, claimSecondaryLapHistoryCar } from '../lib/lapHistoryCar'
+import { useSecondaryState } from '../lib/secondaryStream'
 
 interface Target {
   carIdx: number
@@ -16,18 +17,22 @@ interface Props {
   // The Standings fastest-lap holder, so the modal agrees with its tinted row.
   fastestLapCarIdx: number | null
   onClose: () => void
+  /** Whose laps: the open file's (default) or the second file's. */
+  file?: 'a' | 'b'
 }
 
-export default function DriverLapsDialog({ target, fastestLapCarIdx, onClose }: Props) {
+export default function DriverLapsDialog({ target, fastestLapCarIdx, onClose, file = 'a' }: Props) {
   const { mounted, visible, transitionTargetRef, value: shown } = useModalPresenceValue(target)
   const carIdx = target?.carIdx ?? null
-  // Tell the engine which car's laps are wanted while open. It pushes them
-  // now and again only when they change; nothing here polls.
+  // Tell the engine (or B's stream) which car's laps are wanted while open.
+  // It pushes them now and again only when they change; nothing here polls.
   useEffect(() => {
     if (carIdx === null) return
-    return claimLapHistoryCar(carIdx)
-  }, [carIdx])
-  const pushed = useTelemetryStore(s => s.driverLapHistory)
+    return file === 'b' ? claimSecondaryLapHistoryCar(carIdx) : claimLapHistoryCar(carIdx)
+  }, [carIdx, file])
+  const pushedA = useTelemetryStore(s => s.driverLapHistory)
+  const pushedB = useSecondaryState().driverLapHistory
+  const pushed = file === 'b' ? pushedB : pushedA
   const shownCar = shown?.carIdx ?? null
   const history = pushed && pushed.car_idx === shownCar ? pushed : null
   const loaded = history !== null

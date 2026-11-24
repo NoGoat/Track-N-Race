@@ -349,6 +349,9 @@ struct PlaybackStateRow {
     // Absolute session_time of the recording's first row. current_time is
     // relative to it; consumers needing the absolute cursor add the two.
     float       start_time{};
+    // Lap-synced playback (Engine::playerSetMergedTimeline): the merged
+    // clock. Absent otherwise.
+    std::optional<double> merged_time;
 };
 
 struct TypeOnlyRow {

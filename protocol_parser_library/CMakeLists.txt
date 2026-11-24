@@ -102,7 +102,9 @@ add_library(tnrp STATIC
     src/AnalysisMap.cpp
     src/AnalysisMapPaint.cpp
     src/LapDelta.cpp
+    src/DriverLapHistory.cpp
     src/LapMeasures.cpp
+    src/MergedLapTimeline.cpp
     src/LiveV6Store.cpp
     src/Strategy.cpp
     src/Parser.cpp

@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal, flushSync } from 'react-dom'
 import { type FormatOptionLabelMeta, type GroupBase, type SingleValue } from 'react-select'
 import Select from '../lib/AnimatedSelect'
-import { AlertTriangle, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Disc3, Eye, Gauge, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, Palette, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RotateCcw, Rows3, SeparatorVertical, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Disc3, Eye, Gauge, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, Palette, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RotateCcw, Rows3, SeparatorVertical, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_COMBINED_BY_ID, ANALYZE_METRIC_BY_ID, ANALYZE_TYRE_CORNERS, ANALYZE_TYRE_ROWS, DEFAULT_ANALYZE_CONFIG,
@@ -15,20 +15,19 @@ import {
 import type { AnalysisYAxisState } from '../lib/graphSections'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
-import { BUTTON_CLASS, PRIMARY_BUTTON_CLASS } from '../lib/buttonStyles'
+import { BUTTON_CLASS } from '../lib/buttonStyles'
 import { useLabels } from '../lib/labels'
 import { tyreCompoundColor } from '../lib/tyreCompounds'
-import { useModalPresence, useModalPresenceValue } from '../lib/useModalPresence'
+import { useModalPresence } from '../lib/useModalPresence'
 import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
-import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
+import { mergeAnalyzeLapData, parseAnalyzeLapData } from '../lib/analyzeLapData'
 import { parseAnalysisMapResult, type AnalysisMapResult } from '../lib/analyzeMapPaint'
 import { buildLapProgressMap, findSectorSplits, interpolateDistanceAtTime, interpolateLapElapsed, type LapProgressMap } from '../lib/lapDelta'
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../lib/playbackCursor'
 import { useTelemetryStore } from '../stores/telemetryStore'
-import { emptyView, viewOfRows } from '../lib/columnStore'
+import { emptyView } from '../lib/columnStore'
 import type {
   AnalysisDriverLapCatalog, AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData,
-  DamageRow, LapRow, MotionExRow, MotionRow, PlayerPositionPoint, StatusRow, TelemetryRow,
 } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
 import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
@@ -50,7 +49,6 @@ interface Props {
   compareDriver: AnalysisDriverSelection | null
   onCompareDriverChange: (driver: AnalysisDriverSelection | null) => void
   secondaryFile: SecondaryFileData | null
-  onSecondaryFileChange: (file: SecondaryFileData | null) => void
   fixedLapMode: AnalyzeFixedLapMode
   onFixedLapModeChange: (mode: AnalyzeFixedLapMode) => void
   mapDimmed: boolean
@@ -92,12 +90,21 @@ interface ComparisonLapOption extends Omit<LapOption, 'value'> {
 }
 export interface SecondaryFileData {
   filename: string
+  /** Full path, so closing file A can promote this file to the main recording. */
+  filePath: string
   trackId: number | null
+  trackName: string | null
   blocks: LapBlock[]
   fastestLapNum: number | null
   lapTimesByNum: Record<number, number>
   deltaAvailable: boolean
   analysisDrivers: AnalysisDriverLapCatalog[]
+  /**
+   * The car the other pages follow in this file (the title bar's driver
+   * picker); -1 is the recorded player. `blocks`, `lapTimesByNum` and
+   * `fastestLapNum` are that car's (secondaryFileForDriver).
+   */
+  driverIndex: number
 }
 interface AnalysisDriverOption extends AnalysisDriverSelection, DriverRowFields {
   value: string
@@ -151,23 +158,6 @@ function easeInOutCubic(progress: number): number {
   return progress < 0.5
     ? 4 * progress * progress * progress
     : 1 - Math.pow(-2 * progress + 2, 3) / 2
-}
-
-// The engine's analysisLoadFile JSON; each field is checked before use.
-interface AnalysisFilePayload {
-  laps?: Array<{ lapNum: number; lapTimeMs: number }>
-  blocks?: LapBlock[]
-  fastestLapNum?: number
-  lapDistanceAvailable?: boolean
-  deltaAvailable?: boolean
-  analysisDrivers?: AnalysisDriverLapCatalog[]
-}
-
-interface PendingCircuitMismatch {
-  filePath: string
-  data: AnalysisFilePayload
-  trackId: number | null
-  trackName: string
 }
 
 interface AnalysisViewTransition {
@@ -632,39 +622,6 @@ const AnalyzeComparisonGroup = memo(function AnalyzeComparisonGroup({
 })
 
 // Engine JSON for one lap (playback_lap_data); validated below before use.
-interface LapDataPayload {
-  type?: string
-  lapNum: number
-  startSessionTime: number
-  endSessionTime: number
-  telemetry?: TelemetryRow[]
-  motionHistory?: MotionRow[]
-  motionExHistory?: MotionExRow[]
-  statusHistory?: StatusRow[]
-  damageHistory?: DamageRow[]
-  lapProgress?: LapRow[]
-  playerPositions?: PlayerPositionPoint[]
-  rowTypeMask: number
-}
-
-function parseAnalyzeLapData(raw: unknown): AnalyzeLapData | null {
-  const payload = raw as LapDataPayload | null | undefined
-  if (!payload || payload.type !== 'playback_lap_data' || !Number.isFinite(payload.lapNum)) return null
-  return {
-    lapNum: payload.lapNum,
-    startSessionTime: payload.startSessionTime,
-    endSessionTime: payload.endSessionTime,
-    telemetry: viewOfRows('telemetry', payload.telemetry ?? []),
-    motion: viewOfRows('motion', payload.motionHistory ?? []),
-    motionEx: viewOfRows('motion_ex', payload.motionExHistory ?? []),
-    statusHistory: viewOfRows('status', payload.statusHistory ?? []),
-    damageHistory: viewOfRows('damage', payload.damageHistory ?? []),
-    lapProgress: viewOfRows('lap', payload.lapProgress ?? [], false),
-    playerPositions: payload.playerPositions ?? [],
-    rowTypeMask: Number.isFinite(payload.rowTypeMask) ? payload.rowTypeMask >>> 0 : 0xFFFFFFFF,
-  }
-}
-
 // Engine JSON from analysisCompareLaps; validated below before use.
 interface DeltaDataPayload {
   currentLapNum: number
@@ -971,7 +928,7 @@ function useSidebarWidth(ref: { current: HTMLElement | null }, open: boolean, wi
 export default function AnalyzeScreen({
   isDark, playbackFilename, currentLapNum, compareLapNum, onCompareLapChange,
   compareDriver, onCompareDriverChange,
-  secondaryFile, onSecondaryFileChange,
+  secondaryFile,
   fixedLapMode, onFixedLapModeChange, mapDimmed, reduceAnimations, sectorColors,
   onDataMaskChange, yAxis,
 }: Props) {
@@ -1011,7 +968,6 @@ export default function AnalyzeScreen({
   const fastestLapNum = useTelemetryStore(s => s.fastestLapNum)
   const lapTimesByNum = useTelemetryStore(s => s.lapTimesByNum)
   const deltaAvailable = useTelemetryStore(s => s.analyzeDeltaAvailable)
-  const primaryTrackName = useTelemetryStore(s => s.playbackTrackName)
   const { tn } = useLabels()
   const effectiveCurrentLapNum = currentLapNum ?? liveLapNum
   const resolvedCurrentLabel = config.currentLabel.trim() || DEFAULT_CURRENT_LABEL
@@ -1025,12 +981,8 @@ export default function AnalyzeScreen({
   const lapBDriver = fixedLapMode.lapBDriver
   const [analysisLapCache, setAnalysisLapCache] = useState<Record<string, AnalyzeLapData>>({})
   const [deltaData, setDeltaData] = useState<AnalyzeDeltaData | null>(null)
-  const [secondaryLoading, setSecondaryLoading] = useState(false)
-  const [secondaryError, setSecondaryError] = useState<string | null>(null)
   const [controlsHelpOpen, setControlsHelpOpen] = useState(false)
   const { mounted: controlsHelpMounted, visible: controlsHelpVisible, transitionTargetRef: controlsHelpTargetRef } = useModalPresence(controlsHelpOpen)
-  const [pendingCircuitMismatch, setPendingCircuitMismatch] = useState<PendingCircuitMismatch | null>(null)
-  const { mounted: circuitMismatchMounted, visible: circuitMismatchVisible, transitionTargetRef: circuitMismatchTargetRef, value: displayedCircuitMismatch } = useModalPresenceValue(pendingCircuitMismatch)
   const [mapFocus, setMapFocus] = useState<AnalyzeMapFocus | null>(null)
   const mapFocusIdRef = useRef(0)
   const activeAnalysisViewTransitionRef = useRef<AnalysisViewTransition | null>(null)
@@ -1581,81 +1533,47 @@ export default function AnalyzeScreen({
   const deltaPositiveColor = deltaSeries?.color ?? DEFAULT_DELTA_POSITIVE_COLOR
   const deltaNegativeColor = deltaSeries?.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR
 
-  const resetAnalysisDrivers = useCallback(() => {
-    onCompareDriverChange(null)
-    onFixedLapModeChange({ ...fixedLapMode, lapADriver: null, lapBDriver: null })
-  }, [fixedLapMode, onCompareDriverChange, onFixedLapModeChange])
-
-  const applySecondaryFile = useCallback((filePath: string, data: AnalysisFilePayload, trackId: number | null) => {
-    const times: Record<number, number> = {}
-    for (const lap of data?.laps ?? []) {
-      if (Number.isFinite(lap.lapNum) && Number.isFinite(lap.lapTimeMs) && lap.lapTimeMs > 0) {
-        times[lap.lapNum] = lap.lapTimeMs
-      }
-    }
-    onSecondaryFileChange({
-      filename: filePath.split(/[\\/]/).pop() ?? filePath,
-      trackId,
-      blocks: Array.isArray(data?.blocks) ? data.blocks : [],
-      fastestLapNum: typeof data.fastestLapNum === 'number' && Number.isFinite(data.fastestLapNum) ? data.fastestLapNum : null,
-      lapTimesByNum: times,
-      deltaAvailable: data?.lapDistanceAvailable === true || data?.deltaAvailable === true,
-      analysisDrivers: Array.isArray(data?.analysisDrivers) ? data.analysisDrivers : [],
-    })
+  // File B is loaded and closed from the title bar (useSecondaryFile). When it
+  // changes, drop what Analysis cached or picked from the previous one.
+  const secondaryFilename = secondaryFile?.filename ?? null
+  const [lapCacheSecondary, setLapCacheSecondary] = useState(secondaryFilename)
+  if (lapCacheSecondary !== secondaryFilename) {
+    setLapCacheSecondary(secondaryFilename)
     setAnalysisLapCache({})
+  }
+  const secondaryResetRef = useRef({
+    fixedLapMode, compareDriver, lapASource, lapBSource, lapADriver, lapBDriver,
+    onCompareLapChange, onCompareDriverChange, onFixedLapModeChange,
+  })
+  useEffect(() => {
+    secondaryResetRef.current = {
+      fixedLapMode, compareDriver, lapASource, lapBSource, lapADriver, lapBDriver,
+      onCompareLapChange, onCompareDriverChange, onFixedLapModeChange,
+    }
+  })
+  const appliedSecondaryRef = useRef(secondaryFilename)
+  useEffect(() => {
+    if (appliedSecondaryRef.current === secondaryFilename) return
+    appliedSecondaryRef.current = secondaryFilename
     analysisRequestedRef.current.clear()
-    onCompareLapChange(null)
-    resetAnalysisDrivers()
-  }, [onCompareLapChange, onSecondaryFileChange, resetAnalysisDrivers])
-
-  const loadSecondaryFile = useCallback(async () => {
-    const filePath = await window.fsBridge.selectTNRDFile()
-    if (!filePath) return
-    setSecondaryLoading(true)
-    setSecondaryError(null)
-    const result = await window.analysisBridge.loadFile(filePath)
-    setSecondaryLoading(false)
-    if (!result.ok) {
-      onSecondaryFileChange(null)
-      setAnalysisLapCache({})
-      analysisRequestedRef.current.clear()
-      onCompareLapChange(null)
-      resetAnalysisDrivers()
-      setSecondaryError(result.error ?? 'The recording could not be opened.')
+    const s = secondaryResetRef.current
+    s.onCompareLapChange(null)
+    if (secondaryFilename !== null) {
+      s.onCompareDriverChange(null)
+      s.onFixedLapModeChange({ ...s.fixedLapMode, lapADriver: null, lapBDriver: null })
       return
     }
-    const data = (result.data ?? {}) as AnalysisFilePayload
-    if (primaryTrackId !== null && Number.isFinite(result.trackId) && result.trackId !== primaryTrackId) {
-      setPendingCircuitMismatch({
-        filePath,
-        data,
-        trackId: Number.isFinite(result.trackId) ? result.trackId! : null,
-        trackName: result.trackName || `Circuit ${result.trackId}`,
-      })
-      return
-    }
-    applySecondaryFile(filePath, data, Number.isFinite(result.trackId) ? result.trackId! : null)
-  }, [applySecondaryFile, onCompareLapChange, onSecondaryFileChange, primaryTrackId, resetAnalysisDrivers])
-
-  const clearSecondaryFile = useCallback(() => {
-    window.analysisBridge.closeFile()
-    onSecondaryFileChange(null)
-    setAnalysisLapCache({})
-    analysisRequestedRef.current.clear()
-    onCompareLapChange(null)
-    setSecondaryError(null)
-    setPendingCircuitMismatch(null)
-    if (compareDriver?.source === 'file2') onCompareDriverChange(null)
-    if (lapASource === 'file2' || lapBSource === 'file2') {
-      onFixedLapModeChange({
-        ...fixedLapMode,
-        lapA: lapASource === 'file2' ? null : fixedLapMode.lapA,
-        lapB: lapBSource === 'file2' ? null : fixedLapMode.lapB,
-        lapADriver: lapASource === 'file2' ? null : lapADriver,
-        lapBDriver: lapBSource === 'file2' ? null : lapBDriver,
+    if (s.compareDriver?.source === 'file2') s.onCompareDriverChange(null)
+    if (s.lapASource === 'file2' || s.lapBSource === 'file2') {
+      s.onFixedLapModeChange({
+        ...s.fixedLapMode,
+        lapA: s.lapASource === 'file2' ? null : s.fixedLapMode.lapA,
+        lapB: s.lapBSource === 'file2' ? null : s.fixedLapMode.lapB,
+        lapADriver: s.lapASource === 'file2' ? null : s.lapADriver,
+        lapBDriver: s.lapBSource === 'file2' ? null : s.lapBDriver,
       })
     }
-  }, [compareDriver?.source, fixedLapMode, lapADriver, lapASource, lapBDriver, lapBSource, onCompareDriverChange, onCompareLapChange, onFixedLapModeChange, onSecondaryFileChange])
+  }, [secondaryFilename])
 
   const [cacheFilename, setCacheFilename] = useState(playbackFilename)
   if (cacheFilename !== playbackFilename) {
@@ -1947,28 +1865,6 @@ export default function AnalyzeScreen({
                     isSearchable={false} menuPortalTarget={document.body}
                   />
                 </div>
-              </div>}
-              {playbackFilename && blocks && <div className="mb-1 space-y-1">
-                <div className="h-8 flex items-center gap-1 min-w-0">
-                  <span
-                    className={`flex-1 min-w-0 truncate text-[11px] ${secondaryFile ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}
-                    title={secondaryFile?.filename}
-                  >
-                    {secondaryLoading ? 'Loading file' : secondaryFile?.filename ?? 'Choose file'}
-                  </span>
-                  <button
-                    type="button" onClick={loadSecondaryFile} disabled={secondaryLoading}
-                    title={secondaryFile ? 'Replace Secondary File' : 'Open Secondary File'}
-                    aria-label={secondaryFile ? 'Replace Secondary File' : 'Open Secondary File'}
-                    className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40"
-                  ><Upload size={14} /></button>
-                  {secondaryFile && <button
-                    type="button" onClick={clearSecondaryFile} disabled={secondaryLoading}
-                    title="Clear Secondary File" aria-label="Clear Secondary File"
-                    className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[#d44252] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40"
-                  ><X size={13} /></button>}
-                </div>
-                {secondaryError && <div className="px-1 text-[9px] text-[#d44252]">{secondaryError}</div>}
               </div>}
               <div className="analyze-lap-mode-switch -mx-3">
                 <div
@@ -2350,41 +2246,6 @@ export default function AnalyzeScreen({
         </div>
       </div>, document.body)}
 
-      {circuitMismatchMounted && displayedCircuitMismatch && <div
-        ref={circuitMismatchTargetRef}
-        data-state={circuitMismatchVisible ? 'open' : 'closed'}
-        className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
-        role="dialog" aria-modal="true" aria-labelledby="analysis-circuit-mismatch-title"
-      >
-        <div className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[500px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0 select-none">
-            <div id="analysis-circuit-mismatch-title" className="text-xs font-mono font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
-              <AlertTriangle size={15} className="text-amber-500" />
-              <span>Circuit Mismatch</span>
-            </div>
-            <button onClick={() => setPendingCircuitMismatch(null)} aria-label="Cancel loading Secondary File" className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#d44252] transition-colors">
-              <X size={18} />
-            </button>
-          </div>
-
-          <div className="p-6 flex flex-col gap-4">
-            <p className="text-sm font-semibold text-[var(--text-primary)]">The Secondary File was recorded on a different circuit.</p>
-            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">Lap comparisons may not align correctly. You can cancel or load the file anyway.</p>
-            <div className="p-3 rounded-lg bg-[var(--bg-card)]/30 border border-[var(--border)] text-xs font-mono text-[var(--text-secondary)] space-y-2">
-              <div><span className="text-[var(--text-muted)]">Loaded File: </span><span className="font-semibold">{primaryTrackName || `Circuit ${primaryTrackId}`}</span></div>
-              <div><span className="text-[var(--text-muted)]">Selected File: </span><span className="font-semibold">{displayedCircuitMismatch.trackName}</span></div>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
-            <button onClick={() => setPendingCircuitMismatch(null)} className={BUTTON_CLASS}>Cancel</button>
-            <button onClick={() => {
-              applySecondaryFile(displayedCircuitMismatch.filePath, displayedCircuitMismatch.data, displayedCircuitMismatch.trackId)
-              setPendingCircuitMismatch(null)
-            }} className={PRIMARY_BUTTON_CLASS}>Load Anyway</button>
-          </div>
-        </div>
-      </div>}
     </div>
   )
 }

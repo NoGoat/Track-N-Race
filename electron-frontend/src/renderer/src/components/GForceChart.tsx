@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import { useSideRows } from '../lib/lapDataSide'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import { alignedFromView, sessionTimeAt, type ColumnView } from '../lib/columnStore'
@@ -7,6 +8,7 @@ import type { AlignedTable, MotionRow } from '../types'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { ChartHeader, useSplitLegendState } from '../lib/chartSplit'
 import { themeSeriesColor } from '../lib/themeColors'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 import { MISC_CHART_Y_AXIS_SIZE } from '../lib/miscChartLayout'
@@ -56,7 +58,7 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30, mode =
     ...series,
     color: series.label === 'Lateral' ? colorLat : colorLong,
   })), [colorLat, colorLong, selectedSeries])
-  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const [hiddenSeries, setHiddenSeries] = useSplitLegendState<Record<string, boolean>>({})
   const toggleSeries = useCallback((label: string) => {
     setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
   }, [])
@@ -69,7 +71,7 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30, mode =
     ...series,
     visible: !hiddenSeries[series.label],
   })), [hiddenSeries, themedSeries])
-  const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotion : s.motion)
+  const data = useSideRows('motion', useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotion : s.motion))
   const getTableValues = useCallback((rows: ColumnView<MotionRow>, i: number) => selectedSeries.map(series => series.getY(rows, i)), [selectedSeries])
   const emptyTableData = useMemo((): AlignedTable => [
     new Float64Array(0),
@@ -93,7 +95,7 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30, mode =
     return [
       `<div style="color:${tooltipTimeColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(v),
-      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
+      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues, coordinates.comparisonLabel),
     ].join('')
   }, [coordinates, formatValues, tooltipTimeColor])
   const cursorSync = useMemo(() => ({
@@ -107,7 +109,7 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30, mode =
 
   return (
     <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
-      <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
+      <ChartHeader className="flex h-[22px] items-center justify-between mb-3 shrink-0">
         <div className="flex items-center gap-0">
           <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{modeConfig.title}</h2>
           <ChartWindowOverrideSelect />
@@ -123,7 +125,7 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30, mode =
             </span>)}
             <span className="text-[var(--text-secondary)]">{modeConfig.directionHint}</span>
         </div>}
-      </div>
+      </ChartHeader>
       <div className="flex-1 min-h-0 relative">
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>

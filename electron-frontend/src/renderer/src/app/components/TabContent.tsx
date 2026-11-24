@@ -7,8 +7,7 @@ import InputsChart from '../../components/InputsChart'
 import GForceChart from '../../components/GForceChart'
 import RideHeightChart from '../../components/RideHeightChart'
 import SteeringChart from '../../components/SteeringChart'
-import RacePanel from '../../components/RacePanel'
-import TimingTower from '../../components/TimingTower'
+import StandingsPage from '../../components/StandingsPage'
 import ThermalPanel from '../../components/ThermalPanel'
 import DamagePanel from '../../components/DamagePanel'
 import PowerBreakdownChart from '../../components/PowerBreakdownChart'
@@ -18,6 +17,7 @@ import SessionPanel from '../../components/SessionPanel'
 import StrategyPanel from '../../components/StrategyPanel'
 import TrendPanel from '../../components/TrendPanel'
 import DamagePage from '../../components/DamagePage'
+import FileSplit, { useSecondaryLapState } from './FileSplit'
 import AnalyzeScreen, { type AnalysisDriverSelection, type AnalyzeFixedLapMode, type SecondaryFileData } from '../../components/AnalyzeScreen'
 import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
 import type { CoreLayout, DamageLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TrendsLayout, TyresLayout } from '../appConfig'
@@ -74,7 +74,6 @@ interface TabContentProps {
   analyzeCompareDriver: AnalysisDriverSelection | null
   onAnalyzeCompareDriverChange: (driver: AnalysisDriverSelection | null) => void
   analyzeSecondaryFile: SecondaryFileData | null
-  onAnalyzeSecondaryFileChange: (file: SecondaryFileData | null) => void
   analyzeFixedLapMode: AnalyzeFixedLapMode
   onAnalyzeFixedLapModeChange: (mode: AnalyzeFixedLapMode) => void
   onAnalyzeDataMaskChange: (mask: number) => void
@@ -88,6 +87,10 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
 }: TabContentProps) {
   const coordinates = useChartCoordinates()
   const splitPedals = pageLayouts.inputPedals === 'split'
+  // Two files open: Inputs charts stack one per row so each splits A | B under
+  // the page's column headers (side-by-side cells would read A B | A B).
+  const secondaryLap = useSecondaryLapState()
+  const inputVertical = pageLayouts.input === 'vertical' || secondaryLap !== null
   const combinedPedalMode = pageLayouts.inputPedals === 'combined2' ? 'combined2' : 'combined'
   const combinedPedalView = combinedPedalMode === 'combined2'
     ? graphView.inputThrottleBrakeOverlay
@@ -153,11 +156,6 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
     rr: graphView.tyreCardRR,
   }), [graphView.tyreCardFL, graphView.tyreCardFR, graphView.tyreCardRL, graphView.tyreCardRR])
 
-  const selectedCar        = timing?.cars.find(c => c.idx === selectedIdx) ?? null
-  const playerDriver       = participants?.drivers.find(d => d.idx === (timing?.player_idx ?? -1)) ?? null
-  const selectedDriver     = participants?.drivers.find(d => d.idx === selectedIdx) ?? playerDriver
-  const selectedCarStatus  = allStatus?.cars.find(c => c.idx === selectedIdx) ?? null
-
   return (
     <>
       {tab === 'stint' && <TrendPanel isDark={isDark} compact={compact.stintSummary} layout={pageLayouts.trends} visible={trendsLayout} wearMode={tyreWearMode} tyreYAxis={chartYAxis.tyres.tyreLife}
@@ -195,12 +193,12 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             )}
             {showSpeedChartPanel && (
               <div className={`${speedChartFlex} min-h-0`}>
-                <SpeedRpmChart isDark={isDark} view={graphView.overviewTelemetry} windowSeconds={seconds} />
+                <FileSplit><SpeedRpmChart isDark={isDark} view={graphView.overviewTelemetry} windowSeconds={seconds} /></FileSplit>
               </div>
             )}
             {showThermalPanel && (
               <div className={thermalCompactCards ? 'shrink-0' : `${thermalFlex} min-h-0`}>
-                <ThermalPanel latest={tyreView === 'cards' ? latest : null} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={isDark} tyresLevel={compact.overviewTyres} graphViews={overviewThermalGraphViews} cardViews={overviewThermalCardViews} windowSeconds={seconds} yAxis={chartYAxis.overview} />
+                {tyreView === 'graphs' ? <FileSplit><ThermalPanel latest={null} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={isDark} tyresLevel={compact.overviewTyres} graphViews={overviewThermalGraphViews} cardViews={overviewThermalCardViews} windowSeconds={seconds} yAxis={chartYAxis.overview} /></FileSplit> : <ThermalPanel latest={tyreView === 'cards' ? latest : null} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={isDark} tyresLevel={compact.overviewTyres} graphViews={overviewThermalGraphViews} cardViews={overviewThermalCardViews} windowSeconds={seconds} yAxis={chartYAxis.overview} />}
               </div>
             )}
             {visibleDamageCount > 0 && (
@@ -213,63 +211,22 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
         </ChartCursorSyncProvider>
         )
       })()}
-      {tab === 'timing_tower' && (() => {
-        const showTower = standingsLayout?.showTimingTower ?? true
-        const showTiming = standingsLayout?.cards?.timing ?? true
-        const showErs = standingsLayout?.cards?.energyRecovery ?? true
-        const showStrategy = standingsLayout?.cards?.strategy ?? true
-        const anySidebar = showTiming || showErs || showStrategy
-        const sidebarPct = standingsLayout?.sidebarPct ?? 28
-
-        if (!showTower && !anySidebar) {
-          return null
-        }
-
-        return (
-          <div className="h-full flex flex-col overflow-hidden">
-            <div className="flex-1 min-h-0 flex bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-x divide-[var(--border)]">
-              {showTower && (
-                <div
-                  style={anySidebar ? { width: `${100 - sidebarPct}%` } : undefined}
-                  className={`${anySidebar ? 'shrink-0' : 'flex-1'} min-w-0 overflow-auto`}
-                >
-                  <TimingTower
-                    timing={timing}
-                    participants={participants}
-                    allStatus={allStatus}
-                    fastestLapCarIdx={fastestLapCarIdx}
-                    selectedIdx={selectedIdx}
-                    onSelectDriver={onSelectDriver}
-                    isDark={isDark}
-                    animationsEnabled={!reduceAnimations}
-                    compact={compact.standingsTable}
-                  />
-                </div>
-              )}
-              {anySidebar && (
-                <div
-                  style={showTower ? { width: `${sidebarPct}%` } : undefined}
-                  className={`${showTower ? 'shrink-0' : 'flex-1'} overflow-y-auto`}
-                >
-                  <RacePanel
-                    lap={lap}
-                    status={status}
-                    selectedCar={selectedCar}
-                    selectedDriver={selectedDriver}
-                    selectedCarStatus={selectedCarStatus}
-                    playerIdx={timing?.player_idx ?? null}
-                    isDark={isDark}
-                    cards={standingsLayout?.cards}
-                    compactTiming={compact.standingsTiming}
-                    compactErs={compact.standingsErs}
-                    compactStrategy={compact.standingsStrategy}
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-        )
-      })()}
+      {tab === 'timing_tower' && (
+        <StandingsPage
+          standingsLayout={standingsLayout}
+          compact={compact}
+          isDark={isDark}
+          reduceAnimations={reduceAnimations}
+          lap={lap}
+          status={status}
+          timing={timing}
+          participants={participants}
+          allStatus={allStatus}
+          fastestLapCarIdx={fastestLapCarIdx}
+          selectedIdx={selectedIdx}
+          onSelectDriver={onSelectDriver}
+        />
+      )}
       {tab === 'session' && (
         <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
           <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={isDark} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} compactHeader={compact.sessionHeader} compactCards={compact.sessionCards} compactWeather={compact.sessionWeather} compactEvents={compact.sessionEvents} compactProximity={compact.sessionProximity} layout={sessionLayout} />
@@ -278,32 +235,32 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
       {tab === 'input' && (
         <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
         <div className="h-full flex flex-col overflow-hidden">
-          {pageLayouts.input === 'vertical' ? (
+          {inputVertical ? (
             <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
               {inputLayout.showGear && (
                 <div className="flex-1 min-h-0">
-                  <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
+                  <FileSplit><GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} /></FileSplit>
                 </div>
               )}
               {splitPedals ? <>
                 {inputLayout.showAccelerator && (
                   <div className="flex-1 min-h-0">
-                    <InputsChart key="accelerator" mode="accelerator" isDark={isDark} view={graphView.inputAccelerator} windowSeconds={seconds} />
+                    <FileSplit><InputsChart key="accelerator" mode="accelerator" isDark={isDark} view={graphView.inputAccelerator} windowSeconds={seconds} /></FileSplit>
                   </div>
                 )}
                 {inputLayout.showBrake && (
                   <div className="flex-1 min-h-0">
-                    <InputsChart key="brake" mode="brake" isDark={isDark} view={graphView.inputBrake} windowSeconds={seconds} />
+                    <FileSplit><InputsChart key="brake" mode="brake" isDark={isDark} view={graphView.inputBrake} windowSeconds={seconds} /></FileSplit>
                   </div>
                 )}
               </> : showCombinedPedals && (
                 <div className="flex-1 min-h-0">
-                  <InputsChart key={combinedPedalMode} mode={combinedPedalMode} showAccelerator={inputLayout.showAccelerator} showBrake={inputLayout.showBrake} isDark={isDark} view={combinedPedalView} windowSeconds={seconds} />
+                  <FileSplit><InputsChart key={combinedPedalMode} mode={combinedPedalMode} showAccelerator={inputLayout.showAccelerator} showBrake={inputLayout.showBrake} isDark={isDark} view={combinedPedalView} windowSeconds={seconds} /></FileSplit>
                 </div>
               )}
               {inputLayout.showSteering && (
                 <div className="flex-1 min-h-0">
-                  <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
+                  <FileSplit><SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} /></FileSplit>
                 </div>
               )}
             </div>
@@ -314,12 +271,12 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
                   <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
                     {inputLayout.showAccelerator && (
                       <div className="flex-1 min-w-0 min-h-0">
-                        <InputsChart key="accelerator" mode="accelerator" isDark={isDark} view={graphView.inputAccelerator} windowSeconds={seconds} />
+                        <FileSplit><InputsChart key="accelerator" mode="accelerator" isDark={isDark} view={graphView.inputAccelerator} windowSeconds={seconds} /></FileSplit>
                       </div>
                     )}
                     {inputLayout.showBrake && (
                       <div className="flex-1 min-w-0 min-h-0">
-                        <InputsChart key="brake" mode="brake" isDark={isDark} view={graphView.inputBrake} windowSeconds={seconds} />
+                        <FileSplit><InputsChart key="brake" mode="brake" isDark={isDark} view={graphView.inputBrake} windowSeconds={seconds} /></FileSplit>
                       </div>
                     )}
                   </div>
@@ -328,12 +285,12 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
                   <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
                     {inputLayout.showGear && (
                       <div className="flex-1 min-w-0 min-h-0">
-                        <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
+                        <FileSplit><GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} /></FileSplit>
                       </div>
                     )}
                     {inputLayout.showSteering && (
                       <div className="flex-1 min-w-0 min-h-0">
-                        <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
+                        <FileSplit><SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} /></FileSplit>
                       </div>
                     )}
                   </div>
@@ -343,19 +300,19 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
                 <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
                   {inputLayout.showGear && (
                     <div className="flex-1 min-w-0 min-h-0">
-                      <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
+                      <FileSplit><GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} /></FileSplit>
                     </div>
                   )}
                   {showCombinedPedals && (
                     <div className="flex-1 min-w-0 min-h-0">
-                      <InputsChart key={combinedPedalMode} mode={combinedPedalMode} showAccelerator={inputLayout.showAccelerator} showBrake={inputLayout.showBrake} isDark={isDark} view={combinedPedalView} windowSeconds={seconds} />
+                      <FileSplit><InputsChart key={combinedPedalMode} mode={combinedPedalMode} showAccelerator={inputLayout.showAccelerator} showBrake={inputLayout.showBrake} isDark={isDark} view={combinedPedalView} windowSeconds={seconds} /></FileSplit>
                     </div>
                   )}
                 </div>
               )}
               {inputLayout.showSteering && (
                 <div className="flex-1 min-h-0">
-                  <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
+                  <FileSplit><SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} /></FileSplit>
                 </div>
               )}
               </>}
@@ -372,7 +329,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
           </div>
           <div className="flex-1 min-h-0">
             <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
-              <PowerBreakdownChart data={statusHistory} isDark={isDark} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} fuelUpperLimit={fuelUpperLimit} hasMguh={protocolStatus?.capabilities.hasMguh ?? false} harvestUpperLimit={(protocolStatus?.presentation_format ?? protocolStatus?.active_format) === 2026 ? 8000 : 4000} ersHarvestYAxis={chartYAxis.power.ersHarvest} layout={pageLayouts.power} />
+              <FileSplit><PowerBreakdownChart data={statusHistory} isDark={isDark} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} fuelUpperLimit={fuelUpperLimit} hasMguh={protocolStatus?.capabilities.hasMguh ?? false} harvestUpperLimit={(protocolStatus?.presentation_format ?? protocolStatus?.active_format) === 2026 ? 8000 : 4000} ersHarvestYAxis={chartYAxis.power.ersHarvest} layout={pageLayouts.power} /></FileSplit>
             </ChartCursorSyncProvider>
           </div>
         </div>
@@ -395,6 +352,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
               windowSeconds={seconds}
               yAxis={chartYAxis.tyres}
               chartLayout={pageLayouts.tyres}
+              allocationView={pageLayouts.tyresAllocation}
             />
           </ChartCursorSyncProvider>
         </div>
@@ -425,26 +383,26 @@ const MiscTabContent = memo(function MiscTabContent({
         <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
           {pageLayouts.miscGForce === 'split' ? <>
             {miscLayout.showGLateral && <div className="flex-1 min-h-0">
-              <GForceChart mode="lateral" isDark={isDark} view={graphView.miscGLateral} windowSeconds={seconds} />
+              <FileSplit><GForceChart mode="lateral" isDark={isDark} view={graphView.miscGLateral} windowSeconds={seconds} /></FileSplit>
             </div>}
             {miscLayout.showGLongitudinal && <div className="flex-1 min-h-0">
-              <GForceChart mode="longitudinal" isDark={isDark} view={graphView.miscGLongitudinal} windowSeconds={seconds} />
+              <FileSplit><GForceChart mode="longitudinal" isDark={isDark} view={graphView.miscGLongitudinal} windowSeconds={seconds} /></FileSplit>
             </div>}
           </> : miscLayout.showGForce && (
             <div className="flex-1 min-h-0">
-              <GForceChart isDark={isDark} view={graphView.miscGForce} windowSeconds={seconds} />
+              <FileSplit><GForceChart isDark={isDark} view={graphView.miscGForce} windowSeconds={seconds} /></FileSplit>
             </div>
           )}
           {pageLayouts.miscRideHeight === 'split' ? <>
             {miscLayout.showRideFront && <div className="flex-1 min-h-0">
-              <RideHeightChart mode="front" isDark={isDark} view={graphView.miscRideFront} windowSeconds={seconds} />
+              <FileSplit><RideHeightChart mode="front" isDark={isDark} view={graphView.miscRideFront} windowSeconds={seconds} /></FileSplit>
             </div>}
             {miscLayout.showRideRear && <div className="flex-1 min-h-0">
-              <RideHeightChart mode="rear" isDark={isDark} view={graphView.miscRideRear} windowSeconds={seconds} />
+              <FileSplit><RideHeightChart mode="rear" isDark={isDark} view={graphView.miscRideRear} windowSeconds={seconds} /></FileSplit>
             </div>}
           </> : miscLayout.showRideHeight && (
             <div className="flex-1 min-h-0">
-              <RideHeightChart isDark={isDark} view={graphView.miscRideHeight} windowSeconds={seconds} />
+              <FileSplit><RideHeightChart isDark={isDark} view={graphView.miscRideHeight} windowSeconds={seconds} /></FileSplit>
             </div>
           )}
         </div>
@@ -464,7 +422,6 @@ const TabContent = memo(function TabContent(props: TabContentProps) {
       compareDriver={props.analyzeCompareDriver}
       onCompareDriverChange={props.onAnalyzeCompareDriverChange}
       secondaryFile={props.analyzeSecondaryFile}
-      onSecondaryFileChange={props.onAnalyzeSecondaryFileChange}
       fixedLapMode={props.analyzeFixedLapMode}
       onFixedLapModeChange={props.onAnalyzeFixedLapModeChange}
       mapDimmed={props.mapDimmed}

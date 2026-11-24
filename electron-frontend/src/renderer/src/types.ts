@@ -503,6 +503,11 @@ export interface AnalyzeLapData {
   lapProgress: ColumnView<LapProgressPoint>
   playerPositions: PlayerPositionPoint[]
   rowTypeMask?: number
+  /**
+   * The V6 fields read, one bit per V6 type (bit n = type n), for a lap read
+   * with only some fields; absent = every field of the families in rowTypeMask.
+   */
+  v6TypeMask?: number
 }
 
 export interface PlayerPositionPoint {
@@ -578,6 +583,29 @@ export interface PlaybackState {
   totalTime: number
   filename: string | null
   isScanning: boolean
+  /** Lap-synced playback (two files): the engine's merged clock. */
+  mergedTime?: number
+}
+
+/** One tick of file B's row stream (SecondaryStream in the addon; mirrors main's). */
+export interface SecondaryStreamMessage {
+  json: string
+  binary?: Uint8Array
+  /** B's session time, its followed car's lap there and where that lap started. */
+  time: number
+  lapNum: number
+  lapStart: number
+  /**
+   * A jump: the lap's history from lapStart to `time` (column blocks) comes
+   * first, and the longer families' from longFrom.
+   */
+  flush?: boolean
+  history?: Uint8Array
+  longHistory?: Uint8Array
+  longFrom?: number
+  /** Before V6 (no column history): the same spans as packed hot rows and JSON, as A's seek flush. */
+  historyBinary?: Uint8Array
+  historyJson?: string
 }
 
 export interface PlaybackLapBlock {
@@ -924,7 +952,8 @@ declare global {
       load: (filePath: string) => Promise<{ ok: boolean; error?: string }>
       play: () => void
       pause: () => void
-      seek: (pct: number) => void
+      seek: (pct: number, mergedTime?: number) => void
+      setMergedTimeline: (inputJson: string | null) => void
       setAllLapsMode: (enabled: boolean, rowTypeMask?: number, windowSeconds?: number) => void
       setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number,
                             v6Types?: number[], v6HistoryTypes?: number[]) => void
@@ -954,6 +983,18 @@ declare global {
         lapNum: number, rowTypeMask?: number,
         source?: 'file1' | 'file2', driverIndex?: number,
       ) => Promise<unknown | null>
+      mergedLapTimeline: (inputJson: string) => Promise<string | null>
+      setStreaming: (enabled: boolean, driverIndex: number, longMask?: number, longSeconds?: number) => void
+      setLapHistoryCar: (carIdx: number) => void
+      setFocusDriver: (driverIndex: number) => void
+      onBatch: (callback: (message: SecondaryStreamMessage) => void) => () => void
+      lapHistory: (lapNum: number, rowTypeMask: number, driverIndex: number, v6Types?: number[]) => Promise<{
+        lapNum: number; startSessionTime: number; endSessionTime: number; rowTypeMask: number; history: Uint8Array
+      } | null>
+      getLapDataJson: (
+        lapNum: number, rowTypeMask?: number,
+        source?: 'file1' | 'file2', driverIndex?: number,
+      ) => Promise<string | null>
       compareLaps: (
         currentLapNum: number,
         currentSource: 'file1' | 'file2',

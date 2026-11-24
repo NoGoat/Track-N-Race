@@ -16,6 +16,8 @@ interface Props {
   isDark: boolean
   animationsEnabled: boolean
   compact?: DensityMode | boolean
+  /** Whose laps a row's lap-times dialog shows: the open file's (default) or the second file's. */
+  file?: 'a' | 'b'
 }
 
 
@@ -256,7 +258,7 @@ const TowerRow = memo(function TowerRow({
 })
 TowerRow.displayName = 'TowerRow'
 
-const TimingTower = memo(function TimingTower({ timing, participants, allStatus, fastestLapCarIdx, selectedIdx, onSelectDriver, isDark, animationsEnabled, compact }: Props) {
+const TimingTower = memo(function TimingTower({ timing, participants, allStatus, fastestLapCarIdx, selectedIdx, onSelectDriver, isDark, animationsEnabled, compact, file = 'a' }: Props) {
   const isCompact = compact === true || compact === 'compact'
   const isSpacious = compact === 'spacious'
   const { tn } = useLabels()
@@ -499,7 +501,7 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
             ))}
           </tbody>
         </table>
-        <DriverLapsDialog target={lapsTarget} fastestLapCarIdx={fastestLapCarIdx} onClose={closeLaps} />
+        <DriverLapsDialog target={lapsTarget} fastestLapCarIdx={fastestLapCarIdx} onClose={closeLaps} file={file} />
       </div>
   )
 })

@@ -305,6 +305,18 @@ bool TnrdReader::historyRequest(float from, float to, uint32_t mask, HistoryRequ
     return backend_ && backend_->historyRequest(from, to, mask, out);
 }
 
+bool TnrdReader::lapHistoryRequest(int lapNum, uint32_t mask, int driverIndex,
+                                   const std::vector<uint8_t>& v6Types, HistoryRequest& out,
+                                   float& startOut, float& endOut) const {
+    return backend_ && backend_->lapHistoryRequest(lapNum, mask, driverIndex, v6Types, out,
+                                                   startOut, endOut);
+}
+
+bool TnrdReader::rangeHistoryRequest(float from, float to, uint32_t mask, int driverIndex,
+                                     const std::vector<uint8_t>& v6Types, HistoryRequest& out) const {
+    return backend_ && backend_->rangeHistoryRequest(from, to, mask, driverIndex, v6Types, out);
+}
+
 // ── Load-time payload ────────────────────────────────────────────────────────
 
 std::string TnrdReader::lapBlocksMessage() const {
@@ -388,6 +400,14 @@ LapMeasuresRow TnrdReader::lapMeasures(int driver, float throughTime, bool hasMg
     LapMeasuresRow out;
     out.car_idx = driver;
     return out;
+}
+
+std::string TnrdReader::lapTrendsMessage(int driverIndex, float throughTime, bool hasMguh) const {
+    const int driver = driverIndex >= 0 ? driverIndex : effectivePlaybackDriver();
+    LapTrendsRow row;
+    row.history = driverLapHistory(driver, throughTime);
+    row.measures = lapMeasures(driver, throughTime, hasMguh);
+    return writeJson(row);
 }
 
 bool TnrdReader::v6FastestLapAt(float t, FastestLapRow& out) const {

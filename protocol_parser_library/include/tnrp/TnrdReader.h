@@ -52,6 +52,13 @@ struct TnrdReaderContext {
 // (lapBlocksMessage / getLapDataMessage) returns fully-serialised JSON strings.
 //
 // Not thread-safe; the engine serializes access from its playback thread.
+// One car's completed laps and their ERS and fuel use (TnrdReader::lapTrendsMessage).
+struct LapTrendsRow {
+    std::string type{"lap_trends"};
+    DriverLapHistoryRow history;
+    LapMeasuresRow measures;
+};
+
 class TnrdReader {
 public:
     TnrdReader();
@@ -232,6 +239,19 @@ public:
     // The read for [from, to] of the playback driver's history; false when
     // this recording or the playback settings cannot serve it column-wise.
     bool historyRequest(float from, float to, uint32_t mask, HistoryRequest& out) const;
+    // The read for one whole race lap of one car (-1: the playback driver),
+    // with the lap's time span: what getLapDataMessage() covers, as column
+    // blocks for a HistoryReader instead of JSON. `v6Types` names the V6
+    // fields to read, as a history subscription does (empty: every field of
+    // the families in `mask`). False when this recording has no column history
+    // (only V6 recordings opened from a file do) or no such lap.
+    bool lapHistoryRequest(int lapNum, uint32_t mask, int driverIndex,
+                           const std::vector<uint8_t>& v6Types, HistoryRequest& out,
+                           float& startOut, float& endOut) const;
+    // The same read over any span [from, to] of one car's history (-1: the
+    // playback driver), for a second recording's time windows and All Laps.
+    bool rangeHistoryRequest(float from, float to, uint32_t mask, int driverIndex,
+                             const std::vector<uint8_t>& v6Types, HistoryRequest& out) const;
 
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
@@ -303,6 +323,11 @@ public:
     // That car's ERS and fuel use on each of the same laps (tnrp/LapMeasures.h).
     // V6 only; other formats return no laps.
     LapMeasuresRow lapMeasures(int driver, float throughTime, bool hasMguh) const;
+    // Both of the above for one car as a single lap_trends message (LapTrendsRow),
+    // for a frontend comparing this recording against the one it plays: the
+    // Trends page of a second file. driverIndex -1 is the playback driver.
+    // V6 only; other formats return no laps.
+    std::string lapTrendsMessage(int driverIndex, float throughTime, bool hasMguh) const;
     // V6 recordings keep no fastest_lap rows. The holder at `t` is derived
     // from the lap summaries: the fastest valid completed lap by then. Returns
     // false for other formats, whose recorded rows already carry it; car_idx

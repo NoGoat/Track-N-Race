@@ -1,12 +1,14 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 import type { AlignedTable, TelemetryRow } from '../types'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import { useSideRows } from '../lib/lapDataSide'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import { alignedFromView, sessionTimeAt, type ColumnView } from '../lib/columnStore'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { ChartHeader, useSplitLegendState } from '../lib/chartSplit'
 import type { GraphSection } from '../lib/graphSections'
 import { themeSeriesColor } from '../lib/themeColors'
 import { INPUT_CHART_Y_AXIS_SIZE } from '../lib/inputChartLayout'
@@ -87,7 +89,7 @@ function InputsChartContent({
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const colorAccelerator = themeSeriesColor(COLOR_ACCELERATOR, isDark)
   const colorBrake = themeSeriesColor(COLOR_BRAKE, isDark)
-  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const [hiddenSeries, setHiddenSeries] = useSplitLegendState<Record<string, boolean>>({})
   const toggleSeries = useCallback((label: string) => {
     setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
   }, [])
@@ -112,7 +114,7 @@ function InputsChartContent({
     [tableSeries],
   )
 
-  const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
+  const data = useSideRows('telemetry', useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry))
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
     return alignedFromView(data, tableSeries.map(series => series.getValue))
@@ -129,7 +131,7 @@ function InputsChartContent({
     return [
       `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(values),
-      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
+      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues, coordinates.comparisonLabel),
     ].join('')
   }, [axisColor, baseSeries, colorAccelerator, colorBrake, coordinates, hiddenSeries, showAccelerator, showBrake])
 
@@ -147,7 +149,7 @@ function InputsChartContent({
     }).join(''),
   }), [baseSeries, colorAccelerator, colorBrake, hiddenSeries, mode, showAccelerator, showBrake])
   return <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
-    <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
+    <ChartHeader className="flex h-[22px] items-center justify-between mb-3 shrink-0">
       <div className="flex items-center gap-0">
         <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
         <ChartWindowOverrideSelect />
@@ -168,7 +170,7 @@ function InputsChartContent({
           {combined ? '▼' : overlaid ? '—' : '▲'} Brake
         </span>}
       </div>}
-    </div>
+    </ChartHeader>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />

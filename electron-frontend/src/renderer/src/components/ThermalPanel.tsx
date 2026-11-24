@@ -6,6 +6,8 @@ import GraphTable, { type GraphTableColumn } from './GraphTable'
 import { useColorFn } from '../lib/cards'
 import type { TyreYAxisGroupState } from '../lib/graphSections'
 import { useChartCoordinates } from '../lib/chartCoordinates'
+import FileTableCards from './FileTableCards'
+import { useSecondaryCards } from '../lib/secondaryLive'
 
 type Corner = 'fl' | 'fr' | 'rl' | 'rr'
 
@@ -231,8 +233,13 @@ function useCornerHistories(telemetry: ColumnView<TelemetryRow>, enabled: Record
   }, [telemetry, enabled, skip])
 }
 
+const CORNER_LABELS = { fl: 'Front Left', fr: 'Front Right', rl: 'Rear Left', rr: 'Rear Right' } as const
+
 const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, damageHistory, view, tyreWearMode, thermalGraphs, thermalCards, isDark, tyresLevel = 0, graphViews, cardViews, windowSeconds = 30, yAxis }: Props) {
   const fullLapMode = useChartCoordinates().allLapsMode
+  // Side-by-side with a second file: the tyre cards become one table (Overview 6).
+  const secondary = useSecondaryCards()
+  const ramp = useColorFn(null, null, isDark)
   const sf = { fl: latest?.tyre_temp_surface_fl ?? 0, fr: latest?.tyre_temp_surface_fr ?? 0, rl: latest?.tyre_temp_surface_rl ?? 0, rr: latest?.tyre_temp_surface_rr ?? 0 }
   const inn = { fl: latest?.tyre_temp_inner_fl   ?? 0, fr: latest?.tyre_temp_inner_fr   ?? 0, rl: latest?.tyre_temp_inner_rl   ?? 0, rr: latest?.tyre_temp_inner_rr   ?? 0 }
   const brk = { fl: latest?.brake_temp_fl        ?? 0, fr: latest?.brake_temp_fr        ?? 0, rl: latest?.brake_temp_rl        ?? 0, rr: latest?.brake_temp_rr        ?? 0 }
@@ -255,6 +262,32 @@ const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, dam
         <div className="h-full">
           <TyreTrendCharts telemetry={telemetry} damageHistory={damageHistory} tyreWearMode={tyreWearMode} visibleGraphs={thermalGraphs} isDark={isDark} graphViews={graphViews} windowSeconds={windowSeconds} fastScroll yAxis={yAxis} sectionGroup="overview" />
         </div>
+      ) : secondary ? (
+        // Surface, inner and brake temperature, then wear, for each corner shown.
+        <FileTableCards dateA={secondary.dateA} dateB={secondary.dateB} cards={CORNERS.filter(corner => thermalCards[corner]).map(corner => {
+          // Each figure in its own colour, as the one-file cards show them:
+          // the tyre and brake temperature ramps and the wear ramp.
+          const temps = (row: TelemetryRow | null, wear: number | null | undefined) => {
+            if (!row) return { value: '—' }
+            const part = (value: number | null | undefined, scale: string, suffix: string) =>
+              value != null && Number.isFinite(value)
+                ? { text: `${Math.round(value)}${suffix}`, color: ramp(scale, value) ?? undefined }
+                : { text: '—' }
+            const field = (name: string) => (row as unknown as Record<string, number | undefined>)[name]
+            const parts = [
+              part(field(`tyre_temp_surface_${corner}`), 'temp.tyre', '°'),
+              part(field(`tyre_temp_inner_${corner}`), 'temp.tyre', '°'),
+              part(field(`brake_temp_${corner}`), 'temp.brake', '°'),
+              part(wear, 'wear', '%'),
+            ]
+            return { value: parts.map(p => p.text).join(' '), parts }
+          }
+          return {
+            key: corner, label: CORNER_LABELS[corner],
+            a: temps(latest, damage?.[`tyre_wear_${corner}`]),
+            b: temps(secondary.latest, secondary.damage?.[`tyre_wear_${corner}`]),
+          }
+        })} />
       ) : (
         <div className={`flex divide-x divide-[var(--border)] ${compactCards ? '' : 'h-full'}`}>
           {thermalCards.fl && <WheelCard pos="Front Left" corner="fl" surface={sf.fl}  inner={inn.fl}  brake={brk.fl}

@@ -65,6 +65,18 @@ public:
     virtual std::unique_ptr<TnrdReader::HistoryReader> openHistoryReader(std::string* errorOut) const = 0;
     virtual bool historyRequest(float from, float to, uint32_t mask,
                                 TnrdReader::HistoryRequest& out) const = 0;
+    // One whole race lap of one car (-1: the playback driver) as a column
+    // history read, with the lap's time span. Only V6 recordings opened from a
+    // file can serve it.
+    virtual bool lapHistoryRequest(int /*lapNum*/, uint32_t /*mask*/, int /*driverIndex*/,
+                                   const std::vector<uint8_t>& /*v6Types*/,
+                                   TnrdReader::HistoryRequest& /*out*/, float& /*startOut*/,
+                                   float& /*endOut*/) const { return false; }
+    // One car's history over [from, to] as a column history read (the same
+    // read as a lap's, over any span). Only V6 recordings opened from a file.
+    virtual bool rangeHistoryRequest(float /*from*/, float /*to*/, uint32_t /*mask*/, int /*driverIndex*/,
+                                     const std::vector<uint8_t>& /*v6Types*/,
+                                     TnrdReader::HistoryRequest& /*out*/) const { return false; }
 
     // ── Host playback settings, already stored in the context ───────────────
     virtual void playbackRowMaskChanged(float cursorTime) = 0;

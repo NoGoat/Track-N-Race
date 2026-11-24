@@ -5,6 +5,8 @@ import { OVERVIEW_RESOLVERS, useColorFn, type CardCtx, type CardDesc } from '../
 import { playbackDebug } from '../lib/playbackDebug'
 
 import type { DensityMode } from '../lib/graphSections'
+import FileTableCards, { type FileTableCard } from './FileTableCards'
+import { tableValue, useSecondaryCards } from '../lib/secondaryLive'
 
 interface VisibleCards {
   speed: boolean; rpm: boolean; gear: boolean; throttle: boolean; brake: boolean
@@ -129,6 +131,9 @@ let lastWingReport = ''
 const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConnected, visibleCards, isDark, compact }: Props) {
   const { t, tn } = useLabels()
   const color = useColorFn(latest, status, isDark)
+  // Side-by-side with a second file: one table, A's values over B's at B's moment on the playhead.
+  const secondary = useSecondaryCards()
+  const secondaryColor = useColorFn(secondary?.latest ?? null, secondary?.status ?? null, isDark)
 
   // Card definitions: { key (resolver/data), label (catalog), vis (visibility flag) }.
   // The wing card's data key is format-aware (drs ↔ slm) while it stays under the
@@ -147,6 +152,24 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
     { key: 'tyre',     label: t('ui.overview.tyre'),     vis: 'tyre' },
   ]
   const shown = descs.filter(d => visibleCards[d.vis])
+
+  if (secondary) {
+    const resolve = (ctx: CardCtx | null, key: string) => {
+      if (!ctx?.latest) return { value: '—' }
+      try { return OVERVIEW_RESOLVERS[key]?.(ctx) ?? { value: '—' } } catch { return { value: '—' } }
+    }
+    const aCtx: CardCtx | null = isConnected && latest ? { latest, status, lap, damage, session: null, isDark, t, tn, color } : null
+    const bCtx: CardCtx = { latest: secondary.latest, status: secondary.status, lap: secondary.lap, damage: secondary.damage, session: null, isDark, t, tn, color: secondaryColor }
+    const cards: FileTableCard[] = shown.map(d => {
+      const a = resolve(aCtx, d.key), b = resolve(bCtx, d.key)
+      return {
+        key: d.vis, label: d.label,
+        a: { value: tableValue(a.value), unit: a.unit, color: a.color },
+        b: { value: tableValue(b.value), unit: b.unit, color: b.color },
+      }
+    })
+    return <FileTableCards dateA={secondary.dateA} dateB={secondary.dateB} cards={cards} />
+  }
 
   if (!isConnected || !latest) {
     return (
